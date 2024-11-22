@@ -63,7 +63,9 @@ class SVR_head:
 
 
   def predict(self, X):
-    return self.svr.predict(X)
+    predictions = self.svr.predict(X)
+    rounded_predictions = np.round(predictions).astype(int)
+    return rounded_predictions
 
   def k_fold_cross_validation(self, X, y, groups, k=3):
     """ k-fold cross-validation training of SVR model. """
