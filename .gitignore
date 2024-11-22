@@ -17679,3 +17679,4 @@ VideoMAEv2/scripts/pretrain/vit_b_hybrid_pt.sh
 VideoMAEv2/scripts/pretrain/vit_g_hybrid_pt.sh
 VideoMAEv2/scripts/pretrain/vit_h_hybrid_pt.sh
 VideoMAEv2/scripts/pretrain/vit_l_hybrid_pt.sh
+PartA/video/custom_video/all_2.mp4
