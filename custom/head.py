@@ -1,5 +1,5 @@
 from sklearn.svm import SVR
-from sklearn.model_selection import cross_val_score, KFold, StratifiedKFold
+from sklearn.model_selection import cross_val_score, KFold, StratifiedKFold, cross_validate
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import GridSearchCV, GroupKFold,GroupShuffleSplit
 from sklearn.metrics import mean_absolute_error as mea
@@ -71,16 +71,17 @@ class SVR_head:
     print('X.shape', X.shape)
     print('y.shapey', y.shape)
     gss = GroupShuffleSplit(n_splits = k)
-    scores = cross_val_score(self.svr, X, y, cv=gss,scoring='neg_mean_absolute_error', groups=groups)
-    scores = -scores
+    results = cross_validate(self.svr, X, y, cv=gss,scoring='neg_mean_absolute_error', groups=groups, return_train_score=True, return_estimator=True)
+    # scores = - scores
     # Print the scores for each fold and the mean score
-    print(f"Cross-validation scores (MAE): {scores}")
-    print(f"Mean cross-validation score (MAE): {np.mean(scores)}")
-    print(f'Std cross-validation score (MAE): {np.std(scores)}')
+    print("Keys:", results.keys())
+    print("Train accuracy:", results['train_score'])
+    print("Test accuracy:", results['test_score'])
+    # print("Mean test accuracy:", results['test_accuracy'].mean())
     list_split_indices=[]
     for fold, (train_idx, test_idx) in enumerate(gss.split(X, y, groups=groups), 1):
       list_split_indices.append((train_idx,test_idx))
-    return list_split_indices
+    return list_split_indices,results
 
   def run_grid_search(self,param_grid, X, y, groups ,k_cross_validation):
     # Initialize GridSearchCV
