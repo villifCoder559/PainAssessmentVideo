@@ -349,15 +349,16 @@ class customDataset(torch.utils.data.Dataset):
       if out is None:
         out = cv2.VideoWriter(output_video_path, fourcc, output_fps, frame_size)
       frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-      print(f'frame_count: {frame_count}')
+      # print(f'frame_count: {frame_count}')
       black_frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
       font = cv2.FONT_HERSHEY_SIMPLEX
       font_scale = 1
       font_color = (255, 255, 255)
       thickness = 2
       count = 0
+      # print(f'frame_indices: {len(list_frame_indices)}')
       for j,frame_indices in enumerate(list_frame_indices[i]):
-        print('frame_indices',frame_indices)
+        # print('frame_indices',frame_indices)
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset the video capture to the beginning
         for _ in range(1):
           number_frame = black_frame.copy()
@@ -372,6 +373,7 @@ class customDataset(torch.utils.data.Dataset):
           if not ret:
             break
             # Check if the current frame index is in the list
+          # print(f'frame_indices: {frame_indices}')
           if frame_idx in frame_indices:
             # print(f'gt:{list_ground_truth}')
             # print(f'pred:{all_predictions}')
