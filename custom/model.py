@@ -10,9 +10,12 @@ from sklearn.metrics import r2_score, mean_absolute_error as mea
 import numpy as np
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+
 from custom.head import SVR_head
 from joblib import dump
 import os
+from sklearn.manifold import TSNE
 
 class Model_Advanced: # Scenario_Advanced
   def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,
@@ -125,17 +128,17 @@ class Model_Advanced: # Scenario_Advanced
       
   def _extract_features_from_dataset(self,stop_after=3):
     """
-    Extracts features from the dataset using the model and dataloader.
-
-    This method moves the model to the appropriate device (GPU if available, otherwise CPU),
-    sets the model to evaluation mode, and iterates over the dataloader to extract features
-    and labels without computing gradients. The extracted features and labels are then 
-    stacked and returned as tensors.
-
+    Extracts features from the dataset using the model's backbone.
+    Args:
+      stop_after (int, optional): Number of iterations after which to stop the feature extraction. Defaults to 3.
     Returns:
-      tuple: A tuple containing two tensors:
-        - A tensor of stacked features extracted from the dataset.
-        - A tensor of stacked labels corresponding to the features.
+      tuple: A tuple containing the following elements:
+        - torch.Tensor: Stacked features extracted from the dataset.
+        - torch.Tensor: Stacked labels corresponding to the features.
+        - numpy.ndarray: Array of subject IDs.
+        - numpy.ndarray: Array of sample IDs.
+        - numpy.ndarray: Array of paths corresponding to the samples.
+        - torch.Tensor: Stacked frames sampled from the dataset.
     """
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"extracting features using... {device}")
@@ -201,8 +204,10 @@ class Model_Advanced: # Scenario_Advanced
   #   plt.suptitle(title)
   #   plt.tight_layout()
   #   plt.show()
+  
   def _compute_features(self, data, labels, subject_id, sample_id, path, device, remove_clip_reduction=False):
-# Extract features from clips -> return [B, clips/tubelets, W/patch_w, H/patch_h, emb_dim] 
+  
+    # Extract features from clips -> return [B, clips/tubelets, W/patch_w, H/patch_h, emb_dim] 
     feature = self.backbone.forward_features(data.to(device)) # ex. [B,8*14*14,emb_dim]
     unique_labels, unique_subject_id, unique_sample_id, unique_path = [], [], [], []  
     # Apply dimensionality reduction [B,C,T,H,W] -> [B, reduction(C,T,H,W)]
@@ -242,7 +247,7 @@ class Model_Advanced: # Scenario_Advanced
       csv_array = np.stack(list_samples)
       print(f'csv_array: {csv_array[:,4].astype(int)}')
       print(f'sample_id: {sample_id}')
-      idx = np.where(csv_array[:,4].astype(int) == sample_id)# get the index of the sample_id in the cvs
+      idx = np.where(csv_array[:,4].astype(int) == sample_id) # get the index of the sample_id in the cvs
       print(f'idx len: {len(idx[0])}')
       assert len(idx[0]) > 0, "Sample_id not found in the dataset."
       idx = idx[0][0]
@@ -254,7 +259,7 @@ class Model_Advanced: # Scenario_Advanced
       if stride_window>0:
         self.dataset.stride_window = old_value_stride
       print(features[0].shape)
-      device = 'cuda' if torch.cuda.is_available() else 'cpu'
+      device = 'cuda' if torch.cuda.is_available() else 'cpu' #TODO: move somewhere else 
       self.backbone.model.to(device)
       self.backbone.model.eval()
       print('Computing features...')
@@ -264,7 +269,7 @@ class Model_Advanced: # Scenario_Advanced
       feature = feature.detach().cpu().squeeze()
       print(feature.shape)
       
-      predictions = self.head.svr.predict(feature)
+      predictions = self.head.svr.predict(feature) # TODO: Change to use self.head.predict
       print('predictions',predictions)
       print('Plotting...')
       indices = np.arange(len(predictions)).astype(int)
@@ -334,7 +339,118 @@ class Model_Advanced: # Scenario_Advanced
     
     return all_predictions
   
+  
+  
+  
+  def plot_comparison_prediction_gt(self, list_samples=None):
+    # Supposition -> I have 1 prediction for one video  
+    if list_samples is None: # all samples in the self.dataset.path_labels are used
+      with torch.no_grad():
+        features_list, gt_list, subject_ids, sample_ids, _, _ = self._extract_features_from_dataset()
+      print('Computing features...')
+      features_list = features_list.detach().cpu().numpy().squeeze()
+      gt_list = gt_list.detach().cpu().numpy().squeeze()
+      prediction_list = self.head.predict(features_list)
+      print(prediction_list)
+      tensor_subjects_prediction_gt = np.stack((subject_ids, prediction_list, gt_list), axis=1)
+      unique_subject = np.unique(subject_ids)
+      # print(f'tensor_subjects_prediction_gt.shape {tensor_subjects_prediction_gt.shape}')
+      unique_subject = np.unique(subject_ids)
+      # unique_gt = np.unique(gt_list)
+      unique_gt = np.arange(0,4) # TODO: add class_list in dataset when created
+      # print(f'unique_subject {unique_subject},  unique_gt {unique_gt}')
+      class_count_gt = {class_id: np.zeros(len(unique_subject)) for class_id in (gt_list)}
+      class_count_pred = {class_id: np.zeros(len(unique_subject)) for class_id in (gt_list)}
+      # print(class_count_gt)
+      for i, subject in enumerate(unique_subject):
+        for gt in unique_gt:
+          idx_gt = np.where((tensor_subjects_prediction_gt[:,0] == subject) & (tensor_subjects_prediction_gt[:,2] == gt))
+          idx_pred = np.where((tensor_subjects_prediction_gt[:,0] == subject) & (tensor_subjects_prediction_gt[:,1] == gt))
+          # print(f'idx {idx_gt[0].shape}')
+          class_count_gt[gt][i] = idx_gt[0].shape[0]
+          class_count_pred[gt][i] = idx_pred[0].shape[0]
+
+    # Plotting the comparison
+    # class_count_gt = {
+    #     0: [1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+    #     1: [2.0, 1.0, 2.0, 1.0, 2.0, 1.0, 1.0, 1.0],
+    #     2: [0.0, 0.0, 2.0, 1.0, 1.0, 0.0, 0.0, 1.0],
+    #     3: [1.0, 1.0, 2.0, 0.0, 1.0, 0.0, 1.0, 1.0]
+    # }
+
+    # class_count_pred = {
+    #     0: [3.0, 1.0, 0.0, 0.0, 1.0, 0.0, 3.0, 0.0],
+    #     1: [2.0, 0.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.0],
+    #     2: [1.0, 3.0, 7.0, 2.0, 4.0, 2.0, 1.0, 3.0],
+    #     3: [1.0, 0.0, 1.0, 0.0, 2.0, 0.0, 4.0, 0.0]
+    # } 
+    fig, ax = plt.subplots(figsize=(12, 6))
+    bar_width = 0.35
+    index = np.arange(len(unique_subject))
+    cmap = cm.get_cmap('tab20', len(unique_gt))  # Use a categorical colormap like 'tab10'
+    colors = [cmap(i) for i in range(len(unique_gt))]
+    for gt,i  in enumerate(unique_gt):
+      ax.bar(index, class_count_gt[gt], bar_width, label=f'Class {gt}', color=colors[gt],edgecolor='k')
+      ax.bar(index + bar_width, class_count_pred[gt], bar_width, color=colors[gt],edgecolor='k')
+      
+    ax.set_xlabel('Subjects')
+    ax.set_ylabel('Count')
+    ax.set_title('Comparison of Ground Truth and Predictions by Subject')
+    ax.set_xticks(index + bar_width / 2)
+    ax.set_xticklabels([('grt '+str(sbj)+ ' prd') for sbj in unique_subject])
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
     
+
+  def plot_tsne_colored(self, color_by='subject'):
+    """
+    Plots the t-SNE reduction of the features in 2D with colors based on subject, gt, or predicted class.
+    Args:
+      stop_after (int, optional): Number of iterations after which to stop the feature extraction. Defaults to 5.
+      color_by (str, optional): Criterion for coloring the points ('subject', 'label', 'prediction'). Defaults to 'subject'.
+    """
+    X, y, subjects_id, _, _, _ = self._extract_features_from_dataset()
+    X = X.reshape(X.shape[0], -1).detach().cpu().numpy()
+    y = y.squeeze().detach().cpu().numpy()
+    
+    if color_by == 'subject':
+      colors = subjects_id
+      color_label = 'Subject ID'
+    elif color_by == 'gt':
+      colors = y
+      color_label = 'Groundtruth Label'
+    elif color_by == 'prediction':
+      predictions = self.head.predict(X)
+      colors = predictions
+      color_label = 'Predicted Class'
+    else:
+      raise ValueError("color_by must be 'subject', 'label', or 'prediction'")
+    
+    unique_colors = np.unique(colors)
+    color_map = plt.cm.get_cmap('tab20', len(unique_colors))
+    color_dict = {val: color_map(i) for i, val in enumerate(unique_colors)}
+    
+    unique_subjects = np.unique(subjects_id)
+    markers = ['o', 's', 'D', '^', 'v', '<', '>', 'p', '*', 'h', 'H', 'x', 'd', '|', '_', '+', '1', '2', '3', '4']
+    marker_dict = {val: markers[i % len(markers)] for i, val in enumerate(unique_subjects)}
+    
+    tsne = TSNE(n_components=2, random_state=42, perplexity=10)
+    X_tsne = tsne.fit_transform(X)
+    
+    plt.figure(figsize=(10, 8))
+    for val in unique_colors:
+      idx = colors == val
+      for subject in unique_subjects:
+        subject_idx = subjects_id == subject
+        combined_idx = idx & subject_idx
+        plt.scatter(X_tsne[combined_idx, 0], X_tsne[combined_idx, 1], color=color_dict[val],  alpha=0.7, marker=marker_dict[subject])
+    
+    plt.legend()
+    plt.title(f't-SNE Reduction to 2D (Colored by {color_label})')
+    plt.xlabel('t-SNE Component 1')
+    plt.ylabel('t-SNE Component 2')
+    plt.show()
     
     
     
