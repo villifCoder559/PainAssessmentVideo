@@ -102,8 +102,8 @@ class Model_Advanced: # Scenario_Advanced
         X = X.reshape(X.shape[0],-1).detach().cpu().numpy()
         y = y.squeeze().detach().cpu().numpy()
         
-        list_split_indices = self.head.k_fold_cross_validation(k=k_cross_validation,X=X, y=y, groups=subjects_id)
-        return list_split_indices
+        list_split_indices,results = self.head.k_fold_cross_validation(k=k_cross_validation,X=X, y=y, groups=subjects_id)
+        return list_split_indices, results
       else:
         print('Training using SVR...')
         self.dataset.set_path_labels('val') # TODO: change to train
@@ -285,7 +285,7 @@ class Model_Advanced: # Scenario_Advanced
       # for frames in features[5]:
       #   print(f'frames: {frames}')
       output_video_path = os.path.join('PartA','video','custom_video',csv_array[idx,5]+f'_{self.dataset.stride_window}'+'.mp4')
-      # self.dataset.save_frames_as_video([input_video_path],features[5].numpy(),output_video_path)
+      self.dataset.save_frames_as_video([input_video_path],[features[5].numpy()], output_video_path ,[predictions], [features[1][0]])
     
   def plot_prediction_graph_all(self, sample_ids, stride_window=0):
     all_predictions = []
