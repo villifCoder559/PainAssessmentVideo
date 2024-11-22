@@ -1,6 +1,6 @@
 from enum import Enum
-from models.modeling_finetune import vit_small_patch16_224, vit_base_patch16_224, vit_giant_patch14_224
-from models.modeling_pretrain import pretrain_videomae_giant_patch14_224
+from VideoMAEv2.models.modeling_finetune import vit_small_patch16_224, vit_base_patch16_224, vit_giant_patch14_224
+from VideoMAEv2.models.modeling_pretrain import pretrain_videomae_giant_patch14_224
 import os
 import torch
 import requests
