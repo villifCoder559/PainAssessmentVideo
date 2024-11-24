@@ -122,7 +122,6 @@ class Model_Advanced: # Scenario_Advanced
         # print(subjects_id)
         # print(X_train.shape)
         self.head.fit(X_train=X_train, y_train=y_train, subject_ids=subjects_id_train)
-        # dump(self.head.svr, os.path.join('PartA','starting_point',f'svr_model_{self.dataset.path_labels}.joblib'))
     # elif isinstance(self.head, GRU_head):      
   # def fit(self):
       
@@ -289,7 +288,7 @@ class Model_Advanced: # Scenario_Advanced
       print('input_video_path', input_video_path)
       # for frames in features[5]:
       #   print(f'frames: {frames}')
-      output_video_path = os.path.join('PartA','video','custom_video',csv_array[idx,5]+f'_{self.dataset.stride_window}'+'.mp4')
+      output_video_path = os.path.join('partA','video','custom_video',csv_array[idx,5]+f'_{self.dataset.stride_window}'+'.mp4')
       self.dataset.save_frames_as_video([input_video_path],[features[5].numpy()], output_video_path ,[predictions], [features[1][0]])
     
   def plot_prediction_graph_all(self, sample_ids, stride_window=0):
@@ -330,7 +329,7 @@ class Model_Advanced: # Scenario_Advanced
         all_predictions.append(predictions)
         
         input_video_path = os.path.join(self.dataset.path_dataset, csv_array[idx, 1], csv_array[idx, 5] + '.mp4')
-        output_video_path = os.path.join('PartA', 'video', 'custom_video', 'all' + f'_{len(sample_ids)}' + '.mp4')
+        output_video_path = os.path.join('partA', 'video', 'custom_video', 'all' + f'_{len(sample_ids)}' + '.mp4')
         
         input_video_paths.append(input_video_path)
         all_frames.append(features[5].numpy())
@@ -425,7 +424,7 @@ class Model_Advanced: # Scenario_Advanced
       colors = predictions
       color_label = 'Predicted Class'
     else:
-      raise ValueError("color_by must be 'subject', 'label', or 'prediction'")
+      raise ValueError("color_by must be 'subject', 'gt', or 'prediction'")
     
     unique_colors = np.unique(colors)
     color_map = plt.cm.get_cmap('tab20', len(unique_colors))
@@ -435,18 +434,18 @@ class Model_Advanced: # Scenario_Advanced
     markers = ['o', 's', 'D', '^', 'v', '<', '>', 'p', '*', 'h', 'H', 'x', 'd', '|', '_', '+', '1', '2', '3', '4']
     marker_dict = {val: markers[i % len(markers)] for i, val in enumerate(unique_subjects)}
     
-    tsne = TSNE(n_components=2, random_state=42, perplexity=10)
+    tsne = TSNE(n_components=2, random_state=42, perplexity=20)
     X_tsne = tsne.fit_transform(X)
     
     plt.figure(figsize=(10, 8))
     for val in unique_colors:
       idx = colors == val
       for subject in unique_subjects:
-        subject_idx = subjects_id == subject
+        subject_idx = (subjects_id == subject)
         combined_idx = idx & subject_idx
         plt.scatter(X_tsne[combined_idx, 0], X_tsne[combined_idx, 1], color=color_dict[val],  alpha=0.7, marker=marker_dict[subject])
     
-    plt.legend()
+    # plt.legend()
     plt.title(f't-SNE Reduction to 2D (Colored by {color_label})')
     plt.xlabel('t-SNE Component 1')
     plt.ylabel('t-SNE Component 2')
