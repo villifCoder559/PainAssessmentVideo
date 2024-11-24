@@ -28,11 +28,12 @@ class backbone:
   def download_model(self,model_type):
     url="https://huggingface.co/OpenGVLab/VideoMAE2/resolve/main/"
     model_name = os.path.split(model_type)[-1]
-    if model_type == MODEL_TYPE.VIDEOMAE_v2_S or model_type == MODEL_TYPE.VIDEOMAE_v2_B:
-      url += "distil/"+model_name
+    if model_type == MODEL_TYPE.VIDEOMAE_v2_S.value or model_type == MODEL_TYPE.VIDEOMAE_v2_B.value:
+      url += "distill/"+model_name
     else:
       url += "mae-g/"+model_name
-    weights_path = os.path.join('pretrained', model_name)  
+    print(url)
+    weights_path = os.path.join('VideoMAEv2','pretrained', model_name)  
     
     # Download the file from the given URL
     response = requests.get(url, stream=True) # Stream the download for large files
@@ -77,6 +78,7 @@ class backbone:
     
     self.remove_unwanted_layers(model)
     return model
+  
   def remove_unwanted_layers(self,model):
     # Remove 'head', 'norm', and 'fc_norm' if they exist
     if hasattr(model, "head"):
@@ -89,6 +91,7 @@ class backbone:
   def forward_features(self, x):
     # x.shape = [B, C, T, H, W]
     num_frames = x.shape[2]
+    # added return_embedding in the original code to catch the embedding
     feat = self.model.forward_features(x, return_embedding=True) # torch.Size([1, 1568, 768]) (VIDEOMAE_v2_B model)
     B = feat.shape[0]
     T = int(feat.shape[1] / (self.out_spatial_size ** 2))
