@@ -331,13 +331,14 @@ class customDataset(torch.utils.data.Dataset):
     # Open the original video
     out = None
     print('all_labels',list_ground_truth)
+    print(f'output_video_path: {output_video_path}')
     # print('pred',all_predictions)
     # print('gt',list_ground_truth)
     for i,input_video_path in enumerate(list_input_video_path):
       print(f'input_video_path: {input_video_path}')
       cap = cv2.VideoCapture(input_video_path)
       if not cap.isOpened():
-        raise IOError(f"Unable to open video file: {input_video_path}")
+        raise IOError(f"Err: Unable to open video file: {input_video_path}")
 
       # Get the width and height of the frames in the video
       frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -345,7 +346,7 @@ class customDataset(torch.utils.data.Dataset):
       frame_size = (frame_width, frame_height)
 
       # Define the codec and create VideoWriter object
-      fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # For .mp4 files
+      fourcc = cv2.VideoWriter_fourcc(*'H264')  # For .mp4 files
       if out is None:
         out = cv2.VideoWriter(output_video_path, fourcc, output_fps, frame_size)
       frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -375,12 +376,12 @@ class customDataset(torch.utils.data.Dataset):
             # Check if the current frame index is in the list
           # print(f'frame_indices: {frame_indices}')
           if frame_idx in frame_indices:
-            # print(f'gt:{list_ground_truth}')
+            # print(f'GT:{list_ground_truth}')
             # print(f'pred:{all_predictions}')
+            # print(i,j)
             cv2.putText(frame, str(count)+'/'+str(frame_idx), (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 3, (0,0,0), thickness, cv2.LINE_AA)
-            cv2.putText(frame, f'gt:{list_ground_truth[i][i]}', (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
-            cv2.putText(frame, f'pred:{all_predictions[i][j]}', (50, 450), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
-
+            cv2.putText(frame, f'gt:{list_ground_truth[i][j]}', (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
+            cv2.putText(frame, f'pred:{all_predictions[i][j]}', (50, 400), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
             out.write(frame)
         count+=1
           # print(f'frame_idx: {frame_idx}')
