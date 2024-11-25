@@ -13,9 +13,10 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
 from custom.head import SVR_head
-from joblib import dump
 import os
 from sklearn.manifold import TSNE
+
+from tsnecuda import TSNE as cudaTSNE # available only on Linux
 
 class Model_Advanced: # Scenario_Advanced
   def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,
@@ -47,56 +48,6 @@ class Model_Advanced: # Scenario_Advanced
     self.dataloader = DataLoader(self.dataset, batch_size=batch_size, shuffle=False, collate_fn=self.dataset._custom_collate_fn) # TODO: put inside customDataset and return a dataset and dataLoader
     self.head = head
     
-  # def fit(self, stop_after=5,plot_dataset_split_distribution=False):
-  #   """ Evaluation training of SVR model. """
-  #   X, y, subjects_id, _, paths, list_frames = self._extract_features_from_dataset(stop_after=stop_after) # feats,labels,subject_id,sample_id,path
-  #   X = X.reshape(X.shape[0],-1).detach().cpu().numpy()
-  #   y = y.squeeze().detach().cpu().numpy()
-  #   print(f'list_frames_FIT.shape {list_frames.shape}') # [video, nr_frame, indices] for each video I have many chunks sampled using following the indices in the list   
-  #   if plot_dataset_split_distribution:
-  #     merged_array = np.concatenate((y[:,None],subjects_id[:,None]),axis=1)
-  #     print(f'merged_array.shape: {merged_array.shape}')
-
-  #   X_train, X_test, y_train, y_test =  train_test_split(X, merged_array, test_size=0.2, random_state=42)
-  #   print(f'y_train shape: {y_train.shape}')
-  #   print(f'y_test shape: {y_test.shape}')
-  #   y_train, subjects_id_train = y_train[:,0], y_train[:,1]
-  #   y_test, subjects_id_test = y_test[:,0], y_test[:,1]
-  #   # print(f"subjects_id shape: {subjects_id.shape}, y_train shape: {y_train.shape}")
-  #   if plot_dataset_split_distribution:
-  #     self.plot_dataset_split_distribution(subjects_id_train, y_train, title='Train Dist.')
-  #     self.plot_dataset_split_distribution(subjects_id_test, y_test, title='Test Dist.')
-  #   # print(f"X_train shape: {X_train.shape}, y_train shape: {y_train.shape}")
-  #   # print(f"X_test shape: {X_test.shape}, y_test shape: {y_test.shape}")
-  #   # # return None
-  #   regressor = self.svr.fit(X_train, y_train)
-  #   y_pred = regressor.predict(X_test)
-  #   # Model evaluation
-  #   print("Mean absolute Error:", mea(y_test, y_pred))
-  #   frames_path_dict = [] 
-  #   for path,list_f in zip(paths,list_frames):
-  #     frames_path_dict.append({'path':path,'frame_list':list_f})
-  #   return frames_path_dict
-  #   # print("R2 Score:", r2_score(y_test, y_pred))
-      
-  # def k_fold_cross_validation(self, k=3, stop_after=5,plot_dataset_split_distribution=False):
-  #   """ k-fold cross-validation training of SVR model. """
-  #   # Use dictionary so you cann add w/o changing code
-  #   X, y, subjects_id,_ , _ = self._extract_features_from_dataset(stop_after=stop_after) # feats,labels,subject_id,sample_id,path
-  #   X = X.reshape(X.shape[0],-1).detach().cpu().numpy()
-  #   y = y.squeeze().detach().cpu().numpy()
-  #   if plot_dataset_split_distribution:
-  #     self.plot_dataset_split_distribution(subjects_id, y)
-    
-  #   print('X.shape', X.shape)
-  #   print('y.shapey', y.shape)
-  #   kf = KFold(n_splits = k, shuffle = True,random_state = 42)
-  #   scores = cross_val_score(self.svr, X, y, cv=kf)
-    
-  #   # Print the scores for each fold and the mean score
-  #   print(f"Cross-validation scores (MSE): {scores}")
-  #   print(f"Mean cross-validation score (MSE): {np.mean(scores)}")
-  #   print(f'Std cross-validation score (MSE): {np.std(scores)}')  
   def train(self, stop_after=5,k_cross_validation=0):
     if isinstance(self.head, SVR_head):
       if k_cross_validation:
@@ -113,17 +64,8 @@ class Model_Advanced: # Scenario_Advanced
         X_train, y_train, subjects_id_train, _, paths_train, list_frames_train = self._extract_features_from_dataset(stop_after=stop_after)
         X_train = X_train.reshape(X_train.shape[0],-1).detach().cpu().numpy()
         y_train = y_train.squeeze().detach().cpu().numpy()
-        
-        # self.dataset.set_path_labels('test')
-        # X_test, y_test, subjects_id_test, _, paths_test, list_frames_test = self._extract_features_from_dataset(stop_after=stop_after)
-        # X_test = X.reshape(X.shape[0],-1).detach().cpu().numpy()
-        # y_test = y.squeeze().detach().cpu().numpy()
-        # X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.4, random_state=42)
-        # print(subjects_id)
-        # print(X_train.shape)
+
         self.head.fit(X_train=X_train, y_train=y_train, subject_ids=subjects_id_train)
-    # elif isinstance(self.head, GRU_head):      
-  # def fit(self):
       
   def _extract_features_from_dataset(self,stop_after=3):
     """
@@ -170,39 +112,6 @@ class Model_Advanced: # Scenario_Advanced
            np.stack([sample_id for sample_id in list_sample_id]),\
            np.stack([path for path in list_path]),\
            torch.stack(list_frames)  
-  
-  # def plot_dataset_split_distribution(self, subjects_id, labels, title=''):
-  #   """
-  #   Plots histograms to show the distribution of labels and subjects_id.
-
-  #   Parameters:
-  #   subjects_id (tensor): Tensor containing subject IDs.
-  #   labels (tensor): Tensor containing labels.
-  #   title (str): Title for the entire plot.
-  #   """
-  #   plt.figure(figsize=(12, 6))
-
-  #   # Plot distribution of labels
-  #   plt.subplot(1, 2, 1)
-  #   bins = np.arange(min(labels), max(labels) + 2) - 0.5
-  #   plt.hist(labels, bins=bins, edgecolor='k', alpha=0.7)
-  #   plt.title('Distribution of Labels')
-  #   plt.xlabel('Labels')
-  #   plt.ylabel('Frequency')
-  #   plt.xticks(np.arange(min(labels), max(labels) + 1))
-    
-  #   # Plot distribution of subjects_id
-  #   plt.subplot(1, 2, 2)
-  #   bins = np.arange(min(subjects_id), max(subjects_id) + 2) - 0.5
-  #   plt.hist(subjects_id, bins=bins, edgecolor='k', alpha=0.7)
-  #   plt.title('Distribution of Subject IDs')
-  #   plt.xlabel('Subject IDs')
-  #   plt.ylabel('Frequency')
-  #   plt.xticks(np.arange(min(subjects_id), max(subjects_id) + 1))
-
-  #   plt.suptitle(title)
-  #   plt.tight_layout()
-  #   plt.show()
   
   def _compute_features(self, data, labels, subject_id, sample_id, path, device, remove_clip_reduction=False):
   
@@ -343,6 +252,7 @@ class Model_Advanced: # Scenario_Advanced
   
   def plot_comparison_prediction_gt(self, list_samples=None):
     # Supposition -> I have 1 prediction for one video  
+
     if list_samples is None: # all samples in the self.dataset.path_labels are used
       with torch.no_grad():
         features_list, gt_list, subject_ids, sample_ids, _, _ = self._extract_features_from_dataset()
@@ -402,9 +312,9 @@ class Model_Advanced: # Scenario_Advanced
     plt.show()
     
 
-  def plot_tsne_colored(self, color_by='subject'):
+  def plot_tsne_colored_fixed_subject(self, color_by='subject',use_cuda=False,perplexity=20):
     """
-    Plots the t-SNE reduction of the features in 2D with colors based on subject, gt, or predicted class.
+    Plots the t-SNE reduction of the features in 2D with colors based on either gt or predicted class and shapes represent the subject.
     Args:
       stop_after (int, optional): Number of iterations after which to stop the feature extraction. Defaults to 5.
       color_by (str, optional): Criterion for coloring the points ('subject', 'label', 'prediction'). Defaults to 'subject'.
@@ -413,6 +323,58 @@ class Model_Advanced: # Scenario_Advanced
     X = X.reshape(X.shape[0], -1).detach().cpu().numpy()
     y = y.squeeze().detach().cpu().numpy()
     
+    if color_by == 'gt':
+      colors = y
+      color_label = 'Groundtruth Label'
+    elif color_by == 'prediction':
+      predictions = self.head.predict(X)
+      colors = predictions
+      color_label = 'Predicted Class'
+    else:
+      raise ValueError("color_by must be 'subject', 'gt', or 'prediction'")
+    
+    unique_colors = np.unique(colors)
+    color_map = plt.cm.get_cmap('tab20', len(unique_colors))
+    color_dict = {val: color_map(i) for i, val in enumerate(unique_colors)}
+    
+    unique_subjects = np.unique(subjects_id)
+    
+    markers = ['o', 's', 'D', '^', 'v', '<', '>', 'p', '*', 'h', 'H', 'x', 'd', '|', '_', '+', '1', '2', '3', '4']
+    marker_dict = {val: markers[i % len(markers)] for i, val in enumerate(unique_subjects)}
+    
+    if use_cuda and X.shape[0] > 194:
+      tsne = cudaTSNE(n_components=2, perplexity=perplexity, random_state=42)
+    else:
+      tsne = TSNE(n_components=2, random_state=42, perplexity=perplexity)
+    X_tsne = tsne.fit_transform(X)
+    plt.figure(figsize=(10, 8))
+    for val in unique_colors:
+      idx = colors == val
+      for subject in unique_subjects:
+        subject_idx = (subjects_id == subject)
+        combined_idx = idx & subject_idx
+        plt.scatter(X_tsne[combined_idx, 0], X_tsne[combined_idx, 1], color=color_dict[val],  alpha=0.7, marker=marker_dict[subject])
+      handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=color_dict[val], markersize=10, label=f'Class {val}') for val in unique_colors]
+      plt.legend(handles=handles)
+
+    # plt.legend()
+    plt.title(f't-SNE Reduction to 2D (Colored by {color_label})')
+    plt.xlabel('t-SNE Component 1')
+    plt.ylabel('t-SNE Component 2')
+    plt.show()
+
+  def plot_tsne(self, color_by='subject', use_cuda=False, perplexity=20):
+    """
+    Plots the t-SNE reduction of the features in 2D with colors based on subject, gt, or predicted class.
+    Args:
+      color_by (str, optional): Criterion for coloring the points ('subject', 'label', 'prediction'). Defaults to 'subject'.
+      use_cuda (bool, optional): Whether to use CUDA for t-SNE computation. Defaults to False.
+      perplexity (int, optional): Perplexity parameter for t-SNE. Defaults to 20.
+    """
+    X, y, subjects_id, _, _, _ = self._extract_features_from_dataset()
+    X = X.reshape(X.shape[0], -1).detach().cpu().numpy()
+    y = y.squeeze().detach().cpu().numpy()
+    print(X.shape)
     if color_by == 'subject':
       colors = subjects_id
       color_label = 'Subject ID'
@@ -430,26 +392,21 @@ class Model_Advanced: # Scenario_Advanced
     color_map = plt.cm.get_cmap('tab20', len(unique_colors))
     color_dict = {val: color_map(i) for i, val in enumerate(unique_colors)}
     
-    unique_subjects = np.unique(subjects_id)
-    markers = ['o', 's', 'D', '^', 'v', '<', '>', 'p', '*', 'h', 'H', 'x', 'd', '|', '_', '+', '1', '2', '3', '4']
-    marker_dict = {val: markers[i % len(markers)] for i, val in enumerate(unique_subjects)}
-    
-    tsne = TSNE(n_components=2, random_state=42, perplexity=20)
+    if use_cuda and X.shape[0] > 194:
+      tsne = cudaTSNE(n_components=2, perplexity=perplexity, learning_rate=10)
+    else:
+      tsne = TSNE(n_components=2, perplexity=perplexity)
     X_tsne = tsne.fit_transform(X)
     
     plt.figure(figsize=(10, 8))
     for val in unique_colors:
       idx = colors == val
-      for subject in unique_subjects:
-        subject_idx = (subjects_id == subject)
-        combined_idx = idx & subject_idx
-        plt.scatter(X_tsne[combined_idx, 0], X_tsne[combined_idx, 1], color=color_dict[val],  alpha=0.7, marker=marker_dict[subject])
+      plt.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[val], label=f'{color_label} {val}', alpha=0.7)
     
-    # plt.legend()
+    plt.legend()
     plt.title(f't-SNE Reduction to 2D (Colored by {color_label})')
     plt.xlabel('t-SNE Component 1')
     plt.ylabel('t-SNE Component 2')
     plt.show()
-    
     
     
