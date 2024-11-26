@@ -1,3 +1,4 @@
+import pickle
 from sklearn.svm import SVR
 from sklearn.model_selection import cross_val_score, KFold, StratifiedKFold, cross_validate
 from sklearn.model_selection import train_test_split
@@ -10,7 +11,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import custom.tools as tools
-from torchmetrics.classification import MulticlassConfusionMatrix
+from torchmetrics.classification import ConfusionMatrix
+import os
 
 # class head:
 #   def __init__(self,head):
@@ -32,6 +34,9 @@ class head:
                              num_epochs, criterion=criterion, optimizer=optimizer)
       # self.plot_loss(dict_results['train_losses'], dict_results['test_losses'])
     return dict_results
+  
+  def predict(self, X):
+    return self.head.predict(X)
 class HeadSVR:
   def __init__(self, svr_params):
     self.svr = SVR(**svr_params)
@@ -105,10 +110,16 @@ class HeadSVR:
     # print(f'train_loss_per_subject: {train_loss_per_subject} \t test_loss_per_subject: {test_loss_per_subject}')
 
     # print("diffenece:", np.sum(np.abs(y_train - pred_train) >= 1))
-    
+    train_confusion_matricies = []
+    test_confusion_matricies = []
+    train_confusion_matricies.append(self.compute_confusion_matrix(X_train, y_train, regressor))
+    test_confusion_matricies.append(self.compute_confusion_matrix(X_test, y_test, regressor))
+
     return {'train_losses': [train_loss], 'train_loss_per_class': train_loss_per_class.reshape(1, -1), 'train_loss_per_subject': train_loss_per_subject.reshape(1, -1), 
             'test_losses': [test_loss], 'test_loss_per_class': test_loss_per_class.reshape(1, -1), 'test_loss_per_subject': test_loss_per_subject.reshape(1, -1),
-            'y_unique': y_unique, 'subject_ids_unique': subject_ids_unique}
+            'y_unique': y_unique, 'subject_ids_unique': subject_ids_unique,
+            'test_confusion_matricies': test_confusion_matricies,
+            'train_confusion_matricies': train_confusion_matricies}
 
 
 
@@ -116,7 +127,7 @@ class HeadSVR:
     predictions = self.svr.predict(X)
     return predictions
 
-  def k_fold_cross_validation(self, X, y, groups, k=3):
+  def k_fold_cross_validation(self, X, y, groups, k=3, list_saving_paths_k_val=None):
     """ k-fold cross-validation training of SVR model. """
     # Use dictionary so you cann add w/o changing code
     print('X.shape', X.shape)
@@ -130,11 +141,49 @@ class HeadSVR:
     print("Test accuracy:", results['test_score'])
     # print("Mean test accuracy:", results['test_accuracy'].mean())
     list_split_indices=[]
+      # Save each model fitted during cross-validation
+    for fold_idx, estimator in enumerate(results['estimator']):
+      model_path = os.path.join(list_saving_paths_k_val[fold_idx],f'SVR_{fold_idx}.pkl')
+      with open(model_path, 'wb') as f:
+        pickle.dump(estimator, f)
+      print(f"Model for fold {fold_idx + 1} saved to {model_path}")
+
     for fold, (train_idx, test_idx) in enumerate(gss.split(X, y, groups=groups), 1):
       list_split_indices.append((train_idx,test_idx))
-    return list_split_indices,results
+    
+    # Save the model for each fold
+    model_path = os.path.join(list_saving_paths_k_val[fold_idx], f'SVR_{fold_idx}.pkl')
+    with open(model_path, 'wb') as f:
+      pickle.dump(estimator, f)
+    print(f"Model for fold {fold_idx + 1} saved to {model_path}")
+    
+    # Initialize confusion matrices for each fold
+    confusion_matrix_test = []
+    confusion_matrix_train = []
+
+    for fold_idx, estimator in enumerate(results['estimator']):
+      X_train, y_train = X[results['train_score'][fold_idx]], y[results['train_score'][fold_idx]]
+      X_test, y_test = X[results['test_score'][fold_idx]], y[results['test_score'][fold_idx]]
+      cm_train = self.compute_confusion_matrix(X_train, y_train, estimator)
+      cm_test = self.compute_confusion_matrix(X_test, y_test, estimator)
+      confusion_matrix_train.append(cm_train)
+      confusion_matrix_test.append(cm_test)
+
+    dict_result = {'df_results': results,  
+                   'test_confusion_matricies': confusion_matrix_test,
+                   'train_confusion_matricies': confusion_matrix_train}
+    
+    return list_split_indices, dict_result
   
+  def compute_confusion_matrix(self,X, y, estimator):
+    y_pred_train = estimator.predict(X)
+    # y_pred_test = estimator.predict(X_test)
+    cm = ConfusionMatrix(num_classes=len(np.unique(y)))
+    cm.update(torch.tensor(y_pred_train), torch.tensor(y))
+    cm.compute()
+    return cm
   
+
   def run_grid_search(self,param_grid, X, y, groups ,k_cross_validation):
     
     def _plot_cv_indices(cv, X, y, group, ax, n_splits, lw=20):
@@ -263,8 +312,8 @@ class HeadGRU:
     test_loss_per_class = np.zeros((num_epochs, unique_classes.shape[0]))
     train_loss_per_subject = np.zeros((num_epochs, unique_subjects.shape[0]))
     test_loss_per_subject = np.zeros((num_epochs, unique_subjects.shape[0]))
-    train_confusion_matricies = [MulticlassConfusionMatrix(num_classes=unique_classes.shape[0]) for _ in range(num_epochs)]
-    test_confusion_matricies = [MulticlassConfusionMatrix(num_classes=unique_classes.shape[0]) for _ in range(num_epochs)]
+    train_confusion_matricies = [ConfusionMatrix(num_classes=unique_classes.shape[0]) for _ in range(num_epochs)]
+    test_confusion_matricies = [ConfusionMatrix(num_classes=unique_classes.shape[0]) for _ in range(num_epochs)]
 
     for epoch in range(num_epochs):
       self.model.train()
@@ -380,6 +429,10 @@ class HeadGRU:
     test_confusion_matricies.compute()
     return avg_loss, class_loss, subject_loss
 
+  def predict(self, X):
+    predictions = self.model(X)
+    return predictions
+
 class CrossValidationGRU:
   def __init__(self, head):
     self.head = head
@@ -390,7 +443,8 @@ class CrossValidationGRU:
     self.output_size = head.output_size
 
   def k_fold_cross_validation(self, X, y, group_ids, k=5, num_epochs=10, batch_size=32,
-                               criterion=nn.L1Loss(), optimizer_fn=optim.Adam, lr=0.001):
+                               criterion=nn.L1Loss(), optimizer_fn=optim.Adam, lr=0.001, 
+                               list_saving_paths_k_val=None):
     """
     Perform k-fold cross-validation using GroupShuffleSplit.
     
@@ -404,15 +458,17 @@ class CrossValidationGRU:
       criterion: Loss function.
       optimizer_fn: Optimizer function.
       lr (float): Learning rate.
+      save_model_path (str): Path to save the model weights.
 
     Returns:
       dict: Cross-validation results including per-fold losses.
     """
     gss = GroupShuffleSplit(n_splits=k, test_size=0.2, random_state=42)
     fold_results = []
-
+    list_split_indices = []
     for fold_idx, (train_idx, test_idx) in enumerate(gss.split(X, y, groups=group_ids)):
       print(f"Starting Fold {fold_idx + 1}/{k}")
+      list_split_indices.append((train_idx,test_idx))
 
       # Split the data into training and testing sets
       X_train, X_test = X[train_idx], X[test_idx]
@@ -433,6 +489,11 @@ class CrossValidationGRU:
       
       fold_results.append(fold_result)
 
+      # Save model weights
+      if list_saving_paths_k_val:
+        torch.save(model.model.state_dict(), os.path.join(list_saving_paths_k_val[fold_idx], 'model_weights.pth'))
+        print(f"Model weights for fold {fold_idx + 1} saved to {list_saving_paths_k_val[fold_idx]}")
+      
       # Print fold results
       print(f"Fold {fold_idx + 1} Results:")
       print(f"  Train Losses: {fold_result['train_losses'][-1]:.4f}")
@@ -442,8 +503,8 @@ class CrossValidationGRU:
     avg_train_loss = np.mean([result['train_losses'][-1] for result in fold_results])
     avg_test_loss = np.mean([result['test_losses'][-1] for result in fold_results])
 
-    print("\nCross-Validation Results:")
+    print("Cross-Validation Results:")
     print(f"  Average Train Loss: {avg_train_loss:.4f}")
     print(f"  Average Test Loss: {avg_test_loss:.4f}")
 
-    return fold_results
+    return fold_results, list_split_indices
