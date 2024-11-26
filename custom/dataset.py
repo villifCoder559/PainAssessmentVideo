@@ -11,7 +11,7 @@ from sklearn.model_selection import GridSearchCV, GroupKFold, GroupShuffleSplit
 
 
 class customDataset(torch.utils.data.Dataset):
-  def __init__(self,path_dataset, dict_paths, preprocess, sample_frame_strategy, stride_window=2, clip_length=16):
+  def __init__(self,path_dataset, dict_paths, preprocess, sample_frame_strategy, batch_size=1, stride_window=2, clip_length=16):
     assert os.path.exists(path_dataset), f"Dataset path {path_dataset} does not exist."
     # assert os.path.exists(path_labels), f"Labels path {path_labels} does not exist."
     assert clip_length > 0, f"Clip length must be greater than 0."
@@ -42,7 +42,39 @@ class customDataset(torch.utils.data.Dataset):
     self.image_channels = 3
     self.clip_length = clip_length
   
+  def get_unique_subjects_and_classes(self):
+    """
+    Get the number of times each unique subject ID and class ID appears in video_labels.
+
+    Returns:
+      dict: A dictionary with keys 'subject_counts' and 'class_counts', each containing a dictionary
+        where the keys are the unique IDs and the values are the counts.
+    """
+    csv_array = self.video_labels.to_numpy()
+    list_samples = [entry[0].split("\t") for entry in csv_array]
+    list_samples = np.stack(list_samples)
+    
+    subject_ids = list_samples[:, 0].astype(int)
+    class_ids = list_samples[:, 2].astype(int)
+    
+    subject_counts = {subject_id: np.sum(subject_ids == subject_id) for subject_id in np.unique(subject_ids)}
+    class_counts = {class_id: np.sum(class_ids == class_id) for class_id in np.unique(class_ids)}
+    
+    return subject_counts, class_counts
+
   def set_path_labels(self, path): #FIX: improve the path selection
+    """
+    Sets the path labels for the dataset.
+
+    This method sets the path labels for the dataset by checking if the given path exists in the dictionary of paths.
+    If the path exists, it reads the corresponding CSV file and assigns it to the video_labels attribute.
+
+    Args:
+      path (str):  Must be one of 'train','val','test'
+
+    Raises:
+      AssertionError: If the provided path is not found in the dictionary of paths.
+    """
     assert path in self.dict_paths, f"Path {path} not found in the dictionary. Available {self.dict_paths.keys()}"
     self.path_labels = self.dict_paths[path]
     self.video_labels = pd.read_csv(self.path_labels)
@@ -211,7 +243,7 @@ class customDataset(torch.utils.data.Dataset):
     """
     indices = torch.arange(0, video_len - self.clip_length, self.stride_window)
     list_indices = torch.stack([torch.arange(start_idx, start_idx + self.clip_length) for start_idx in indices])
-    print('Sliding shape',list_indices.shape)
+    # print('Sliding shape',list_indices.shape)
     return list_indices
   
   def plot_distribution_mean_std_duration(self,per_class=False,per_partecipant=False):
