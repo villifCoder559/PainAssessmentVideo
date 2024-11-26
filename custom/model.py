@@ -52,14 +52,14 @@ class Model_Advanced: # Scenario_Advanced
       self.head = HeadSVR(svr_params=head_params)
     elif head == 'GRU':
       assert self.backbone.frame_size % self.backbone.tubelet_size == 0, "Frame size must be divisible by tubelet size."
+      # Calculate the backbone output tensor size to use as input to the GRU head
       output_tensor = [1, int(self.backbone.frame_size/self.backbone.tubelet_size), self.backbone.out_spatial_size, self.backbone.out_spatial_size, self.backbone.embed_dim]
       if embedding_reduction:
         for dim in self.neck.dim_embed_reduction:
           output_tensor[dim] = 1
-
       if clips_reduction:
         print(self.neck.dim_clips_reduction)
-        output_tensor[self.neck.dim_clips_reduction+1] = 1
+        output_tensor[self.neck.dim_clips_reduction + 1] = 1
       head_params['input_size'] = np.prod(output_tensor).astype(int)
       print(f'head_params : {head_params}')
       print(f'output_tensor : {output_tensor}')
