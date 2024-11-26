@@ -246,7 +246,7 @@ class customDataset(torch.utils.data.Dataset):
     # print('Sliding shape',list_indices.shape)
     return list_indices
   
-  def plot_distribution_mean_std_duration(self,per_class=False,per_partecipant=False):
+  def plot_distribution_mean_std_duration(self,per_class=False,per_partecipant=False,saving_path=None):
     def plot_distribution(key,title):  
       key_dict = {} # key: subject_id -> value: [duration, N]
       for idx, sample in enumerate(list_samples):
@@ -273,7 +273,10 @@ class customDataset(torch.utils.data.Dataset):
       plt.grid(axis="y", linestyle="--", alpha=0.7)
       # Show the plot
       # plt.tight_layout()
-      plt.show()
+      if saving_path is not None:
+        plt.savefig(saving_path)
+      else:
+        plt.show()
     
     csv_array=self.video_labels.to_numpy() # subject_id, subject_name, class_id, class_name, sample_id, sample_name
     list_samples=[]
@@ -290,7 +293,7 @@ class customDataset(torch.utils.data.Dataset):
     
       
     
-  def plot_dataset_distribution(self,per_class=False,per_partecipant=False): 
+  def plot_dataset_distribution(self,per_class=False,per_partecipant=False, saving_path=None): 
     def plot_distribution(unique,count,title):  
       plt.figure(figsize=(10, 5))
       plt.bar(unique.astype(str), count, color='blue')
@@ -300,7 +303,10 @@ class customDataset(torch.utils.data.Dataset):
       plt.yticks(fontsize=16)
       plt.grid(axis="y", linestyle="--", alpha=0.7)
       plt.title('Dataset Distribution ' + title +f' ({os.path.split(self.path_labels)[-1]})',fontsize=16)
-      plt.show()
+      if saving_path is not None:
+        plt.savefig(saving_path)
+      else:
+        plt.show()
       
     def plot_distribution_stacked(unique, title, class_counts):
       # colors = ['blue', 'orange', 'green', 'red', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
@@ -317,7 +323,10 @@ class customDataset(torch.utils.data.Dataset):
       plt.xticks(fontsize=13,rotation=45)
       plt.yticks(fontsize=13)
       plt.grid(axis="y", linestyle="--", alpha=0.7)
-      plt.show()
+      if saving_path is not None:
+        plt.savefig(saving_path)
+      else:
+        plt.show()
 
     #Extract csv and postprocess
     csv_array = self.video_labels.to_numpy()  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
@@ -413,7 +422,7 @@ class customDataset(torch.utils.data.Dataset):
             # print(i,j)
             cv2.putText(frame, str(count)+'/'+str(frame_idx), (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 3, (0,0,0), thickness, cv2.LINE_AA)
             cv2.putText(frame, f'gt:{list_ground_truth[i][j]}', (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
-            cv2.putText(frame, f'pred:{all_predictions[i][j]}', (50, 400), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
+            cv2.putText(frame, f'pred:{np.round(all_predictions[i][j],2)}', (50, 400), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
             out.write(frame)
         count+=1
           # print(f'frame_idx: {frame_idx}')
