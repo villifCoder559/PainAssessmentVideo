@@ -7,7 +7,6 @@ import torch
 import cv2
 from custom.helper import SAMPLE_FRAME_STRATEGY
 import matplotlib.pyplot as plt
-from sklearn.model_selection import GridSearchCV, GroupKFold, GroupShuffleSplit
 
 
 class customDataset(torch.utils.data.Dataset):
@@ -62,7 +61,7 @@ class customDataset(torch.utils.data.Dataset):
     
     return subject_counts, class_counts
 
-  def set_path_labels(self, path): #FIX: improve the path selection
+  def set_path_labels(self, path):
     """
     Sets the path labels for the dataset.
 
@@ -82,50 +81,7 @@ class customDataset(torch.utils.data.Dataset):
     
   def __len__(self):
     return len(self.video_labels)
-  
-  def _generate_train_test_validation(self):
-    csv_array=self.video_labels.to_numpy()
-    video_labels_columns = self.video_labels.columns.to_numpy()[0].split('\t')
-    # ['subject_id', 'subject_name', 'class_id', 'class_name', 'sample_id', 'sample_name']
-    list_samples=[]
-    for entry in (csv_array):
-      tmp = entry[0].split("\t")
-      list_samples.append(tmp)
-    list_samples = np.stack(list_samples)
-    split_dict={}
-    X = list_samples
-    y = list_samples[:,2]
-    groups = list_samples[:,0]
-    
-    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-    split = list(gss.split(X, y, groups=groups)) # tmp to split in validation and test
-    train_split_idx = split[0][0]
-    split_dict['train'] = list_samples[train_split_idx]
-    
-    # Further split temp into validation and test
-    tmp_split = split[0][1]
-    X_temp = X[tmp_split]
-    y_temp = y[tmp_split]
-    groups_temp = groups[tmp_split]
-
-    gss_temp = GroupShuffleSplit(n_splits=1, test_size=0.5, random_state=42)
-    test_val_split  = list(gss_temp.split(X_temp, y_temp, groups=groups_temp))
-    test_split_idx = test_val_split[0][0]
-    val_split_idx = test_val_split[0][1]
-    split_dict['test'] = list_samples[tmp_split[test_split_idx]]
-    split_dict['val'] = list_samples[tmp_split[val_split_idx]]
-    if set(split_dict['train'][:,0].astype(int)).intersection(split_dict['val'][:,0].astype(int)) or \
-       set(split_dict['train'][:,0].astype(int)).intersection(split_dict['test'][:,0].astype(int)) or \
-       set(split_dict['val'][:,0].astype(int)).intersection(split_dict['test'][:,0].astype(int)):
-      print('Error: train, validation and test split have common elements')
-    for element in split_dict:
-
-      save_path = os.path.join('partA','starting_point',element+f'_{len(split_dict[element])}.csv')
-      split_df = pd.DataFrame(split_dict[element], columns=video_labels_columns)
-      split_df.to_csv(save_path, index=False, sep='\t')
-      print(f'{element} split saved to {save_path}')
-
-    
+   
   def _generate_csv_subsampled(self, nr_samples_per_class=2):
     csv_array=self.video_labels.to_numpy()
     video_labels_columns = self.video_labels.columns.to_numpy()[0].split('\t')
@@ -149,9 +105,7 @@ class customDataset(torch.utils.data.Dataset):
     subsampled_df = pd.DataFrame(samples_subsampled, columns=video_labels_columns)
     subsampled_df.to_csv(save_path, index=False, sep='\t')
     print(f'Subsampled video labels saved to {save_path}')
-    
-      
-    
+  
   def __getitem__(self, idx):
     # split in # ["subject_id, subject_name, class_id, class_name, sample_id, sample_name"]
     csv_array = self.video_labels.iloc[idx,0].split('\t') 
@@ -208,12 +162,23 @@ class customDataset(torch.utils.data.Dataset):
     return data.reshape(-1,self.image_channels, self.clip_length, self.image_resize_h, self.image_resize_w), labels, subject_id,\
            sample_id, path, list_frames
   
-  
   def _single_uniform_sampling(self, video_len):
     indices = np.linspace(0, video_len-1, self.clip_length, dtype=int)
     indices = torch.from_numpy(indices)
     return indices[None, :]
-  
+  def get_all_sample_ids(self):
+    """
+    Returns all sample_id values from path_labels.
+
+    Returns:
+      list: A list of all sample_id values.
+    """
+    csv_array = self.video_labels.to_numpy()
+    list_samples = [entry[0].split("\t") for entry in csv_array]
+    list_samples = np.stack(list_samples)
+    sample_ids = list_samples[:, 4].astype(int)
+    return sample_ids.tolist()
+    
   def _central_sampling(self, video_len):
     assert video_len // 2 - (self.clip_length // 2) * self.stride_window >= 0, f"Video is too short for the given clip length. Reduce the stride (given {self.stride_window})"
     start_idx = video_len // 2 - (self.clip_length // 2) * self.stride_window
@@ -263,18 +228,19 @@ class customDataset(torch.utils.data.Dataset):
       mean_duration = np.array([np.mean(key_dict[key]) for key in key_dict.keys()])
       std_duration = np.array([np.std(key_dict[key]) for key in key_dict.keys()])
       indices = key_id_vector.argsort() # TODO: print also elements not availables 
+      dataset_name = f'{os.path.split(self.path_labels)[-1].split(".")[0]}'
       plt.figure(figsize=(30, 12))
       plt.bar(key_id_vector[indices].astype(str), mean_duration[indices], yerr=std_duration[indices], color="blue", alpha=0.8)
       plt.xlabel(title,fontsize=16)
       plt.ylabel("mean duration (s)",fontsize=16)
-      plt.title("Mean Duration per "+title+" with Standard Deviation",fontsize=16)
+      plt.title(f"Mean Duration per {title} with std ({dataset_name})",fontsize=16)
       plt.xticks(rotation=45,fontsize=13)
       plt.yticks(fontsize=13)
       plt.grid(axis="y", linestyle="--", alpha=0.7)
       # Show the plot
       # plt.tight_layout()
       if saving_path is not None:
-        plt.savefig(saving_path)
+        plt.savefig(os.path.join(saving_path,f'{title}_{dataset_name}.png'))
       else:
         plt.show()
     
@@ -286,12 +252,10 @@ class customDataset(torch.utils.data.Dataset):
     list_samples = np.stack(list_samples)
     if per_partecipant is True:
       key = 0
-      plot_distribution(key,'participant ID')
+      plot_distribution(key,'participant')
     if per_class is True:
       key = 2
       plot_distribution(key,'class')
-    
-      
     
   def plot_dataset_distribution(self,per_class=False,per_partecipant=False, saving_path=None): 
     def plot_distribution(unique,count,title):  
@@ -302,9 +266,10 @@ class customDataset(torch.utils.data.Dataset):
       plt.xticks(fontsize=16, rotation=45)
       plt.yticks(fontsize=16)
       plt.grid(axis="y", linestyle="--", alpha=0.7)
+      # dataset_name = f'{os.path.split(self.path_labels)[-1]}'
       plt.title('Dataset Distribution ' + title +f' ({os.path.split(self.path_labels)[-1]})',fontsize=16)
       if saving_path is not None:
-        plt.savefig(saving_path)
+        plt.savefig(os.path.join(saving_path,f'{title}.png'))
       else:
         plt.show()
       
@@ -318,13 +283,14 @@ class customDataset(torch.utils.data.Dataset):
         bottom += class_count
       ax.set_xlabel('User ID', fontsize=14)
       ax.set_ylabel('# Samples', fontsize=14)
-      ax.set_title('Dataset Distribution ' + title + f' ({os.path.split(self.path_labels)[-1]})', fontsize=16)
+      dataset_name = f'{os.path.split(self.path_labels)[-1].split(".")[0]}'
+      ax.set_title('Dataset Distribution ' + title + f' ({dataset_name})', fontsize=16)
       ax.legend(title='Pain level (unique_people/tot_people)')
       plt.xticks(fontsize=13,rotation=45)
       plt.yticks(fontsize=13)
       plt.grid(axis="y", linestyle="--", alpha=0.7)
       if saving_path is not None:
-        plt.savefig(saving_path)
+        plt.savefig(os.path.join(saving_path,f'{title}_{dataset_name}.png'))
       else:
         plt.show()
 
@@ -359,7 +325,6 @@ class customDataset(torch.utils.data.Dataset):
       unique_subject_id = np.sort(unique_subject_id.astype(int))
       plot_distribution(unique_subject_id,count,'per participant')
           
-  
   def save_frames_as_video(self,list_input_video_path, list_frame_indices, output_video_path,all_predictions,list_ground_truth, output_fps=1):
     """
     Extract specific frames from a video and save them as a new video.
