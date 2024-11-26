@@ -3,8 +3,8 @@ import os
 class SAMPLE_FRAME_STRATEGY(Enum):
   UNIFORM = 'uniform'
   SLIDING_WINDOW = 'sliding_window'
-  CENTRAL_SAMPLING = 'central_sampling' # TODO: Implement with stride
-  RANDOM_SAMPLING = 'random_sampling' # TODO: Implement with stride
+  CENTRAL_SAMPLING = 'central_sampling'
+  RANDOM_SAMPLING = 'random_sampling' 
   
 class MODEL_TYPE(Enum):
   VIDEOMAE_v2_S = os.path.join('VideoMAEv2','pretrained',"vit_s_k710_dl_from_giant.pth")
@@ -19,10 +19,13 @@ class EMBEDDING_REDUCTION(Enum):
   MEAN_SPATIAL = (2,3) 
   # [B,t,p,p,emb] -> [B,1,1,1,emb] ex: [3,8,14,14,768] -> [3,1,1,1,768]
   MEAN_TEMPORAL_SPATIAL = (1,2,3)
-   
   
 class CLIPS_REDUCTION(Enum): 
   # [B,t,p,p,emb] -> [1,t,p,p,emb] ex: [3,8,14,14,768] -> [1,8,14,14,768]
   MEAN = (0)
   # MAX = "max"
+
+class HEAD(Enum):
+  SVR = 'SVR'
+  GRU = 'GRU'
 
