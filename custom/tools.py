@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
-def plot_mea_per_class(unique_classes, mae_per_class, title='', count_classes=None):
+def plot_mea_per_class(unique_classes, mae_per_class, title='', count_classes=None, saving_path=None):
   """ Plot Mean Absolute Error per class. """
   plt.figure(figsize=(10, 5))
   print(f'unique_classes shape {unique_classes.shape}')
@@ -15,11 +15,13 @@ def plot_mea_per_class(unique_classes, mae_per_class, title='', count_classes=No
   if count_classes is not None:
     for cls,count in count_classes.items():
       plt.text(unique_classes[cls], mae_per_class[cls], str(count), ha='center', va='bottom')
-  
   plt.legend()
-  plt.show()
+  if saving_path is not None:
+    plt.savefig(saving_path)
+  else:
+    plt.show()
 
-def plot_mea_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_subjects=None):
+def plot_mea_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_subjects=None, saving_path=None):
   """ Plot Mean Absolute Error per participant. """
   plt.figure(figsize=(10, 5))
   print(f'uniqie_subject_ids shape {uniqie_subject_ids.shape}')
@@ -33,9 +35,12 @@ def plot_mea_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_sub
     for id,count in count_subjects.items():
       idx = np.where(id == uniqie_subject_ids)[0]
       plt.text(uniqie_subject_ids[idx], mae_per_subject[idx], str(count), ha='center', va='bottom')
-  plt.show()
+  if saving_path is not None:
+    plt.savefig(saving_path)
+  else:
+    plt.show()
 
-def plot_losses(train_losses, test_losses):
+def plot_losses(train_losses, test_losses, saving_path=None):
   plt.figure(figsize=(10, 5))
   plt.plot(train_losses, label='Training Loss')
   plt.plot(test_losses, label='Test Loss')
@@ -44,4 +49,7 @@ def plot_losses(train_losses, test_losses):
   plt.title('Training and Test Losses over Epochs')
   plt.legend()
   plt.grid(True)
-  plt.show()
+  if saving_path is not None:
+    plt.savefig(saving_path)
+  else:
+    plt.show()
