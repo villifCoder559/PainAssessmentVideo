@@ -12,7 +12,8 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import custom.tools as tools
-
+import torch.nn as nn
+import torch.optim as optim
 from custom.head import HeadSVR, HeadGRU, CrossValidationGRU
 import os
 from sklearn.manifold import TSNE
@@ -91,11 +92,12 @@ class Model_Advanced: # Scenario_Advanced
       return list_split_indices, results
 
   
-  def train(self):
+  def train(self,num_epochs=10, batch_size=32, criterion=nn.L1Loss(),optimizer_fn=optim.Adam, lr=0.0001):
     if isinstance(self.head, HeadSVR):
       print('Training using SVR...')
       # Extract feature from training set
       self.dataset.set_path_labels('train') 
+      count_subject_ids_train, count_y_train = self.dataset.get_unique_subjects_and_classes() 
       dict_feature_extraction_train = self._extract_features() # TODO: Optimize keeping only dict key usefull
       print('feature shape: ',dict_feature_extraction_train['features'].shape)
       X_train = dict_feature_extraction_train['features']
@@ -107,6 +109,7 @@ class Model_Advanced: # Scenario_Advanced
       print('subject_ids_train',subject_ids_train)
       # Extract feature from test set
       self.dataset.set_path_labels('test') 
+      count_subject_ids_test, count_y_test = self.dataset.get_unique_subjects_and_classes() 
       dict_feature_extraction_train = self._extract_features() # TODO: Optimize keeping only dict key usefull
       X_test = dict_feature_extraction_train['features']
       y_test = dict_feature_extraction_train['list_labels']
@@ -120,7 +123,7 @@ class Model_Advanced: # Scenario_Advanced
                                      X_test=X_test, y_test=y_test, subject_ids_test=subject_ids_test,)
 
     if isinstance(self.head, HeadGRU):
-      print('Training using GRU...')
+      print('Training using GRU.....')
       self.dataset.set_path_labels('train')
       count_subject_ids_train, count_y_train = self.dataset.get_unique_subjects_and_classes() 
       dict_feature_extraction_train = self._extract_features() # TODO: Optimize keeping only dict key usefull
@@ -137,14 +140,22 @@ class Model_Advanced: # Scenario_Advanced
       subjects_id_test = dict_feature_extraction_test['list_subject_id']
       dict_results = self.head.start_train_test(X_train=X_train, y_train=y_train, subject_ids_train=subject_ids_train,
                                                 X_test=X_test, y_test=y_test, subject_ids_test=subjects_id_test, 
-                                                num_epochs=2,batch_size=1)
+                                                num_epochs=num_epochs,batch_size=batch_size,criterion=criterion,optimizer_fn=optimizer_fn,lr=lr)
     
+    # newpath = os.path.join('partA','results') 
+    # if not os.path.exists(newpath):
+    #     os.makedirs(newpath)
     # Plot the results
-    tools.plot_mea_per_class(title='training', mae_per_class=dict_results['train_loss_per_class'][-1], unique_classes=dict_results['y_unique'], count_classes=count_y_train)
-    tools.plot_mea_per_class(title='test', mae_per_class=dict_results['test_loss_per_class'][-1], unique_classes=dict_results['y_unique'], count_classes=count_y_test)
+    tools.plot_mea_per_class(title='training', mae_per_class=dict_results['train_loss_per_class'][-1], 
+                             unique_classes=dict_results['y_unique'], count_classes=count_y_train,
+                             )
+    tools.plot_mea_per_class(title='test', mae_per_class=dict_results['test_loss_per_class'][-1], 
+                             unique_classes=dict_results['y_unique'], count_classes=count_y_test)
     
-    tools.plot_mea_per_subject(title='training', mae_per_subject=dict_results['train_loss_per_subject'][-1], uniqie_subject_ids=dict_results['subject_ids_unique'],count_subjects=count_subject_ids_train)
-    tools.plot_mea_per_subject(title='test', mae_per_subject=dict_results['test_loss_per_subject'][-1], uniqie_subject_ids=dict_results['subject_ids_unique'],count_subjects=count_subject_ids_test )
+    tools.plot_mea_per_subject(title='training', mae_per_subject=dict_results['train_loss_per_subject'][-1], 
+                               uniqie_subject_ids=dict_results['subject_ids_unique'],count_subjects=count_subject_ids_train)
+    tools.plot_mea_per_subject(title='test', mae_per_subject=dict_results['test_loss_per_subject'][-1], 
+                               uniqie_subject_ids=dict_results['subject_ids_unique'],count_subjects=count_subject_ids_test )
     
     return dict_results
 
