@@ -16,8 +16,8 @@ import torch.nn as nn
 import torch.optim as optim
 from custom.head import HeadSVR, HeadGRU, CrossValidationGRU
 import os
+import json
 from sklearn.manifold import TSNE
-
 from tsnecuda import TSNE as cudaTSNE # available only on Linux
 
 class Model_Advanced: # Scenario_Advanced
@@ -67,29 +67,33 @@ class Model_Advanced: # Scenario_Advanced
       self.head = HeadGRU(dropout=head_params['dropout'], input_size=head_params['input_size'], 
                           hidden_size=head_params['hidden_size'], num_layers=head_params['num_layers'])
 
-  def cross_validation(self, k=5, batch_size=16):
+  def run_k_fold_cross_validation(self, k=5, batch_size=8, criterion=nn.L1Loss(), 
+                                  optimizer_fn=optim.Adam, lr=0.0001, list_saving_paths_k_val=None):
     if isinstance(self.head, HeadGRU):
       cv_gru = CrossValidationGRU(head=self.head)
       # Perform k-fold cros-validation
       print('GRU with k-fold cross-validation...')
-      self.dataset.set_path_labels('train')
+      self.dataset.set_path_labels('all')
       dict_feature_extraction_train = self._extract_features() # feats,labels,subject_id,sample_id,path
       X = dict_feature_extraction_train['features']
       y = dict_feature_extraction_train['list_labels']
       subject_ids = dict_feature_extraction_train['list_subject_id']
-      results = cv_gru.k_fold_cross_validation(X, y, subject_ids, k=k, num_epochs=5, batch_size=batch_size, lr=0.001)
-      return results
+      results, list_split_indices = cv_gru.k_fold_cross_validation(X=X, Y=y, group_ids=subject_ids, k=k, num_epochs=10, 
+                                               batch_size=batch_size,criterion=criterion, 
+                                               optimizer_fn=optimizer_fn, lr=lr, list_saving_paths_k_val=list_saving_paths_k_val)  
     
     elif isinstance(self.head, HeadSVR):
       print('SVR with k-fold cross-validation...')
+      self.dataset.set_path_labels('all')
       dict_feature_extraction_train = self._extract_features() # feats,labels,subject_id,sample_id,path
       X = dict_feature_extraction_train['features']
       y = dict_feature_extraction_train['list_labels']
       subject_ids = dict_feature_extraction_train['list_subject_id']
       X = X.reshape(X.shape[0],-1).detach().cpu().numpy()
       y = y.squeeze().detach().cpu().numpy()
-      list_split_indices,results = self.head.k_fold_cross_validation(k=k,X=X, y=y, groups=subject_ids)
-      return list_split_indices, results
+      list_split_indices,results = self.head.k_fold_cross_validation(X=X, y=y, k=k, groups=subject_ids)
+
+    return results, list_split_indices
 
   
   def train(self,num_epochs=10, batch_size=32, criterion=nn.L1Loss(),optimizer_fn=optim.Adam, lr=0.0001):
@@ -142,23 +146,11 @@ class Model_Advanced: # Scenario_Advanced
                                                 X_test=X_test, y_test=y_test, subject_ids_test=subjects_id_test, 
                                                 num_epochs=num_epochs,batch_size=batch_size,criterion=criterion,optimizer_fn=optimizer_fn,lr=lr)
     
-    # newpath = os.path.join('partA','results') 
-    # if not os.path.exists(newpath):
-    #     os.makedirs(newpath)
-    # Plot the results
-    tools.plot_mea_per_class(title='training', mae_per_class=dict_results['train_loss_per_class'][-1], 
-                             unique_classes=dict_results['y_unique'], count_classes=count_y_train,
-                             )
-    tools.plot_mea_per_class(title='test', mae_per_class=dict_results['test_loss_per_class'][-1], 
-                             unique_classes=dict_results['y_unique'], count_classes=count_y_test)
-    
-    tools.plot_mea_per_subject(title='training', mae_per_subject=dict_results['train_loss_per_subject'][-1], 
-                               uniqie_subject_ids=dict_results['subject_ids_unique'],count_subjects=count_subject_ids_train)
-    tools.plot_mea_per_subject(title='test', mae_per_subject=dict_results['test_loss_per_subject'][-1], 
-                               uniqie_subject_ids=dict_results['subject_ids_unique'],count_subjects=count_subject_ids_test )
-    
-    return dict_results
-
+    return {'dict_results':dict_results, 
+            'count_y_train':count_y_train, 
+            'count_y_test':count_y_test,
+            'count_subject_ids_train':count_subject_ids_train,
+            'count_subject_ids_test':count_subject_ids_test}
   
   def _extract_features(self,stop_after=3):
     """
@@ -296,7 +288,7 @@ class Model_Advanced: # Scenario_Advanced
       output_video_path = os.path.join('partA','video','custom_video',csv_array[idx,5]+f'_{self.dataset.stride_window}'+'.mp4')
       self.dataset.save_frames_as_video([input_video_path],[features[5].numpy()], output_video_path ,[predictions], [features[1][0]])
     
-  def plot_prediction_graph_all(self, sample_ids, stride_window=0):
+  def plot_prediction_graph_all(self, sample_ids,predictions=None, stride_window=0):
     all_predictions = []
     with torch.no_grad():
       csv_array = self.dataset.video_labels.to_numpy()
@@ -326,11 +318,12 @@ class Model_Advanced: # Scenario_Advanced
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.backbone.model.to(device)
         self.backbone.model.eval()
-        
-        feature, _, _, _, _ = self._compute_features(features[0], features[1], features[2], features[3], features[4], device, True)
-        print(f'features[1]->labels', features[1])
-        feature = feature.detach().cpu().squeeze()
-        predictions = self.head.svr.predict(feature)
+        if predictions is None:
+          feature, _, _, _, _ = self._compute_features(features[0], features[1], features[2], features[3], features[4], device, True)
+          print(f'features[1]->labels', features[1])
+          feature = feature.detach().cpu().squeeze()
+          predictions = self.head.predict(feature)
+
         all_predictions.append(predictions)
         
         input_video_path = os.path.join(self.dataset.path_dataset, csv_array[idx, 1], csv_array[idx, 5] + '.mp4')
@@ -343,9 +336,7 @@ class Model_Advanced: # Scenario_Advanced
     
     return all_predictions
   
-  
-  
-  
+
   def plot_comparison_prediction_gt(self, list_samples=None):
     # Supposition -> I have 1 prediction for one video  
 
@@ -504,5 +495,28 @@ class Model_Advanced: # Scenario_Advanced
     plt.xlabel('t-SNE Component 1')
     plt.ylabel('t-SNE Component 2')
     plt.show()
+
+  def save_configuration(self, saving_path):
+    """
+    Save the configuration of the model to a file.
     
+    Parameters:
+    path (str): Path to the file where the configuration will be saved.
+    """
+    config = {
+      'model_type': self.backbone.model_type.name,
+      'embedding_reduction': self.neck.embedding_reduction,
+      'clips_reduction': self.neck.clips_reduction,
+      'path_dataset': self.dataset.path_dataset,
+      'path_labels': self.dataset.path_labels,
+      'sample_frame_strategy': self.dataset.sample_frame_strategy.name,
+      'stride_window': self.dataset.stride_window,
+      'clip_length': self.dataset.clip_length,
+      'batch_size': self.dataset.batch_size,
+      'head': self.head.__class__.__name__,
+      'head_params': self.head.get_params() if hasattr(self.head, 'get_params') else {}
+    }
+    
+    with open(saving_path, 'w') as f:
+      json.dump(config, f, indent=2)
     
