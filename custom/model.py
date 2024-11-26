@@ -11,8 +11,9 @@ import numpy as np
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+import custom.tools as tools
 
-from custom.head import SVR_head
+from custom.head import HeadSVR, HeadGRU, CrossValidationGRU
 import os
 from sklearn.manifold import TSNE
 
@@ -20,7 +21,7 @@ from tsnecuda import TSNE as cudaTSNE # available only on Linux
 
 class Model_Advanced: # Scenario_Advanced
   def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,
-              path_labels, preprocess, sample_frame_strategy, head, download_if_unavailable=False,
+              path_labels, preprocess, sample_frame_strategy, head, head_params, download_if_unavailable=False,
               batch_size=1,stride_window=2,clip_length=16
               ):
     """
@@ -44,45 +45,126 @@ class Model_Advanced: # Scenario_Advanced
     """
     self.backbone = backbone(model_type, download_if_unavailable)
     self.neck = neck(embedding_reduction, clips_reduction)
-    self.dataset = customDataset(path_dataset, path_labels, preprocess, sample_frame_strategy, stride_window=stride_window, clip_length=clip_length)
+    self.dataset = customDataset(path_dataset, path_labels, preprocess, sample_frame_strategy, stride_window=stride_window, clip_length=clip_length,
+                                 batch_size=batch_size)
     self.dataloader = DataLoader(self.dataset, batch_size=batch_size, shuffle=False, collate_fn=self.dataset._custom_collate_fn) # TODO: put inside customDataset and return a dataset and dataLoader
-    self.head = head
-    
-  def train(self, stop_after=5,k_cross_validation=0):
-    if isinstance(self.head, SVR_head):
-      if k_cross_validation:
-        print('Training using SVR with k-fold cross-validation...')
-        X, y, subjects_id,_ , _, _ = self._extract_features_from_dataset(stop_after=stop_after) # feats,labels,subject_id,sample_id,path
-        X = X.reshape(X.shape[0],-1).detach().cpu().numpy()
-        y = y.squeeze().detach().cpu().numpy()
-        
-        list_split_indices,results = self.head.k_fold_cross_validation(k=k_cross_validation,X=X, y=y, groups=subjects_id)
-        return list_split_indices, results
-      else:
-        print('Training using SVR...')
-        self.dataset.set_path_labels('val') # TODO: change to train
-        X_train, y_train, subjects_id_train, _, paths_train, list_frames_train = self._extract_features_from_dataset(stop_after=stop_after)
-        X_train = X_train.reshape(X_train.shape[0],-1).detach().cpu().numpy()
-        y_train = y_train.squeeze().detach().cpu().numpy()
+    if head == 'SVR':
+      self.head = HeadSVR(svr_params=head_params)
+    elif head == 'GRU':
+      assert self.backbone.frame_size % self.backbone.tubelet_size == 0, "Frame size must be divisible by tubelet size."
+      output_tensor = [1, int(self.backbone.frame_size/self.backbone.tubelet_size), self.backbone.out_spatial_size, self.backbone.out_spatial_size, self.backbone.embed_dim]
+      if embedding_reduction:
+        for dim in self.neck.dim_embed_reduction:
+          output_tensor[dim] = 1
 
-        self.head.fit(X_train=X_train, y_train=y_train, subject_ids=subjects_id_train)
+      if clips_reduction:
+        print(self.neck.dim_clips_reduction)
+        output_tensor[self.neck.dim_clips_reduction+1] = 1
+      head_params['input_size'] = np.prod(output_tensor).astype(int)
+      print(f'head_params : {head_params}')
+      print(f'output_tensor : {output_tensor}')
+      self.head = HeadGRU(dropout=head_params['dropout'], input_size=head_params['input_size'], 
+                          hidden_size=head_params['hidden_size'], num_layers=head_params['num_layers'])
+
+  def cross_validation(self, k=5, batch_size=16):
+    if isinstance(self.head, HeadGRU):
+      cv_gru = CrossValidationGRU(head=self.head)
+      # Perform k-fold cros-validation
+      print('GRU with k-fold cross-validation...')
+      self.dataset.set_path_labels('train')
+      dict_feature_extraction_train = self._extract_features() # feats,labels,subject_id,sample_id,path
+      X = dict_feature_extraction_train['features']
+      y = dict_feature_extraction_train['list_labels']
+      subject_ids = dict_feature_extraction_train['list_subject_id']
+      results = cv_gru.k_fold_cross_validation(X, y, subject_ids, k=k, num_epochs=5, batch_size=batch_size, lr=0.001)
+      return results
+    
+    elif isinstance(self.head, HeadSVR):
+      print('SVR with k-fold cross-validation...')
+      dict_feature_extraction_train = self._extract_features() # feats,labels,subject_id,sample_id,path
+      X = dict_feature_extraction_train['features']
+      y = dict_feature_extraction_train['list_labels']
+      subject_ids = dict_feature_extraction_train['list_subject_id']
+      X = X.reshape(X.shape[0],-1).detach().cpu().numpy()
+      y = y.squeeze().detach().cpu().numpy()
+      list_split_indices,results = self.head.k_fold_cross_validation(k=k,X=X, y=y, groups=subject_ids)
+      return list_split_indices, results
+
+  
+  def train(self):
+    if isinstance(self.head, HeadSVR):
+      print('Training using SVR...')
+      # Extract feature from training set
+      self.dataset.set_path_labels('train') 
+      dict_feature_extraction_train = self._extract_features() # TODO: Optimize keeping only dict key usefull
+      print('feature shape: ',dict_feature_extraction_train['features'].shape)
+      X_train = dict_feature_extraction_train['features']
+      y_train = dict_feature_extraction_train['list_labels']
       
-  def _extract_features_from_dataset(self,stop_after=3):
+      X_train = X_train.reshape(X_train.shape[0],-1).detach().cpu().numpy()
+      y_train = y_train.squeeze().detach().cpu().numpy()
+      subject_ids_train = dict_feature_extraction_train['list_subject_id']
+      print('subject_ids_train',subject_ids_train)
+      # Extract feature from test set
+      self.dataset.set_path_labels('test') 
+      dict_feature_extraction_train = self._extract_features() # TODO: Optimize keeping only dict key usefull
+      X_test = dict_feature_extraction_train['features']
+      y_test = dict_feature_extraction_train['list_labels']
+      
+      X_test = X_test.reshape(X_test.shape[0],-1).detach().cpu().numpy()
+      y_test = y_test.squeeze().detach().cpu().numpy()
+      subject_ids_test = dict_feature_extraction_train['list_subject_id']
+      print('subject_ids_test',subject_ids_test)
+
+      dict_results = self.head.fit(X_train=X_train,y_train=y_train, subject_ids_train=subject_ids_train,
+                                     X_test=X_test, y_test=y_test, subject_ids_test=subject_ids_test,)
+
+    if isinstance(self.head, HeadGRU):
+      print('Training using GRU...')
+      self.dataset.set_path_labels('train')
+      count_subject_ids_train, count_y_train = self.dataset.get_unique_subjects_and_classes() 
+      dict_feature_extraction_train = self._extract_features() # TODO: Optimize keeping only dict key usefull
+      X_train = dict_feature_extraction_train['features'] 
+      y_train = dict_feature_extraction_train['list_labels']
+      subject_ids_train = dict_feature_extraction_train['list_subject_id']
+      # sample_ids_train = dict_feature_extraction_train['list_sample_id'] 
+      
+      self.dataset.set_path_labels('test')
+      count_subject_ids_test, count_y_test = self.dataset.get_unique_subjects_and_classes() 
+      dict_feature_extraction_test = self._extract_features()
+      X_test = dict_feature_extraction_test['features'] 
+      y_test = dict_feature_extraction_test['list_labels'] 
+      subjects_id_test = dict_feature_extraction_test['list_subject_id']
+      dict_results = self.head.start_train_test(X_train=X_train, y_train=y_train, subject_ids_train=subject_ids_train,
+                                                X_test=X_test, y_test=y_test, subject_ids_test=subjects_id_test, 
+                                                num_epochs=2,batch_size=1)
+    
+    # Plot the results
+    tools.plot_mea_per_class(title='training', mae_per_class=dict_results['train_loss_per_class'][-1], unique_classes=dict_results['y_unique'], count_classes=count_y_train)
+    tools.plot_mea_per_class(title='test', mae_per_class=dict_results['test_loss_per_class'][-1], unique_classes=dict_results['y_unique'], count_classes=count_y_test)
+    
+    tools.plot_mea_per_subject(title='training', mae_per_subject=dict_results['train_loss_per_subject'][-1], uniqie_subject_ids=dict_results['subject_ids_unique'],count_subjects=count_subject_ids_train)
+    tools.plot_mea_per_subject(title='test', mae_per_subject=dict_results['test_loss_per_subject'][-1], uniqie_subject_ids=dict_results['subject_ids_unique'],count_subjects=count_subject_ids_test )
+    
+    return dict_results
+
+  
+  def _extract_features(self,stop_after=3):
     """
     Extracts features from the dataset using the model's backbone.
     Args:
       stop_after (int, optional): Number of iterations after which to stop the feature extraction. Defaults to 3.
     Returns:
-      tuple: A tuple containing the following elements:
-        - torch.Tensor: Stacked features extracted from the dataset.
-        - torch.Tensor: Stacked labels corresponding to the features.
-        - numpy.ndarray: Array of subject IDs.
-        - numpy.ndarray: Array of sample IDs.
-        - numpy.ndarray: Array of paths corresponding to the samples.
-        - torch.Tensor: Stacked frames sampled from the dataset.
+      dict: A dictionary containing the following elements:
+          - 'features' (torch.Tensor): Stacked features extracted from the dataset.
+          - 'list_labels' (torch.Tensor): Stacked labels corresponding to the features.
+          - 'list_subject_id' (numpy.ndarray): Array of subject IDs.
+          - 'list_sample_id' (numpy.ndarray): Array of sample IDs.
+          - 'list_path' (numpy.ndarray): Array of paths corresponding to the samples.
+          - 'list_frames' (torch.Tensor): Stacked frames sampled from the dataset.
     """
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"extracting features using... {device}")
+    print(f"extracting features using.... {device}")
     list_features = []
     list_labels = []
     list_subject_id = []
@@ -96,6 +178,7 @@ class Model_Advanced: # Scenario_Advanced
     with torch.no_grad():
       for data, labels, subject_id,sample_id, path, list_sampled_frames in self.dataloader:
         feature, unique_labels, unique_subject_id, unique_sample_id, unique_path = self._compute_features(data, labels, subject_id, sample_id, path, device)
+        print(f'unique_id: {unique_sample_id}')
         list_frames.append(list_sampled_frames)
         list_features.append(feature)
         list_labels.append(unique_labels)
@@ -105,13 +188,15 @@ class Model_Advanced: # Scenario_Advanced
         count += 1
         # if count % stop_after == 0:
         #   break
-    print('Feature extracetion done')
-    return torch.stack([feature for feature in list_features]),\
-           torch.stack([label for label in list_labels]),\
-           np.stack([subject_id for subject_id in list_subject_id]).squeeze(),\
-           np.stack([sample_id for sample_id in list_sample_id]),\
-           np.stack([path for path in list_path]),\
-           torch.stack(list_frames)  
+    print('Feature extraceton done')
+    return {
+            'features':torch.stack([feature for feature in list_features]),
+           'list_labels':torch.stack([label for label in list_labels]),
+           'list_subject_id':np.stack([subject_id for subject_id in list_subject_id]).squeeze(),
+           'list_sample_id':np.stack([sample_id for sample_id in list_sample_id]),
+           'list_path':np.stack([path for path in list_path]),
+           'list_frames':torch.stack(list_frames)
+           }  
   
   def _compute_features(self, data, labels, subject_id, sample_id, path, device, remove_clip_reduction=False):
   
@@ -124,17 +209,17 @@ class Model_Advanced: # Scenario_Advanced
     # Apply clip reduction [B, reduction(C,T,H,W)] -> [1, reduction(C,T,H,W)]
     if not remove_clip_reduction and self.neck.clips_reduction is not None:
       feature = self.neck.clips_reduction(feature)
-      unique_labels = torch.unique(labels, return_counts=False)
-      unique_sample_id = np.unique(sample_id, return_counts=False)
-      unique_subject_id = np.unique(subject_id, return_counts=False)
-      unique_path = np.unique(path, return_counts=False)
+    unique_labels = torch.unique(labels, return_counts=False)
+    unique_sample_id = np.unique(sample_id, return_counts=False)
+    unique_subject_id = np.unique(subject_id, return_counts=False)
+    unique_path = np.unique(path, return_counts=False)
     return feature, unique_labels, unique_subject_id, unique_sample_id, unique_path
     
   def run_grid_search(self, param_grid,k_cross_validation=5): #
-    if isinstance(self.head, SVR_head):
-      print('GridSearch using SVR.-..')
+    if isinstance(self.head, HeadSVR):
+      print('GridSearch using SVR...')
       self.dataset.set_path_labels('val')
-      X, y, subjects_id,_ , _, _ = self._extract_features_from_dataset()
+      X, y, subjects_id,_ , _, _ = self._extract_features()
       X = X.reshape(X.shape[0],-1).detach().cpu().numpy()
       y = y.squeeze().detach().cpu().numpy()
       # print(subjects_id.shape)
@@ -255,7 +340,7 @@ class Model_Advanced: # Scenario_Advanced
 
     if list_samples is None: # all samples in the self.dataset.path_labels are used
       with torch.no_grad():
-        features_list, gt_list, subject_ids, sample_ids, _, _ = self._extract_features_from_dataset()
+        features_list, gt_list, subject_ids, sample_ids, _, _ = self._extract_features()
       print('Computing features...')
       features_list = features_list.detach().cpu().numpy().squeeze()
       gt_list = gt_list.detach().cpu().numpy().squeeze()
@@ -319,7 +404,7 @@ class Model_Advanced: # Scenario_Advanced
       stop_after (int, optional): Number of iterations after which to stop the feature extraction. Defaults to 5.
       color_by (str, optional): Criterion for coloring the points ('subject', 'label', 'prediction'). Defaults to 'subject'.
     """
-    X, y, subjects_id, _, _, _ = self._extract_features_from_dataset()
+    X, y, subjects_id, _, _, _ = self._extract_features()
     X = X.reshape(X.shape[0], -1).detach().cpu().numpy()
     y = y.squeeze().detach().cpu().numpy()
     
@@ -371,7 +456,7 @@ class Model_Advanced: # Scenario_Advanced
       use_cuda (bool, optional): Whether to use CUDA for t-SNE computation. Defaults to False.
       perplexity (int, optional): Perplexity parameter for t-SNE. Defaults to 20.
     """
-    X, y, subjects_id, _, _, _ = self._extract_features_from_dataset()
+    X, y, subjects_id, _, _, _ = self._extract_features()
     X = X.reshape(X.shape[0], -1).detach().cpu().numpy()
     y = y.squeeze().detach().cpu().numpy()
     print(X.shape)
