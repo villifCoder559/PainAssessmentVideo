@@ -178,7 +178,7 @@ class HeadSVR:
   def compute_confusion_matrix(self,X, y, estimator):
     y_pred_train = estimator.predict(X)
     # y_pred_test = estimator.predict(X_test)
-    cm = ConfusionMatrix(num_classes=len(np.unique(y)))
+    cm = ConfusionMatrix(task="multiclass",num_classes=len(np.unique(y)))
     cm.update(torch.tensor(y_pred_train), torch.tensor(y))
     cm.compute()
     return cm
@@ -312,8 +312,8 @@ class HeadGRU:
     test_loss_per_class = np.zeros((num_epochs, unique_classes.shape[0]))
     train_loss_per_subject = np.zeros((num_epochs, unique_subjects.shape[0]))
     test_loss_per_subject = np.zeros((num_epochs, unique_subjects.shape[0]))
-    train_confusion_matricies = [ConfusionMatrix(num_classes=unique_classes.shape[0]) for _ in range(num_epochs)]
-    test_confusion_matricies = [ConfusionMatrix(num_classes=unique_classes.shape[0]) for _ in range(num_epochs)]
+    train_confusion_matricies = [ConfusionMatrix(task="multiclass",num_classes=unique_classes.shape[0]) for _ in range(num_epochs)]
+    test_confusion_matricies = [ConfusionMatrix(task="multiclass",num_classes=unique_classes.shape[0]) for _ in range(num_epochs)]
 
     for epoch in range(num_epochs):
       self.model.train()
