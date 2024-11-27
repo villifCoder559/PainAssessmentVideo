@@ -149,16 +149,16 @@ def generate_plot_train_test_results(dict_results, count_y_train, count_y_test, 
                               uniqie_subject_ids=dict_results['subject_ids_unique'],count_subjects=count_subject_ids_test,
                               saving_path=saving_path)
   
-  plot_losses(dict_results['train_loss'], dict_results['test_loss'], saving_path=saving_path)
+  plot_losses(dict_results['train_losses'], dict_results['test_losses'], saving_path=saving_path)
       
 def plot_confusion_matrix(confusion_matrix, title, saving_path):
   # confusion_matrix must be from torchmetrics
-  assert isinstance(confusion_matrix, ConfusionMatrix), 'confusion_matrix must be from torchmetrics.classification'
+  # assert not isinstance(confusion_matrix, ConfusionMatrix), 'confusion_matrix must be from torchmetrics.classification'
   fig, _ = confusion_matrix.plot() 
   fig.suptitle(title)
   fig.savefig(saving_path+'.png')
 
-def plot_tsne(X, labels, legend_label, use_cuda=False, perplexity=20, saving_path=None):
+def plot_tsne(X, labels, legend_label, use_cuda=False, perplexity=1, saving_path=None):
   """
   Plots the t-SNE reduction of the features in 2D with colors based on subject, gt, or predicted class.
   Args:
@@ -189,12 +189,19 @@ def plot_tsne(X, labels, legend_label, use_cuda=False, perplexity=20, saving_pat
     tsne = cudaTSNE(n_components=2, perplexity=perplexity)
   else:
     tsne = TSNE(n_components=2, perplexity=perplexity)
-  X_tsne = tsne.fit_transform(X)
-  
+  X_cpu = X.detach().cpu().squeeze()
+  X_cpu = X_cpu.reshape(X_cpu.shape[0], -1)
+  print(f'X_cpu shape before tnse{X_cpu.shape}')
+  print(f'perplexity {perplexity}')
+  X_tsne = tsne.fit_transform(X_cpu)
+  print(f'X_tsne shape {X_tsne.shape}')
   plt.figure(figsize=(10, 8))
   for val in unique_labels:
-    idx = labels == val
-    plt.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[val], label=f'{legend_label} {val}', alpha=0.7)
+    idx = (labels == val).squeeze()
+    print(f'idx shape {idx.shape}')
+    print(f'idx {idx}')
+
+    plt.scatter(X_tsne[idx,0], X_tsne[idx,1], color=color_dict[val], label=f'{legend_label} {val}', alpha=0.7)
   if legend_label != 'subject':
     plt.legend()
   plt.title(f't-SNE Reduction to 2D (Colored by {legend_label})')
