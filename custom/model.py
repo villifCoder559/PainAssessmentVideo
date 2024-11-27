@@ -324,7 +324,7 @@ class Model_Advanced: # Scenario_Advanced
           feature = feature.detach().cpu().squeeze()
           predictions = self.head.predict(feature)
 
-        all_predictions.append(predictions)
+        all_predictions.append(predictions.squeeze().detach().cpu().numpy())
         
         input_video_path = os.path.join(self.dataset.path_dataset, csv_array[idx, 1], csv_array[idx, 5] + '.mp4')
         output_video_path = os.path.join('partA', 'video', 'custom_video', 'all' + f'_{len(sample_ids)}' + '.mp4')
