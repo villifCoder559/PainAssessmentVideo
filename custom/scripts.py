@@ -16,24 +16,24 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    head_params, preprocess, download_if_unavailable=False,
                    k_fold = 1, epochs = 10, criterion = nn.L1Loss(), optimizer_fn = optim.Adam, lr = 0.001):
   
-  model_type = MODEL_TYPE.VIDEOMAE_v2_B
-  pooling_embedding_reduction = EMBEDDING_REDUCTION.MEAN_SPATIAL
-  pooling_clips_reduction = CLIPS_REDUCTION.NONE
-  sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
-  # stride_window_in_video = 70 # not applid for UNIFORM and CENTRAL_SAMPLING
+  # model_type = MODEL_TYPE.VIDEOMAE_v2_B
+  # pooling_embedding_reduction = EMBEDDING_REDUCTION.MEAN_SPATIAL
+  # pooling_clips_reduction = CLIPS_REDUCTION.NONE
+  # sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
+  # # stride_window_in_video = 70 # not applid for UNIFORM and CENTRAL_SAMPLING
 
-  path_dict = tools._generate_train_test_validation(path_csv_dataset)
-  # path_dict ={
-  #   'train' : os.path.join('partA','starting_point','train_21.csv'),
-  #   'val' : os.path.join('partA','starting_point',''),
-  #   'test' : os.path.join('partA','starting_point','test_5.csv')
-  # }
+  # path_dict = tools._generate_train_test_validation(path_csv_dataset)
+  # # path_dict ={
+  # #   'train' : os.path.join('partA','starting_point','train_21.csv'),
+  # #   'val' : os.path.join('partA','starting_point',''),
+  # #   'test' : os.path.join('partA','starting_point','test_5.csv')
+  # # }
 
-  # path_video_dataset = os.path.join('partA','video','video')  
-  # head = HeadSVR(svr_params={'kernel':'rbf','C':1,'epsilon':10})
-  # head = head
+  # # path_video_dataset = os.path.join('partA','video','video')  
+  # # head = HeadSVR(svr_params={'kernel':'rbf','C':1,'epsilon':10})
+  # # head = head
 
-  preprocess = AutoImageProcessor.from_pretrained("MCG-NJU/videomae-base")
+  # preprocess = AutoImageProcessor.from_pretrained("MCG-NJU/videomae-base")
 
   model_advanced = Model_Advanced(model_type=model_type,
                                   path_dataset=path_video_dataset,
@@ -41,7 +41,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   clips_reduction=pooling_clips_reduction,
                                   sample_frame_strategy=sample_frame_strategy,
                                   stride_window=stride_window_in_video,
-                                  path_labels=path_dict,
+                                  path_labels=path_csv_dataset,
                                   preprocess=preprocess,
                                   batch_size=1,
                                   head=head.value,
@@ -52,10 +52,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   global_foder_name = 'history_run'
   if not os.path.exists(global_foder_name):
     os.makedirs(global_foder_name)
-  run_folder_name = f'{os.path.split(model_type.value)[-1].split('.')[0]}_
-                      {pooling_embedding_reduction.name if pooling_clips_reduction else None}_
-                      {pooling_clips_reduction.name if pooling_clips_reduction else None}_
-                      {sample_frame_strategy.name}_{head.name}' 
+  run_folder_name = f'{model_type.value}_{pooling_embedding_reduction.name if pooling_clips_reduction else None}_{pooling_clips_reduction.name if pooling_clips_reduction else None}_{sample_frame_strategy.name}_{head.name}'
   
   # Create folder to save the run
   run_folder_path = os.path.join(global_foder_name,run_folder_name)
@@ -64,20 +61,20 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   print(f"Run folder created at {run_folder_path}")
   
   # Save model configuration
-  model_advanced.save_configuration(os.path.join(run_folder_path,'advancedmodel_config.json'))
+  # model_advanced.save_configuration(os.path.join(run_folder_path,'advancedmodel_config.json'))
   
   # Plot dataset distribution
   dataset_folder_path = os.path.join(run_folder_path,'dataset')
   if not os.path.exists(dataset_folder_path):
     os.makedirs(os.path.join(run_folder_path,'dataset'))
 
-  for key in path_dict.keys():
+  for key in model_advanced.dataset.dict_paths.keys():
     model_advanced.dataset.set_path_labels(key)
     model_advanced.dataset.plot_dataset_distribution(per_class=True, per_partecipant=True,
-                                                     save_path=dataset_folder_path) # 1 plot
+                                                     saving_path=dataset_folder_path) # 1 plot
     model_advanced.dataset.plot_distribution_mean_std_duration(per_class=True, 
                                                                per_partecipant=True, 
-                                                               save_path=dataset_folder_path) # 2 plots
+                                                               saving_path=dataset_folder_path) # 2 plots
   
   # Train the model
   train_folder_path = os.path.join(run_folder_path,f'train_{head}')
@@ -157,14 +154,15 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                   saving_path=os.path.join(saving_path_tsne,'tsne_backbone'),
                   legend_label='gt')
   
-  if isinstance(head, HEAD.GRU): # test split as above
-    X_GRU = model_advanced.head.model.gru(dict_feats['features'])
-    y_pred = model_advanced.head.model.fc(X_GRU) # TODO: separate in train and test
+  if head.value == HEAD.GRU.value: # test split as above
+    X_GRU = model_advanced.head.model.gru(dict_feats['features'].reshape(dict_feats['features'].shape[0],dict_feats['features'].shape[1],-1))
+    print('X_GRU shape',X_GRU[1].shape)
+    y_pred = model_advanced.head.model.fc(X_GRU[1]) # TODO: separate in train and test
     y = dict_feats['list_labels']
-    tools.plot_tsne(X_GRU,y_pred,'pred ')
-    tools.plot_tsne(X_GRU,y,'gt ')
+    tools.plot_tsne(X_GRU[1].detach().cpu(),y_pred.detach().cpu(),'pred ')
+    tools.plot_tsne(X_GRU[1].detach().cpu(),y.detach().cpu(),'gt ')
 
-  elif isinstance(head, HEAD.SVR): #TODO: check if it is correct
+  elif head.value== HEAD.SVR.value: #TODO: check if it is correct
     y_pred = model_advanced.head.predict(dict_feats['features'])
     y = dict_feats['list_labels']
     tools.plot_tsne(dict_feats['features'],y_pred,'pred ')
@@ -174,6 +172,6 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   video_folder_path = os.path.join(train_folder_path,'video')
   if not os.path.exists(video_folder_path):
     os.makedirs(video_folder_path)
-  samples_ids = model_advanced.dataset.get_samples_ids('test')
+  samples_ids = model_advanced.dataset.get_all_sample_ids()
   model_advanced.dataset.set_path_labels('test')
-  model_advanced.plot_prediction_graph_all(sample_ids=samples_ids,predictions=y_pred, save_path=video_folder_path)
+  model_advanced.plot_prediction_graph_all(sample_ids=samples_ids,predictions=y_pred.detach().cpu()) #add save_path=video_folder_path
