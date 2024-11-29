@@ -39,6 +39,8 @@ class head:
   
   def predict(self, X):
     return self.head.predict(X)
+  
+
 class HeadSVR:
   def __init__(self, svr_params):
     self.params = svr_params
@@ -276,11 +278,15 @@ class GRUModel(nn.Module):
     self.gru = nn.GRU(input_size, hidden_size, num_layers, dropout=dropout, batch_first=True)
     self.fc = nn.Linear(hidden_size, output_size)
 
-  def forward(self, x):
+  def forward(self, x,return_last_time_step=False):
     out, _ = self.gru(x)
-    out = self.fc(out[:, -1, :])  # Get the last time step output
+    # print(f'out shape: {out.shape}')
+    if return_last_time_step:
+      out = self.fc(out[:, -1, :])
+    else:
+      out = self.fc(out)
     return out
-  
+    
   def _initialize_weights(self):
     # Initialize GRU weights
     for name, param in self.gru.named_parameters():
@@ -334,8 +340,10 @@ class HeadGRU:
 
     # Device and optimizer setup
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print('Device:', device)
     self.model.to(device)
+    print('Device model start_train_test:', device)
+    # tmp = next(self.model.gru.parameters()).device
+    # print(f"The model is on: {tmp}") 
     optimizer = optimizer_fn(self.model.parameters(), lr=lr)
 
     # Unique classes and subjects
@@ -360,15 +368,16 @@ class HeadGRU:
       epoch_loss = 0.0
       class_loss = np.zeros(unique_classes.shape[0])
       subject_loss = np.zeros(unique_subjects.shape[0])
-      class_counts = np.zeros(unique_classes.shape[0])
-      subject_counts = np.zeros(unique_subjects.shape[0])
+      # class_counts = np.zeros(unique_classes.shape[0])
+      # subject_counts = np.zeros(unique_subjects.shape[0])
 
       for batch_X, batch_y, batch_subjects in train_loader:
+        print(f'device: {device}')
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
         optimizer.zero_grad()
 
         # Forward pass
-        outputs = self.model(batch_X)
+        outputs = self.model(batch_X, return_last_time_step=True)
         # outputs = torch.round(outputs)
         loss = criterion(outputs, batch_y)
         epoch_loss += loss.item()
@@ -389,8 +398,8 @@ class HeadGRU:
             subj_idx = np.where(unique_subjects == subj)[0][0]
             subject_loss[subj_idx] += criterion(outputs[mask], batch_y[mask]).item()
             # subject_counts[subj_idx] += mask.sum().item()
-        print(f' output: {torch.round(outputs.detach().cpu())}')
-        print(f' batch_y: {batch_y.detach().cpu()}')
+        # print(f' output: {torch.round(outputs.detach().cpu())}')
+        # print(f' batch_y: {batch_y.detach().cpu()}')
         # train_confusion_matricies[epoch].update(torch.round(outputs.detach().cpu()), batch_y.detach().cpu()) # FIX:regression go over 4 or under 0, save that as Null(?)
 
       # train_confusion_matricies[epoch].compute()
@@ -414,9 +423,9 @@ class HeadGRU:
       
       print(f'Epoch [{epoch+1}/{num_epochs}] | Train Loss: {avg_train_loss:.4f} | Test Loss: {avg_test_loss:.4f}')
       print(f'\tTrain Loss Per Class: {train_loss_per_class[epoch]}')
-      print(f'\tTrain Loss Per Subject: {train_loss_per_subject[epoch]}')
+      # print(f'\tTrain Loss Per Subject: {train_loss_per_subject[epoch]}')
       print(f'\tTest Loss Per Class: {test_loss_per_class[epoch]}')
-      print(f'\tTest Loss Per Subject: {test_loss_per_subject[epoch]}')
+      # print(f'\tTest Loss Per Subject: {test_loss_per_subject[epoch]}')
 
       # Save the best model
       if avg_test_loss < best_test_loss:
@@ -429,9 +438,9 @@ class HeadGRU:
       torch.save(best_model_state, os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth'))
       print(f"Best model weights saved to {saving_path}")
 
-    # Plot losses
-    tools.plot_losses(train_losses=train_losses, test_losses=test_losses)
-
+    # # Plot losses
+    # tools.plot_losses(train_losses=train_losses, test_losses=test_losses)
+    # self.model.to('cpu')
     return {
       'train_losses': train_losses,
       'train_loss_per_class': train_loss_per_class,
@@ -448,6 +457,7 @@ class HeadGRU:
 
   def evaluate(self, test_loader, criterion, device, unique_classes, unique_subjects, test_confusion_matricies):
     self.model.eval()
+    # self.model.to(device)
     total_loss = 0.0
     class_loss = np.zeros(unique_classes.shape[0])
     subject_loss = np.zeros(unique_subjects.shape[0])
@@ -457,7 +467,7 @@ class HeadGRU:
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
 
         # Forward pass
-        outputs = self.model(batch_X)
+        outputs = self.model(batch_X, return_last_time_step=True)
         loss = criterion(outputs, batch_y)
         total_loss += loss.item()
 
@@ -478,13 +488,31 @@ class HeadGRU:
         
         test_confusion_matricies.update(outputs.detach().cpu(), batch_y.detach().cpu())
 
+    # self.model.to('cpu')
     # Class and subject losses
     avg_loss = total_loss / len(test_loader)
     test_confusion_matricies.compute()
     return avg_loss, class_loss, subject_loss
-
-  def predict(self, X):
-    predictions = self.model(X)
+  def get_emebeddings(self, X, device=None):
+    if device is None:
+      device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    self.model.to(device)
+    self.model.eval()
+    with torch.no_grad():
+      embeddings = self.model.gru(X)
+    # self.model.to('cpu')
+    return embeddings
+  
+  def predict(self, X,device=None):
+    print('X.shape', X.shape)
+    if device is None:
+      device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    # self.model.to(device)
+    self.model.eval()
+    with torch.no_grad():
+      predictions = self.model(X)
+    # self.model.to('cpu')
+    print('predictions.shape', predictions.shape)
     return predictions
 
 class CrossValidationGRU:
