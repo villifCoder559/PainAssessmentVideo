@@ -257,12 +257,16 @@ class customDataset(torch.utils.data.Dataset):
     """
     # Open the original video
     out = None
-    print('all_labels',list_ground_truth)
-    print(f'output_video_path: {output_video_path}')
+    # if len(all_predictions.shape)>2:
+    #   all_predictions = all_predictions.reshape(all_predictions.shape[0],-1)
+    # if len(list_ground_truth.shape) :
+    print(f'all_predictions shape: {all_predictions.shape}')
+    # print('all_labels',list_ground_truth)
+    # print(f'output_video_path: {output_video_path}')
     # print('pred',all_predictions)
     # print('gt',list_ground_truth)
     # partA/video/video/112209_m_51_112209_m_51-BL1-086.mp4
-    for i,input_video_path in enumerate(list_input_video_path):
+    for i, input_video_path in enumerate(list_input_video_path): # i->[0...33]
       print(f'input_video_path: {input_video_path}')
       cap = cv2.VideoCapture(input_video_path)
       if not cap.isOpened():
@@ -274,7 +278,7 @@ class customDataset(torch.utils.data.Dataset):
       frame_size = (frame_width, frame_height)
 
       # Define the codec and create VideoWriter object
-      fourcc = cv2.VideoWriter_fourcc(*'H264')  
+      fourcc = cv2.VideoWriter_fourcc(*'mp4v')  
       if out is None:
         out = cv2.VideoWriter(output_video_path, fourcc, output_fps, frame_size)
       frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -286,12 +290,12 @@ class customDataset(torch.utils.data.Dataset):
       thickness = 2
       count = 0
       # print(f'frame_indices: {len(list_frame_indices)}')
-      for j,frame_indices in enumerate(list_frame_indices[i]):
-        # print('frame_indices',frame_indices)
+      for j,frame_indices in enumerate(list_frame_indices[i]): #j->[0..1] [16]
+        # print('frame_indices',frame_indices) # i->[0,...,32] framle_inidces->[2,16]
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset the video capture to the beginning
-        for _ in range(1):
+        for _ in range(output_fps):
           number_frame = black_frame.copy()
-          text = str(count)
+          text = os.path.split(input_video_path)[-1]
           text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
           text_x = (number_frame.shape[1] - text_size[0]) // 2
           text_y = (number_frame.shape[0] + text_size[1]) // 2
@@ -303,13 +307,16 @@ class customDataset(torch.utils.data.Dataset):
             break
             # Check if the current frame index is in the list
           # print(f'frame_indices: {frame_indices}')
-          if frame_idx in frame_indices:
-            print(f'GT:{list_ground_truth.shape}')
-            print(f'pred:{all_predictions.shape}')
-            print(i,j)
+          if frame_idx in frame_indices: # [2,16]
+            # print(f'GT:{list_ground_truth.shape}')
+            # print(f'pred:{all_predictions.shape}')
+            # print(i,j)
+            # print(list_ground_truth[i][j])
+            # print(all_predictions[i][j])
+            pred_rounded = np.round(all_predictions[i][j],2)
             cv2.putText(frame, str(count)+'/'+str(frame_idx), (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 3, (0,0,0), thickness, cv2.LINE_AA)
             cv2.putText(frame, f'gt:{list_ground_truth[i][j]}', (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
-            cv2.putText(frame, f'pred:{np.round(all_predictions[0][i][j],2)}', (50, 400), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
+            cv2.putText(frame, f'pred:{np.round(pred_rounded,2)}', (50, 400), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
             out.write(frame)
         count+=1
           # print(f'frame_idx: {frame_idx}')
