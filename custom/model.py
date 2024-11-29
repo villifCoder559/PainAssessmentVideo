@@ -206,6 +206,8 @@ class Model_Advanced: # Scenario_Advanced
       X_test = dict_feature_extraction_test['features'] 
       y_test = dict_feature_extraction_test['list_labels'] 
       subjects_id_test = dict_feature_extraction_test['list_subject_id']
+      device = 'cuda' if torch.cuda.is_available() else 'cpu'
+      # self.head.model.to(device)
       dict_results = self.head.start_train_test(X_train=X_train, y_train=y_train, subject_ids_train=subject_ids_train,
                                                 X_test=X_test, y_test=y_test, subject_ids_test=subjects_id_test, 
                                                 num_epochs=num_epochs,batch_size=batch_size,criterion=criterion,
@@ -263,8 +265,9 @@ class Model_Advanced: # Scenario_Advanced
         # if count % stop_after == 0:
         #   break
     print('Feature extraceton done')
+    # self.backbone.model.to('cpu')
     return {
-            'features':torch.stack([feature for feature in list_features]),
+            'features':torch.stack([feature for feature in list_features]), # using batch it doesn't work because of different size, try to transform the list in tensor
            'list_labels':torch.stack([label for label in list_labels]),
            'list_subject_id':np.stack([subject_id for subject_id in list_subject_id]).squeeze(),
            'list_sample_id':np.stack([sample_id for sample_id in list_sample_id]),
@@ -273,9 +276,9 @@ class Model_Advanced: # Scenario_Advanced
            }  
   
   def _compute_features(self, data, labels, subject_id, sample_id, path, device, remove_clip_reduction=False):
-  
+    with torch.no_grad():
     # Extract features from clips -> return [B, clips/tubelets, W/patch_w, H/patch_h, emb_dim] 
-    feature = self.backbone.forward_features(data.to(device)) # ex. [B,8*14*14,emb_dim]
+      feature = self.backbone.forward_features(data.to(device)) # ex. [B,8*14*14,emb_dim]
     unique_labels, unique_subject_id, unique_sample_id, unique_path = [], [], [], []  
     # Apply dimensionality reduction [B,C,T,H,W] -> [B, reduction(C,T,H,W)]
     if self.neck.embedding_reduction is not None:
@@ -327,7 +330,7 @@ class Model_Advanced: # Scenario_Advanced
         self.dataset.stride_window = old_value_stride
       print(features[0].shape)
       device = 'cuda' if torch.cuda.is_available() else 'cpu' #TODO: move somewhere else 
-      self.backbone.model.to(device)
+      # self.backbone.model.to(device)
       self.backbone.model.eval()
       print('Computing features...')
       feature, unique_labels, unique_subject_id, unique_sample_id, unique_path = self._compute_features(features[0], features[1], features[2], features[3], features[4], device,True)
@@ -387,10 +390,11 @@ class Model_Advanced: # Scenario_Advanced
           self.dataset.stride_window = old_value_stride
         
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.backbone.model.to(device)
-        self.backbone.model.eval()
+        # self.backbone.model.to(device)
         if predictions is None:
-          feature, _, _, _, _ = self._compute_features(features[0], features[1], features[2], features[3], features[4], device, True)
+          self.backbone.model.eval()
+          with torch.no_grad():
+            feature, _, _, _, _ = self._compute_features(features[0], features[1], features[2], features[3], features[4], device, True)
           print(f'features[1]->labels', features[1])
           feature = feature.detach().cpu().squeeze()
           predictions = self.head.predict(feature)
