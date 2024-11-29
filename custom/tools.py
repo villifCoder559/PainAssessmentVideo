@@ -5,8 +5,11 @@ import os
 import pandas as pd
 from torchmetrics.classification import ConfusionMatrix
 from sklearn.manifold import TSNE
+from matplotlib.ticker import MaxNLocator
+import cv2
 import platform
 import av
+import torch
 if os.name == 'posix':
   from tsnecuda import TSNE as cudaTSNE # available only on Linux
 else:
@@ -59,6 +62,7 @@ def plot_losses(train_losses, test_losses, saving_path=None):
   plt.grid(True)
   if saving_path is not None:
     plt.savefig(saving_path+'.png')
+    print(f'Plot losses saved to {saving_path}.png')
   else:
     plt.show()
 
@@ -219,7 +223,7 @@ def plot_dataset_distribution(csv_path, total_classes=None,per_class=False, per_
       plt.bar(unique.astype(str), count, color='blue')
       plt.xlabel('User ID', fontsize=16)
       plt.ylabel('Samples', fontsize=16)
-      plt.xticks(fontsize=16, rotation=45)
+      plt.xticks(fontsize=16, rotation=0)
       plt.yticks(fontsize=16)
       plt.grid(axis="y", linestyle="--", alpha=0.7)
       # dataset_name = f'{os.path.split(self.path_labels)[-1]}'
@@ -228,6 +232,7 @@ def plot_dataset_distribution(csv_path, total_classes=None,per_class=False, per_
         plt.savefig(os.path.join(saving_path,f'{title}.png'))
       else:
         plt.show()
+      plt.xticks(fontsize=14,rotation=0)
       
     def plot_distribution_stacked(unique, title, class_counts,total_classes):
       # colors = ['blue', 'orange', 'green', 'red', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
@@ -251,6 +256,7 @@ def plot_dataset_distribution(csv_path, total_classes=None,per_class=False, per_
         plt.savefig(os.path.join(saving_path,f'{title}_{dataset_name}.png'))
       else:
         plt.show()
+      plt.xticks(fontsize=14,rotation=0)
 
     #Extract csv and postprocess
     csv_array = pd.read_csv(csv_path).to_numpy()  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
@@ -308,7 +314,7 @@ def plot_dataset_distribution_mean_std_duration(csv_path, video_path=None, per_c
     plt.xlabel(title,fontsize=16)
     plt.ylabel("mean duration (s)",fontsize=16)
     plt.title(f"Mean Duration per {title} with std ({dataset_name})",fontsize=16)
-    plt.xticks(rotation=45,fontsize=13)
+    plt.xticks(rotation=0,fontsize=13)
     plt.yticks(fontsize=13)
     plt.grid(axis="y", linestyle="--", alpha=0.7)
     # Show the plot
@@ -332,8 +338,28 @@ def plot_dataset_distribution_mean_std_duration(csv_path, video_path=None, per_c
   if per_class is True:
     key = 2
     plot_distribution(key,'class',video_path)
-      
-def plot_tsne(X, labels, legend_label='', from_dataset = '', use_cuda=False, perplexity=1, saving_path=None):
+
+def plot_prediction_chunks_per_subject(predictions, title,saving_path=None):
+  print('Plotting...')
+  print('  predictions shape', predictions.shape) # (n_samples, n_chunks)
+  indices = np.arange(predictions.shape[1]).astype(int)
+  get_list_video_path_from_csv
+  print('indices', indices)
+  plt.figure(figsize=(6, 4))
+  plt.gca().xaxis.set_major_locator(MaxNLocator(integer=True))
+  plt.plot(indices, predictions[0])
+  plt.xlabel('Frame chunk index', fontsize=11)
+  plt.ylabel('Prediction', fontsize=11)
+  plt.title(title, fontsize=14)
+  plt.xticks(fontsize=12)
+  plt.yticks(fontsize=12)
+  plt.tight_layout()
+  if saving_path is not None:
+    plt.savefig(saving_path+'.png')
+  else:
+    plt.show()
+
+def plot_tsne(X, labels, legend_label='', title = '', use_cuda=False, perplexity=3, saving_path=None):
   """
   Plots the t-SNE reduction of the features in 2D with colors based on subject, gt, or predicted class.
   Args:
@@ -341,8 +367,10 @@ def plot_tsne(X, labels, legend_label='', from_dataset = '', use_cuda=False, per
     use_cuda (bool, optional): Whether to use CUDA for t-SNE computation. Defaults to False.
     perplexity (int, optional): Perplexity parameter for t-SNE. Defaults to 20.
   """
+  if len(labels.shape) != 1:
+    labels = labels.reshape(-1)
   unique_labels = np.unique(labels)
-  color_map = plt.cm.get_cmap('tab20', len(unique_labels))
+  color_map = plt.cm.get_cmap('tab20', len(unique_labels)) # FIX: if uniqelabels > 20 create maore a differnt plot
   color_dict = {val: color_map(i) for i, val in enumerate(unique_labels)}
   
   if use_cuda and X.shape[0] > 194:
@@ -351,8 +379,11 @@ def plot_tsne(X, labels, legend_label='', from_dataset = '', use_cuda=False, per
     tsne = TSNE(n_components=2, perplexity=perplexity)
   X_cpu = X.detach().cpu().squeeze()
   X_cpu = X_cpu.reshape(X_cpu.shape[0], -1)
-  X_tsne = tsne.fit_transform(X_cpu)
-
+  print(f'X_cpu.shape: {X_cpu.shape}')
+  X_tsne = tsne.fit_transform(X_cpu) # in: X=(n_samples, n_features)
+                                     # out: (n_samples, n_components=2)
+  print(f'X_tsne.shape: {X_tsne.shape}')
+  print(f'labels shape: {labels.shape}')
   plt.figure(figsize=(10, 8))
   for val in unique_labels:
     idx = (labels == val).squeeze()
@@ -360,7 +391,7 @@ def plot_tsne(X, labels, legend_label='', from_dataset = '', use_cuda=False, per
   
   if legend_label != 'subject':
     plt.legend()
-  plt.title(f't-SNE Reduction to 2D (Colored by {legend_label})')
+  plt.title(f'{title} (Colored by {legend_label})')
   plt.xlabel('t-SNE Component 1')
   plt.ylabel('t-SNE Component 2')
   if saving_path is None:
@@ -369,22 +400,115 @@ def plot_tsne(X, labels, legend_label='', from_dataset = '', use_cuda=False, per
     plt.savefig(saving_path+'.png')
 
 def get_list_video_path_from_csv(csv_path, cols_csv_idx=[1,5], union_segment='_'):
-  csv_array = pd.read_csv(csv_path).to_numpy()  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
-  list_samples = []
-  for entry in csv_array:
-    tmp = entry[0].split("\t")
-    list_samples.append(tmp)
-  list_samples = np.stack(list_samples)
-  # partA/video/video/112209_m_51/112209_m_51-BL1-086.mp4
-  # partA/video/video/112209_m_51_112209_m_51-BL1-086.mp4
-  video_path = os.path.join('partA','video','video')
+  list_samples,_ = get_array_from_csv(csv_path) # subject_id, subject_name, class_id, class_name, sample_id, sample_name
+  video_folder_path = os.path.join('partA','video','video')
   list_video_path = []
   for sample in list_samples:
     # sample_video = union_segment.join(sample[cols_csv_idx])
     sample_video = os.path.join(sample[cols_csv_idx[0]], sample[cols_csv_idx[1]])
-    video_path = os.path.join(video_path, sample_video)
+    video_path = os.path.join(video_folder_path, sample_video)
     video_path += '.mp4'
     list_video_path.append(video_path)
   return list_video_path
 
+def get_array_from_csv(csv_path):
+  """
+  Reads a CSV file, converts it to a NumPy array, and processes each entry by splitting
+  the first column using a tab delimiter. The processed entries are then stacked into
+  a single NumPy array.
 
+  Args:
+    csv_path (str): The file path to the CSV file.
+
+  Returns:
+    np.ndarray: A NumPy array containing the processed entries from the CSV file.\n
+                (BIOVID cols-> subject_id, subject_name, class_id, class_name, sample_id, sample_name)
+  """
+  csv_array = pd.read_csv(csv_path)  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
+  cols_array = csv_array.columns.to_numpy()[0].split('\t')
+  csv_array = csv_array.to_numpy()
+  list_samples = []
+  for entry in csv_array:
+    tmp = entry[0].split("\t")
+    list_samples.append(tmp)
+  return np.stack(list_samples),cols_array
+
+def save_frames_as_video(list_input_video_path, list_frame_indices, output_video_path,all_predictions,list_ground_truth, output_fps=1):
+  """
+  Extract specific frames from a video and save them as a new video.
+
+  :param input_video_path: Path to the original video file.
+  :param frame_indices: List of frame indices to extract and save.
+  :param output_video_path: Path to save the output video.
+  :param output_fps: Frames per second for the output video (default is 30).
+  """
+  # Open the original video
+  out = None
+  # if len(all_predictions.shape)>2:
+  #   all_predictions = all_predictions.reshape(all_predictions.shape[0],-1)
+  # if len(list_ground_truth.shape) :
+  print(f'all_predictions shape: {all_predictions.shape}')
+  # print('all_labels',list_ground_truth)
+  # print(f'output_video_path: {output_video_path}')
+  # print('pred',all_predictions)
+  # print('gt',list_ground_truth)
+  # partA/video/video/112209_m_51_112209_m_51-BL1-086.mp4
+  for i, input_video_path in enumerate(list_input_video_path): # i->[0...33]
+    # print(f'input_video_path: {input_video_path}')
+    cap = cv2.VideoCapture(input_video_path)
+    if not cap.isOpened():
+      raise IOError(f"Err: Unable to open video file: {input_video_path}")
+
+    # Get the width and height of the frames in the video
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    frame_size = (frame_width, frame_height)
+
+    # Define the codec and create VideoWriter object
+    fourcc = cv2.VideoWriter_fourcc(*'avc1')  
+    if out is None:
+      out = cv2.VideoWriter(output_video_path, fourcc, output_fps, frame_size)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    # print(f'frame_count: {frame_count}')
+    black_frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 1
+    font_color = (255, 255, 255)
+    thickness = 2
+    count = 0
+    # print(f'frame_indices: {len(list_frame_indices)}')
+    for j,frame_indices in enumerate(list_frame_indices[i]): #j->[0..1] [16]
+      # print('frame_indices',frame_indices) # i->[0,...,32] framle_inidces->[2,16]
+      cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset the video capture to the beginning
+      for _ in range(output_fps):
+        number_frame = black_frame.copy()
+        text = str(count)
+        # print(f'   text: {text}')
+        text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+        text_x = (number_frame.shape[1] - text_size[0]) // 2
+        text_y = (number_frame.shape[0] + text_size[1]) // 2
+        cv2.putText(number_frame, text, (text_x, text_y), font, font_scale, font_color, thickness)
+        out.write(number_frame)
+      for frame_idx in range(frame_count):
+        ret, frame = cap.read()
+        if not ret:
+          break
+          # Check if the current frame index is in the list
+        # print(f'frame_indices: {frame_indices}')
+        if frame_idx in frame_indices: # [2,16]
+          # print(f'GT:{list_ground_truth.shape}')
+          # print(f'pred:{all_predictions.shape}')
+          # print(i,j)
+          # print(list_ground_truth[i][j])
+          # print(all_predictions[i][j])
+          cv2.putText(frame, str(count)+'/'+str(frame_idx), (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 3, (0,0,0), thickness, cv2.LINE_AA)
+          cv2.putText(frame, f'gt:{list_ground_truth[i][j]}', (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
+          cv2.putText(frame, f'pred:{all_predictions[i][j]:.2f}', (50, 400), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
+          out.write(frame)
+      count+=1
+        # print(f'frame_idx: {frame_idx}')
+  # Release resources
+  cap.release()
+  out.release()
+  print(f"Saved extracted frames to {output_video_path}")
+  # Add 4 black frames at the end
