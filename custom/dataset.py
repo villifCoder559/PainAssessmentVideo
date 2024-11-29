@@ -6,11 +6,12 @@ import numpy as np
 import torch
 import cv2
 from custom.helper import SAMPLE_FRAME_STRATEGY
+from sklearn.model_selection import GroupShuffleSplit
 import matplotlib.pyplot as plt
-
+import custom.tools as tools
 
 class customDataset(torch.utils.data.Dataset):
-  def __init__(self,path_dataset, dict_paths, preprocess, sample_frame_strategy, batch_size=1, stride_window=2, clip_length=16):
+  def __init__(self,path_dataset, path_labels, preprocess, sample_frame_strategy, batch_size=1, stride_window=2, clip_length=16):
     assert os.path.exists(path_dataset), f"Dataset path {path_dataset} does not exist."
     # assert os.path.exists(path_labels), f"Labels path {path_labels} does not exist."
     assert clip_length > 0, f"Clip length must be greater than 0."
@@ -18,9 +19,9 @@ class customDataset(torch.utils.data.Dataset):
     assert sample_frame_strategy in SAMPLE_FRAME_STRATEGY, f"Sample frame strategy must be one of {SAMPLE_FRAME_STRATEGY}."
     
     self.path_dataset = path_dataset
-    self.dict_paths = dict_paths
-    self.set_path_labels('train')
+    self.path_labels = path_labels
     self.preprocess = preprocess
+    self.type_sample_frame_strategy = sample_frame_strategy
     # self.video_labels = pd.read_csv(path_labels)
     if sample_frame_strategy == SAMPLE_FRAME_STRATEGY.UNIFORM:
       self.sample_frame_strategy = self._single_uniform_sampling
@@ -40,48 +41,29 @@ class customDataset(torch.utils.data.Dataset):
     self.image_resize_h = 224
     self.image_channels = 3
     self.clip_length = clip_length
-  
-  def get_unique_subjects_and_classes(self):
-    """
-    Get the number of times each unique subject ID and class ID appears in video_labels.
-
-    Returns:
-      dict: A dictionary with keys 'subject_counts' and 'class_counts', each containing a dictionary
-        where the keys are the unique IDs and the values are the counts.
-    """
-    csv_array = self.video_labels.to_numpy()
-    list_samples = [entry[0].split("\t") for entry in csv_array]
-    list_samples = np.stack(list_samples)
-    
-    subject_ids = list_samples[:, 0].astype(int)
-    class_ids = list_samples[:, 2].astype(int)
-    
-    subject_counts = {subject_id: np.sum(subject_ids == subject_id) for subject_id in np.unique(subject_ids)}
-    class_counts = {class_id: np.sum(class_ids == class_id) for class_id in np.unique(class_ids)}
-    
-    return subject_counts, class_counts
+    # self.set_path_labels('all')
+    # self.set_path_labels('train')
+    tmp = tools.get_unique_subjects_and_classes(self.path_labels)
+    self.total_subjects, self.total_classes = len(tmp[0]), len(tmp[1])
 
   def set_path_labels(self, path):
     """
-    Sets the path labels for the dataset.
-
-    This method sets the path labels for the dataset by checking if the given path exists in the dictionary of paths.
-    If the path exists, it reads the corresponding CSV file and assigns it to the video_labels attribute.
+    Sets the path to the labels file and loads the video labels from a CSV file.
 
     Args:
-      path (str):  Must be one of 'train','val','test'
+      path (str): The file path to the CSV file containing the video labels.
 
-    Raises:
-      AssertionError: If the provided path is not found in the dictionary of paths.
+    Returns:
+      None
     """
-    assert path in self.dict_paths, f"Path {path} not found in the dictionary. Available {self.dict_paths.keys()}"
-    self.path_labels = self.dict_paths[path]
+    self.path_labels = path
     self.video_labels = pd.read_csv(self.path_labels)
     print(f'Set path_labels: {self.path_labels}')
     
   def __len__(self):
     return len(self.video_labels)
-   
+
+
   def _generate_csv_subsampled(self, nr_samples_per_class=2):
     csv_array=self.video_labels.to_numpy()
     video_labels_columns = self.video_labels.columns.to_numpy()[0].split('\t')
@@ -108,6 +90,7 @@ class customDataset(torch.utils.data.Dataset):
   
   def __getitem__(self, idx):
     # split in # ["subject_id, subject_name, class_id, class_name, sample_id, sample_name"]
+    # print(f'idx: {idx}')
     csv_array = self.video_labels.iloc[idx,0].split('\t') 
     video_path = os.path.join(self.path_dataset, csv_array[1], csv_array[5])
     video_path += '.mp4'
@@ -123,7 +106,11 @@ class customDataset(torch.utils.data.Dataset):
     labels = unit_vector * int(csv_array[2])
     subject_id = unit_vector * int(csv_array[0])
     # print(list_indices.shape)
-    return  {'preprocess':preprocessed_tensors, 'labels': labels, 'subject_id': subject_id, 'sample_id': sample_id, 'path': path, 
+    return  {'preprocess':preprocessed_tensors, 
+             'labels': labels, 
+             'subject_id': subject_id, 
+             'sample_id': sample_id, 
+             'path': path, 
              'frame_list': list_indices}
 
   def _read_video_pyav(self,container, indices):
@@ -166,6 +153,7 @@ class customDataset(torch.utils.data.Dataset):
     indices = np.linspace(0, video_len-1, self.clip_length, dtype=int)
     indices = torch.from_numpy(indices)
     return indices[None, :]
+  
   def get_all_sample_ids(self):
     """
     Returns all sample_id values from path_labels.
@@ -211,119 +199,52 @@ class customDataset(torch.utils.data.Dataset):
     # print('Sliding shape',list_indices.shape)
     return list_indices
   
-  def plot_distribution_mean_std_duration(self,per_class=False,per_partecipant=False,saving_path=None):
-    def plot_distribution(key,title):  
-      key_dict = {} # key: subject_id -> value: [duration, N]
-      for idx, sample in enumerate(list_samples):
-        # csv_array = self.video_labels.iloc[idx,0].split('\t') 
-        key_id = sample[key]
-        video_path = os.path.join(self.path_dataset, sample[1], sample[5])
-        video_path += '.mp4'
-        container = av.open(video_path)
-        duration_secs = container.streams.video[0].frames // container.streams.video[0].average_rate
-        if key_id not in key_dict:
-          key_dict[key_id] = []
-          key_dict[key_id].append(duration_secs)
-      key_id_vector = np.array(list(key_dict.keys())).astype(int)
-      mean_duration = np.array([np.mean(key_dict[key]) for key in key_dict.keys()])
-      std_duration = np.array([np.std(key_dict[key]) for key in key_dict.keys()])
-      indices = key_id_vector.argsort() # TODO: print also elements not availables 
-      dataset_name = f'{os.path.split(self.path_labels)[-1].split(".")[0]}'
-      plt.figure(figsize=(30, 12))
-      plt.bar(key_id_vector[indices].astype(str), mean_duration[indices], yerr=std_duration[indices], color="blue", alpha=0.8)
-      plt.xlabel(title,fontsize=16)
-      plt.ylabel("mean duration (s)",fontsize=16)
-      plt.title(f"Mean Duration per {title} with std ({dataset_name})",fontsize=16)
-      plt.xticks(rotation=45,fontsize=13)
-      plt.yticks(fontsize=13)
-      plt.grid(axis="y", linestyle="--", alpha=0.7)
-      # Show the plot
-      # plt.tight_layout()
-      if saving_path is not None:
-        plt.savefig(os.path.join(saving_path,f'{title}_{dataset_name}.png'))
-      else:
-        plt.show()
+  # def plot_dataset_distribution_mean_std_duration(self,per_class=False,per_partecipant=False,saving_path=None):
+  #   def plot_distribution(key,title):  
+  #     key_dict = {} # key: subject_id -> value: [duration, N]
+  #     for idx, sample in enumerate(list_samples):
+  #       # csv_array = self.video_labels.iloc[idx,0].split('\t') 
+  #       key_id = sample[key]
+  #       video_path = os.path.join(self.path_dataset, sample[1], sample[5])
+  #       video_path += '.mp4'
+  #       container = av.open(video_path)
+  #       duration_secs = container.streams.video[0].frames // container.streams.video[0].average_rate
+  #       if key_id not in key_dict:
+  #         key_dict[key_id] = []
+  #         key_dict[key_id].append(duration_secs)
+  #     key_id_vector = np.array(list(key_dict.keys())).astype(int)
+  #     mean_duration = np.array([np.mean(key_dict[key]) for key in key_dict.keys()])
+  #     std_duration = np.array([np.std(key_dict[key]) for key in key_dict.keys()])
+  #     indices = key_id_vector.argsort() # TODO: print also elements not availables 
+  #     dataset_name = f'{os.path.split(self.path_labels)[-1].split(".")[0]}'
+  #     plt.figure(figsize=(30, 12))
+  #     plt.bar(key_id_vector[indices].astype(str), mean_duration[indices], yerr=std_duration[indices], color="blue", alpha=0.8)
+  #     plt.xlabel(title,fontsize=16)
+  #     plt.ylabel("mean duration (s)",fontsize=16)
+  #     plt.title(f"Mean Duration per {title} with std ({dataset_name})",fontsize=16)
+  #     plt.xticks(rotation=45,fontsize=13)
+  #     plt.yticks(fontsize=13)
+  #     plt.grid(axis="y", linestyle="--", alpha=0.7)
+  #     # Show the plot
+  #     # plt.tight_layout()
+  #     if saving_path is not None:
+  #       plt.savefig(os.path.join(saving_path,f'{title}_{dataset_name}.png'))
+  #     else:
+  #       plt.show()
     
-    csv_array=self.video_labels.to_numpy() # subject_id, subject_name, class_id, class_name, sample_id, sample_name
-    list_samples=[]
-    for entry in (csv_array):
-      tmp = entry[0].split("\t")
-      list_samples.append(tmp)
-    list_samples = np.stack(list_samples)
-    if per_partecipant is True:
-      key = 0
-      plot_distribution(key,'participant')
-    if per_class is True:
-      key = 2
-      plot_distribution(key,'class')
+  #   csv_array=self.video_labels.to_numpy() # subject_id, subject_name, class_id, class_name, sample_id, sample_name
+  #   list_samples=[]
+  #   for entry in (csv_array):
+  #     tmp = entry[0].split("\t")
+  #     list_samples.append(tmp)
+  #   list_samples = np.stack(list_samples)
+  #   if per_partecipant is True:
+  #     key = 0
+  #     plot_distribution(key,'participant')
+  #   if per_class is True:
+  #     key = 2
+  #     plot_distribution(key,'class')
     
-  def plot_dataset_distribution(self,per_class=False,per_partecipant=False, saving_path=None): 
-    def plot_distribution(unique,count,title):  
-      plt.figure(figsize=(10, 5))
-      plt.bar(unique.astype(str), count, color='blue')
-      plt.xlabel('User ID', fontsize=16)
-      plt.ylabel('Samples', fontsize=16)
-      plt.xticks(fontsize=16, rotation=45)
-      plt.yticks(fontsize=16)
-      plt.grid(axis="y", linestyle="--", alpha=0.7)
-      # dataset_name = f'{os.path.split(self.path_labels)[-1]}'
-      plt.title('Dataset Distribution ' + title +f' ({os.path.split(self.path_labels)[-1]})',fontsize=16)
-      if saving_path is not None:
-        plt.savefig(os.path.join(saving_path,f'{title}.png'))
-      else:
-        plt.show()
-      
-    def plot_distribution_stacked(unique, title, class_counts):
-      # colors = ['blue', 'orange', 'green', 'red', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
-      fig, ax = plt.subplots(figsize=(20, 10))
-      bottom = np.zeros(len(unique))
-      for i, (class_id, class_count) in enumerate(class_counts.items()):
-        unique_people = np.sum(class_count > 0)
-        ax.bar(unique.astype(str), class_count, bottom=bottom, label=f'{class_id} ({unique_people}/{len(class_count)})')
-        bottom += class_count
-      ax.set_xlabel('User ID', fontsize=14)
-      ax.set_ylabel('# Samples', fontsize=14)
-      dataset_name = f'{os.path.split(self.path_labels)[-1].split(".")[0]}'
-      ax.set_title('Dataset Distribution ' + title + f' ({dataset_name})', fontsize=16)
-      ax.legend(title='Pain level (unique_people/tot_people)')
-      plt.xticks(fontsize=13,rotation=45)
-      plt.yticks(fontsize=13)
-      plt.grid(axis="y", linestyle="--", alpha=0.7)
-      if saving_path is not None:
-        plt.savefig(os.path.join(saving_path,f'{title}_{dataset_name}.png'))
-      else:
-        plt.show()
-
-    #Extract csv and postprocess
-    csv_array = self.video_labels.to_numpy()  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
-    list_samples = []
-    for entry in csv_array:
-      tmp = entry[0].split("\t")
-      list_samples.append(tmp)
-    list_samples = np.stack(list_samples)
-
-    if per_class and per_partecipant:
-      unique_subject_id = np.unique(list_samples[:, 0].astype(int)) # subject_id
-      # print(f'unique_subject_id: {unique_subject_id}')
-      class_ids =np.unique(list_samples[:, 2].astype(int)) # class_id TODO: use a number of predefinited class to see if there are missing classes
-      # class_ids = np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) # class_id
-      class_counts = {class_id: np.zeros(len(unique_subject_id)) for class_id in class_ids} # for each class, create a list of zeros for each participant
-      for i, subject_id in enumerate(unique_subject_id):
-        for class_id in class_ids:
-          # Count the number of samples for each class and participant
-          class_counts[class_id][i] = np.sum((list_samples[:, 0].astype(int) == subject_id) & (list_samples[:, 2].astype(int) == class_id))
-      # print(class_counts)
-      plot_distribution_stacked(unique_subject_id, 'per participant and class', class_counts)
-    
-    elif per_class:
-      unique_subject_id,count = np.unique(list_samples[:,2],return_counts=True) 
-      unique_subject_id = np.sort(unique_subject_id.astype(int))
-      plot_distribution(unique_subject_id,count,'per class')
-    
-    elif per_partecipant: 
-      unique_subject_id,count = np.unique(list_samples[:,0],return_counts=True)
-      unique_subject_id = np.sort(unique_subject_id.astype(int))
-      plot_distribution(unique_subject_id,count,'per participant')
           
   def save_frames_as_video(self,list_input_video_path, list_frame_indices, output_video_path,all_predictions,list_ground_truth, output_fps=1):
     """
@@ -340,6 +261,7 @@ class customDataset(torch.utils.data.Dataset):
     print(f'output_video_path: {output_video_path}')
     # print('pred',all_predictions)
     # print('gt',list_ground_truth)
+    # partA/video/video/112209_m_51_112209_m_51-BL1-086.mp4
     for i,input_video_path in enumerate(list_input_video_path):
       print(f'input_video_path: {input_video_path}')
       cap = cv2.VideoCapture(input_video_path)
@@ -352,7 +274,7 @@ class customDataset(torch.utils.data.Dataset):
       frame_size = (frame_width, frame_height)
 
       # Define the codec and create VideoWriter object
-      fourcc = cv2.VideoWriter_fourcc(*'H264')  # For .mp4 files
+      fourcc = cv2.VideoWriter_fourcc(*'H264')  
       if out is None:
         out = cv2.VideoWriter(output_video_path, fourcc, output_fps, frame_size)
       frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -382,12 +304,12 @@ class customDataset(torch.utils.data.Dataset):
             # Check if the current frame index is in the list
           # print(f'frame_indices: {frame_indices}')
           if frame_idx in frame_indices:
-            # print(f'GT:{list_ground_truth}')
-            # print(f'pred:{all_predictions}')
-            # print(i,j)
+            print(f'GT:{list_ground_truth.shape}')
+            print(f'pred:{all_predictions.shape}')
+            print(i,j)
             cv2.putText(frame, str(count)+'/'+str(frame_idx), (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 3, (0,0,0), thickness, cv2.LINE_AA)
             cv2.putText(frame, f'gt:{list_ground_truth[i][j]}', (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
-            cv2.putText(frame, f'pred:{np.round(all_predictions[i][j],2)}', (50, 400), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
+            cv2.putText(frame, f'pred:{np.round(all_predictions[0][i][j],2)}', (50, 400), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
             out.write(frame)
         count+=1
           # print(f'frame_idx: {frame_idx}')

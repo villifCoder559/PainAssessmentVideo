@@ -48,7 +48,10 @@ class Model_Advanced: # Scenario_Advanced
     self.neck = neck(embedding_reduction, clips_reduction)
     self.dataset = customDataset(path_dataset, path_labels, preprocess, sample_frame_strategy, stride_window=stride_window, clip_length=clip_length,
                                  batch_size=batch_size)
-    self.dataloader = DataLoader(self.dataset, batch_size=batch_size, shuffle=False, collate_fn=self.dataset._custom_collate_fn) # TODO: put inside customDataset and return a dataset and dataLoader
+    # self.dataloader = DataLoader(self.dataset, 
+    #                              batch_size=batch_size, 
+    #                              shuffle=False,
+    #                              collate_fn=self.dataset._custom_collate_fn) # TODO: put inside customDataset and return a dataset and dataLoader
     if head == 'SVR':
       self.head = HeadSVR(svr_params=head_params)
     elif head == 'GRU':
@@ -58,7 +61,7 @@ class Model_Advanced: # Scenario_Advanced
       if embedding_reduction:
         for dim in self.neck.dim_embed_reduction:
           output_tensor[dim] = 1
-      if clips_reduction:
+      if clips_reduction.value:
         print(self.neck.dim_clips_reduction)
         output_tensor[self.neck.dim_clips_reduction + 1] = 1
       head_params['input_size'] = np.prod(output_tensor).astype(int)
@@ -67,42 +70,103 @@ class Model_Advanced: # Scenario_Advanced
       self.head = HeadGRU(dropout=head_params['dropout'], input_size=head_params['input_size'], 
                           hidden_size=head_params['hidden_size'], num_layers=head_params['num_layers'])
 
-  def run_k_fold_cross_validation(self, k=5, batch_size=8, criterion=nn.L1Loss(), 
-                                  optimizer_fn=optim.Adam, lr=0.0001, list_saving_paths_k_val=None):
-    if isinstance(self.head, HeadGRU):
-      cv_gru = CrossValidationGRU(head=self.head)
-      # Perform k-fold cros-validation
-      print('GRU with k-fold cross-validation...')
-      self.dataset.set_path_labels('all')
-      dict_feature_extraction_train = self._extract_features() # feats,labels,subject_id,sample_id,path
-      X = dict_feature_extraction_train['features']
-      y = dict_feature_extraction_train['list_labels']
-      subject_ids = dict_feature_extraction_train['list_subject_id']
-      results, list_split_indices = cv_gru.k_fold_cross_validation(X=X, Y=y, group_ids=subject_ids, k=k, num_epochs=10, 
-                                               batch_size=batch_size,criterion=criterion, 
-                                               optimizer_fn=optimizer_fn, lr=lr, list_saving_paths_k_val=list_saving_paths_k_val)  
-    
-    elif isinstance(self.head, HeadSVR):
-      print('SVR with k-fold cross-validation...')
-      self.dataset.set_path_labels('all')
-      dict_feature_extraction_train = self._extract_features() # feats,labels,subject_id,sample_id,path
-      X = dict_feature_extraction_train['features']
-      y = dict_feature_extraction_train['list_labels']
-      subject_ids = dict_feature_extraction_train['list_subject_id']
-      X = X.reshape(X.shape[0],-1).detach().cpu().numpy()
-      y = y.squeeze().detach().cpu().numpy()
-      list_split_indices,results = self.head.k_fold_cross_validation(X=X, y=y, k=k, groups=subject_ids)
+  
+  def run_k_fold_cross_validation(self, k_fold, train_folder_path, batch_size=8, criterion=nn.L1Loss(), 
+                                  optimizer_fn=optim.Adam, lr=0.0001,
+                                  epochs=10,train_size=0.8,val_size=0.1,test_size=0.1):
+    # def k_cross_valuation():
+    fold_results = []
+    list_saving_paths = []
 
-    return results, list_split_indices
+    for i in range(k_fold):
+      path = os.path.join(train_folder_path,f'results_k{i}_cross_val')
+      list_saving_paths.append(path)
+      if not os.path.exists(path):
+        os.makedirs(path)
+      path_csv_k_fold = tools._generate_train_test_validation(csv_path=self.dataset.path_labels,
+                                                              saving_path=path,
+                                                              train_size=train_size,
+                                                              val_size=val_size,
+                                                              test_size=test_size,
+                                                              random_state=i)
+      
+      result = self.train(train_csv_path=path_csv_k_fold['train'],
+                          test_csv_path=path_csv_k_fold['test'],
+                          num_epochs=epochs, batch_size=batch_size, 
+                          criterion=criterion,
+                          optimizer_fn=optimizer_fn,
+                          lr=lr, 
+                          saving_path=path)
+      fold_results.append(result)
+
+    best_results_idx = [fold_results[i]['best_model_idx'] for i in range(k_fold)]
+    dict_all_results = {
+                        'avg_train_loss_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['train_losses'][-1] for i in range(k_fold)]),
+                        'avg_test_loss_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['test_losses'][-1] for i in range(k_fold)]),
+                        'avg_train_loss_per_class_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['train_loss_per_class'][-1] for i in range(k_fold)]),
+                        'avg_test_loss_per_class_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['test_loss_per_class'][-1] for i in range(k_fold)]),
+                        'avg_train_loss_per_subject_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['train_loss_per_subject'][-1] for i in range(k_fold)]),
+                        'avg_test_loss_per_subject_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['test_loss_per_subject'][-1] for i in range(k_fold)])
+                        }
+    with open(os.path.join(train_folder_path,'results_k_fold.txt'),'w') as f:
+      f.write(str(dict_all_results))
+    return fold_results, list_saving_paths, best_results_idx
+    
+    # def k_cross_valuation_SVR():
+    #   print('SVR with k-fold cross-validation...')
+    #   self.dataset.set_path_labels('all')
+    #   dict_feature_extraction_train = self._extract_features() # feats,labels,subject_id,sample_id,path
+    #   X = dict_feature_extraction_train['features']
+    #   y = dict_feature_extraction_train['list_labels']
+    #   subject_ids = dict_feature_extraction_train['list_subject_id']
+    #   X = X.reshape(X.shape[0],-1).detach().cpu().numpy()
+    #   y = y.squeeze().detach().cpu().numpy()
+    #   list_split_indices,results = self.head.k_fold_cross_validation(X=X, y=y, k=k_fold, groups=subject_ids)
+
+    # if isinstance(self.head, HeadGRU):
+    #   results = k_cross_valuation()
+
+    # elif isinstance(self.head, HeadSVR):
+    #   results = k_cross_valuation_SVR()      
+
+    # return results
 
   
-  def train(self,num_epochs=10, batch_size=32, criterion=nn.L1Loss(),optimizer_fn=optim.Adam, lr=0.0001):
+  def train(self, train_csv_path, test_csv_path, num_epochs=10, batch_size=32, criterion=nn.L1Loss(),optimizer_fn=optim.Adam, lr=0.0001,saving_path=None):
+    """
+    Train the model using the specified training and testing datasets.
+    Parameters:
+      train_csv_path (str): Path to the CSV file containing the training data.
+      test_csv_path (str): Path to the CSV file containing the testing data.
+      num_epochs (int, optional): Number of epochs for training. Default is 10.
+      batch_size (int, optional): Batch size for training. Default is 32.
+      criterion (torch.nn.Module, optional): Loss function to be used. Default is nn.L1Loss().
+      optimizer_fn (torch.optim.Optimizer, optional): Optimizer function to be used. Default is optim.Adam.
+      lr (float, optional): Learning rate for the optimizer. Default is 0.0001.
+      saving_path (str, optional): Path to save the trained model. Default is None.
+    Returns:
+      dict: A dictionary containing the results of the training process, including:
+      - 'dict_results': {
+                      - 'train_losses': List of training losses.
+                      - 'train_loss_per_class': Training loss per class, reshaped to (1, -1).
+                      - 'train_loss_per_subject': Training loss per subject, reshaped to (1, -1).
+                      - 'test_losses': List of test losses.
+                      - 'test_loss_per_class': Test loss per class, reshaped to (1, -1).
+                      - 'test_loss_per_subject': Test loss per subject, reshaped to (1, -1).
+                      - 'subject_ids_unique': Unique subject IDs in the combined training and test subject IDs.
+                      - 'y_unique': Unique classes in the combined training and test labels.
+                      }
+      - 'count_y_train': Count of unique classes in the training set.
+      - 'count_y_test': Count of unique classes in the testing set.
+      - 'count_subject_ids_train': Count of unique subject IDs in the training set.
+      - 'count_subject_ids_test': Count of unique subject IDs in the testing set.
+    """
     if isinstance(self.head, HeadSVR):
       print('Training using SVR...')
       # Extract feature from training set
-      self.dataset.set_path_labels('train') 
-      count_subject_ids_train, count_y_train = self.dataset.get_unique_subjects_and_classes() 
-      dict_feature_extraction_train = self._extract_features() # TODO: Optimize keeping only dict key usefull
+      # self.dataset.set_path_labels(train_csv_path) 
+      count_subject_ids_train, count_y_train = tools.get_unique_subjects_and_classes(train_csv_path) 
+      dict_feature_extraction_train = self._extract_features(train_csv_path)
       print('feature shape: ',dict_feature_extraction_train['features'].shape)
       X_train = dict_feature_extraction_train['features']
       y_train = dict_feature_extraction_train['list_labels']
@@ -112,9 +176,9 @@ class Model_Advanced: # Scenario_Advanced
       subject_ids_train = dict_feature_extraction_train['list_subject_id']
       print('subject_ids_train',subject_ids_train)
       # Extract feature from test set
-      self.dataset.set_path_labels('test') 
-      count_subject_ids_test, count_y_test = self.dataset.get_unique_subjects_and_classes() 
-      dict_feature_extraction_train = self._extract_features() # TODO: Optimize keeping only dict key usefull
+      # self.dataset.set_path_labels(test_csv_path) 
+      count_subject_ids_test, count_y_test = tools.get_unique_subjects_and_classes(test_csv_path) 
+      dict_feature_extraction_train = self._extract_features(test_csv_path)
       X_test = dict_feature_extraction_train['features']
       y_test = dict_feature_extraction_train['list_labels']
       
@@ -128,23 +192,25 @@ class Model_Advanced: # Scenario_Advanced
 
     if isinstance(self.head, HeadGRU):
       print('Training using GRU.....')
-      self.dataset.set_path_labels('train')
-      count_subject_ids_train, count_y_train = self.dataset.get_unique_subjects_and_classes() 
-      dict_feature_extraction_train = self._extract_features() # TODO: Optimize keeping only dict key usefull
+      # self.dataset.set_path_labels(train_csv_path)
+      count_subject_ids_train, count_y_train = tools.get_unique_subjects_and_classes(train_csv_path) 
+      dict_feature_extraction_train = self._extract_features(train_csv_path) 
       X_train = dict_feature_extraction_train['features'] 
       y_train = dict_feature_extraction_train['list_labels']
       subject_ids_train = dict_feature_extraction_train['list_subject_id']
       # sample_ids_train = dict_feature_extraction_train['list_sample_id'] 
       
-      self.dataset.set_path_labels('test')
-      count_subject_ids_test, count_y_test = self.dataset.get_unique_subjects_and_classes() 
-      dict_feature_extraction_test = self._extract_features()
+      # self.dataset.set_path_labels(test_csv_path)
+      count_subject_ids_test, count_y_test = tools.get_unique_subjects_and_classes(test_csv_path) 
+      dict_feature_extraction_test = self._extract_features(test_csv_path)
       X_test = dict_feature_extraction_test['features'] 
       y_test = dict_feature_extraction_test['list_labels'] 
       subjects_id_test = dict_feature_extraction_test['list_subject_id']
       dict_results = self.head.start_train_test(X_train=X_train, y_train=y_train, subject_ids_train=subject_ids_train,
                                                 X_test=X_test, y_test=y_test, subject_ids_test=subjects_id_test, 
-                                                num_epochs=num_epochs,batch_size=batch_size,criterion=criterion,optimizer_fn=optimizer_fn,lr=lr)
+                                                num_epochs=num_epochs,batch_size=batch_size,criterion=criterion,
+                                                optimizer_fn=optimizer_fn,lr=lr,
+                                                saving_path=saving_path)
     
     return {'dict_results':dict_results, 
             'count_y_train':count_y_train, 
@@ -152,7 +218,7 @@ class Model_Advanced: # Scenario_Advanced
             'count_subject_ids_train':count_subject_ids_train,
             'count_subject_ids_test':count_subject_ids_test}
   
-  def _extract_features(self,stop_after=3):
+  def _extract_features(self,path_csv_dataset, batch_size=1): # TODO: Fix using batch_size > 1 (torch.stack wants all tensors to have the same size)
     """
     Extracts features from the dataset using the model's backbone.
     Args:
@@ -175,11 +241,16 @@ class Model_Advanced: # Scenario_Advanced
     list_path = []
     list_frames = []
     count = 0
+    self.dataset.set_path_labels(path_csv_dataset)
+    dataloader = DataLoader(self.dataset, 
+                            batch_size=batch_size, 
+                            shuffle=False,
+                            collate_fn=self.dataset._custom_collate_fn)
     
     self.backbone.model.to(device)
     self.backbone.model.eval()
     with torch.no_grad():
-      for data, labels, subject_id,sample_id, path, list_sampled_frames in self.dataloader:
+      for data, labels, subject_id,sample_id, path, list_sampled_frames in dataloader:
         feature, unique_labels, unique_subject_id, unique_sample_id, unique_path = self._compute_features(data, labels, subject_id, sample_id, path, device)
         print(f'unique_id: {unique_sample_id}')
         list_frames.append(list_sampled_frames)
@@ -288,7 +359,7 @@ class Model_Advanced: # Scenario_Advanced
       output_video_path = os.path.join('partA','video','custom_video',csv_array[idx,5]+f'_{self.dataset.stride_window}'+'.mp4')
       self.dataset.save_frames_as_video([input_video_path],[features[5].numpy()], output_video_path ,[predictions], [features[1][0]])
     
-  def plot_prediction_graph_all(self, sample_ids,predictions=None, stride_window=0):
+  def plot_prediction_graph_all(self, sample_ids,predictions=None, stride_window=0,output_video_path=None):
     all_predictions = []
     with torch.no_grad():
       csv_array = self.dataset.video_labels.to_numpy()
@@ -327,12 +398,12 @@ class Model_Advanced: # Scenario_Advanced
         all_predictions.append(predictions.squeeze().detach().cpu().numpy())
         
         input_video_path = os.path.join(self.dataset.path_dataset, csv_array[idx, 1], csv_array[idx, 5] + '.mp4')
-        output_video_path = os.path.join('partA', 'video', 'custom_video', 'all' + f'_{len(sample_ids)}' + '.mp4')
-        
+        if output_video_path is None:
+          output_video_path = os.path.join('partA', 'video', 'custom_video', 'all' + f'_{len(sample_ids)}_{os.path.split(self.dataset.path_labels)[-1].split(".")[0]}')
         input_video_paths.append(input_video_path)
         all_frames.append(features[5].numpy())
         all_labels.append(features[1][0])
-      self.dataset.save_frames_as_video(input_video_paths, all_frames, output_video_path,all_predictions, all_labels)
+      self.dataset.save_frames_as_video(input_video_paths, all_frames, output_video_path+'.mp4',all_predictions, all_labels)
     
     return all_predictions
   
@@ -505,18 +576,16 @@ class Model_Advanced: # Scenario_Advanced
     """
     config = {
       'model_type': self.backbone.model_type.name,
-      'embedding_reduction': self.neck.embedding_reduction,
-      'clips_reduction': self.neck.clips_reduction,
+      'embedding_reduction': self.neck.type_embedding_redcution.name,
+      'clips_reduction': self.neck.type_embedding_redcution.name,
       'path_dataset': self.dataset.path_dataset,
       'path_labels': self.dataset.path_labels,
-      'sample_frame_strategy': self.dataset.sample_frame_strategy.name,
+      'sample_frame_strategy': self.dataset.type_sample_frame_strategy.name,
       'stride_window': self.dataset.stride_window,
       'clip_length': self.dataset.clip_length,
-      'batch_size': self.dataset.batch_size,
-      'head': self.head.__class__.__name__,
-      'head_params': self.head.get_params() if hasattr(self.head, 'get_params') else {}
+      'head': self.head.params,
+      # 'head_params': self.head.get_params() if hasattr(self.head, 'get_params') else {}
     }
-    
-    with open(saving_path, 'w') as f:
-      json.dump(config, f, indent=2)
+    with open(saving_path, 'w') as config_file:
+      json.dump(config, config_file, indent=4)
     

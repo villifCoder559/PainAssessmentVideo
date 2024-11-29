@@ -6,14 +6,16 @@ from custom.helper import EMBEDDING_REDUCTION, CLIPS_REDUCTION
 
 class neck:
   def __init__(self, embedding_reduction, clips_reduction):
-        
-    if embedding_reduction is None:
+    self.type_embedding_redcution = embedding_reduction
+    self.type_clips_reduction = clips_reduction
+    
+    if embedding_reduction.value is None:
       self.embedding_reduction = None
     else:
       self.embedding_reduction = self.embedding_reduction_mean
       self.dim_embed_reduction = embedding_reduction.value
     
-    if clips_reduction is None:
+    if clips_reduction.value is None:
       self.clips_reduction = None
       
     else:

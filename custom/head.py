@@ -13,6 +13,8 @@ from torch.utils.data import DataLoader, TensorDataset
 import custom.tools as tools
 from torchmetrics.classification import ConfusionMatrix
 import os
+import torch.nn.init as init
+
 
 # class head:
 #   def __init__(self,head):
@@ -39,10 +41,10 @@ class head:
     return self.head.predict(X)
 class HeadSVR:
   def __init__(self, svr_params):
+    self.params = svr_params
     self.svr = SVR(**svr_params)
 
-
-  def fit(self, X_train, y_train, subject_ids_train, X_test, y_test, subject_ids_test):
+  def fit(self, X_train, y_train, subject_ids_train, X_test, y_test, subject_ids_test, saving_path=None):
     """
     Evaluation training of SVR model.
     Parameters:
@@ -62,8 +64,17 @@ class HeadSVR:
       - 'test_loss_per_subject': Test loss per subject, reshaped to (1, -1).
       - 'y_unique': Unique classes in the combined training and test labels.
       - 'subject_ids_unique': Unique subject IDs in the combined training and test subject IDs.
+      - 'best_model_idx': best_model_epoch
+
     """
+
     regressor = self.svr.fit(X_train, y_train)
+    # Save the regressor
+    if saving_path:
+      with open(saving_path, 'wb') as f:
+        pickle.dump(regressor, f)
+      print(f"Regressor saved to {saving_path}")
+
     pred_train = regressor.predict(X_train)
     pred_test = regressor.predict(X_test)
 
@@ -115,11 +126,14 @@ class HeadSVR:
     train_confusion_matricies.append(self.compute_confusion_matrix(X_train, y_train, regressor))
     test_confusion_matricies.append(self.compute_confusion_matrix(X_test, y_test, regressor))
 
-    return {'train_losses': [train_loss], 'train_loss_per_class': train_loss_per_class.reshape(1, -1), 'train_loss_per_subject': train_loss_per_subject.reshape(1, -1), 
-            'test_losses': [test_loss], 'test_loss_per_class': test_loss_per_class.reshape(1, -1), 'test_loss_per_subject': test_loss_per_subject.reshape(1, -1),
+    return {'train_losses': [train_loss], 'train_loss_per_class': train_loss_per_class.reshape(1, -1), 
+            'train_loss_per_subject': train_loss_per_subject.reshape(1, -1), 
+            'test_losses': [test_loss], 'test_loss_per_class': test_loss_per_class.reshape(1, -1), 
+            'test_loss_per_subject': test_loss_per_subject.reshape(1, -1),
             'y_unique': y_unique, 'subject_ids_unique': subject_ids_unique,
             'test_confusion_matricies': test_confusion_matricies,
-            'train_confusion_matricies': train_confusion_matricies}
+            'train_confusion_matricies': train_confusion_matricies,
+            'best_model_idx': 0}
 
 
 
@@ -266,7 +280,20 @@ class GRUModel(nn.Module):
     out, _ = self.gru(x)
     out = self.fc(out[:, -1, :])  # Get the last time step output
     return out
-
+  
+  def _initialize_weights(self):
+    # Initialize GRU weights
+    for name, param in self.gru.named_parameters():
+      if 'weight_ih' in name:
+          torch.nn.init.xavier_uniform_(param.data)
+      elif 'weight_hh' in name:
+          torch.nn.init.orthogonal_(param.data)
+      elif 'bias' in name:
+          param.data.fill_(0)
+    # Initialize Linear weights
+    init.xavier_uniform_(self.fc.weight)  # Xavier uniform initialization
+    if self.fc.bias is not None:
+        init.zeros_(self.fc.bias)
 
 class HeadGRU:
   def __init__(self, input_size, hidden_size, num_layers, dropout=0.0, output_size=1):
@@ -275,26 +302,35 @@ class HeadGRU:
     self.num_layers = num_layers
     self.dropout = dropout
     self.output_size = output_size
+    self.params = {
+      'input_size': int(input_size),
+      'hidden_size': int(hidden_size),
+      'num_layers': int(num_layers),
+      'dropout': float(dropout),
+      'output_size': int(output_size)
+    }
     self.model = GRUModel(input_size, hidden_size, num_layers, dropout, output_size)
 
   def start_train_test(self, X_train, y_train, subject_ids_train,
                        X_test, y_test, subject_ids_test,
-                       num_epochs=10, batch_size=32, criterion=nn.L1Loss(),
-                       optimizer_fn=optim.Adam, lr=0.0001):
+                       num_epochs=10, batch_size=32, criterion=nn.L1Loss(), # fix batch_size = 1
+                       optimizer_fn=optim.Adam, lr=0.0001, saving_path=None):
+    # Init model weights 
+    # self.model._initialize_weights()
+
     # Reshape inputs
     X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], -1)
     X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], -1)
-
     # DataLoaders
     train_dataset = TensorDataset(X_train, 
                                   y_train, 
                                   torch.tensor(subject_ids_train,dtype=torch.int32))
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
 
     test_dataset = TensorDataset(X_test,
                                  y_test,
                                  torch.tensor(subject_ids_test, dtype=torch.int32))
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=2, shuffle=False)
 
     # Device and optimizer setup
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -314,6 +350,10 @@ class HeadGRU:
     test_loss_per_subject = np.zeros((num_epochs, unique_subjects.shape[0]))
     train_confusion_matricies = [ConfusionMatrix(task="multiclass",num_classes=unique_classes.shape[0]) for _ in range(num_epochs)]
     test_confusion_matricies = [ConfusionMatrix(task="multiclass",num_classes=unique_classes.shape[0]) for _ in range(num_epochs)]
+
+    best_test_loss = float('inf')
+    best_model_state = None
+    best_model_epoch = -1
 
     for epoch in range(num_epochs):
       self.model.train()
@@ -349,9 +389,11 @@ class HeadGRU:
             subj_idx = np.where(unique_subjects == subj)[0][0]
             subject_loss[subj_idx] += criterion(outputs[mask], batch_y[mask]).item()
             # subject_counts[subj_idx] += mask.sum().item()
-        train_confusion_matricies[epoch].update(outputs.detach().cpu(), batch_y.detach().cpu())
+        print(f' output: {torch.round(outputs.detach().cpu())}')
+        print(f' batch_y: {batch_y.detach().cpu()}')
+        # train_confusion_matricies[epoch].update(torch.round(outputs.detach().cpu()), batch_y.detach().cpu()) # FIX:regression go over 4 or under 0, save that as Null(?)
 
-      train_confusion_matricies[epoch].compute()
+      # train_confusion_matricies[epoch].compute()
       # Class and subject losses
       train_loss_per_class[epoch] = class_loss 
       train_loss_per_subject[epoch] = subject_loss 
@@ -372,9 +414,20 @@ class HeadGRU:
       
       print(f'Epoch [{epoch+1}/{num_epochs}] | Train Loss: {avg_train_loss:.4f} | Test Loss: {avg_test_loss:.4f}')
       print(f'\tTrain Loss Per Class: {train_loss_per_class[epoch]}')
-      print(f'\tTest Loss Per Class: {test_loss_per_class[epoch]}')
       print(f'\tTrain Loss Per Subject: {train_loss_per_subject[epoch]}')
+      print(f'\tTest Loss Per Class: {test_loss_per_class[epoch]}')
       print(f'\tTest Loss Per Subject: {test_loss_per_subject[epoch]}')
+
+      # Save the best model
+      if avg_test_loss < best_test_loss:
+        best_test_loss = avg_test_loss
+        best_model_state = self.model.state_dict()
+        best_model_epoch = epoch
+
+    # Save model weights
+    if saving_path:
+      torch.save(best_model_state, os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth'))
+      print(f"Best model weights saved to {saving_path}")
 
     # Plot losses
     tools.plot_losses(train_losses=train_losses, test_losses=test_losses)
@@ -389,7 +442,8 @@ class HeadGRU:
       'y_unique': unique_classes,
       'subject_ids_unique': unique_subjects,
       'train_confusion_matricies': train_confusion_matricies,
-      'test_confusion_matricies': test_confusion_matricies
+      'test_confusion_matricies': test_confusion_matricies,
+      'best_model_idx': best_model_epoch
     }
 
   def evaluate(self, test_loader, criterion, device, unique_classes, unique_subjects, test_confusion_matricies):
