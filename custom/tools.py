@@ -465,7 +465,7 @@ def save_frames_as_video(list_input_video_path, list_frame_indices, output_video
     frame_size = (frame_width, frame_height)
 
     # Define the codec and create VideoWriter object
-    fourcc = cv2.VideoWriter_fourcc(*'avc1')  
+    fourcc = cv2.VideoWriter_fourcc(*'avc1')   
     if out is None:
       out = cv2.VideoWriter(output_video_path, fourcc, output_fps, frame_size)
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -490,17 +490,15 @@ def save_frames_as_video(list_input_video_path, list_frame_indices, output_video
         cv2.putText(number_frame, text, (text_x, text_y), font, font_scale, font_color, thickness)
         out.write(number_frame)
       for frame_idx in range(frame_count):
-        ret, frame = cap.read()
-        if not ret:
-          break
-          # Check if the current frame index is in the list
-        # print(f'frame_indices: {frame_indices}')
         if frame_idx in frame_indices: # [2,16]
-          # print(f'GT:{list_ground_truth.shape}')
-          # print(f'pred:{all_predictions.shape}')
-          # print(i,j)
-          # print(list_ground_truth[i][j])
-          # print(all_predictions[i][j])
+          if frame_idx >= frame_count:
+            print(f"Warning: Frame index {frame_idx} out of range for video {input_video_path}")
+            continue
+          cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+          ret, frame = cap.read()
+          if not ret:
+            print(f"Warning: Failed to read frame {frame_idx} from video {input_video_path}")
+            continue
           cv2.putText(frame, str(count)+'/'+str(frame_idx), (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 3, (0,0,0), thickness, cv2.LINE_AA)
           cv2.putText(frame, f'gt:{list_ground_truth[i][j]}', (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
           cv2.putText(frame, f'pred:{all_predictions[i][j]:.2f}', (50, 400), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
