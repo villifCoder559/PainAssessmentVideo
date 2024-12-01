@@ -31,13 +31,26 @@ class head:
       # print(f'train_loss: {dict_results["train_losses"][-1]} \t test_loss: {dict_results["test_losses"][-1]}')
 
     elif isinstance(self.head, HeadGRU):
-      dict_results = self.head.start_train(X_train, y_train, sample_ids_train, subject_ids_train, 
+      dict_results = self.head.start_train_test(X_train, y_train, sample_ids_train, subject_ids_train, 
                              X_test, y_test, subject_ids_test,
                              num_epochs, criterion=criterion, optimizer=optimizer)
       # self.plot_loss(dict_results['train_losses'], dict_results['test_losses'])
     return dict_results
   
-  def predict(self, X):
+  def predict(self, X, predict_per_video = True): # X = [n_video, n_windows, tub_size, path_w, patch_h, emb_dim]
+    print(f'X.shape: {X.shape}')
+    if isinstance(self.head, HeadGRU):
+      if predict_per_video:
+        X = X.reshape(X.shape[0], X.shape[1], -1) # [n_video, n_windows, tub_size*path_w*patch_h*emb_dim]
+      else:
+        X = X.reshape(X.shape[0]*X.shape[1], 1, -1) # [n_video*n_windows, 1, tub_size*path_w*patch_h*emb_dim]
+    
+    elif isinstance(self.head, HeadSVR):
+      if predict_per_video:
+        X = X.reshape(X.shape[0], -1) # [n_video, n_windows*tub_size*path_w*patch_h*emb_dim]
+      else:
+        X = X.reshape(X.shape[0]*X.shape[1], -1) # [n_video*n_windows, tub_size*path_w*patch_h*emb_dim]
+      
     return self.head.predict(X)
   
 
@@ -140,6 +153,16 @@ class HeadSVR:
 
 
   def predict(self, X):
+    """
+    Predicts the target values for the given input data using the trained SVR model.
+
+    Parameters:
+    X (array-like): The input data with shape (n_samples, n_features).
+
+    Returns:
+    array: The predicted target values.
+    """
+    assert len(X.shape) == 2, f"Input shape should be (n_samples, n_features), got {X.shape}"
     predictions = self.svr.predict(X)
     return predictions
 
@@ -278,10 +301,21 @@ class GRUModel(nn.Module):
     self.gru = nn.GRU(input_size, hidden_size, num_layers, dropout=dropout, batch_first=True)
     self.fc = nn.Linear(hidden_size, output_size)
 
-  def forward(self, x,return_last_time_step=False):
+  def forward(self, x, pred_only_last_time_step=False):
+    """
+    Forward pass for the GRU-based model.
+
+    Args:
+      x (torch.Tensor): Expected input (batch_size, sequence_length, input_size).
+      pred_only_last_time_step (bool, optional): If True, only the output of the last time step is passed through the fully connected layer. Defaults to False.
+
+    Returns:
+      torch.Tensor: If pred_only_last_time_step is True, the shape will be (batch_size, output_size). Otherwise, (batch_size, sequence_length, output_size).
+    """
+    assert len(x.shape) == 3, f"Input shape should be (batch_size, sequence_length, input_size), got {x.shape}"
     out, _ = self.gru(x)
     # print(f'out shape: {out.shape}')
-    if return_last_time_step:
+    if pred_only_last_time_step:
       out = self.fc(out[:, -1, :])
     else:
       out = self.fc(out)
@@ -377,7 +411,7 @@ class HeadGRU:
         optimizer.zero_grad()
 
         # Forward pass
-        outputs = self.model(batch_X, return_last_time_step=True)
+        outputs = self.model.forward(x=batch_X, pred_only_last_time_step=True)
         # outputs = torch.round(outputs)
         loss = criterion(outputs, batch_y)
         epoch_loss += loss.item()
@@ -467,7 +501,7 @@ class HeadGRU:
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
 
         # Forward pass
-        outputs = self.model(batch_X, return_last_time_step=True)
+        outputs = self.model.forward(x=batch_X, pred_only_last_time_step=True)
         loss = criterion(outputs, batch_y)
         total_loss += loss.item()
 
@@ -493,10 +527,21 @@ class HeadGRU:
     avg_loss = total_loss / len(test_loader)
     test_confusion_matricies.compute()
     return avg_loss, class_loss, subject_loss
+  
   def get_emebeddings(self, X, device=None):
+    """
+    Generate embeddings for the input tensor using the model's GRU layer.
+    Args:
+      X (torch.Tensor): The input tensor for which embeddings are to be generated.
+      device (str, optional): The device to run the model on. If None, it will default to 'cuda' if available, otherwise 'cpu'.
+
+    Returns:
+      torch.Tensor: The generated embeddings from the model's GRU layer.
+    """
     if device is None:
       device = 'cuda' if torch.cuda.is_available() else 'cpu'
     self.model.to(device)
+    X = X.to(device)
     self.model.eval()
     with torch.no_grad():
       embeddings = self.model.gru(X)
