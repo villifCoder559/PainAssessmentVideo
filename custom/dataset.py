@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import custom.tools as tools
 
 class customDataset(torch.utils.data.Dataset):
-  def __init__(self,path_dataset, path_labels, preprocess, sample_frame_strategy, batch_size=1, stride_window=2, clip_length=16):
+  def __init__(self,path_dataset, path_labels, preprocess, sample_frame_strategy, batch_size=1, stride_window=2, clip_length=16,stride_inside_window=1):
     assert os.path.exists(path_dataset), f"Dataset path {path_dataset} does not exist."
     # assert os.path.exists(path_labels), f"Labels path {path_labels} does not exist."
     assert clip_length > 0, f"Clip length must be greater than 0."
@@ -30,9 +30,10 @@ class customDataset(torch.utils.data.Dataset):
     elif sample_frame_strategy == SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW:
       self.sample_frame_strategy = self._sliding_window_sampling
       self.stride_window = stride_window
+      self.stride_inside_window = stride_inside_window
     elif sample_frame_strategy == SAMPLE_FRAME_STRATEGY.CENTRAL_SAMPLING:
       self.sample_frame_strategy = self._central_sampling
-      self.stride_window = stride_window
+      self.stride_inside_window = stride_inside_window
     elif sample_frame_strategy == SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING:
       self.sample_frame_strategy = self._random_sampling
       Warning(f"The {SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING} sampling strategy does not take into account the stride window.")
@@ -168,10 +169,10 @@ class customDataset(torch.utils.data.Dataset):
     return sample_ids.tolist()
     
   def _central_sampling(self, video_len):
-    assert video_len // 2 - (self.clip_length // 2) * self.stride_window >= 0, f"Video is too short for the given clip length. Reduce the stride (given {self.stride_window})"
-    start_idx = video_len // 2 - (self.clip_length // 2) * self.stride_window
+    assert video_len // 2 - (self.clip_length // 2) * self.stride_inside_window >= 0, f"Video is too short for the given clip length. Reduce the stride (given {self.stride_window})"
+    start_idx = video_len // 2 - (self.clip_length // 2) * self.stride_inside_window
     # print('Start index',start_idx)
-    indices = torch.arange(start_idx, start_idx + self.clip_length * self.stride_window, self.stride_window)[None,:]
+    indices = torch.arange(start_idx, start_idx + self.clip_length * self.stride_inside_window, self.stride_inside_window)[None,:]
     # print('Indices central',indices)
     return indices
   
@@ -182,21 +183,22 @@ class customDataset(torch.utils.data.Dataset):
     # print('Random shape', indices.shape)
     return indices
   
-  def _sliding_window_sampling(self,video_len):
+  def _sliding_window_sampling(self, video_len, stride_inside_window=1):
     """
     Generates a list of indices for sliding window sampling of a video.
 
     Args:
       video_len (int): The total length of the video in frames.
+      stride_inside_window (int): The stride inside each window.
 
     Returns:
       torch.Tensor: A tensor containing the indices for each sliding window.
               Each row corresponds to a window and contains the indices
               of the frames within that window.
     """
-    indices = torch.arange(0, video_len - self.clip_length, self.stride_window)
-    list_indices = torch.stack([torch.arange(start_idx, start_idx + self.clip_length) for start_idx in indices])
-    # print('Sliding shape',list_indices.shape)
+    indices = torch.arange(0, video_len - self.clip_length * stride_inside_window + 1, self.stride_window)
+    list_indices = torch.stack([torch.arange(start_idx, start_idx + self.clip_length * stride_inside_window, stride_inside_window) for start_idx in indices])
+    # print('Sliding shape', list_indices.shape)
     return list_indices
   
   # def plot_dataset_distribution_mean_std_duration(self,per_class=False,per_partecipant=False,saving_path=None):
