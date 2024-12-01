@@ -223,6 +223,7 @@ class Model_Advanced: # Scenario_Advanced
   def _extract_features(self,path_csv_dataset, batch_size=1): # TODO: Fix using batch_size > 1 (torch.stack wants all tensors to have the same size)
     """
     Extracts features from the dataset using the model's backbone.
+    Data and model will be moved to the device ('cuda' if available, 'cpu' otherwise).
     Args:
       stop_after (int, optional): Number of iterations after which to stop the feature extraction. Defaults to 3.
     Returns:
@@ -248,11 +249,15 @@ class Model_Advanced: # Scenario_Advanced
                             batch_size=batch_size, 
                             shuffle=False,
                             collate_fn=self.dataset._custom_collate_fn)
-    
+    # move the model to the device
     self.backbone.model.to(device)
     self.backbone.model.eval()
+
     with torch.no_grad():
       for data, labels, subject_id,sample_id, path, list_sampled_frames in dataloader:
+        # move the data to the device
+        data = data.to(device)
+        #compute features
         feature, unique_labels, unique_subject_id, unique_sample_id, unique_path = self._compute_features(data, labels, subject_id, sample_id, path, device)
         print(f'unique_id: {unique_sample_id}')
         list_frames.append(list_sampled_frames)
@@ -265,7 +270,7 @@ class Model_Advanced: # Scenario_Advanced
         # if count % stop_after == 0:
         #   break
     print('Feature extraceton done')
-    # self.backbone.model.to('cpu')
+    self.backbone.model.to('cpu')
     return {
             'features':torch.stack([feature for feature in list_features]), # using batch it doesn't work because of different size, try to transform the list in tensor
            'list_labels':torch.stack([label for label in list_labels]),
@@ -275,11 +280,31 @@ class Model_Advanced: # Scenario_Advanced
            'list_frames':torch.stack(list_frames)
            }  
   
-  def _compute_features(self, data, labels, subject_id, sample_id, path, device, remove_clip_reduction=False):
+  def _compute_features(self, data, labels, subject_id, sample_id, path, remove_clip_reduction=False):
+    """
+    Compute features from the given data using the model's backbone and neck components.
+    Assumption: The model and data already in the same device
+    Args:
+      data (torch.Tensor): Input data tensor.
+      labels (torch.Tensor): Labels corresponding to the input data.
+      subject_id (torch.Tensor): Subject IDs corresponding to the input data.
+      sample_id (torch.Tensor or np.ndarray): Sample IDs corresponding to the input data.
+      path (torch.Tensor or np.ndarray): Paths corresponding to the input data.
+      device (torch.device): Device to perform computations on.
+      remove_clip_reduction (bool, optional): Flag to remove clip reduction. Defaults to False.
+
+    Returns:
+      tuple: A tuple containing:
+        - feature (torch.Tensor) : Extracted features from the input data.
+        - unique_labels (torch.Tensor): Unique labels from the input data.
+        - unique_subject_id (np.ndarray): Unique subject IDs from the input data.
+        - unique_sample_id (np.ndarray): Unique sample IDs from the input data.
+        - unique_path (np.ndarray): Unique paths from the input data.
+    """
     with torch.no_grad():
     # Extract features from clips -> return [B, clips/tubelets, W/patch_w, H/patch_h, emb_dim] 
-      feature = self.backbone.forward_features(data.to(device)) # ex. [B,8*14*14,emb_dim]
-    unique_labels, unique_subject_id, unique_sample_id, unique_path = [], [], [], []  
+      feature = self.backbone.forward_features(data) # ex. [B,8*14*14,emb_dim]
+    unique_labels, unique_subject_id, unique_sample_id, unique_path = [], [], [], []
     # Apply dimensionality reduction [B,C,T,H,W] -> [B, reduction(C,T,H,W)]
     if self.neck.embedding_reduction is not None:
       feature = self.neck.embedding_reduction(feature)
@@ -290,7 +315,12 @@ class Model_Advanced: # Scenario_Advanced
     unique_sample_id = np.unique(sample_id, return_counts=False)
     unique_subject_id = np.unique(subject_id, return_counts=False)
     unique_path = np.unique(path, return_counts=False)
-    return feature, unique_labels, unique_subject_id, unique_sample_id, unique_path
+
+    return feature, \
+           unique_labels, \
+           unique_subject_id,\
+           unique_sample_id, \
+           unique_path
     
   def run_grid_search(self, param_grid,k_cross_validation=5): #
     if isinstance(self.head, HeadSVR):
