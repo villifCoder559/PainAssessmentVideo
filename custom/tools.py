@@ -5,17 +5,29 @@ import os
 import pandas as pd
 from torchmetrics.classification import ConfusionMatrix
 from sklearn.manifold import TSNE
+import matplotlib
 from matplotlib.ticker import MaxNLocator
 import cv2
 import platform
 import av
 import torch
+import json
+
 if os.name == 'posix':
   from tsnecuda import TSNE as cudaTSNE # available only on Linux
 else:
-  print('tsnecuda availbale only on Linux')
+  print('tsnecuda available only on Linux')
 
-
+class NpEncoder(json.JSONEncoder):
+  def default(self, obj):
+    if isinstance(obj, np.integer):
+      return int(obj)
+    if isinstance(obj, np.floating):
+      return float(obj)
+    if isinstance(obj, np.ndarray):
+      return obj.tolist()
+    return super(NpEncoder, self).default(obj)
+  
 def plot_mea_per_class(unique_classes, mae_per_class, title='', count_classes=None, saving_path=None):
   """ Plot Mean Absolute Error per class. """
   plt.figure(figsize=(10, 5))
@@ -34,6 +46,19 @@ def plot_mea_per_class(unique_classes, mae_per_class, title='', count_classes=No
   else:
     plt.show()
 
+def get_accuracy_from_confusion_matrix(confusion_matrix):
+  """ Compute the accuracy from a tensor that represent a confusion matrix. """
+  nr_samples_per_class = confusion_matrix.sum(dim=1)
+  accuracy_per_class = (confusion_matrix.diag() / nr_samples_per_class) 
+  finite_val = torch.isfinite(accuracy_per_class)
+  mean_accuracy = torch.mean(accuracy_per_class[finite_val])
+  weight_per_class =  nr_samples_per_class[finite_val]/ torch.sum(nr_samples_per_class[finite_val])
+  return {
+    'accuracy_per_class': accuracy_per_class,
+    'mean_accuracy': mean_accuracy,
+    'mean_weighted_accuracy': torch.sum(weight_per_class*accuracy_per_class[finite_val])
+  }
+
 def plot_mea_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_subjects=None, saving_path=None):
   """ Plot Mean Absolute Error per participant. """
   plt.figure(figsize=(10, 5))
@@ -46,6 +71,20 @@ def plot_mea_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_sub
     for id,count in count_subjects.items():
       idx = np.where(id == uniqie_subject_ids)[0]
       plt.text(uniqie_subject_ids[idx], mae_per_subject[idx], str(count), ha='center', va='bottom')
+  if saving_path is not None:
+    plt.savefig(saving_path+'.png')
+  else:
+    plt.show()
+
+def plot_all_accuracy(list_accuracy,list_labels, saving_path=None):
+  plt.figure(figsize=(10, 5))
+  for i, (accuracy, label) in enumerate(zip(list_accuracy, list_labels)):
+    plt.plot(accuracy, label=label)
+  plt.xlabel('Epochs')
+  plt.ylabel('Accuracy')
+  plt.title('Accuracy over Epochs')
+  plt.legend()
+  plt.grid(True)
   if saving_path is not None:
     plt.savefig(saving_path+'.png')
   else:
@@ -94,13 +133,19 @@ def _generate_train_test_validation(csv_path, saving_path,train_size=0.8,val_siz
         return False
     print("All splits have at least one sample per class.")
     return True
-  def _save_split(split_dict,video_labels_columns,saving_path):
+  def _save_split(split_dict, video_labels_columns, saving_path):
     # Sanity check
-    if set(split_dict['train'][:,0].astype(int)).intersection(split_dict['val'][:,0].astype(int)) or \
-        set(split_dict['train'][:,0].astype(int)).intersection(split_dict['test'][:,0].astype(int)) or \
-        set(split_dict['val'][:,0].astype(int)).intersection(split_dict['test'][:,0].astype(int)):
-      raise ('Error: train, validation and test split have common elements')
+    set_train = set(split_dict['train'][:, 0].astype(int))
+    set_test = set(split_dict['test'][:, 0].astype(int)) if test_size != 0.0 else set()
+    set_val = set(split_dict['val'][:, 0].astype(int)) if val_size != 0.0 else set()
 
+    if set_train & set_test:
+        raise ValueError('Error: train and test split have common elements')
+    if set_train & set_val:
+        raise ValueError('Error: train and validation split have common elements')
+    if set_test & set_val:
+        raise ValueError('Error: validation and test split have common elements')
+      
     # Save the splits
     save_path_dict = {}
     for k,v in split_dict.items():
@@ -139,12 +184,17 @@ def _generate_train_test_validation(csv_path, saving_path,train_size=0.8,val_siz
     X_temp = X[tmp_split]
     y_temp = y[tmp_split]
     groups_temp = groups[tmp_split]
-
+    # print(f'split generation seed: {random_state}')
     gss_temp = GroupShuffleSplit(n_splits = 1,
                                  train_size = (1/(val_size+test_size)) * val_size, # 1/(val_size+test_size) = 1/0.2 = 5 => 5 * val_size = 0.5
                                  test_size = (1/(val_size+test_size)) * test_size,
                                  random_state = random_state)
-    
+    if val_size == 0.0:
+      split_dict['test'] = list_samples[tmp_split]
+      return split_dict,video_labels_columns
+    if train_size == 0.0:
+      split_dict['val'] = list_samples[tmp_split]
+      return split_dict,video_labels
     val_test_split  = list(gss_temp.split(X_temp, y_temp, groups=groups_temp))
     val_split_idx = val_test_split[0][0]
     test_split_idx = val_test_split[0][1]
@@ -194,6 +244,7 @@ def plot_confusion_matrix(confusion_matrix, title, saving_path):
   fig, _ = confusion_matrix.plot() 
   fig.suptitle(title)
   fig.savefig(saving_path+'.png')
+  # matplotlib.pyplot.close()
 
 
 def get_unique_subjects_and_classes(csv_path):
@@ -379,12 +430,15 @@ def plot_tsne(X, labels, legend_label='', title = '', use_cuda=False, perplexity
     tsne = TSNE(n_components=2, perplexity=perplexity)
   X_cpu = X.detach().cpu().squeeze()
   X_cpu = X_cpu.reshape(X_cpu.shape[0], -1)
-  print(f'X_cpu.shape: {X_cpu.shape}')
+  print(f' X_cpu.shape: {X_cpu.shape}')
+  print(" Start t-SNE computation...")
   X_tsne = tsne.fit_transform(X_cpu) # in: X=(n_samples, n_features)
                                      # out: (n_samples, n_components=2)
-  print(f'X_tsne.shape: {X_tsne.shape}')
-  print(f'labels shape: {labels.shape}')
+  print(" t-SNE computation done.")
+  print(f' X_tsne.shape: {X_tsne.shape}')
+  print(f' labels shape: {labels.shape}')
   plt.figure(figsize=(10, 8))
+  
   for val in unique_labels:
     idx = (labels == val).squeeze()
     plt.scatter(X_tsne[idx,0], X_tsne[idx,1], color=color_dict[val], label=f'{legend_label} {val}', alpha=0.7)
@@ -510,3 +564,27 @@ def save_frames_as_video(list_input_video_path, list_frame_indices, output_video
   out.release()
   print(f"Saved extracted frames to {output_video_path}")
   # Add 4 black frames at the end
+
+
+def _generate_csv_subsampled(csv_dataset_path, nr_samples_per_class=2):
+  csv_array, video_labels_columns =get_array_from_csv(csv_dataset_path)
+  # ['subject_id', 'subject_name', 'class_id', 'class_name', 'sample_id', 'sample_name']
+  list_samples=[]
+  for entry in (csv_array):
+    tmp = entry[0].split("\t")
+    list_samples.append(tmp)
+  list_samples = np.stack(list_samples)
+  nr_classes = np.max(list_samples[:,2].astype(int))
+  print(f'number of classes: {nr_classes}, \ntotal number of samples: {nr_samples_per_class*nr_classes}')
+  for cls in range(nr_classes):
+    samples = list_samples[list_samples[:,2].astype(int) == cls]
+    samples = samples[np.random.choice(samples.shape[0], nr_samples_per_class, replace=False), :]
+    if cls == 0:
+      samples_subsampled = samples
+    else:
+      samples_subsampled = np.concatenate((samples_subsampled,samples),axis=0)
+  print(f'samples_subsampled: {samples_subsampled}')
+  save_path = os.path.join('partA','starting_point','subsamples_'+str(nr_samples_per_class)+'_'+str(nr_samples_per_class*nr_classes)+'.csv')
+  subsampled_df = pd.DataFrame(samples_subsampled, columns=video_labels_columns)
+  subsampled_df.to_csv(save_path, index=False, sep='\t')
+  print(f'Subsampled video labels saved to {save_path}')
