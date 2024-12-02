@@ -288,8 +288,8 @@ class Model_Advanced: # Scenario_Advanced
         list_subject_id.append(unique_subject_id)
         list_path.append(unique_path)
         count += 1
-        # if count % stop_after == 0:
-        #   break
+        if count % 15 == 0:
+          print(f'Extracted features for {count*batch_size} samples')
     print('Feature extraceton done')
     self.backbone.model.to('cpu')
     print('backbone moved to cpu')
