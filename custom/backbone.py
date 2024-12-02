@@ -89,6 +89,15 @@ class backbone:
       model.fc_norm = None
       
   def forward_features(self, x):
+    """
+    Forward pass to extract features from the input tensor.
+
+    Args:
+      x (torch.Tensor): Input tensor of shape [nr_clips, channels, nr_frames=16, H, W]
+
+    Returns:
+      torch.Tensor: Reshaped feature tensor of shape [batch_size, tubelet_size, patch_h, patch_w, self.embed_dim]
+    """
     # x.shape = [B, C, T, H, W]
     num_frames = x.shape[2]
     # added return_embedding in the original code to catch the embedding
