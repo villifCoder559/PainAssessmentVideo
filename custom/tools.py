@@ -5,10 +5,8 @@ import os
 import pandas as pd
 from torchmetrics.classification import ConfusionMatrix
 from sklearn.manifold import TSNE
-import matplotlib
 from matplotlib.ticker import MaxNLocator
 import cv2
-import platform
 import av
 import torch
 import json
@@ -425,8 +423,10 @@ def plot_tsne(X, labels, legend_label='', title = '', use_cuda=False, perplexity
   color_dict = {val: color_map(i) for i, val in enumerate(unique_labels)}
   
   if use_cuda and X.shape[0] > 194:
+    print('Using CUDA')
     tsne = cudaTSNE(n_components=2, perplexity=perplexity)
   else:
+    print('Using CPU')
     tsne = TSNE(n_components=2, perplexity=perplexity)
   X_cpu = X.detach().cpu().squeeze()
   X_cpu = X_cpu.reshape(X_cpu.shape[0], -1)
