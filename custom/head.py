@@ -483,11 +483,6 @@ class HeadGRU:
         # print("Train:")
         # print(f' output_rounded: {outputs}')
         # print(f' output_postprocessed: {output_postprocessed.detach().cpu().to(dtype=torch.int16)}')
-        print(f' outputs {outputs.detach().cpu().to(dtype=torch.int32).tolist()}')
-        print(f' batch_y: {batch_y.detach().cpu().to(dtype=torch.int32).tolist()}')
-        print(f' output_postprocessed: {output_postprocessed.detach().cpu().to(dtype=torch.int32).tolist()}')
-        if torch.sum(batch_y.detach().cpu()>3):
-          raise ValueError(f'batch_y > 3,find it in epoch {epoch}, the value is {batch_y.detach().cpu()}')
         train_confusion_matricies[epoch].update(output_postprocessed.detach().cpu(),
                                                 batch_y.detach().cpu())
         # print(train_confusion_matricies[epoch].compute())
