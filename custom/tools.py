@@ -3,7 +3,7 @@ import numpy as np
 from sklearn.model_selection import GroupShuffleSplit
 import os
 import pandas as pd
-from torchmetrics.classification import ConfusionMatrix
+from torchmetrics.classification import ConfusionMatrix,MulticlassConfusionMatrix
 from sklearn.manifold import TSNE
 from matplotlib.ticker import MaxNLocator
 import cv2
@@ -11,10 +11,10 @@ import av
 import torch
 import json
 
-if os.name == 'posix':
-  from tsnecuda import TSNE as cudaTSNE # available only on Linux
-else:
-  print('tsnecuda available only on Linux')
+# if os.name == 'posix':
+  # from tsnecuda import TSNE as cudaTSNE # available only on Linux
+# else:
+  # print('tsnecuda available only on Linux')
 
 class NpEncoder(json.JSONEncoder):
   def default(self, obj):
@@ -45,17 +45,108 @@ def plot_mea_per_class(unique_classes, mae_per_class, title='', count_classes=No
     plt.show()
 
 def get_accuracy_from_confusion_matrix(confusion_matrix):
-  """ Compute the accuracy from a tensor that represent a confusion matrix. """
-  nr_samples_per_class = confusion_matrix.sum(dim=1)
-  accuracy_per_class = (confusion_matrix.diag() / nr_samples_per_class) 
-  finite_val = torch.isfinite(accuracy_per_class)
-  mean_accuracy = torch.mean(accuracy_per_class[finite_val])
-  weight_per_class =  nr_samples_per_class[finite_val]/ torch.sum(nr_samples_per_class[finite_val])
+  """
+  Calculate various accuracy metrics from a given confusion matrix in torch.tensor format.
+  Args:
+    confusion_matrix (torch.Tensor): A square tensor representing the confusion matrix.
+
+  Returns:
+    dict: A dictionary containing the following keys:
+      - 'accuracy_per_class' (torch.Tensor): The accuracy for each class.
+      - 'mean_balanced_accuracy_per_class' (torch.Tensor): The balanced accuracy for each class.
+      - 'mean_accuracy' (torch.Tensor): The mean accuracy across all classes except the last one (considered the Null class).
+      - 'mean_balanced_accuracy' (torch.Tensor): The mean balanced accuracy across all classes except the last one (considered the Null class).
+  """
+  if isinstance(confusion_matrix, MulticlassConfusionMatrix):
+    # print('COmpute conf matrix')
+    confusion_matrix = confusion_matrix.compute()
+  tp = confusion_matrix.diag()
+  fn = torch.sum(confusion_matrix,1) - tp
+  fp = torch.sum(confusion_matrix,0) - tp
+
+  precision_per_class = torch.stack([tp[i] / (tp[i]+fp[i]) if tp[i]+fp[i]!=0 else torch.tensor(0) for i in range(len(tp))]).float()
+  recall_per_class = torch.stack([tp[i] / (tp[i] + fn[i]) if tp[i]+fn[i]!=0 else torch.tensor(0) for i in range(len(tp))]).float() 
+  
+  # Treats all instances equally (larger classes have more weight)-> sensitive to imbalance
+  micro_precision = torch.sum(tp) / (torch.sum(tp) + torch.sum(fp)) if torch.sum(tp + fp) != 0 else torch.tensor(0.0)
+  micro_recall = torch.sum(tp) / (torch.sum(tp) + torch.sum(fn)) if torch.sum(tp + fn) != 0 else torch.tensor(0.0)
+  
+  # Weighted by the size of each class
+  # print('factor 1',torch.sum(precision_per_class * torch.sum(confusion_matrix,1)))
+  # print('factor 2',torch.sum(confusion_matrix))
+  weighted_precision = torch.sum(precision_per_class * torch.sum(confusion_matrix,1)) / torch.sum(confusion_matrix)
+  weighted_recall = torch.sum(recall_per_class * torch.sum(confusion_matrix,1)) / torch.sum(confusion_matrix)
+  
+  # Treats all classes equally
+  macro_precision = torch.mean(precision_per_class)
+  # print('np macro',np.mean(precision_per_class.numpy()))
+  macro_recall = torch.mean(recall_per_class)
+  
   return {
-    'accuracy_per_class': accuracy_per_class,
-    'mean_accuracy': mean_accuracy,
-    'mean_weighted_accuracy': torch.sum(weight_per_class*accuracy_per_class[finite_val])
+    'precision_per_class': precision_per_class,
+    'recall_per_class': recall_per_class,
+    'macro_precision': macro_precision, 
+    'macro_recall': macro_recall, 
+    'micro_precision': micro_precision, 
+    'micro_recall': micro_recall, 
+    'weighted_precision': weighted_precision, 
+    'weighted_recall': weighted_recall,
   }
+
+def plot_accuracy_confusion_matrix(train_confusion_matricies,test_confusion_matricies, title='', saving_path=None):
+  if isinstance(train_confusion_matricies[0], MulticlassConfusionMatrix):
+    train_confusion_matricies = torch.stack([train_confusion_matricies[i].compute() for i in range(len(train_confusion_matricies))])
+  if isinstance(test_confusion_matricies[0], MulticlassConfusionMatrix):
+    test_confusion_matricies=torch.stack([test_confusion_matricies[i].compute() for i in range(len(test_confusion_matricies))])
+  
+  list_train_acc_confusion_matrix = []
+  list_test_acc_confusion_matrix = []
+  for train_confusion_matrix in train_confusion_matricies:
+    list_train_acc_confusion_matrix.append(get_accuracy_from_confusion_matrix(train_confusion_matrix))
+  for test_confusion_matrix in test_confusion_matricies:
+    list_test_acc_confusion_matrix.append(get_accuracy_from_confusion_matrix(test_confusion_matrix))
+  keys = list_train_acc_confusion_matrix[0].keys()
+  for key in keys:
+    # print(f'key: {key}')
+    train_list_key_values = [list_train_acc_confusion_matrix[i][key] for i in range(len(list_train_acc_confusion_matrix))]
+    test_list_key_values = [list_test_acc_confusion_matrix[i][key] for i in range(len(list_test_acc_confusion_matrix))]
+    labels_train = []
+    labels_test = []
+    if len(train_list_key_values[0].shape) == 0:
+      labels_train.append(f'Training')
+      labels_test.append(f'Test')
+    else:
+      for i in range(train_list_key_values[0].shape[0]):
+        labels_train.append(f'Train class {i}')
+        labels_test.append(f'Test class {i}')
+    plt.figure(figsize=(10, 5))
+    plt.plot(train_list_key_values, label=labels_train)
+    plt.plot(test_list_key_values, label=labels_test)
+    plt.xlabel('Epochs')
+    plt.ylabel(key)
+    plt.title(f'{key} over Epochs {title}')
+    plt.legend()
+    if saving_path is not None:
+      path=os.path.join(saving_path,f'{key}.png')
+      plt.savefig(path)
+      print(f'Plot {key} over Epochs {title} saved to {path}.png')
+    else:
+      plt.show()
+    # else:
+      # for i in range(train_list_key_values[0].shape[0]):
+      #   plt.figure(figsize=(10, 5))
+      #   plt.plot([train_list_key_values[j][i] for j in range(len(train_list_key_values))], label='Training '+key+' class '+str(i))
+      #   plt.plot([test_list_key_values[j][i] for j in range(len(test_list_key_values))], label='Test '+key+' class '+str(i))
+      #   plt.xlabel('Epochs')
+      #   plt.ylabel(key)
+      #   plt.title(f'{key} over Epochs {title} class {i}')
+      #   plt.legend()
+      #   if saving_path is not None:
+      #     plt.savefig(saving_path+f'_class_{i}.png')
+      #     print(f'Plot {key} over Epochs {title} class {i} saved to {saving_path}_class_{i}.png')
+      #   else:
+      #     plt.show()
+
 
 def plot_mea_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_subjects=None, saving_path=None):
   """ Plot Mean Absolute Error per participant. """
@@ -74,19 +165,6 @@ def plot_mea_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_sub
   else:
     plt.show()
 
-def plot_all_accuracy(list_accuracy,list_labels, saving_path=None):
-  plt.figure(figsize=(10, 5))
-  for i, (accuracy, label) in enumerate(zip(list_accuracy, list_labels)):
-    plt.plot(accuracy, label=label)
-  plt.xlabel('Epochs')
-  plt.ylabel('Accuracy')
-  plt.title('Accuracy over Epochs')
-  plt.legend()
-  plt.grid(True)
-  if saving_path is not None:
-    plt.savefig(saving_path+'.png')
-  else:
-    plt.show()
 
 def plot_losses(train_losses, test_losses, saving_path=None):
   plt.figure(figsize=(10, 5))
@@ -176,7 +254,6 @@ def _generate_train_test_validation(csv_path, saving_path,train_size=0.8,val_siz
     split = list(gss.split(X, y, groups=groups)) # tmp to split in validation and test
     train_split_idx = split[0][0]
     split_dict['train'] = list_samples[train_split_idx]
-    
     # Further split temp into validation and test
     tmp_split = split[0][1]
     X_temp = X[tmp_split]
@@ -208,7 +285,9 @@ def _generate_train_test_validation(csv_path, saving_path,train_size=0.8,val_siz
     if _check_class_distribution(split_dict=split_dict, 
                                  y_unique=classes):
       break
-
+  print(f'nr_train_samples: {len(split_dict["train"])}')
+  print(f'nr_test_samples: {len(split_dict["test"])}')
+  print(f'nr_val_samples: {len(split_dict["val"])}')
   save_path_dict = _save_split(split_dict,video_labels_columns,saving_path=saving_path) # in saving_path
   # save_path_dict['all'] = csv_path
   return save_path_dict
@@ -424,7 +503,7 @@ def plot_tsne(X, labels, legend_label='', title = '', use_cuda=False, perplexity
   
   if use_cuda and X.shape[0] > 194:
     print('Using CUDA')
-    tsne = cudaTSNE(n_components=2, perplexity=perplexity)
+    # tsne = cudaTSNE(n_components=2, perplexity=perplexity)
   else:
     print('Using CPU')
     tsne = TSNE(n_components=2, perplexity=perplexity)
@@ -487,7 +566,7 @@ def get_array_from_csv(csv_path):
     list_samples.append(tmp)
   return np.stack(list_samples),cols_array
 
-def save_frames_as_video(list_input_video_path, list_frame_indices, output_video_path,all_predictions,list_ground_truth, output_fps=1):
+def save_frames_as_video(list_input_video_path, list_frame_indices,sample_ids, output_video_path, all_predictions, list_ground_truth, output_fps=1):
   """
   Extract specific frames from a video and save them as a new video.
 
@@ -507,7 +586,8 @@ def save_frames_as_video(list_input_video_path, list_frame_indices, output_video
   # print('pred',all_predictions)
   # print('gt',list_ground_truth)
   # partA/video/video/112209_m_51_112209_m_51-BL1-086.mp4
-  for i, input_video_path in enumerate(list_input_video_path): # i->[0...33]
+  unique_sample_ids = np.unique(sample_ids,return_counts=False)
+  for input_video_path, sample_id in (zip(list_input_video_path,unique_sample_ids)): # i->[0...33]
     # print(f'input_video_path: {input_video_path}')
     cap = cv2.VideoCapture(input_video_path)
     if not cap.isOpened():
@@ -530,8 +610,9 @@ def save_frames_as_video(list_input_video_path, list_frame_indices, output_video
     font_color = (255, 255, 255)
     thickness = 2
     count = 0
-    # print(f'frame_indices: {len(list_frame_indices)}')
-    for j,frame_indices in enumerate(list_frame_indices[i]): #j->[0..1] [16]
+    idxs = torch.nonzero(sample_ids == sample_id)
+    # print(f'frame_indices: {len(list_frame_indices)}') # [36,16]
+    for j, frame_indices in (zip(idxs, list_frame_indices[idxs])): #j->[0..1] [16]
       # print('frame_indices',frame_indices) # i->[0,...,32] framle_inidces->[2,16]
       cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset the video capture to the beginning
       for _ in range(output_fps):
@@ -553,9 +634,12 @@ def save_frames_as_video(list_input_video_path, list_frame_indices, output_video
           if not ret:
             print(f"Warning: Failed to read frame {frame_idx} from video {input_video_path}")
             continue
+          # print(f'j: {j}')
+          # print(f'list_ground_truth[j]: {list_ground_truth[j]}')
+          # print(f'all_predictions[j]: {all_predictions[j]}')
           cv2.putText(frame, str(count)+'/'+str(frame_idx), (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 3, (0,0,0), thickness, cv2.LINE_AA)
-          cv2.putText(frame, f'gt:{list_ground_truth[i][j]}', (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
-          cv2.putText(frame, f'pred:{all_predictions[i][j]:.2f}', (50, 400), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
+          cv2.putText(frame, f'gt:{list_ground_truth[j].item()}', (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
+          cv2.putText(frame, f'pred:{(all_predictions[j].item()):.2f}', (50, 400), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,0), thickness, cv2.LINE_AA)
           out.write(frame)
       count+=1
         # print(f'frame_idx: {frame_idx}')
