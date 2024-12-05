@@ -96,7 +96,7 @@ class backbone:
       x (torch.Tensor): Input tensor of shape [nr_clips, channels, nr_frames=16, H, W]
 
     Returns:
-      torch.Tensor: Reshaped feature tensor of shape [batch_size, tubelet_size, patch_h, patch_w, self.embed_dim]
+      emb (torch.Tensor): tensor of shape [batch_size, temporal_dim, patch_h, patch_w, emb_dim]
     """
     # x.shape = [B, C, T, H, W]
     num_frames = x.shape[2]
@@ -105,6 +105,7 @@ class backbone:
     B = feat.shape[0]
     T = int(feat.shape[1] / (self.out_spatial_size ** 2))
     S = int(feat.shape[1] / (self.out_spatial_size * (num_frames / self.tubelet_size))) # 1568 / (14*8) = 14
-    return feat.reshape(B, T, S, S, self.embed_dim) # [1,1568,768] -> [1,8,14,14,768]
+    emb = feat.reshape(B, T, S, S, self.embed_dim)
+    return emb # [1,1568,768] -> [1,8,14,14,768]
 
 
