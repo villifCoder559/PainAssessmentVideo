@@ -18,7 +18,8 @@ from custom.head import HeadSVR, HeadGRU, CrossValidationGRU
 import os
 import json
 from sklearn.manifold import TSNE
-from tsnecuda import TSNE as cudaTSNE # available only on Linux
+import time
+# from tsnecuda import TSNE as cudaTSNE # available only on Linux
 
 class Model_Advanced: # Scenario_Advanced
   def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,
@@ -58,13 +59,15 @@ class Model_Advanced: # Scenario_Advanced
     elif head == 'GRU':
       assert self.backbone.frame_size % self.backbone.tubelet_size == 0, "Frame size must be divisible by tubelet size."
       # Calculate the backbone output tensor size to use as input to the GRU head
-      output_tensor = [1, int(self.backbone.frame_size/self.backbone.tubelet_size), self.backbone.out_spatial_size, self.backbone.out_spatial_size, self.backbone.embed_dim]
+      # output_tensor = [1, 14, 14, 384]
+      # output_tensor = [1, int(self.backbone.frame_size/self.backbone.tubelet_size), self.backbone.out_spatial_size, self.backbone.out_spatial_size, self.backbone.embed_dim]
+      output_tensor = [1,1, self.backbone.out_spatial_size, self.backbone.out_spatial_size, self.backbone.embed_dim]
       if embedding_reduction:
-        for dim in self.neck.dim_embed_reduction:
+        for dim in self.neck.dim_embed_reduction: 
           output_tensor[dim] = 1
-      if clips_reduction.value:
-        print(self.neck.dim_clips_reduction)
-        output_tensor[self.neck.dim_clips_reduction + 1] = 1
+      # if clips_reduction.value: # the temporal_size in gru is the input for the seq_length=[8 * nr_windows]
+      #   print(self.neck.dim_clips_reduction)
+      #   output_tensor[self.neck.dim_clips_reduction + 1] = 1
       head_params['input_size'] = np.prod(output_tensor).astype(int)
       print(f'head_params : {head_params}')
       print(f'output_tensor : {output_tensor}')
@@ -146,7 +149,7 @@ class Model_Advanced: # Scenario_Advanced
     # return results
 
   
-  def train(self, train_csv_path, test_csv_path, num_epochs=10, batch_size=1, criterion=nn.L1Loss(),optimizer_fn=optim.Adam, lr=0.0001,saving_path=None,init_weights=True,round_output=True):
+  def train(self, train_csv_path, test_csv_path, num_epochs=10, batch_size=3, criterion=nn.L1Loss(),optimizer_fn=optim.Adam, lr=0.0001,saving_path=None,init_weights=True,round_output_loss=True):
     """
     Train the model using the specified training and testing datasets.
     Parameters:
@@ -211,11 +214,14 @@ class Model_Advanced: # Scenario_Advanced
       # self.dataset.set_path_labels(train_csv_path)
       count_subject_ids_train, count_y_train = tools.get_unique_subjects_and_classes(train_csv_path) 
       print(f'GRU extract features from {train_csv_path}')
-      dict_feature_extraction_train = self._extract_features(train_csv_path) 
+      time_start_extract_feature = time.time()
+      dict_feature_extraction_train = self._extract_features(train_csv_path)
+      print(f'feature shape: {dict_feature_extraction_train["features"].shape}') 
+      print(f'time to extract features: {time.time() - time_start_extract_feature}')
       X_train = dict_feature_extraction_train['features'] 
       y_train = dict_feature_extraction_train['list_labels']
       subject_ids_train = dict_feature_extraction_train['list_subject_id']
-      # sample_ids_train = dict_feature_extraction_train['list_sample_id'] 
+      sample_ids_train = dict_feature_extraction_train['list_sample_id'] 
       
       # self.dataset.set_path_labels(test_csv_path)
       count_subject_ids_test, count_y_test = tools.get_unique_subjects_and_classes(test_csv_path) 
@@ -223,15 +229,18 @@ class Model_Advanced: # Scenario_Advanced
       X_test = dict_feature_extraction_test['features'] 
       y_test = dict_feature_extraction_test['list_labels'] 
       subjects_id_test = dict_feature_extraction_test['list_subject_id']
+      sample_ids_test = dict_feature_extraction_test['list_sample_id']
+
       device = 'cuda' if torch.cuda.is_available() else 'cpu'
       # self.head.model.to(device)
       dict_results = self.head.start_train_test(X_train=X_train, y_train=y_train, subject_ids_train=subject_ids_train,
+                                                sample_ids_test=sample_ids_test, sample_ids_train=sample_ids_train,
                                                 X_test=X_test, y_test=y_test, subject_ids_test=subjects_id_test, 
                                                 num_epochs=num_epochs,batch_size=batch_size,criterion=criterion,
                                                 optimizer_fn=optimizer_fn,lr=lr,
                                                 saving_path=saving_path,
                                                 init_weights=init_weights,
-                                                round_output=round_output,
+                                                round_output_loss=round_output_loss,
                                                 )
     
     return {'dict_results':dict_results, 
@@ -240,20 +249,23 @@ class Model_Advanced: # Scenario_Advanced
             'count_subject_ids_train':count_subject_ids_train,
             'count_subject_ids_test':count_subject_ids_test}
   
-  def _extract_features(self,path_csv_dataset, batch_size=1): # TODO: Fix using batch_size > 1 (torch.stack wants all tensors to have the same size)
+  def _extract_features(self,path_csv_dataset, batch_size=2):
     """
-    Extracts features from the dataset using the model's backbone.
-    Data and model will be moved to the device ('cuda' if available, 'cpu' otherwise).
+    Extract features from the dataset specified by the CSV file path.
+
     Args:
-      stop_after (int, optional): Number of iterations after which to stop the feature extraction. Defaults to 3.
+      path_csv_dataset (str): Path to the CSV file containing dataset information.
+      batch_size (int, optional): Number of samples per batch to load. Default is 2.
+
     Returns:
-      dict: A dictionary containing the following elements:
-          - 'features' (torch.Tensor): Stacked features extracted from the dataset.
-          - 'list_labels' (torch.Tensor): Stacked labels corresponding to the features.
-          - 'list_subject_id' (numpy.ndarray): Array of subject IDs.
-          - 'list_sample_id' (numpy.ndarray): Array of sample IDs.
-          - 'list_path' (numpy.ndarray): Array of paths corresponding to the samples.
-          - 'list_frames' (torch.Tensor): Stacked frames sampled from the dataset.
+      dict: A dictionary containing the following keys:
+        - 'features' (torch.Tensor): shape [n_video * n_clips, temporal_dim=8, patch_h, patch_w, emb_dim].
+        - 'list_labels' (torch.Tensor): shape [n_video * n_clips].
+        - 'list_subject_id' (torch.Tensor): shape (n_video * n_clips).
+        - 'list_sample_id' (torch.Tensor): shape (n_video * n_clips).
+        - 'list_path' (np.ndarray): shape (n_video * n_clips,).
+        - 'list_frames' (torch.Tensor): shape [n_video * n_clips, n_frames].
+
     """
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"extracting features using.... {device}")
@@ -267,20 +279,34 @@ class Model_Advanced: # Scenario_Advanced
     self.dataset.set_path_labels(path_csv_dataset)
     dataloader = DataLoader(self.dataset, 
                             batch_size=batch_size,
-
+                            num_workers=4,
                             shuffle=False,
                             collate_fn=self.dataset._custom_collate_fn)
     # move the model to the device
     self.backbone.model.to(device)
     self.backbone.model.eval()
-
     with torch.no_grad():
+      # start_total_time = time.time()
+      # start = time.time()
       for data, labels, subject_id,sample_id, path, list_sampled_frames in dataloader:
-        # data shape -> [nr_clips, clip_length, channels=3, H=224, W=224]
+        # print(f'Elapsed time for {batch_size} samples: {time.time() - start}')
+        #############################################################################################################
+        # data shape -> [nr_clips, clip_length=16, channels=3, H=224, W=224]
+        # 
+        # nr_clips  = floor((total_frames-clip_length=16)/stride_window) + 1
+        #           BIOVID -> floor((138-16)/4)) + 1 = 31
+        # 
+        # self.backbone.model ->   85 MB (small_model), 
+        #                         400 MB (base_model), 
+        #                           4 GB (giant_model)
+        # 
+        # video_feat_size = nr_clips * clip_length=16 * 3 * 224 * 224 * 4 (float32) = nr_clips * 9633792 bytes = 
+        #                 = nr_clips * 9.19 MB (float16 = 4.6 MB) => 
+        #                => 31 * 9.19 MB = 285 MB
+        #############################################################################################################
         data = data.to(device)
-        #compute features
         feature, unique_labels, unique_subject_id, unique_sample_id, unique_path = self._compute_features(data, labels, subject_id, sample_id, path, device)
-        # print(f'unique_id: {unique_sample_id}')
+        # feature -> [2, 8, 1, 1, 384]
         list_frames.append(list_sampled_frames)
         list_features.append(feature)
         list_labels.append(unique_labels)
@@ -288,30 +314,25 @@ class Model_Advanced: # Scenario_Advanced
         list_subject_id.append(unique_subject_id)
         list_path.append(unique_path)
         count += 1
-        if count % 15 == 0:
-          print(f'Extracted features for {count*batch_size} samples')
-    print('Feature extraceton done')
+        # if count % 10 == 0:
+        #   print(f'Extracted features for {count*batch_size} samples')
+        # start = time.time()
+    # print(f'Elapsed time for total feature extraction: {time.time() - start_total_time}')
+    # print('Feature extraceton done')
     self.backbone.model.to('cpu')
-    print('backbone moved to cpu')
-    dict_data={
-            'features':torch.stack([feature for feature in list_features]), # [n_video, n_clips, tubelet_size, patch_h, patch_w, emb_dim]
-           'list_labels':torch.stack([label for label in list_labels]), # [n_video, 1]
-           'list_subject_id':np.stack([subject_id for subject_id in list_subject_id]).squeeze(), # (n_video,)
-           'list_sample_id':np.stack([sample_id for sample_id in list_sample_id]), # (n_video, 1)
-           'list_path':np.stack([path for path in list_path]), # (n_video, 1)
-           'list_frames':torch.stack(list_frames) # [n_video, n_clips, n_frames]
-           } 
-    
-    return dict_data 
-    # dict_data features torch.Size([33, 2, 8, 1, 1, 768])
-    # dict_data list_labels torch.Size([33, 1])
-    # dict_data list_subject_id (33,)
-    # dict_data list_sample_id (33, 1)
-    # dict_data list_path (33, 1)
-    # dict_data list_frames torch.Size([33, 2, 16])
+    # print('backbone moved to cpu')
+    # print(f'torch.cat features {torch.cat(list_features,dim=0).shape}')
+    dict_data = {
+      'features': torch.cat(list_features,dim=0),  # [n_video * n_clips, temporal_dim=8, patch_h, patch_w, emb_dim]
+      'list_labels': torch.cat(list_labels,dim=0),  # [n_video * n_clips]
+      'list_subject_id': torch.cat(list_subject_id).squeeze(),  # (n_video * n_clips)
+      'list_sample_id': torch.cat(list_sample_id),  # (n_video * n_clips)
+      'list_path': np.concatenate(list_path),  # (n_video * n_clips,)
+      'list_frames': torch.cat(list_frames,dim=0)  # [n_video * n_clips, n_frames]
+    }
 
-    # using batch>1  doesn't work because of different size, try to transform the list in tensor
-  
+    return dict_data 
+
   def _compute_features(self, data, labels, subject_id, sample_id, path, remove_clip_reduction=False):
     """
     Compute features from the given data using the model's backbone and neck components.
@@ -320,38 +341,34 @@ class Model_Advanced: # Scenario_Advanced
       data (torch.Tensor): Input data tensor with shape [nr_clips, channels=3, clip_length=16, H=224, W=224]
       labels (torch.Tensor): Labels corresponding to the input data.
       subject_id (torch.Tensor): Subject IDs corresponding to the input data.
-      sample_id (torch.Tensor or np.ndarray): Sample IDs corresponding to the input data.
-      path (torch.Tensor or np.ndarray): Paths corresponding to the input data.
-      device (torch.device): Device to perform computations on.
+      sample_id (torch.Tensor): Sample IDs corresponding to the input data.
+      path (np.ndarray): Paths corresponding to the input data.
       remove_clip_reduction (bool, optional): Flag to remove clip reduction. Defaults to False.
 
     Returns:
       tuple: A tuple containing:
-        - feature (torch.Tensor) : Extracted features with shape [batch_size, tubelet_size, patch_h, patch_w, self.embed_dim]
-        - unique_labels (torch.Tensor): Unique labels from the input data with shape [nr_video]
-        - unique_subject_id (np.ndarray): Unique subject IDs from the input data with shape (nr_video,)
-        - unique_sample_id (np.ndarray): Unique sample IDs from the input data with shape (nr_video,)
-        - unique_path (np.ndarray): Unique paths from the input data with shape (nr_video,)
+        - feature (torch.Tensor) : shape [batch_size, tubelet_size, patch_h, patch_w, self.embed_dim]
+        - labels (torch.Tensor): shape [nr_video]
+        - subject_id (torch.Tensor): shape (nr_video,)
+        - sample_id (torch.Tensor): shape (nr_video,)
+        - unique_path (np.ndarray): shape (nr_video,)
     """
     with torch.no_grad():
     # Extract features from clips -> return [B, clips/tubelets, W/patch_w, H/patch_h, emb_dim] 
-      feature = self.backbone.forward_features(data) # output shape [batch_size, tubelet_size, patch_h, patch_w, self.embed_dim]
-    unique_labels, unique_subject_id, unique_sample_id, unique_path = [], [], [], []
+      feature = self.backbone.forward_features(x=data) # output shape [batch,temporal_dim,patch_h,patch_w,emb_dim]
     # Apply dimensionality reduction [B,C,T,H,W] -> [B, reduction(C,T,H,W)]
     if self.neck.embedding_reduction is not None:
       feature = self.neck.embedding_reduction(feature)
     # Apply clip reduction [B, reduction(C,T,H,W)] -> [1, reduction(C,T,H,W)]
     if not remove_clip_reduction and self.neck.clips_reduction is not None:
       feature = self.neck.clips_reduction(feature)
-    unique_labels = torch.unique(labels, return_counts=False)
-    unique_sample_id = np.unique(sample_id, return_counts=False)
-    unique_subject_id = np.unique(subject_id, return_counts=False)
+    
     unique_path = np.unique(path, return_counts=False)
-
+    
     return feature, \
-           unique_labels, \
-           unique_subject_id,\
-           unique_sample_id, \
+           labels, \
+           subject_id,\
+           sample_id, \
            unique_path
     
   def run_grid_search(self, param_grid,k_cross_validation=5): #
