@@ -4,7 +4,8 @@ import av
 import os
 import numpy as np
 import torch
-import cv2
+import time
+# import cv2
 from custom.helper import SAMPLE_FRAME_STRATEGY
 from sklearn.model_selection import GroupShuffleSplit
 import matplotlib.pyplot as plt
@@ -64,6 +65,7 @@ class customDataset(torch.utils.data.Dataset):
   def __len__(self):
     return len(self.video_labels)
 
+
   def __getitem__(self, idx):
     """
     Retrieve a sample from the dataset at the given index.
@@ -87,8 +89,12 @@ class customDataset(torch.utils.data.Dataset):
     tot_frames = container.streams.video[0].frames
     
     list_indices = self.sample_frame_strategy(tot_frames)
+    start_time_load_video = time.time()
     frames_list=[self._read_video_pyav(container,indices) for indices in list_indices]
+    print('time to load video:', time.time()-start_time_load_video)
+    start_time_preprocess = time.time()
     preprocessed_tensors = torch.stack([self.preprocess(list(frames), return_tensors="pt")['pixel_values'] for frames in frames_list])
+    print('Time to preprocess video', time.time()-start_time_preprocess)
     # preprocessed output shape [2, 1, 16, 3, 224, 224] -> [nr_clips, batch_video, clip_length, RGB_channels=3, H=224, W=224]
     # print(len(frames_list))
     path = np.repeat(video_path, preprocessed_tensors.shape[0])
@@ -97,7 +103,6 @@ class customDataset(torch.utils.data.Dataset):
     sample_id = unit_vector * int(csv_array[4])
     labels = unit_vector * int(csv_array[2])
     subject_id = unit_vector * int(csv_array[0])
-
     return  {'preprocess':preprocessed_tensors, # shape [nr_clips, batch_video=1, clip_length, channels=3, H=224, W=224]
              'labels': labels,  # torch shape [nr_clips]
              'subject_id': subject_id, # torch shape [nr_clips]
@@ -141,25 +146,22 @@ class customDataset(torch.utils.data.Dataset):
 
     Returns:
       tuple: A tuple containing:
-        - data (torch.Tensor): Stacked and reshaped video data tensor with shape [nr_clips, channels, clip_length, H, W].
-        - labels (torch.Tensor): Stacked labels tensor with shape [nr_video, nr_clips].
-        - subject_id (torch.Tensor): Stacked subject IDs tensor with shape [nr_video, nr_clips].
-        - sample_id (torch.Tensor): Stacked sample IDs tensor with shape [nr_video, nr_clips].
-        - path (numpy.ndarray): Stacked paths array with shape (nr_video, nr_clips).
-        - list_frames (torch.Tensor): Stacked frame lists tensor with shape [nr_video, nr_clips].
+        - 'data' (torch.Tensor): shape [nr_video* nr_windows, channels=3, clip_length=16, H=224, W=224]
+        - 'labels' (torch.Tensor): shape [nr_video * nr_windows].
+        - 'subject_id' (torch.Tensor): shape [nr_video * nr_windows].
+        - 'sample_id' (torch.Tensor): shape [nr_video * nr_windows].
+        - 'path' (numpy.ndarray): shape (nr_video * nr_windows).
+        - 'list_frames' (torch.Tensor): shape [nr_video * nr_windows].
     """
-    # if torch.cuda.is_available():
-    #   device = torch.device('cuda')
-    # else:
-    # device = torch.device('cpu')
-    data = torch.stack([batch[index]['preprocess'].squeeze().transpose(1,2) for index in range(len(batch))]) 
-    #data shape: [nr_clips, batch_video=1, clip_length, channels=3, H=224, W=224] -> [nr_clips,clip_length,channels,H,W]
-    data = data.reshape(-1,self.image_channels, self.clip_length, self.image_resize_h, self.image_resize_w)
-    labels = torch.stack([batch[index]['labels'] for index in range(len(batch))])
-    path = np.stack([batch[index]['path'] for index in range(len(batch))])
-    subject_id = torch.stack([batch[index]['subject_id'] for index in range(len(batch))])
-    sample_id = torch.stack([batch[index]['sample_id'] for index in range(len(batch))])
-    list_frames = torch.stack([batch[index]['frame_list'] for index in range(len(batch))]).squeeze()
+    
+    data = torch.cat([batch[index]['preprocess'].squeeze().transpose(1,2) for index in range(len(batch))], dim=0) 
+    data = data.reshape(-1,self.image_channels, self.clip_length, self.image_resize_h, self.image_resize_w) 
+
+    labels = torch.cat([batch[index]['labels'] for index in range(len(batch))],dim=0)
+    path = np.concatenate([batch[index]['path'] for index in range(len(batch))])
+    subject_id = torch.cat([batch[index]['subject_id'] for index in range(len(batch))],dim=0)
+    sample_id = torch.cat([batch[index]['sample_id'] for index in range(len(batch))],dim=0)
+    list_frames = torch.cat([batch[index]['frame_list'] for index in range(len(batch))],dim=0).squeeze()
 
     return data, \
            labels,\
@@ -167,6 +169,7 @@ class customDataset(torch.utils.data.Dataset):
            sample_id,\
            path,\
            list_frames
+  
   def get_params_configuration(self):
     """
     Returns the configuration parameters of the dataset.
