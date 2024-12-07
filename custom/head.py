@@ -72,7 +72,7 @@ class head:
     Returns:
       numpy.ndarray: Predicted output.
     """
-    print(f'X.shape: {X.shape}')
+    # print(f'X.shape: {X.shape}')
     if isinstance(self.head, HeadGRU):
       if predict_per_video:
         X = X.reshape(X.shape[0], X.shape[1], -1) # [n_video, n_windows, temp_size*path_w*patch_h*emb_dim]
@@ -84,7 +84,7 @@ class head:
         X = X.reshape(X.shape[0], -1) # [n_video, n_windows*temp_size*path_w*patch_h*emb_dim]
       else:
         X = X.reshape(X.shape[0]*X.shape[1], -1) # [n_video*n_windows, temp_size*path_w*patch_h*emb_dim]
-    print(f'X prediction.shape: {X.shape}')
+    # print(f'X prediction.shape: {X.shape}')
     return self.head.predict(X)
 
 
@@ -131,8 +131,8 @@ class HeadSVR:
     test_loss = mean_absolute_error(y_test, pred_test)
 
     # Compute loss per class
-    print(f'y_train-shape {y_train.shape}')
-    print(f'y_train-shape {y_test.shape}')
+    # print(f'y_train-shape {y_train.shape}')
+    # print(f'y_train-shape {y_test.shape}')
     y_unique = np.unique(np.concatenate((np.unique(y_train), np.unique(y_test))))
     train_loss_per_class = np.zeros(y_unique.shape[0])
     test_loss_per_class = np.zeros(y_unique.shape[0])
@@ -149,9 +149,9 @@ class HeadSVR:
 
     # Compute loss per subject
     subject_ids_unique = np.unique(np.concatenate((np.unique(subject_ids_train), np.unique(subject_ids_test))))
-    print(f'subject_ids_unique shape {subject_ids_unique.shape}')
-    print(f'subject_ids_train_unique shape {np.unique(subject_ids_train).shape}')
-    print(f'subject_ids_test_unique shape {np.unique(subject_ids_test).shape}')
+    # print(f'subject_ids_unique shape {subject_ids_unique.shape}')
+    # print(f'subject_ids_train_unique shape {np.unique(subject_ids_train).shape}')
+    # print(f'subject_ids_test_unique shape {np.unique(subject_ids_test).shape}')
     train_loss_per_subject = np.zeros(subject_ids_unique.shape[0])
     test_loss_per_subject = np.zeros(subject_ids_unique.shape[0])
 
@@ -328,6 +328,11 @@ class HeadSVR:
 class GRUModel(nn.Module):
   def __init__(self, input_size, hidden_size, num_layers, dropout=0.0, output_size=1):
     super(GRUModel, self).__init__()
+    self.input_size = input_size
+    self.hidden_size = hidden_size
+    self.num_layers = num_layers
+    self.dropout = dropout
+    self.output_size = output_size
     self.gru = nn.GRU(input_size, hidden_size, num_layers, dropout=dropout, batch_first=True)
     self.fc = nn.Linear(hidden_size, output_size)
 
@@ -350,16 +355,18 @@ class GRUModel(nn.Module):
     else:
       # print('AAAAAAAAAAAAAAAAAAApacked_out shape',packed_out.data.shape)
       out_padded,list_length = pad_packed_sequence(packed_out, batch_first=True)
-    # print(f'out_padded.shape: {out_padded.shape}')
+    print(f'out_padded.shape: {out_padded.shape}')
     # if pred_only_last_time_step:
     #   out = self.fc(out[:, -1, :])
     # else:
-    last_hidden_layer = out_padded[torch.arange(out_padded.shape[0]), list_length-1]
-    print('last_hidden_layet shape',last_hidden_layer.shape)
+    last_hidden_layer = out_padded[torch.arange(out_padded.shape[0]), list_length-1] # [1, hidden_size]
+    # print('last_hidden_layet shape',last_hidden_layer.shape)
     # print('beforFC shape',().shape)
     if pred_only_last_time_step:
-      out = self.fc(last_hidden_layer.squeeze()).squeeze(1)
-      print('out shape',out.shape)
+      # print('last_hidden_layer shape',last_hidden_layer.shape)
+      out = self.fc(last_hidden_layer) # [batch, output_size=1]
+      # print('FORWARD out_shape',out.shape)
+      out = out.squeeze(dim=1) 
     else:
       out = self.fc(out_padded)
     return out
@@ -400,7 +407,7 @@ class HeadGRU:
   def start_train_test(self, X_train, y_train, subject_ids_train,
                        X_test, y_test, subject_ids_test,sample_ids_train, sample_ids_test, per_video=True,
                        num_epochs=10, batch_size=2, criterion=nn.L1Loss(), # fix batch_size = 1
-                       optimizer_fn=optim.Adam, lr=0.0001, saving_path=None, init_weights=True, round_output_loss=True):
+                       optimizer_fn=optim.Adam, lr=0.0001, saving_path=None, init_weights=True, round_output_loss=False):
     def group_features_by_sample_id(X, y, sample_ids, subject_ids):
       """
       Groups features by sample ID and pads sequences to the same length.
@@ -422,10 +429,11 @@ class HeadGRU:
       subject_ids_per_sample_id = []
       max_len = 0
       for id in torch.unique(sample_ids):
-        mask = (sample_ids == id)
-        print(f'GROUP.mask.shape: {mask.shape}')
+        mask = torch.nonzero(sample_ids == id).squeeze()
+        # print(f'GROUP.mask.shape: {mask.shape}')
         tmp_X_train = X[mask]
-        length_features.append(tmp_X_train.shape[0])
+        # print(f'GROUP.tmp_X_train.shape: {tmp_X_train.shape}')
+        length_features.append(tmp_X_train.shape[0]) # nr_windows
         if tmp_X_train.shape[0] > max_len:
           max_len = tmp_X_train.shape[0]
         #  video reshaped to [1, n_windows * temp_size, path_w,patch_h, emb_dim]
@@ -433,7 +441,9 @@ class HeadGRU:
         y_train_per_sample_id.append(torch.mean(y[mask].float())) # in Biovid dataset, target is the same for all windows in video, not in UNBC
         subject_ids_per_sample_id.append(subject_ids[mask][0])
       padded_sequence = torch.nn.utils.rnn.pad_sequence(X_per_sample_id, batch_first=True)
+      # print(f'GROUP-_padded_sequence.shape: {padded_sequence.shape}')
       length_features = torch.tensor(length_features)
+      # print(f'GROUP-length_features.shape: {length_features}')
       subject_ids_per_sample_id = torch.tensor(subject_ids_per_sample_id)
       y_train_per_sample_id = torch.tensor(y_train_per_sample_id)
 
@@ -444,7 +454,9 @@ class HeadGRU:
       self.model._initialize_weights()
 
     # Reshape inputs
-    print(f'X_train.shape: {X_train.shape}') # [36, 8, 1, 1, 384]
+    # print(f'X_train.shape: {X_train.shape}') # [36, 8, 1, 1, 384] # 
+    X_embed_temp_size = X_train.shape[1]
+    X_emb_dim = X_train.shape[2] * X_train.shape[3] * X_train.shape[4]
     # print(f'X_test.shape: {X_test.shape}')
     # print(f'subject_ids_train.shape: {subject_ids_train.shape}') # (36,)
     # print(f'sample_ids_train.shape: {sample_ids_train.shape}') # (36,)
@@ -456,29 +468,29 @@ class HeadGRU:
     # X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], -1)
     padded_X_train, packed_y_train, packed_subject_ids_train, length_seq_train = group_features_by_sample_id(X_train,y_train, sample_ids_train, subject_ids_train)
     padded_X_test, packed_y_test, packed_subject_ids_test, len_seq_test = group_features_by_sample_id(X_test,y_test, sample_ids_test, subject_ids_test)
+ 
+    
+    padded_X_train = padded_X_train.reshape(padded_X_train.shape[0], # (batch_size)||| nr_videos  
+                                                              -1,    # (seq_len)   ||| nr_windows * temp_size OR nr_windows  
+                                                   self.input_size)
+    padded_X_test = padded_X_test.reshape(padded_X_test.shape[0], # (batch_size)||| nr_videos
+                                                            -1,   # (seq_len)   ||| nr_windows                          OR nr_windows * temp_size
+                                                self.input_size)  # (input_dim) ||| [temp_size*patch_h*patch_w*emb_dim] OR [patch_h*patch_w*emb_dim]
     # padded_X_train.shape [nr_videos, nr_windows(not fixed), temp_size, patch_h, patch_w, emd_dim]
     # DataLoaders
-    print(f'padded_X_train.shape: {padded_X_train.shape}')
-    print(f'packed_y_train.shape: {packed_y_train.shape}')
-    print(f'packed_subject_ids_train.shape: {packed_subject_ids_train.shape}')
-    print(f'length_seq_train.shape: {(length_seq_train* padded_X_train.shape[2]).shape}')
-
-    train_dataset = TensorDataset(padded_X_train.reshape(padded_X_train.shape[0], #nr_videos | (batch_size)
-                                                         padded_X_train.shape[1]*padded_X_train.shape[2] # nr_windows * temp_size  | (seq_len)
-                                                         ,-1), #  -> [patch_h * patch_w * emb_dim]  | (input_dim)
-                                  packed_y_train, # [nr_videos]
+    # print(f'packed_y_train.shape: {packed_y_train.shape}')
+    # print(f'packed_subject_ids_train.shape: {packed_subject_ids_train.shape}')
+    extension_for_length_seq_train = X_embed_temp_size/(self.input_size/X_emb_dim) # is 1 if temp_size=8 is considered in input_dim, otherwise I have to considere the extension in the padding for computing the real length of the video
+    train_dataset = TensorDataset(padded_X_train, 
+                                  packed_y_train,           # [nr_videos]
                                   packed_subject_ids_train, # [nr_videos]
-                                  length_seq_train * padded_X_train.shape[2]) # [nr_videos] To reconstruct the original length of the video (multiplied by temp_size)
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-
-    test_dataset = TensorDataset(padded_X_test.reshape(padded_X_test.shape[0], #nr_videos | (batch_size)
-                                                       padded_X_test.shape[1]*padded_X_test.shape[2] # nr_windows * temp_size  | (seq_len)
-                                                       ,-1), #  -> [patch_h * patch_w * emb_dim]  | (input_dim)
+                                  length_seq_train * extension_for_length_seq_train) # [nr_videos] To reconstruct the original length of the video (multiplied by temp_size)
+    test_dataset = TensorDataset(padded_X_test,   
                                  packed_y_test,
                                  packed_subject_ids_test,
-                                 len_seq_test * padded_X_test.shape[2])
+                                 len_seq_test * extension_for_length_seq_train)
 
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     # Device and optimizer setup
@@ -522,14 +534,15 @@ class HeadGRU:
         # print(f'device: {device}')
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
         optimizer.zero_grad()
-        print(f'batch_X.shape: {batch_X.shape}')
-        print(f'batch_y.shape: {batch_y.shape}')
+        # print(f'batch_X.shape: {batch_X.shape}') # [2,4,384*8=3072]
+        # print(f'batch_y.shape: {batch_y.shape}')
         # print(f'batch_real_length_padded_feat: {batch_real_length_padded_feat}')
         # Forward pass
         packed_input = pack_padded_sequence(batch_X, batch_real_length_padded_feat, batch_first=True, enforce_sorted=False)
-
+        X_tmp,_ = pad_packed_sequence(packed_input, batch_first=True)
+        # print(f'X_tmp.shape: {X_tmp.shape}')
         outputs = self.model.forward(x=packed_input, pred_only_last_time_step=True)
-        print(f'outputs.shape: {outputs.shape}')
+        # print(f'outputs.shape: {outputs.shape}')
         if round_output_loss:
           outputs = torch.round(outputs)
         loss = criterion(outputs, batch_y)
@@ -540,9 +553,9 @@ class HeadGRU:
         # Compute per-class and per-subject losses
         for cls in unique_classes:
           mask = (batch_y == cls).reshape(-1)
-          print(f'mask.shape: {mask.shape}')
-          print(f'outputs: {outputs}')
-          print(f'batch_y: {batch_y}')
+          # print(f'mask.shape: {mask.shape}')
+          # print(f'outputs: {outputs}')
+          # print(f'batch_y: {batch_y}')
           if mask.any():
             class_idx = np.where(unique_classes == cls)[0][0]
             class_loss[class_idx] += criterion(outputs[mask], batch_y[mask]).item()
@@ -554,13 +567,14 @@ class HeadGRU:
             subj_idx = np.where(unique_subjects == subj)[0][0]
             subject_loss[subj_idx] += criterion(outputs[mask], batch_y[mask]).item()
             # subject_counts[subj_idx] += mask.sum().item()
-        # print(f' output: {outputs}')
-        # outputs = torch.round(outputs)
+        print(f' output: {outputs}')
+        outputs = torch.round(outputs)
+        print(f' output_rounded: {outputs}')
         output_postprocessed = torch.where((outputs >= 0) & (outputs < unique_classes.shape[0]), outputs, torch.tensor(unique_classes.shape[0], device=device)) #from 0 to unique_classes.shape[0] - 1
         # print("Train:")
         # print(f' output_rounded: {outputs}')
-        print(f' output_postprocessed shape: {output_postprocessed.detach().cpu().shape}')
-        print(f' batch_y shape: {batch_y.detach().cpu().shape}')
+        # print(f' output_postprocessed shape: {output_postprocessed.detach().cpu().shape}')
+        # print(f' batch_y shape: {batch_y.detach().cpu().shape}')
         # print(f'Update confusion matrix {epoch}')
 
         # try to use scikit learn confusion matrix
@@ -652,7 +666,7 @@ class HeadGRU:
     with torch.no_grad():
       for batch_X, batch_y, batch_subjects, batch_real_length_padded_feat in test_loader:
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
-
+        print(f'batch_X.shape: {batch_X.shape}')
         # Forward pass
         packed_input = pack_padded_sequence(batch_X, batch_real_length_padded_feat, batch_first=True, enforce_sorted=False)
         outputs = self.model.forward(x=packed_input, pred_only_last_time_step=True)
