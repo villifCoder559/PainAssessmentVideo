@@ -24,8 +24,7 @@ import time
 class Model_Advanced: # Scenario_Advanced
   def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,
               path_labels, preprocess, sample_frame_strategy, head, head_params, download_if_unavailable=False,
-              batch_size=1,stride_window=2,clip_length=16
-              ):
+              batch_size_feat_extraction=1,batch_size_training=1,stride_window=2,clip_length=16):
     """
     Initialize the custom model. 
     Parameters:
@@ -42,13 +41,17 @@ class Model_Advanced: # Scenario_Advanced
     clip_length (int, optional): Length of each video clip. Defaults to 16.
     svr_params (dict, optional): Parameters for the Support Vector Regressor (SVR). Defaults to {'kernel': 'rbf', 'C': 1, 'epsilon': 0.1}.
 
-    Raises:
-    AssertionError: If batch_size is not 1.
     """
     self.backbone = backbone(model_type, download_if_unavailable)
     self.neck = neck(embedding_reduction, clips_reduction)
-    self.dataset = customDataset(path_dataset, path_labels, preprocess, sample_frame_strategy, stride_window=stride_window, clip_length=clip_length,
-                                 batch_size=batch_size)
+    self.dataset = customDataset(path_dataset, 
+                                 path_labels, 
+                                 preprocess, 
+                                 sample_frame_strategy, 
+                                 stride_window=stride_window, 
+                                 clip_length=clip_length,
+                                 batch_size=batch_size_feat_extraction)
+    self.batch_size_training = batch_size_training
     # self.dataloader = DataLoader(self.dataset, 
     #                              batch_size=batch_size, 
     #                              shuffle=False,
@@ -58,22 +61,8 @@ class Model_Advanced: # Scenario_Advanced
       self.head = HeadSVR(svr_params=head_params)
     elif head == 'GRU':
       assert self.backbone.frame_size % self.backbone.tubelet_size == 0, "Frame size must be divisible by tubelet size."
-      # Calculate the backbone output tensor size to use as input to the GRU head
-      # output_tensor = [1, 14, 14, 384]
-      # output_tensor = [1, int(self.backbone.frame_size/self.backbone.tubelet_size), self.backbone.out_spatial_size, self.backbone.out_spatial_size, self.backbone.embed_dim]
-      output_tensor = [1,1, self.backbone.out_spatial_size, self.backbone.out_spatial_size, self.backbone.embed_dim]
-      if embedding_reduction:
-        for dim in self.neck.dim_embed_reduction: 
-          output_tensor[dim] = 1
-      # if clips_reduction.value: # the temporal_size in gru is the input for the seq_length=[8 * nr_windows]
-      #   print(self.neck.dim_clips_reduction)
-      #   output_tensor[self.neck.dim_clips_reduction + 1] = 1
-      head_params['input_size'] = np.prod(output_tensor).astype(int)
-      print(f'head_params : {head_params}')
-      print(f'output_tensor : {output_tensor}')
-      self.head = HeadGRU(dropout=head_params['dropout'], input_size=head_params['input_size'], 
-                          hidden_size=head_params['hidden_size'], num_layers=head_params['num_layers'])
-
+      self.head = HeadGRU(**head_params)
+    self.path_to_extracted_features = os.path.join('partA','video','features',os.path.split(path_labels)[-1][:-4])
   # def compute_output_tensor_for_gru(self):
   #   assert self.backbone.frame_size % self.backbone.tubelet_size == 0, "Frame size must be divisible by tubelet size."
   #     # Calculate the backbone output tensor size to use as input to the GRU head
@@ -88,68 +77,69 @@ class Model_Advanced: # Scenario_Advanced
   #     print(f'head_params : {head_params}')
   #     print(f'output_tensor : {output_tensor}')
       
-  def run_k_fold_cross_validation(self, k_fold, train_folder_path, batch_size=8, criterion=nn.L1Loss(), 
-                                  optimizer_fn=optim.Adam, lr=0.0001,
-                                  epochs=10,train_size=0.8,val_size=0.1,test_size=0.1):
-    # def k_cross_valuation():
-    fold_results = []
-    list_saving_paths = []
+  # def run_k_fold_cross_validation(self, k_fold, train_folder_path, batch_size=8, criterion=nn.L1Loss(), 
+  #                                 optimizer_fn=optim.Adam, lr=0.0001,
+  #                                 epochs=10,train_size=0.8,val_size=0.1,test_size=0.1):
+  #   # def k_cross_valuation():
+  #   fold_results = []
+  #   list_saving_paths = []
 
-    for i in range(k_fold):
-      path = os.path.join(train_folder_path,f'results_k{i}_cross_val')
-      list_saving_paths.append(path)
-      if not os.path.exists(path):
-        os.makedirs(path)
-      path_csv_k_fold = tools._generate_train_test_validation(csv_path=self.dataset.path_labels,
-                                                              saving_path=path,
-                                                              train_size=train_size,
-                                                              val_size=val_size,
-                                                              test_size=test_size,
-                                                              random_state=i)
+  #   for i in range(k_fold):
+  #     path = os.path.join(train_folder_path,f'results_k{i}_cross_val')
+  #     list_saving_paths.append(path)
+  #     if not os.path.exists(path):
+  #       os.makedirs(path)
+  #     path_csv_k_fold = tools._generate_train_test_validation(csv_path=self.dataset.path_labels,
+  #                                                             saving_path=path,
+  #                                                             train_size=train_size,
+  #                                                             val_size=val_size,
+  #                                                             test_size=test_size,
+  #                                                             random_state=i)
       
-      result = self.train(train_csv_path=path_csv_k_fold['train'],
-                          test_csv_path=path_csv_k_fold['test'],
-                          num_epochs=epochs, batch_size=batch_size, 
-                          criterion=criterion,
-                          optimizer_fn=optimizer_fn,
-                          lr=lr, 
-                          saving_path=path)
-      fold_results.append(result)
+  #     result = self.train(train_csv_path=path_csv_k_fold['train'],
+  #                         test_csv_path=path_csv_k_fold['test'],
+  #                         num_epochs=epochs, batch_size=batch_size, 
+  #                         criterion=criterion,
+  #                         optimizer_fn=optimizer_fn,
+  #                         lr=lr, 
+  #                         saving_path=path)
+  #     fold_results.append(result)
 
-    best_results_idx = [fold_results[i]['best_model_idx'] for i in range(k_fold)]
-    dict_all_results = {
-                        'avg_train_loss_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['train_losses'][-1] for i in range(k_fold)]),
-                        'avg_test_loss_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['test_losses'][-1] for i in range(k_fold)]),
-                        'avg_train_loss_per_class_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['train_loss_per_class'][-1] for i in range(k_fold)]),
-                        'avg_test_loss_per_class_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['test_loss_per_class'][-1] for i in range(k_fold)]),
-                        'avg_train_loss_per_subject_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['train_loss_per_subject'][-1] for i in range(k_fold)]),
-                        'avg_test_loss_per_subject_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['test_loss_per_subject'][-1] for i in range(k_fold)])
-                        }
-    with open(os.path.join(train_folder_path,'results_k_fold.txt'),'w') as f:
-      f.write(str(dict_all_results))
-    return fold_results, list_saving_paths, best_results_idx
+  #   best_results_idx = [fold_results[i]['best_model_idx'] for i in range(k_fold)]
+  #   dict_all_results = {
+  #                       'avg_train_loss_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['train_losses'][-1] for i in range(k_fold)]),
+  #                       'avg_test_loss_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['test_losses'][-1] for i in range(k_fold)]),
+  #                       'avg_train_loss_per_class_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['train_loss_per_class'][-1] for i in range(k_fold)]),
+  #                       'avg_test_loss_per_class_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['test_loss_per_class'][-1] for i in range(k_fold)]),
+  #                       'avg_train_loss_per_subject_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['train_loss_per_subject'][-1] for i in range(k_fold)]),
+  #                       'avg_test_loss_per_subject_best_models': np.mean([fold_results[best_results_idx[i]]['dict_results']['test_loss_per_subject'][-1] for i in range(k_fold)])
+  #                       }
+  #   with open(os.path.join(train_folder_path,'results_k_fold.txt'),'w') as f:
+  #     f.write(str(dict_all_results))
+  #   return fold_results, list_saving_paths, best_results_idx
     
-    # def k_cross_valuation_SVR():
-    #   print('SVR with k-fold cross-validation...')
-    #   self.dataset.set_path_labels('all')
-    #   dict_feature_extraction_train = self._extract_features() # feats,labels,subject_id,sample_id,path
-    #   X = dict_feature_extraction_train['features']
-    #   y = dict_feature_extraction_train['list_labels']
-    #   subject_ids = dict_feature_extraction_train['list_subject_id']
-    #   X = X.reshape(X.shape[0],-1).detach().cpu().numpy()
-    #   y = y.squeeze().detach().cpu().numpy()
-    #   list_split_indices,results = self.head.k_fold_cross_validation(X=X, y=y, k=k_fold, groups=subject_ids)
+  #   # def k_cross_valuation_SVR():
+  #   #   print('SVR with k-fold cross-validation...')
+  #   #   self.dataset.set_path_labels('all')
+  #   #   dict_feature_extraction_train = self._extract_features() # feats,labels,subject_id,sample_id,path
+  #   #   X = dict_feature_extraction_train['features']
+  #   #   y = dict_feature_extraction_train['list_labels']
+  #   #   subject_ids = dict_feature_extraction_train['list_subject_id']
+  #   #   X = X.reshape(X.shape[0],-1).detach().cpu().numpy()
+  #   #   y = y.squeeze().detach().cpu().numpy()
+  #   #   list_split_indices,results = self.head.k_fold_cross_validation(X=X, y=y, k=k_fold, groups=subject_ids)
 
-    # if isinstance(self.head, HeadGRU):
-    #   results = k_cross_valuation()
+  #   # if isinstance(self.head, HeadGRU):
+  #   #   results = k_cross_valuation()
 
-    # elif isinstance(self.head, HeadSVR):
-    #   results = k_cross_valuation_SVR()      
+  #   # elif isinstance(self.head, HeadSVR):
+  #   #   results = k_cross_valuation_SVR()      
 
-    # return results
+  #   # return results
 
   
-  def train(self, train_csv_path, test_csv_path, num_epochs=10, batch_size=3, criterion=nn.L1Loss(),optimizer_fn=optim.Adam, lr=0.0001,saving_path=None,init_weights=True,round_output_loss=True):
+  def train(self, train_csv_path, test_csv_path,is_validation, original_csv='',num_epochs=10, criterion=nn.L1Loss(),
+            optimizer_fn=optim.Adam, lr=0.0001,saving_path=None,init_weights=True,round_output_loss=False):
     """
     Train the model using the specified training and testing datasets.
     Parameters:
@@ -180,63 +170,71 @@ class Model_Advanced: # Scenario_Advanced
       - 'count_subject_ids_train': Count of unique subject IDs in the training set.
       - 'count_subject_ids_test': Count of unique subject IDs in the testing set.
     """
+    print(self.path_to_extracted_features)
+    dict_feature_extraction_train = {}
+    dict_feature_extraction_test = {}
+    if os.path.exists(self.path_to_extracted_features):
+      print('Loading extracted features...')
+      print('folder_indxs_path',os.path.split(train_csv_path)[:-1][0])
+      split_indices_folder = os.path.join(os.path.split(train_csv_path)[:-1][0])
+      dict_sample_indices = tools.read_split_indices(split_indices_folder)
+      dict_all_features = tools.load_dict_data(self.path_to_extracted_features)
+      list_train_idx = []
+      for sample_id in dict_sample_indices['train'][0]:
+        idxs = sample_id == dict_all_features['list_sample_id']
+        list_train_idx.append(idxs)
+      all_idxs_train = torch.any(torch.stack(list_train_idx), dim=0)
+      if is_validation:
+        key = 'val'
+      else:
+        key = 'test'
+      for sample_id in dict_sample_indices[key][0]:
+        idxs = sample_id == dict_all_features['list_sample_id']
+        list_train_idx.append(idxs)
+      all_idxs_test = torch.any(torch.stack(list_train_idx), dim=0)
+      print(all_idxs_test.shape)
+      for k,v in dict_all_features.items():
+        if k != 'list_path':
+          print(f' {k} : {v.shape}')
+          dict_feature_extraction_train[k] = v[all_idxs_train]
+          dict_feature_extraction_test[k] = v[all_idxs_test]
+        else:
+          dict_feature_extraction_train[k] = v[dict_sample_indices['train'][1]]
+          dict_feature_extraction_test[k] = v[dict_sample_indices[key][1]]
+          
+        
+    else:
+      print('Extracting features...')
+      dict_feature_extraction_train = self._extract_features(train_csv_path)    
+      dict_feature_extraction_test = self._extract_features(test_csv_path)
+    
+    for k,v in dict_feature_extraction_train.items():
+      print(f' train_{k} : {v.shape}')
+        
+    count_subject_ids_train, count_y_train = tools.get_unique_subjects_and_classes(train_csv_path)
+    X_train = dict_feature_extraction_train['features']
+    y_train = dict_feature_extraction_train['list_labels']
+    subject_ids_train = dict_feature_extraction_train['list_subject_id']
+    sample_ids_train = dict_feature_extraction_train['list_sample_id'] 
+    
+    count_subject_ids_test, count_y_test = tools.get_unique_subjects_and_classes(test_csv_path) 
+    X_test = dict_feature_extraction_test['features']
+    y_test = dict_feature_extraction_test['list_labels']
+    subject_ids_test = dict_feature_extraction_test['list_subject_id']
+    sample_ids_test = dict_feature_extraction_test['list_sample_id']  
+        
     if isinstance(self.head, HeadSVR):
-      print('Training using SVR...')
-      # Extract feature from training set
-      # self.dataset.set_path_labels(train_csv_path) 
-      count_subject_ids_train, count_y_train = tools.get_unique_subjects_and_classes(train_csv_path) 
-      dict_feature_extraction_train = self._extract_features(train_csv_path)
-      print('feature shape: ',dict_feature_extraction_train['features'].shape)
-      X_train = dict_feature_extraction_train['features']
-      y_train = dict_feature_extraction_train['list_labels']
-      
-      X_train = X_train.reshape(X_train.shape[0],-1).detach().cpu().numpy()
-      y_train = y_train.squeeze().detach().cpu().numpy()
-      subject_ids_train = dict_feature_extraction_train['list_subject_id']
-      print('subject_ids_train',subject_ids_train)
-      # Extract feature from test set
-      # self.dataset.set_path_labels(test_csv_path) 
-      count_subject_ids_test, count_y_test = tools.get_unique_subjects_and_classes(test_csv_path) 
-      dict_feature_extraction_train = self._extract_features(test_csv_path)
-      X_test = dict_feature_extraction_train['features']
-      y_test = dict_feature_extraction_train['list_labels']
-      
-      X_test = X_test.reshape(X_test.shape[0],-1).detach().cpu().numpy()
-      y_test = y_test.squeeze().detach().cpu().numpy()
-      subject_ids_test = dict_feature_extraction_train['list_subject_id']
-      print('subject_ids_test',subject_ids_test)
-
+      print('Use SVR...')
       dict_results = self.head.fit(X_train=X_train,y_train=y_train, subject_ids_train=subject_ids_train,
                                      X_test=X_test, y_test=y_test, subject_ids_test=subject_ids_test,)
 
     if isinstance(self.head, HeadGRU):
       print('Training using GRU.....')
-      # self.dataset.set_path_labels(train_csv_path)
-      count_subject_ids_train, count_y_train = tools.get_unique_subjects_and_classes(train_csv_path) 
-      print(f'GRU extract features from {train_csv_path}')
-      time_start_extract_feature = time.time()
-      dict_feature_extraction_train = self._extract_features(train_csv_path)
-      print(f'feature shape: {dict_feature_extraction_train["features"].shape}') 
-      print(f'time to extract features: {time.time() - time_start_extract_feature}')
-      X_train = dict_feature_extraction_train['features'] 
-      y_train = dict_feature_extraction_train['list_labels']
-      subject_ids_train = dict_feature_extraction_train['list_subject_id']
-      sample_ids_train = dict_feature_extraction_train['list_sample_id'] 
-      
-      # self.dataset.set_path_labels(test_csv_path)
-      count_subject_ids_test, count_y_test = tools.get_unique_subjects_and_classes(test_csv_path) 
-      dict_feature_extraction_test = self._extract_features(test_csv_path)
-      X_test = dict_feature_extraction_test['features'] 
-      y_test = dict_feature_extraction_test['list_labels'] 
-      subjects_id_test = dict_feature_extraction_test['list_subject_id']
-      sample_ids_test = dict_feature_extraction_test['list_sample_id']
-
-      device = 'cuda' if torch.cuda.is_available() else 'cpu'
-      # self.head.model.to(device)
+      print(train_csv_path)
       dict_results = self.head.start_train_test(X_train=X_train, y_train=y_train, subject_ids_train=subject_ids_train,
                                                 sample_ids_test=sample_ids_test, sample_ids_train=sample_ids_train,
-                                                X_test=X_test, y_test=y_test, subject_ids_test=subjects_id_test, 
-                                                num_epochs=num_epochs,batch_size=batch_size,criterion=criterion,
+                                                X_test=X_test, y_test=y_test, subject_ids_test=subject_ids_test, 
+                                                num_epochs=num_epochs,batch_size=self.batch_size_training,criterion=criterion,
                                                 optimizer_fn=optimizer_fn,lr=lr,
                                                 saving_path=saving_path,
                                                 init_weights=init_weights,
@@ -302,7 +300,7 @@ class Model_Advanced: # Scenario_Advanced
         # 
         # video_feat_size = nr_clips * clip_length=16 * 3 * 224 * 224 * 4 (float32) = nr_clips * 9633792 bytes = 
         #                 = nr_clips * 9.19 MB (float16 = 4.6 MB) => 
-        #                => 31 * 9.19 MB = 285 MB
+        #                => 8 * 9.19 MB = 73.52 MB (float32) = 36.76 MB (float16)
         #############################################################################################################
         data = data.to(device)
         feature, unique_labels, unique_subject_id, unique_sample_id, unique_path = self._compute_features(data, labels, subject_id, sample_id, path, device)
@@ -323,16 +321,17 @@ class Model_Advanced: # Scenario_Advanced
     # print('backbone moved to cpu')
     # print(f'torch.cat features {torch.cat(list_features,dim=0).shape}')
     dict_data = {
-      'features': torch.cat(list_features,dim=0),  # [n_video * n_clips, temporal_dim=8, patch_h, patch_w, emb_dim]
-      'list_labels': torch.cat(list_labels,dim=0),  # [n_video * n_clips]
-      'list_subject_id': torch.cat(list_subject_id).squeeze(),  # (n_video * n_clips)
-      'list_sample_id': torch.cat(list_sample_id),  # (n_video * n_clips)
-      'list_path': np.concatenate(list_path),  # (n_video * n_clips,)
-      'list_frames': torch.cat(list_frames,dim=0)  # [n_video * n_clips, n_frames]
+      'features': torch.cat(list_features,dim=0),  # [n_video * n_clips, temporal_dim=8, patch_h, patch_w, emb_dim] 630GB
+      'list_labels': torch.cat(list_labels,dim=0),  # [n_video * n_clips] 8700 * 10 * 4 = 340 KB
+      'list_subject_id': torch.cat(list_subject_id).squeeze(),  # (n_video * n_clips) 8700 * 10 * 4 = 340 KB
+      'list_sample_id': torch.cat(list_sample_id),  # (n_video * n_clips) 8700 * 10 * 4 = 340 KB
+      'list_path': np.concatenate(list_path),  # (n_video * n_clips,) 8700 * 10 * 4 = 340 KB
+      'list_frames': torch.cat(list_frames,dim=0)  # [n_video * n_clips, n_frames] 8700 * 10 * 4 = 340 KB
     }
 
     return dict_data 
 
+  
   def _compute_features(self, data, labels, subject_id, sample_id, path, remove_clip_reduction=False):
     """
     Compute features from the given data using the model's backbone and neck components.

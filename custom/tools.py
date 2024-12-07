@@ -25,7 +25,45 @@ class NpEncoder(json.JSONEncoder):
     if isinstance(obj, np.ndarray):
       return obj.tolist()
     return super(NpEncoder, self).default(obj)
+
+def save_dict_data(dict_data, saving_folder_path):
+  """
+  Save the dictionary containing numpy and torch elements to the specified path.
+
+  Args:
+    dict_data (dict): Dictionary containing the data to be saved.
+    saving_path (str): Path to save the dictionary data.
+  """
+  if not os.path.exists(saving_folder_path):
+    os.makedirs(saving_folder_path)
   
+  for key, value in dict_data.items():
+    if isinstance(value, torch.Tensor):
+      torch.save(value, os.path.join(saving_folder_path, f"{key}.pt"))
+    elif isinstance(value, np.ndarray):
+      np.save(os.path.join(saving_folder_path, f"{key}.npy"), value)
+    else:
+      raise ValueError(f"Unsupported data type for key {key}: {type(value)}")
+  print(f'Dictionary data saved to {saving_folder_path}')
+
+def load_dict_data(saving_folder_path):
+  """
+  Load the dictionary containing numpy and torch elements from the specified path.
+
+  Args:
+    saving_path (str): Path to load the dictionary data.
+
+  Returns:
+    dict: Dictionary containing the loaded data.
+  """
+  dict_data = {}
+  for file in os.listdir(saving_folder_path):
+    if file.endswith(".pt"):
+      dict_data[file[:-3]] = torch.load(os.path.join(saving_folder_path, file))
+    elif file.endswith(".npy"):
+      dict_data[file[:-4]] = np.load(os.path.join(saving_folder_path, file))
+  return dict_data
+
 def plot_mea_per_class(unique_classes, mae_per_class, title='', count_classes=None, saving_path=None):
   """ Plot Mean Absolute Error per class. """
   plt.figure(figsize=(10, 5))
@@ -198,7 +236,7 @@ def _generate_train_test_validation(csv_path, saving_path,train_size=0.8,val_siz
     Exception: If train, validation, and test splits have common elements.
   Notes:
   - The function attempts to generate splits up to 50 times to ensure each split has at least one sample per class.
-  - The input CSV file is expected to have columns separated by tabs ('\t').
+  - The input CSV file is expected to have columns separated by tabs ('\t'). 
   """
   def _check_class_distribution(split_dict,y_unique):
     """ Check if each split has at least one sample per class. """
@@ -209,7 +247,7 @@ def _generate_train_test_validation(csv_path, saving_path,train_size=0.8,val_siz
         return False
     print("All splits have at least one sample per class.")
     return True
-  def _save_split(split_dict, video_labels_columns, saving_path):
+  def _save_split(split_dict, video_labels_columns, saving_path, split_dict_indices):
     # Sanity check
     set_train = set(split_dict['train'][:, 0].astype(int))
     set_test = set(split_dict['test'][:, 0].astype(int)) if test_size != 0.0 else set()
@@ -220,8 +258,7 @@ def _generate_train_test_validation(csv_path, saving_path,train_size=0.8,val_siz
     if set_train & set_val:
         raise ValueError('Error: train and validation split have common elements')
     if set_test & set_val:
-        raise ValueError('Error: validation and test split have common elements')
-      
+        raise ValueError('Error: validation and test split have common elements') 
     # Save the splits
     save_path_dict = {}
     for k,v in split_dict.items():
@@ -229,29 +266,35 @@ def _generate_train_test_validation(csv_path, saving_path,train_size=0.8,val_siz
       save_path_dict[k] = pth
       split_df = pd.DataFrame(v, columns=video_labels_columns)
       split_df.to_csv(pth, index=False, sep='\t')
-      print(f'{k} split saved to {pth}')
+      print(f'{k} csv split saved to {pth}')
+    # Save all the indices of the split
+    pth = os.path.join(saving_path, 'split_indices.json')
+    with open(pth, 'w') as f:
+      json.dump(split_dict_indices, f, cls=NpEncoder)
+      print(f'Split indices saved to {pth}')
     return save_path_dict
+  
   def _generate_splits():
     video_labels = pd.read_csv(csv_path)
-    csv_array=video_labels.to_numpy()
+    csv_array = video_labels.to_numpy()
     video_labels_columns = video_labels.columns.to_numpy()[0].split('\t')
     # ['subject_id', 'subject_name', 'class_id', 'class_name', 'sample_id', 'sample_name']
-    list_samples=[]
-    for entry in (csv_array):
+    list_samples = []
+    for entry in csv_array:
       tmp = entry[0].split("\t")
       list_samples.append(tmp)
     list_samples = np.stack(list_samples)
-    split_dict={}
+    split_dict = {}
     X = list_samples
-    y = list_samples[:,2] # class ID
-    groups = list_samples[:,0] # subject ID
-    
+    y = list_samples[:, 2]  # class ID
+    groups = list_samples[:, 0]  # subject ID
+
     gss = GroupShuffleSplit(n_splits=1,
-                            train_size = train_size, 
-                            test_size = test_size + val_size, 
-                            random_state = random_state)
-    
-    split = list(gss.split(X, y, groups=groups)) # tmp to split in validation and test
+                            train_size=train_size,
+                            test_size=test_size + val_size,
+                            random_state=random_state)
+
+    split = list(gss.split(X, y, groups=groups))  # tmp to split in validation and test
     train_split_idx = split[0][0]
     split_dict['train'] = list_samples[train_split_idx]
     # Further split temp into validation and test
@@ -260,37 +303,54 @@ def _generate_train_test_validation(csv_path, saving_path,train_size=0.8,val_siz
     y_temp = y[tmp_split]
     groups_temp = groups[tmp_split]
     # print(f'split generation seed: {random_state}')
-    gss_temp = GroupShuffleSplit(n_splits = 1,
-                                 train_size = (1/(val_size+test_size)) * val_size, # 1/(val_size+test_size) = 1/0.2 = 5 => 5 * val_size = 0.5
-                                 test_size = (1/(val_size+test_size)) * test_size,
-                                 random_state = random_state)
+    gss_temp = GroupShuffleSplit(n_splits=1,
+                                 train_size=(1 / (val_size + test_size)) * val_size,  # 1/(val_size+test_size) = 1/0.2 = 5 => 5 * val_size = 0.5
+                                 test_size=(1 / (val_size + test_size)) * test_size,
+                                 random_state=random_state)
+
     if val_size == 0.0:
       split_dict['test'] = list_samples[tmp_split]
-      return split_dict,video_labels_columns
+      split_dict_sample_ids = {'train': list_samples[train_split_idx][:, 4], 'test': list_samples[tmp_split][:, 4]}
+      return split_dict, video_labels_columns, split_dict_sample_ids
+
     if train_size == 0.0:
       split_dict['val'] = list_samples[tmp_split]
-      return split_dict,video_labels
-    val_test_split  = list(gss_temp.split(X_temp, y_temp, groups=groups_temp))
+      split_dict_sample_ids = {'train': list_samples[train_split_idx][:, 4], 'val': list_samples[tmp_split][:, 4]}
+      return split_dict, video_labels, split_dict_sample_ids
+
+    val_test_split = list(gss_temp.split(X_temp, y_temp, groups=groups_temp))
     val_split_idx = val_test_split[0][0]
     test_split_idx = val_test_split[0][1]
     split_dict['val'] = list_samples[tmp_split[val_split_idx]]
     split_dict['test'] = list_samples[tmp_split[test_split_idx]]
-    return split_dict,video_labels_columns
+    
+    split_dict_sample_ids = {'train': (list_samples[train_split_idx][:, 4].astype(int),train_split_idx),
+                'val': (list_samples[tmp_split[val_split_idx]][:, 4].astype(int),val_split_idx),
+                'test': (list_samples[tmp_split[test_split_idx]][:, 4].astype(int),test_split_idx)}
+
+    return split_dict, video_labels_columns, split_dict_sample_ids
   
   ################################################################################################################
   assert train_size + val_size + test_size == 1, "train_size + validation_size + test_size must be equal to 1"
   _,classes=get_unique_subjects_and_classes(csv_path)
-  for i in range(50): # attemps to generate a split
-    split_dict, video_labels_columns = _generate_splits()
+  for _ in range(50): # attemps to generate a split
+    split_dict, video_labels_columns, split_dict_indices = _generate_splits()
     if _check_class_distribution(split_dict=split_dict, 
                                  y_unique=classes):
       break
   print(f'nr_train_samples: {len(split_dict["train"])}')
   print(f'nr_test_samples: {len(split_dict["test"])}')
   print(f'nr_val_samples: {len(split_dict["val"])}')
-  save_path_dict = _save_split(split_dict,video_labels_columns,saving_path=saving_path) # in saving_path
-  # save_path_dict['all'] = csv_path
+  save_path_dict = _save_split(split_dict=split_dict,video_labels_columns=video_labels_columns,
+                               saving_path=saving_path,split_dict_indices=split_dict_indices) # in saving_path
+
   return save_path_dict
+
+def read_split_indices(saving_path):
+  split_indices_file = os.path.join(saving_path, 'split_indices.json')
+  with open(split_indices_file, 'r') as f:
+    split_indices = json.load(f)
+  return split_indices
 
 def generate_plot_train_test_results(dict_results, count_y_train, count_y_test, count_subject_ids_train, count_subject_ids_test, saving_path):  
   plot_mea_per_class(title='training', 
@@ -343,7 +403,6 @@ def get_unique_subjects_and_classes(csv_path):
   class_counts = {class_id: np.sum(class_ids == class_id) for class_id in np.unique(class_ids)}
   
   return subject_counts, class_counts
-
 
 def plot_dataset_distribution(csv_path, total_classes=None,per_class=False, per_partecipant=False, saving_path=None): 
     def plot_distribution(unique,count,title):  
@@ -469,7 +528,7 @@ def plot_dataset_distribution_mean_std_duration(csv_path, video_path=None, per_c
 
 def plot_prediction_chunks_per_subject(predictions, title,saving_path=None):
   print('Plotting...')
-  print('  predictions shape', predictions.shape) # (n_samples, n_chunks)
+  # print('  predictions shape', predictions.shape) # (n_samples, n_chunks)
   indices = np.arange(predictions.shape[1]).astype(int)
   get_list_video_path_from_csv
   print('indices', indices)
@@ -509,13 +568,13 @@ def plot_tsne(X, labels, legend_label='', title = '', use_cuda=False, perplexity
     tsne = TSNE(n_components=2, perplexity=perplexity)
   X_cpu = X.detach().cpu().squeeze()
   X_cpu = X_cpu.reshape(X_cpu.shape[0], -1)
-  print(f' X_cpu.shape: {X_cpu.shape}')
+  # print(f' X_cpu.shape: {X_cpu.shape}')
   print(" Start t-SNE computation...")
   X_tsne = tsne.fit_transform(X_cpu) # in: X=(n_samples, n_features)
                                      # out: (n_samples, n_components=2)
   print(" t-SNE computation done.")
-  print(f' X_tsne.shape: {X_tsne.shape}')
-  print(f' labels shape: {labels.shape}')
+  # print(f' X_tsne.shape: {X_tsne.shape}')
+  # print(f' labels shape: {labels.shape}')
   plt.figure(figsize=(10, 8))
   
   for val in unique_labels:
@@ -580,7 +639,7 @@ def save_frames_as_video(list_input_video_path, list_frame_indices,sample_ids, o
   # if len(all_predictions.shape)>2:
   #   all_predictions = all_predictions.reshape(all_predictions.shape[0],-1)
   # if len(list_ground_truth.shape) :
-  print(f'all_predictions shape: {all_predictions.shape}')
+  # print(f'all_predictions shape: {all_predictions.shape}')
   # print('all_labels',list_ground_truth)
   # print(f'output_video_path: {output_video_path}')
   # print('pred',all_predictions)
@@ -649,7 +708,6 @@ def save_frames_as_video(list_input_video_path, list_frame_indices,sample_ids, o
   print(f"Saved extracted frames to {output_video_path}")
   # Add 4 black frames at the end
 
-
 def _generate_csv_subsampled(csv_dataset_path, nr_samples_per_class=2):
   csv_array, video_labels_columns =get_array_from_csv(csv_dataset_path)
   # ['subject_id', 'subject_name', 'class_id', 'class_name', 'sample_id', 'sample_name']
@@ -667,7 +725,7 @@ def _generate_csv_subsampled(csv_dataset_path, nr_samples_per_class=2):
       samples_subsampled = samples
     else:
       samples_subsampled = np.concatenate((samples_subsampled,samples),axis=0)
-  print(f'samples_subsampled: {samples_subsampled}')
+  # print(f'samples_subsampled: {samples_subsampled}')
   save_path = os.path.join('partA','starting_point','subsamples_'+str(nr_samples_per_class)+'_'+str(nr_samples_per_class*nr_classes)+'.csv')
   subsampled_df = pd.DataFrame(samples_subsampled, columns=video_labels_columns)
   subsampled_df.to_csv(save_path, index=False, sep='\t')
