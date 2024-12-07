@@ -91,10 +91,10 @@ class customDataset(torch.utils.data.Dataset):
     list_indices = self.sample_frame_strategy(tot_frames)
     start_time_load_video = time.time()
     frames_list=[self._read_video_pyav(container,indices) for indices in list_indices]
-    print('time to load video:', time.time()-start_time_load_video)
+    # print('time to load video:', time.time()-start_time_load_video)
     start_time_preprocess = time.time()
     preprocessed_tensors = torch.stack([self.preprocess(list(frames), return_tensors="pt")['pixel_values'] for frames in frames_list])
-    print('Time to preprocess video', time.time()-start_time_preprocess)
+    # print('Time to preprocess video', time.time()-start_time_preprocess)
     # preprocessed output shape [2, 1, 16, 3, 224, 224] -> [nr_clips, batch_video, clip_length, RGB_channels=3, H=224, W=224]
     # print(len(frames_list))
     path = np.repeat(video_path, preprocessed_tensors.shape[0])
