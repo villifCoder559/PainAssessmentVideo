@@ -20,9 +20,10 @@ import json
 
 def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduction, sample_frame_strategy, 
                    path_csv_dataset, path_video_dataset, head, stride_window_in_video, 
-                   head_params, preprocess,k_fold=1,
-                   train_size = 0.8, val_size=0.1, test_size=0.1, download_if_unavailable=False, batch_size=1,
-                   epochs = 10, criterion = nn.L1Loss(), optimizer_fn = optim.Adam, lr = 0.001,random_state=42,
+                   head_params, preprocess,k_fold=1, save_features_extracted=False,
+                   train_size = 0.8, val_size=0.1, test_size=0.1, download_if_unavailable=False, 
+                   batch_size_training = 1, batch_size_feat_extraction = 3,epochs = 10, 
+                   criterion = nn.L1Loss(), optimizer_fn = optim.Adam, lr = 0.001,random_state_split_dataset=42,
                    plot_dataset_distribution=True,plot_loss=True,plot_tsne_backbone_feats=True,plot_tsne_head_pred=True,
                    plot_tsne_gru_feats=True,create_video_prediction=True,create_video_prediction_per_video=True,is_validation=False,
                    round_output_loss=False):
@@ -80,15 +81,25 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     dict_train = model_advanced.train(train_csv_path=dict_csv_path['train'],
                                       test_csv_path=test_csv_path,
                                       num_epochs=epochs, 
-                                      batch_size=batch_size, 
                                       criterion=criterion,
                                       optimizer_fn=optimizer_fn,
                                       lr=lr,
                                       saving_path=train_folder_saving_path,
-                                      round_output_loss=round_output_loss
+                                      round_output_loss=round_output_loss,
+                                      is_validation=is_validation,
                                       )
     return dict_train  
-
+  
+  def extract_and_save_all_features(csv_path,features_folder_saving_path):
+    # features_folder_saving_path = os.path.join(features_folder_saving_path, path_csv_dataset[:-4])
+    if not os.path.exists(features_folder_saving_path):
+      os.makedirs(features_folder_saving_path)
+    # get the name of the csv file
+    if not os.path.exists(features_folder_saving_path):
+      os.makedirs(features_folder_saving_path)
+    dict_data = model_advanced._extract_features(path_csv_dataset=csv_path,batch_size=batch_size_feat_extraction)
+    tools.save_dict_data(dict_data=dict_data, saving_folder_path=features_folder_saving_path)
+    
   def k_fold_cross_validation(is_validation=False,round_output_loss=False):
     """
     Perform k-fold cross-validation on the dataset and train the model.
@@ -124,7 +135,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
 
       dict_train = train_model(dict_csv_path= path_csv_kth_fold,
                                             train_folder_saving_path=saving_path_kth_fold,
-                                            batch_size=batch_size,
+                                            batch_size=batch_size_training,
                                             is_validation=is_validation,
                                             round_output_loss=round_output_loss)
             # Generate and save plots of the training and test results
@@ -156,7 +167,10 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
             'list_saving_paths':list_saving_paths,
             'list_path_csv_kth_fold':list_path_csv_kth_fold,
             'best_results_idx':best_results_idx}
-  
+    
+  ###############################
+  # START of the main function  #
+  ###############################
   inputs_dict = {
     'model_type': model_type.name,
     'pooling_embedding_reduction': pooling_embedding_reduction.name,
@@ -173,12 +187,14 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'val_size': val_size,
     'test_size': test_size,
     'download_if_unavailable': download_if_unavailable,
-    'batch_size': batch_size,
+    'batch_size_feat_extraction': batch_size_feat_extraction,
+    'batch_size_training': batch_size_training,
     'epochs': epochs,
     'criterion': criterion.__class__.__name__,
-    'optimizer_fn': optimizer_fn.__class__.__name__,
-    'lr': lr.__class__.__name__,
-    'random_state': random_state,
+    'optimizer_fn': optimizer_fn.__name__,
+    'lr': lr,
+    'criterion': type(criterion).__name__,
+    'random_state': random_state_split_dataset,
     'plot_dataset_distribution': plot_dataset_distribution,
     'plot_loss': plot_loss,
     'plot_tsne_backbone_feats': plot_tsne_backbone_feats,
@@ -198,7 +214,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   stride_window=stride_window_in_video,
                                   path_labels=path_csv_dataset,
                                   preprocess=preprocess,
-                                  batch_size=batch_size,
+                                  batch_size_training=batch_size_training,
+                                  batch_size_feat_extraction=batch_size_feat_extraction,
                                   head=head.value,
                                   head_params=head_params,
                                   download_if_unavailable=download_if_unavailable
@@ -239,6 +256,13 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
 
   if not os.path.exists(train_folder_path):
     os.makedirs(train_folder_path)
+  
+  # Save feature if required
+  if save_features_extracted:
+    features_folder_saving_path = os.path.join('partA','video','features',os.path.split(path_csv_dataset)[-1][:-4]) # get the name of the csv file
+    extract_and_save_all_features(csv_path=path_csv_dataset,features_folder_saving_path=features_folder_saving_path)
+  
+  # Train the model
   if k_fold == 1:
     print("Generating train, test and validation csv files")
     dict_cvs_path = tools._generate_train_test_validation(csv_path=path_csv_dataset,
@@ -246,12 +270,11 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                                           train_size=train_size,
                                                           val_size=val_size,
                                                           test_size=test_size,
-                                                          random_state=random_state
+                                                          random_state=random_state_split_dataset
                                                           )
     print("Plotting train,test,val distribution")
     for _,csv_path in dict_cvs_path.items():
       plot_dataset_distribuition(csv_path=csv_path,run_folder_path=run_folder_path, total_classes=model_advanced.dataset.total_classes)
-    
     print("Training model")
     dict_train = train_model(is_validation=is_validation,dict_csv_path=dict_cvs_path, train_folder_saving_path=train_folder_path,round_output_loss=round_output_loss)
     
@@ -267,7 +290,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     list_saving_paths_k_fold = fold_results['list_saving_paths'] # list of saving paths for each fold
     for i,dict_train in enumerate(list_dict_csv_path):
       plot_loss_details(dict_train, list_saving_paths_k_fold[i],epochs)
-
+  return None
   # For each dataset used plot tsne considering all features from backbone per subject and per class
   for dict_cvs_path,train_folder_path in zip(list_dict_csv_path,list_saving_paths_k_fold):
     # create folder to save tsne plots
@@ -337,9 +360,9 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
         #                 saving_path = os.path.join(saving_path_tsne,f'tsne_GRU_{split_dataset_name}_subject'))
       
       # Create video with predictions
-      print(f'y_pred shape {y_pred.shape}')
-      print(f'y_gt shape {y_gt.shape}')
-      print(f'list_frames shape {dict_backbone_feats["list_frames"].shape}')
+      # print(f'y_pred shape {y_pred.shape}')
+      # print(f'y_gt shape {y_gt.shape}')
+      # print(f'list_frames shape {dict_backbone_feats["list_frames"].shape}')
       create_unique_video_per_prediction(train_folder_path=train_folder_path,
                                         dict_cvs_path=dict_cvs_path,
                                         list_frames=dict_backbone_feats['list_frames'],
@@ -404,7 +427,7 @@ def create_unique_video_per_prediction(train_folder_path, dict_cvs_path, sample_
   output_video_path = os.path.join(video_folder_path,f'video_{dataset_name}.mp4')
   # Separare che ho la prediction per ogni video dato che uso la sliding windows in input alla GRU
   # Create metodo che dato un dataset per ogni sliding in list_frame fa la predicition e poi salvare il video
-  print(f'y_pred shape {y_pred.shape}') # [36]
+  # print(f'y_pred shape {y_pred.shape}') # [36]
   # print(f'y shape {y.shape}') # [36]
   # print(f'{list_frames.shape}') # [36, 16]
   # all_predictions = y_pred.reshape(y_pred.shape[0],-1) # [33,2,1] -> [33,2]
