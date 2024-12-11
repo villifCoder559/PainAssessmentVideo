@@ -52,6 +52,7 @@ class Model_Advanced: # Scenario_Advanced
                                  clip_length=clip_length,
                                  batch_size=batch_size_feat_extraction)
     self.batch_size_training = batch_size_training
+    self.batch_size_feat_extraction = batch_size_feat_extraction
     # self.dataloader = DataLoader(self.dataset, 
     #                              batch_size=batch_size, 
     #                              shuffle=False,
@@ -138,8 +139,9 @@ class Model_Advanced: # Scenario_Advanced
   #   # return results
 
   
-  def train(self, train_csv_path, test_csv_path,is_validation, original_csv='',num_epochs=10, criterion=nn.L1Loss(),
-            optimizer_fn=optim.Adam, lr=0.0001,saving_path=None,init_weights=True,round_output_loss=False):
+  def train(self, train_csv_path, test_csv_path, num_epochs=10, criterion=nn.L1Loss(),
+            optimizer_fn=optim.Adam, lr=0.0001,saving_path=None,init_weights=True,round_output_loss=False,
+            shuffle_video_chunks=True,shuffle_training_batch=True):
     """
     Train the model using the specified training and testing datasets.
     Parameters:
@@ -170,47 +172,20 @@ class Model_Advanced: # Scenario_Advanced
       - 'count_subject_ids_train': Count of unique subject IDs in the training set.
       - 'count_subject_ids_test': Count of unique subject IDs in the testing set.
     """
-    print(self.path_to_extracted_features)
-    dict_feature_extraction_train = {}
-    dict_feature_extraction_test = {}
-    if os.path.exists(self.path_to_extracted_features):
-      print('Loading extracted features...')
-      print('folder_indxs_path',os.path.split(train_csv_path)[:-1][0])
-      split_indices_folder = os.path.join(os.path.split(train_csv_path)[:-1][0])
-      dict_sample_indices = tools.read_split_indices(split_indices_folder)
-      dict_all_features = tools.load_dict_data(self.path_to_extracted_features)
-      list_train_idx = []
-      for sample_id in dict_sample_indices['train'][0]:
-        idxs = sample_id == dict_all_features['list_sample_id']
-        list_train_idx.append(idxs)
-      all_idxs_train = torch.any(torch.stack(list_train_idx), dim=0)
-      if is_validation:
-        key = 'val'
-      else:
-        key = 'test'
-      for sample_id in dict_sample_indices[key][0]:
-        idxs = sample_id == dict_all_features['list_sample_id']
-        list_train_idx.append(idxs)
-      all_idxs_test = torch.any(torch.stack(list_train_idx), dim=0)
-      print(all_idxs_test.shape)
-      for k,v in dict_all_features.items():
-        if k != 'list_path':
-          print(f' {k} : {v.shape}')
-          dict_feature_extraction_train[k] = v[all_idxs_train]
-          dict_feature_extraction_test[k] = v[all_idxs_test]
-        else:
-          dict_feature_extraction_train[k] = v[dict_sample_indices['train'][1]]
-          dict_feature_extraction_test[k] = v[dict_sample_indices[key][1]]
-          
+    # print(self.path_to_extracted_features)
+        # else:
+        #   dict_feature_extraction_train[k] = v[dict_sample_indices['train'][1]]
+        #   dict_feature_extraction_test[k] = v[dict_sample_indices[key][1]]
+        #   print(f'v {v}')
+        #   print(f"idx: {dict_sample_indices['train'][1]}")
+        #   print(f'dict_feature_extraction_train[k] {dict_feature_extraction_train[k]}')
         
-    else:
-      print('Extracting features...')
-      dict_feature_extraction_train = self._extract_features(train_csv_path)    
-      dict_feature_extraction_test = self._extract_features(test_csv_path)
+        
+    # else:
+    print('Extracting features...')
+    dict_feature_extraction_train = self.extract_features(train_csv_path)
+    dict_feature_extraction_test = self.extract_features(test_csv_path)
     
-    for k,v in dict_feature_extraction_train.items():
-      print(f' train_{k} : {v.shape}')
-        
     count_subject_ids_train, count_y_train = tools.get_unique_subjects_and_classes(train_csv_path)
     X_train = dict_feature_extraction_train['features']
     y_train = dict_feature_extraction_train['list_labels']
@@ -234,11 +209,13 @@ class Model_Advanced: # Scenario_Advanced
       dict_results = self.head.start_train_test(X_train=X_train, y_train=y_train, subject_ids_train=subject_ids_train,
                                                 sample_ids_test=sample_ids_test, sample_ids_train=sample_ids_train,
                                                 X_test=X_test, y_test=y_test, subject_ids_test=subject_ids_test, 
-                                                num_epochs=num_epochs,batch_size=self.batch_size_training,criterion=criterion,
-                                                optimizer_fn=optimizer_fn,lr=lr,
+                                                num_epochs=num_epochs, batch_size=self.batch_size_training,
+                                                criterion=criterion, optimizer_fn=optimizer_fn, lr=lr,
                                                 saving_path=saving_path,
                                                 init_weights=init_weights,
                                                 round_output_loss=round_output_loss,
+                                                shuffle_video_chunks=shuffle_video_chunks,
+                                                shuffle_training_batch=shuffle_training_batch
                                                 )
     
     return {'dict_results':dict_results, 
@@ -246,8 +223,31 @@ class Model_Advanced: # Scenario_Advanced
             'count_y_test':count_y_test,
             'count_subject_ids_train':count_subject_ids_train,
             'count_subject_ids_test':count_subject_ids_test}
-  
-  def _extract_features(self,path_csv_dataset, batch_size=2):
+    
+  def extract_features(self,csv_path):
+    dict_feature_extraction = {}
+    if os.path.exists(self.path_to_extracted_features):
+      print('Loading features from SSD...')
+      key = os.path.split(csv_path)[-1][:-4]
+      # print('folder_indxs_path',os.path.split(train_csv_path)[:-1][0])
+      split_indices_folder = os.path.join(os.path.split(csv_path)[:-1][0])
+      dict_sample_indices = tools.read_split_indices(split_indices_folder)
+      dict_all_features = tools.load_dict_data(self.path_to_extracted_features)
+      list_idx = []
+      for sample_id in dict_sample_indices[key][0]: # dict_sample_indices['train'][0] -> list of sample_ids, dict_sample_indices['train'][1] -> list of indices
+        idxs = sample_id == dict_all_features['list_sample_id'] # get all video chunks of the same sample_id
+        list_idx.append(idxs) # list of boolean tensors => torch.stack(list_idx) -> [n_video, n_clips]
+      
+      all_idxs_train = torch.any(torch.stack(list_idx), dim=0)
+      
+      for k,v in dict_all_features.items():
+        dict_feature_extraction[k] = v[all_idxs_train]
+      return dict_feature_extraction
+    else:
+      print('Computing features...')
+      return self._extract_features(path_csv_dataset=csv_path)
+      
+  def _extract_features(self,path_csv_dataset):
     """
     Extract features from the dataset specified by the CSV file path.
 
@@ -265,6 +265,7 @@ class Model_Advanced: # Scenario_Advanced
         - 'list_frames' (torch.Tensor): shape [n_video * n_clips, n_frames].
 
     """
+    
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"extracting features using.... {device}")
     list_features = []
@@ -276,7 +277,7 @@ class Model_Advanced: # Scenario_Advanced
     count = 0
     self.dataset.set_path_labels(path_csv_dataset)
     dataloader = DataLoader(self.dataset, 
-                            batch_size=batch_size,
+                            batch_size=self.batch_size_feat_extraction,
                             num_workers=4,
                             shuffle=False,
                             collate_fn=self.dataset._custom_collate_fn)
@@ -287,7 +288,6 @@ class Model_Advanced: # Scenario_Advanced
       # start_total_time = time.time()
       # start = time.time()
       for data, labels, subject_id,sample_id, path, list_sampled_frames in dataloader:
-        # print(f'Elapsed time for {batch_size} samples: {time.time() - start}')
         #############################################################################################################
         # data shape -> [nr_clips, clip_length=16, channels=3, H=224, W=224]
         # 
@@ -302,15 +302,16 @@ class Model_Advanced: # Scenario_Advanced
         #                 = nr_clips * 9.19 MB (float16 = 4.6 MB) => 
         #                => 8 * 9.19 MB = 73.52 MB (float32) = 36.76 MB (float16)
         #############################################################################################################
+        # print(f'Elapsed time for {batch_size} samples: {time.time() - start}')
         data = data.to(device)
-        feature, unique_labels, unique_subject_id, unique_sample_id, unique_path = self._compute_features(data, labels, subject_id, sample_id, path, device)
+        feature = self._compute_features(data, labels, subject_id, sample_id, path, device)
         # feature -> [2, 8, 1, 1, 384]
         list_frames.append(list_sampled_frames)
         list_features.append(feature)
-        list_labels.append(unique_labels)
-        list_sample_id.append(unique_sample_id)
-        list_subject_id.append(unique_subject_id)
-        list_path.append(unique_path)
+        list_labels.append(labels)
+        list_sample_id.append(sample_id)
+        list_subject_id.append(subject_id)
+        list_path.append(path)
         count += 1
         # if count % 10 == 0:
         #   print(f'Extracted features for {count*batch_size} samples')
@@ -332,7 +333,7 @@ class Model_Advanced: # Scenario_Advanced
     return dict_data 
 
   
-  def _compute_features(self, data, labels, subject_id, sample_id, path, remove_clip_reduction=False):
+  def _compute_features(self, data, remove_clip_reduction=False):
     """
     Compute features from the given data using the model's backbone and neck components.
     Assumption: The model and data already in the same device
@@ -362,19 +363,15 @@ class Model_Advanced: # Scenario_Advanced
     if not remove_clip_reduction and self.neck.clips_reduction is not None:
       feature = self.neck.clips_reduction(feature)
     
-    unique_path = np.unique(path, return_counts=False)
+    # unique_path = np.unique(path, return_counts=False)
     
-    return feature, \
-           labels, \
-           subject_id,\
-           sample_id, \
-           unique_path
+    return feature
     
   def run_grid_search(self, param_grid,k_cross_validation=5): #
     if isinstance(self.head, HeadSVR):
       print('GridSearch using SVR...')
       self.dataset.set_path_labels('val')
-      X, y, subjects_id,_ , _, _ = self._extract_features()
+      X, y, subjects_id,_ , _, _ = self.extract_features()
       X = X.reshape(X.shape[0],-1).detach().cpu().numpy()
       y = y.squeeze().detach().cpu().numpy()
       # print(subjects_id.shape)
