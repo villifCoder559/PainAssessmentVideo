@@ -20,13 +20,13 @@ import json
 
 def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduction, sample_frame_strategy, 
                    path_csv_dataset, path_video_dataset, head, stride_window_in_video, 
-                   head_params, preprocess,k_fold=1, save_features_extracted=False,
-                   train_size = 0.8, val_size=0.1, test_size=0.1, download_if_unavailable=False, 
+                   head_params, preprocess,k_fold=1, is_save_features_extracted=False,
+                   train_size = 0.8, val_size=0.1, test_size=0.1, is_download_if_unavailable=False, 
                    batch_size_training = 1, batch_size_feat_extraction = 3,epochs = 10, 
                    criterion = nn.L1Loss(), optimizer_fn = optim.Adam, lr = 0.001,random_state_split_dataset=42,
-                   plot_dataset_distribution=True,plot_loss=True,plot_tsne_backbone_feats=True,plot_tsne_head_pred=True,
-                   plot_tsne_gru_feats=True,create_video_prediction=True,create_video_prediction_per_video=True,is_validation=False,
-                   round_output_loss=False, shuffle_video_chunks=True,shuffle_training_batch=True):
+                   is_plot_dataset_distribution=True,is_plot_loss=True,is_plot_tsne_backbone_feats=True,is_plot_tsne_head_pred=True,
+                   is_plot_tsne_gru_feats=True,is_create_video_prediction=True,is_create_video_prediction_per_video=True,is_validation=False,
+                   is_round_output_loss=False, is_shuffle_video_chunks=True,is_shuffle_training_batch=True):
 
   def plot_dataset_distribuition(csv_path,run_folder_path,per_class=True,per_partecipant=True,total_classes=None):
     #  Create folder to save the dataset distribution 
@@ -99,7 +99,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     # get the name of the csv file
     if not os.path.exists(features_folder_saving_path):
       os.makedirs(features_folder_saving_path)
-    dict_data = model_advanced.extract_features(path_csv_dataset=csv_path,batch_size=batch_size_feat_extraction)
+    dict_data = model_advanced.extract_features(csv_path=csv_path)
     # print(f' dict_data {dict_data}')
     tools.save_dict_data(dict_data=dict_data, saving_folder_path=features_folder_saving_path)
     
@@ -190,7 +190,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'train_size': train_size,
     'val_size': val_size,
     'test_size': test_size,
-    'download_if_unavailable': download_if_unavailable,
+    'download_if_unavailable': is_download_if_unavailable,
     'batch_size_feat_extraction': batch_size_feat_extraction,
     'batch_size_training': batch_size_training,
     'epochs': epochs,
@@ -199,18 +199,18 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'lr': lr,
     'criterion': type(criterion).__name__,
     'random_state': random_state_split_dataset,
-    'plot_dataset_distribution': plot_dataset_distribution,
-    'plot_loss': plot_loss,
-    'plot_tsne_backbone_feats': plot_tsne_backbone_feats,
-    'plot_tsne_head_pred': plot_tsne_head_pred,
-    'plot_tsne_gru_feats': plot_tsne_gru_feats,
-    'create_video_prediction': create_video_prediction,
-    'create_video_prediction_per_video': create_video_prediction_per_video,
-    'round_output_loss': round_output_loss,
-    'shuffle_video_chunks': shuffle_video_chunks,
-    'shuffle_training_batch':shuffle_training_batch
+    'plot_dataset_distribution': is_plot_dataset_distribution,
+    'plot_loss': is_plot_loss,
+    'plot_tsne_backbone_feats': is_plot_tsne_backbone_feats,
+    'plot_tsne_head_pred': is_plot_tsne_head_pred,
+    'plot_tsne_gru_feats': is_plot_tsne_gru_feats,
+    'create_video_prediction': is_create_video_prediction,
+    'create_video_prediction_per_video': is_create_video_prediction_per_video,
+    'round_output_loss': is_round_output_loss,
+    'shuffle_video_chunks': is_shuffle_video_chunks,
+    'shuffle_training_batch':is_shuffle_training_batch
   }
-    
+  features_folder_saving_path = os.path.join('partA','video','features',f'{os.path.split(path_csv_dataset)[-1][:-4]}_{stride_window_in_video}') # get the name of the csv file
   # Create the model
   model_advanced = Model_Advanced(model_type=model_type,
                                   path_dataset=path_video_dataset,
@@ -224,7 +224,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   batch_size_feat_extraction=batch_size_feat_extraction,
                                   head=head.value,
                                   head_params=head_params,
-                                  download_if_unavailable=download_if_unavailable
+                                  download_if_unavailable=is_download_if_unavailable,
+                                  features_folder_saving_path= features_folder_saving_path
                                   )
   
   # Check if the global folder exists 
@@ -252,7 +253,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
       
   # Plot dataset distribution of whole dataset
   # print(f"Plotting dataset distribution at {run_folder_path}")
-  plot_dataset_distribuition(csv_path=path_csv_dataset, run_folder_path=run_folder_path, total_classes=model_advanced.dataset.total_classes)
+  if is_plot_dataset_distribution:
+    plot_dataset_distribuition(csv_path=path_csv_dataset, run_folder_path=run_folder_path, total_classes=model_advanced.dataset.total_classes)
 
   # Train the model
   print(f"Start training phase the model at {run_folder_path}")
@@ -264,8 +266,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     os.makedirs(train_folder_path)
   
   # Save feature if required
-  if save_features_extracted:
-    features_folder_saving_path = os.path.join('partA','video','features',os.path.split(path_csv_dataset)[-1][:-4]) # get the name of the csv file
+  if is_save_features_extracted:
     extract_and_save_all_features(csv_path=path_csv_dataset,features_folder_saving_path=features_folder_saving_path)
   
   # Train the model
@@ -280,13 +281,14 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                                           )
     print("Plotting train,test,val distribution")
     for _,csv_path in dict_cvs_path.items():
-      plot_dataset_distribuition(csv_path=csv_path,run_folder_path=run_folder_path, total_classes=model_advanced.dataset.total_classes)
+      if is_plot_dataset_distribution:
+        plot_dataset_distribuition(csv_path=csv_path,run_folder_path=run_folder_path, total_classes=model_advanced.dataset.total_classes)
     print("Training model")
     dict_train = train_model(is_validation=is_validation,
                              dict_csv_path=dict_cvs_path,
                              train_folder_saving_path=train_folder_path,
-                             round_output_loss=round_output_loss,
-                             shuffle_video_chunks=shuffle_video_chunks)
+                             round_output_loss=is_round_output_loss,
+                             shuffle_video_chunks=is_shuffle_video_chunks)
     
     # plot loss details
     plot_loss_details(dict_train, train_folder_path, epochs)
