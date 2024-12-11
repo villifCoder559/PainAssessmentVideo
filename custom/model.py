@@ -315,8 +315,9 @@ class Model_Advanced: # Scenario_Advanced
         list_subject_id.append(subject_id)
         list_path.append(path)
         count += 1
-        if count % 10 == 0:
-          print(f'Extracted features for {count} samples')
+        # if count % 10 == 0:
+        print(f'Batch {count}/{len(dataloader)}')
+        print(f'GPU:\n Free : {torch.cuda.mem_get_info()[0]/1024/1024/1024:.2f} GB \n total: {torch.cuda.mem_get_info()[1]/1024/1024/1024:.2f} GB')
         # start = time.time()
     # print(f'Elapsed time for total feature extraction: {time.time() - start_total_time}')
     # print('Feature extraceton done')
