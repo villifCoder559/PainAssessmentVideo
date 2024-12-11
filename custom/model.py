@@ -24,7 +24,8 @@ import time
 class Model_Advanced: # Scenario_Advanced
   def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,
               path_labels, preprocess, sample_frame_strategy, head, head_params, download_if_unavailable=False,
-              batch_size_feat_extraction=1,batch_size_training=1,stride_window=2,clip_length=16):
+              batch_size_feat_extraction=1,batch_size_training=1,stride_window=2,clip_length=16,
+              features_folder_saving_path=''):
     """
     Initialize the custom model. 
     Parameters:
@@ -63,7 +64,7 @@ class Model_Advanced: # Scenario_Advanced
     elif head == 'GRU':
       assert self.backbone.frame_size % self.backbone.tubelet_size == 0, "Frame size must be divisible by tubelet size."
       self.head = HeadGRU(**head_params)
-    self.path_to_extracted_features = os.path.join('partA','video','features',os.path.split(path_labels)[-1][:-4])
+    self.path_to_extracted_features = features_folder_saving_path
   # def compute_output_tensor_for_gru(self):
   #   assert self.backbone.frame_size % self.backbone.tubelet_size == 0, "Frame size must be divisible by tubelet size."
   #     # Calculate the backbone output tensor size to use as input to the GRU head
@@ -226,7 +227,8 @@ class Model_Advanced: # Scenario_Advanced
     
   def extract_features(self,csv_path):
     dict_feature_extraction = {}
-    if os.path.exists(self.path_to_extracted_features):
+    print(f'csv_path:{csv_path}')
+    if os.path.exists(self.path_to_extracted_features) and os.listdir(self.path_to_extracted_features):
       print('Loading features from SSD...')
       key = os.path.split(csv_path)[-1][:-4]
       # print('folder_indxs_path',os.path.split(train_csv_path)[:-1][0])
@@ -304,7 +306,7 @@ class Model_Advanced: # Scenario_Advanced
         #############################################################################################################
         # print(f'Elapsed time for {batch_size} samples: {time.time() - start}')
         data = data.to(device)
-        feature = self._compute_features(data, labels, subject_id, sample_id, path, device)
+        feature = self._compute_features(data)
         # feature -> [2, 8, 1, 1, 384]
         list_frames.append(list_sampled_frames)
         list_features.append(feature)
@@ -313,8 +315,8 @@ class Model_Advanced: # Scenario_Advanced
         list_subject_id.append(subject_id)
         list_path.append(path)
         count += 1
-        # if count % 10 == 0:
-        #   print(f'Extracted features for {count*batch_size} samples')
+        if count % 10 == 0:
+          print(f'Extracted features for {count} samples')
         # start = time.time()
     # print(f'Elapsed time for total feature extraction: {time.time() - start_total_time}')
     # print('Feature extraceton done')
@@ -359,10 +361,10 @@ class Model_Advanced: # Scenario_Advanced
     # Apply dimensionality reduction [B,C,T,H,W] -> [B, reduction(C,T,H,W)]
     if self.neck.embedding_reduction is not None:
       feature = self.neck.embedding_reduction(feature)
-    # Apply clip reduction [B, reduction(C,T,H,W)] -> [1, reduction(C,T,H,W)]
+    # Apply clip reduction [B, reduction(C,T,H,W)] -> [1, reduction(C,T,H,W)] => extract one feature per video using the mean
     if not remove_clip_reduction and self.neck.clips_reduction is not None:
       feature = self.neck.clips_reduction(feature)
-    
+    print(f'feature shape: {feature.shape}')
     # unique_path = np.unique(path, return_counts=False)
     
     return feature
