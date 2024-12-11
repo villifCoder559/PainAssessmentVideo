@@ -10,6 +10,7 @@ import cv2
 import av
 import torch
 import json
+from openTSNE import TSNE as openTSNE
 
 # if os.name == 'posix':
   # from tsnecuda import TSNE as cudaTSNE # available only on Linux
@@ -99,6 +100,7 @@ def get_accuracy_from_confusion_matrix(confusion_matrix):
   if isinstance(confusion_matrix, MulticlassConfusionMatrix):
     # print('COmpute conf matrix')
     confusion_matrix = confusion_matrix.compute()
+  
   tp = confusion_matrix.diag()
   fn = torch.sum(confusion_matrix,1) - tp
   fp = torch.sum(confusion_matrix,0) - tp
@@ -159,32 +161,33 @@ def plot_accuracy_confusion_matrix(train_confusion_matricies,test_confusion_matr
         labels_train.append(f'Train class {i}')
         labels_test.append(f'Test class {i}')
     plt.figure(figsize=(10, 5))
+    
+    # Plot train results
     plt.plot(train_list_key_values, label=labels_train)
-    plt.plot(test_list_key_values, label=labels_test)
     plt.xlabel('Epochs')
     plt.ylabel(key)
-    plt.title(f'{key} over Epochs {title}')
+    plt.title(f'train_{key} over Epochs {title}')
     plt.legend()
     if saving_path is not None:
-      path=os.path.join(saving_path,f'{key}.png')
+      path=os.path.join(saving_path,f'train_{key}.png')
       plt.savefig(path)
       print(f'Plot {key} over Epochs {title} saved to {path}.png')
     else:
       plt.show()
-    # else:
-      # for i in range(train_list_key_values[0].shape[0]):
-      #   plt.figure(figsize=(10, 5))
-      #   plt.plot([train_list_key_values[j][i] for j in range(len(train_list_key_values))], label='Training '+key+' class '+str(i))
-      #   plt.plot([test_list_key_values[j][i] for j in range(len(test_list_key_values))], label='Test '+key+' class '+str(i))
-      #   plt.xlabel('Epochs')
-      #   plt.ylabel(key)
-      #   plt.title(f'{key} over Epochs {title} class {i}')
-      #   plt.legend()
-      #   if saving_path is not None:
-      #     plt.savefig(saving_path+f'_class_{i}.png')
-      #     print(f'Plot {key} over Epochs {title} class {i} saved to {saving_path}_class_{i}.png')
-      #   else:
-      #     plt.show()
+    
+    #Plot test results  
+    plt.figure(figsize=(10, 5))
+    plt.plot(test_list_key_values, label=labels_test)
+    plt.xlabel('Epochs')
+    plt.ylabel(key)
+    plt.title(f'test_{key} over Epochs {title}')
+    plt.legend()
+    if saving_path is not None:
+      path=os.path.join(saving_path,f'test_{key}.png')
+      plt.savefig(path)
+      print(f'Plot {key} over Epochs {title} saved to {path}.png')
+    else:
+      plt.show()
 
 def plot_mae_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_subjects=None, saving_path=None):
   """ Plot Mean Absolute Error per participant. """
@@ -570,15 +573,17 @@ def plot_tsne(X, labels, legend_label='', title = '', use_cuda=False, perplexity
     # tsne = cudaTSNE(n_components=2, perplexity=perplexity)
   else:
     print('Using CPU')
-    tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42)
+    tsne = openTSNE(n_components=2, perplexity=perplexity, random_state=42,n_jobs = -1)
+    # tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42, n_jobs=-1)
   X_cpu = X.detach().cpu().squeeze()
   X_cpu = X_cpu.reshape(X_cpu.shape[0], -1)
   # print(f' X_cpu.shape: {X_cpu.shape}')
   print(" Start t-SNE computation...")
-  X_tsne = tsne.fit_transform(X_cpu) # in: X=(n_samples, n_features)
+  X_tsne = tsne.fit(X_cpu) # OpenTSNE
+  # X_tsne = tsne.fit_transform(X_cpu) # in: X=(n_samples, n_features)
                                      # out: (n_samples, n_components=2)
   print(" t-SNE computation done.")
-  # print(f' X_tsne.shape: {X_tsne.shape}')
+  print(f' X_tsne.shape: {X_tsne.shape}')
   # print(f' labels shape: {labels.shape}')
   plt.figure(figsize=(10, 8))
   
