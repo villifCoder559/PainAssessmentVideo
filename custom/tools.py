@@ -64,8 +64,9 @@ def load_dict_data(saving_folder_path):
       dict_data[file[:-4]] = np.load(os.path.join(saving_folder_path, file))
   return dict_data
 
-def plot_mea_per_class(unique_classes, mae_per_class, title='', count_classes=None, saving_path=None):
+def plot_mae_per_class(unique_classes, mae_per_class, title='', count_classes=None, saving_path=None):
   """ Plot Mean Absolute Error per class. """
+  print(f'MAE_PER_CLASS {title}: {mae_per_class}')
   plt.figure(figsize=(10, 5))
   plt.bar(unique_classes, mae_per_class, color='blue', width=0.4, label='MAE per Class')
   plt.xlabel('Class')
@@ -78,7 +79,7 @@ def plot_mea_per_class(unique_classes, mae_per_class, title='', count_classes=No
       plt.text(unique_classes[cls], mae_per_class[cls], str(count), ha='center', va='bottom')
   plt.legend()
   if saving_path is not None:
-    plt.savefig(saving_path+'.png')
+    plt.savefig(saving_path)
   else:
     plt.show()
 
@@ -185,8 +186,7 @@ def plot_accuracy_confusion_matrix(train_confusion_matricies,test_confusion_matr
       #   else:
       #     plt.show()
 
-
-def plot_mea_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_subjects=None, saving_path=None):
+def plot_mae_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_subjects=None, saving_path=None):
   """ Plot Mean Absolute Error per participant. """
   plt.figure(figsize=(10, 5))
   plt.bar(uniqie_subject_ids, mae_per_subject, color='green')
@@ -199,10 +199,10 @@ def plot_mea_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_sub
       idx = np.where(id == uniqie_subject_ids)[0]
       plt.text(uniqie_subject_ids[idx], mae_per_subject[idx], str(count), ha='center', va='bottom')
   if saving_path is not None:
-    plt.savefig(saving_path+'.png')
+    plt.savefig(saving_path)
+    print(f'Plot MAE per subject saved to {saving_path}.png')
   else:
     plt.show()
-
 
 def plot_losses(train_losses, test_losses, saving_path=None):
   plt.figure(figsize=(10, 5))
@@ -214,7 +214,7 @@ def plot_losses(train_losses, test_losses, saving_path=None):
   plt.legend()
   plt.grid(True)
   if saving_path is not None:
-    plt.savefig(saving_path+'.png')
+    plt.savefig(saving_path)
     print(f'Plot losses saved to {saving_path}.png')
   else:
     plt.show()
@@ -299,34 +299,34 @@ def _generate_train_test_validation(csv_path, saving_path,train_size=0.8,val_siz
     split_dict['train'] = list_samples[train_split_idx]
     # Further split temp into validation and test
     tmp_split = split[0][1]
-    X_temp = X[tmp_split]
-    y_temp = y[tmp_split]
-    groups_temp = groups[tmp_split]
+    X_tmp = X[tmp_split]
+    y_tmp = y[tmp_split]
+    groups_tmp = groups[tmp_split]
     # print(f'split generation seed: {random_state}')
-    gss_temp = GroupShuffleSplit(n_splits=1,
+    gss_tmp = GroupShuffleSplit(n_splits=1,
                                  train_size=(1 / (val_size + test_size)) * val_size,  # 1/(val_size+test_size) = 1/0.2 = 5 => 5 * val_size = 0.5
                                  test_size=(1 / (val_size + test_size)) * test_size,
                                  random_state=random_state)
 
-    if val_size == 0.0:
+    if val_size == 0:
       split_dict['test'] = list_samples[tmp_split]
       split_dict_sample_ids = {'train': list_samples[train_split_idx][:, 4], 'test': list_samples[tmp_split][:, 4]}
       return split_dict, video_labels_columns, split_dict_sample_ids
 
-    if train_size == 0.0:
+    if test_size == 0:
       split_dict['val'] = list_samples[tmp_split]
       split_dict_sample_ids = {'train': list_samples[train_split_idx][:, 4], 'val': list_samples[tmp_split][:, 4]}
       return split_dict, video_labels, split_dict_sample_ids
 
-    val_test_split = list(gss_temp.split(X_temp, y_temp, groups=groups_temp))
+    val_test_split = list(gss_tmp.split(X_tmp, y_tmp, groups=groups_tmp))
     val_split_idx = val_test_split[0][0]
     test_split_idx = val_test_split[0][1]
     split_dict['val'] = list_samples[tmp_split[val_split_idx]]
     split_dict['test'] = list_samples[tmp_split[test_split_idx]]
     
     split_dict_sample_ids = {'train': (list_samples[train_split_idx][:, 4].astype(int),train_split_idx),
-                'val': (list_samples[tmp_split[val_split_idx]][:, 4].astype(int),val_split_idx),
-                'test': (list_samples[tmp_split[test_split_idx]][:, 4].astype(int),test_split_idx)}
+                'val': (list_samples[tmp_split[val_split_idx]][:, 4].astype(int),tmp_split[val_split_idx]),
+                'test': (list_samples[tmp_split[test_split_idx]][:, 4].astype(int),tmp_split[test_split_idx])}
 
     return split_dict, video_labels_columns, split_dict_sample_ids
   
@@ -353,27 +353,31 @@ def read_split_indices(saving_path):
   return split_indices
 
 def generate_plot_train_test_results(dict_results, count_y_train, count_y_test, count_subject_ids_train, count_subject_ids_test, saving_path):  
-  plot_mea_per_class(title='training', 
+  saving_path_losses = os.path.join(saving_path, 'losses')
+  if not os.path.exists(saving_path_losses):
+    os.makedirs(saving_path_losses)
+  print(f'saving_path_losses: {saving_path_losses}')
+  plot_mae_per_class(title='training', 
                      mae_per_class=dict_results['train_loss_per_class'][-1], 
                      unique_classes=dict_results['y_unique'], count_classes=count_y_train,
-                     saving_path=saving_path)
-  plot_mea_per_class(title='test',
+                     saving_path=os.path.join(saving_path_losses,'train_mae_per_class.png'))
+  plot_mae_per_class(title='test',
                      mae_per_class=dict_results['test_loss_per_class'][-1], 
                      unique_classes=dict_results['y_unique'], count_classes=count_y_test,
-                     saving_path=saving_path)
+                     saving_path=os.path.join(saving_path_losses,'test_mae_per_class.png'))
   
-  plot_mea_per_subject(title='training', 
+  plot_mae_per_subject(title='training', 
                        mae_per_subject=dict_results['train_loss_per_subject'][-1], 
                        uniqie_subject_ids=dict_results['subject_ids_unique'],
                        count_subjects=count_subject_ids_train,
-                       saving_path=saving_path)
-  plot_mea_per_subject(title='test',
+                       saving_path=os.path.join(saving_path_losses,'train_mae_per_subject.png'))
+  plot_mae_per_subject(title='test',
                        mae_per_subject=dict_results['test_loss_per_subject'][-1], 
                        uniqie_subject_ids=dict_results['subject_ids_unique'],
                        count_subjects=count_subject_ids_test,
-                       saving_path=saving_path)
+                       saving_path=os.path.join(saving_path_losses,'test_mae_per_subject.png'))
   
-  plot_losses(dict_results['train_losses'], dict_results['test_losses'], saving_path=saving_path)
+  plot_losses(dict_results['train_losses'], dict_results['test_losses'], saving_path=os.path.join(saving_path_losses,'train_test_loss.png'))
       
 def plot_confusion_matrix(confusion_matrix, title, saving_path):
   # confusion_matrix must be from torchmetrics
@@ -382,7 +386,6 @@ def plot_confusion_matrix(confusion_matrix, title, saving_path):
   fig.suptitle(title)
   fig.savefig(saving_path+'.png')
   # matplotlib.pyplot.close()
-
 
 def get_unique_subjects_and_classes(csv_path):
   """
@@ -526,15 +529,15 @@ def plot_dataset_distribution_mean_std_duration(csv_path, video_path=None, per_c
     key = 2
     plot_distribution(key,'class',video_path)
 
-def plot_prediction_chunks_per_subject(predictions, title,saving_path=None):
+def plot_prediction_chunks_per_subject(predictions, n_chunks,title,saving_path=None):
   print('Plotting...')
-  # print('  predictions shape', predictions.shape) # (n_samples, n_chunks)
-  indices = np.arange(predictions.shape[1]).astype(int)
-  get_list_video_path_from_csv
+  print('  predictions shape', predictions.shape) # (n_samples, n_chunks)
+  print('  n_chunks', n_chunks)
+  indices = np.arange(n_chunks).astype(int)
   print('indices', indices)
   plt.figure(figsize=(6, 4))
   plt.gca().xaxis.set_major_locator(MaxNLocator(integer=True))
-  plt.plot(indices, predictions[0])
+  plt.plot(indices, predictions)
   plt.xlabel('Frame chunk index', fontsize=11)
   plt.ylabel('Prediction', fontsize=11)
   plt.title(title, fontsize=14)
@@ -546,7 +549,7 @@ def plot_prediction_chunks_per_subject(predictions, title,saving_path=None):
   else:
     plt.show()
 
-def plot_tsne(X, labels, legend_label='', title = '', use_cuda=False, perplexity=3, saving_path=None):
+def plot_tsne(X, labels, legend_label='', title = '', use_cuda=False, perplexity=1, saving_path=None):
   """
   Plots the t-SNE reduction of the features in 2D with colors based on subject, gt, or predicted class.
   Args:
@@ -554,18 +557,20 @@ def plot_tsne(X, labels, legend_label='', title = '', use_cuda=False, perplexity
     use_cuda (bool, optional): Whether to use CUDA for t-SNE computation. Defaults to False.
     perplexity (int, optional): Perplexity parameter for t-SNE. Defaults to 20.
   """
+  print(f'TSNE_X.shape: {X.shape}')
+  print(f'TSNE_labels.shape: {labels.shape}')
   if len(labels.shape) != 1:
     labels = labels.reshape(-1)
   unique_labels = np.unique(labels)
   color_map = plt.cm.get_cmap('tab20', len(unique_labels)) # FIX: if uniqelabels > 20 create maore a differnt plot
   color_dict = {val: color_map(i) for i, val in enumerate(unique_labels)}
-  
+  perplexity = min(30, X.size(0) - 1)
   if use_cuda and X.shape[0] > 194:
     print('Using CUDA')
     # tsne = cudaTSNE(n_components=2, perplexity=perplexity)
   else:
     print('Using CPU')
-    tsne = TSNE(n_components=2, perplexity=perplexity)
+    tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42)
   X_cpu = X.detach().cpu().squeeze()
   X_cpu = X_cpu.reshape(X_cpu.shape[0], -1)
   # print(f' X_cpu.shape: {X_cpu.shape}')
@@ -636,23 +641,20 @@ def save_frames_as_video(list_input_video_path, list_frame_indices,sample_ids, o
   """
   # Open the original video
   out = None
-  # if len(all_predictions.shape)>2:
-  #   all_predictions = all_predictions.reshape(all_predictions.shape[0],-1)
-  # if len(list_ground_truth.shape) :
-  # print(f'all_predictions shape: {all_predictions.shape}')
-  # print('all_labels',list_ground_truth)
-  # print(f'output_video_path: {output_video_path}')
-  # print('pred',all_predictions)
-  # print('gt',list_ground_truth)
-  # partA/video/video/112209_m_51_112209_m_51-BL1-086.mp4
+  print(f' list_input_video_path: {list_input_video_path}')
+  print(f' list_frame_indices: {list_frame_indices.shape}')
+  print(f' sample_ids: {sample_ids.shape}')
+  print(f' all_predictions: {all_predictions.shape}')
+  print(f' list_ground_truth: {list_ground_truth.shape}')
+  
   unique_sample_ids = np.unique(sample_ids,return_counts=False)
   for input_video_path, sample_id in (zip(list_input_video_path,unique_sample_ids)): # i->[0...33]
-    # print(f'input_video_path: {input_video_path}')
+    print(f'input_video_path: {input_video_path}')
     cap = cv2.VideoCapture(input_video_path)
     if not cap.isOpened():
       raise IOError(f"Err: Unable to open video file: {input_video_path}")
 
-    # Get the width and height of the frames in the video
+    # Get the width ansample_idsd height of the frames in the video
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_size = (frame_width, frame_height)
@@ -686,12 +688,12 @@ def save_frames_as_video(list_input_video_path, list_frame_indices,sample_ids, o
       for frame_idx in range(frame_count):
         if frame_idx in frame_indices: # [2,16]
           if frame_idx >= frame_count:
-            print(f"Warning: Frame index {frame_idx} out of range for video {input_video_path}")
+            print(f"WARNING: Frame index {frame_idx} out of range for video {input_video_path}")
             continue
           cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
           ret, frame = cap.read()
           if not ret:
-            print(f"Warning: Failed to read frame {frame_idx} from video {input_video_path}")
+            print(f"WARNING: Failed to read frame {frame_idx} from video {input_video_path}")
             continue
           # print(f'j: {j}')
           # print(f'list_ground_truth[j]: {list_ground_truth[j]}')
