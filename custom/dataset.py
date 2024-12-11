@@ -2,6 +2,7 @@ import torch
 import pandas as pd
 import av
 import os
+import math
 import numpy as np
 import torch
 import time
@@ -10,6 +11,9 @@ from custom.helper import SAMPLE_FRAME_STRATEGY
 from sklearn.model_selection import GroupShuffleSplit
 import matplotlib.pyplot as plt
 import custom.tools as tools
+from sklearn.model_selection import StratifiedKFold
+from torch.utils.data import  Sampler
+from sklearn.utils import shuffle
 
 class customDataset(torch.utils.data.Dataset):
   def __init__(self,path_dataset, path_labels, preprocess, sample_frame_strategy, batch_size=1, stride_window=2, clip_length=16,stride_inside_window=1):
@@ -91,9 +95,12 @@ class customDataset(torch.utils.data.Dataset):
     list_indices = self.sample_frame_strategy(tot_frames)
     start_time_load_video = time.time()
     frames_list=[self._read_video_pyav(container,indices) for indices in list_indices]
+    # print(f'Frames list shape: {len(frames_list)}')
+    # print(f'list[0] shape: {frames_list[0].shape}')
     # print('time to load video:', time.time()-start_time_load_video)
-    start_time_preprocess = time.time()
+    # start_time_preprocess = time.time()
     preprocessed_tensors = torch.stack([self.preprocess(list(frames), return_tensors="pt")['pixel_values'] for frames in frames_list])
+    # print(f'Preprocessed tensors shape: {preprocessed_tensors.shape}')
     # print('Time to preprocess video', time.time()-start_time_preprocess)
     # preprocessed output shape [2, 1, 16, 3, 224, 224] -> [nr_clips, batch_video, clip_length, RGB_channels=3, H=224, W=224]
     # print(len(frames_list))
@@ -237,4 +244,37 @@ class customDataset(torch.utils.data.Dataset):
     list_indices = torch.stack([torch.arange(start_idx, start_idx + self.clip_length * stride_inside_window, stride_inside_window) for start_idx in indices])
     # print('Sliding shape', list_indices.shape)
     return list_indices
-  
+
+class customSampler(Sampler):
+  def __init__(self,X,y,batch_size,apply_shuffle,epochs):
+    self.data = {}
+    self.idx_per_class = {}
+    self.X = X
+    self.y = y
+    self.batch_size = batch_size
+    self.shuffle = apply_shuffle
+    self.epochs = epochs
+    self.n_batches = math.ceil(len(X) / batch_size)
+    print(f'Number of batches: {self.n_batches}')
+    # unique_cls,count = torch.unique(y, return_counts=True)
+    # class_weights = 1. / count.float()
+    # for cls in unique_cls:
+    #   self.idx_per_class[cls.item()] = torch.nonzero(y == cls)
+    self.skf = None
+    self.split = None
+    if self.n_batches <= 1:
+      self.split = shuffle(torch.arange(len(X)))
+    else:
+      self.skf = StratifiedKFold(n_splits=self.n_batches, shuffle=apply_shuffle)
+    
+  def __iter__(self):
+    print(f'skf: {self.skf}')
+    print(f'split: {self.split}')
+    if self.skf is not None:
+      for _, split in self.skf.split(self.X, self.y):
+        yield split
+    else:
+      yield self.split
+      
+  def len(self):
+    return self.n_batches
