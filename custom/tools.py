@@ -346,8 +346,8 @@ def _generate_train_test_validation(csv_path, saving_path,train_size=0.8,val_siz
 
   return save_path_dict
 
-def read_split_indices(saving_path):
-  split_indices_file = os.path.join(saving_path, 'split_indices.json')
+def read_split_indices(folder_path):
+  split_indices_file = os.path.join(folder_path, 'split_indices.json')
   with open(split_indices_file, 'r') as f:
     split_indices = json.load(f)
   return split_indices
