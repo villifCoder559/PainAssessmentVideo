@@ -4,6 +4,7 @@ from sklearn.model_selection import cross_val_score, KFold, StratifiedKFold, cro
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import GridSearchCV, GroupKFold,GroupShuffleSplit
 from sklearn.metrics import mean_absolute_error
+
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
@@ -452,11 +453,12 @@ class HeadGRU:
     
     return padded_sequence, y_train_per_sample_id, subject_ids_per_sample_id, length_features
 
-  def start_train_test(self, X_train, y_train, subject_ids_train,
+  def start_train_test(self, X_train, y_train, subject_ids_train,train_csv_path,
                        X_test, y_test, subject_ids_test,sample_ids_train, sample_ids_test, 
                        shuffle_video_chunks=True,shuffle_training_batch=True,
                        num_epochs=10, batch_size=2, criterion=nn.L1Loss(), # fix batch_size = 1
-                       optimizer_fn=optim.Adam, lr=0.0001, saving_path=None, init_weights=True, round_output_loss=False):
+                       optimizer_fn=optim.Adam, lr=0.0001, saving_path=None, init_weights=True, round_output_loss=False,
+                       ):
 
     # Init model weights
     if init_weights:
@@ -508,8 +510,20 @@ class HeadGRU:
     # # Create DataLoaders
     # train_loader = DataLoader(train_dataset, sampler=sampler_weighted, batch_size=batch_size, num_workers=1)
     # test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-    
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle_training_batch)
+    # try:
+    train_loader = None
+    try:
+      print('Try to use custom DataLoader...')
+      customSampler_train = customSampler(path_cvs_dataset=train_csv_path, batch_size=batch_size, shuffle=shuffle_training_batch)
+      customSampler_train.initialize()
+      train_loader = DataLoader(train_dataset, sampler=customSampler_train)
+      print('Custom DataLoader instantiated')
+    except Exception as e:
+      print(f'Err: {e}')
+      print(f'Use standard DataLoader')
+      train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle_training_batch)
+
+    # catch
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
     # Device and optimizer setup
@@ -543,7 +557,7 @@ class HeadGRU:
       os.makedirs(saving_path_logs)
     log_file_path = os.path.join(saving_path_logs, 'training_log.txt') 
     log_batch_path = os.path.join(saving_path_logs, 'batch_log.txt')
-    
+
     for epoch in range(num_epochs):
       self.model.train()
       epoch_loss = 0.0
@@ -551,14 +565,13 @@ class HeadGRU:
       subject_loss = np.zeros(unique_subjects.shape[0])
       # class_counts = np.zeros(unique_classes.shape[0])
       # subject_counts = np.zeros(unique_subjects.shape[0])
-      total_bateches = len(train_loader)
+      total_batches = len(train_loader)
       count_batch = 0
       with open(log_batch_path, 'a') as log_file:
         log_file.write(f'EPOCH {epoch+1}/{num_epochs}\n')
       for batch_X, batch_y, batch_subjects, batch_real_length_padded_feat in train_loader:
         # print(f'device: {device}')
         # print(f'batch_X shape: {batch_X.shape}')
-        
          
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
         optimizer.zero_grad()
@@ -603,22 +616,26 @@ class HeadGRU:
         train_confusion_matricies[epoch].update(output_postprocessed.detach().cpu(),
                                                 batch_y.detach().cpu())
         
-        unique_batch_class,count_class = torch.unique(batch_y, return_counts=True)
-        unique_batch_subject,count_subject = torch.unique(batch_subjects, return_counts=True)
+        unique_batch_class, count_class = torch.unique(batch_y.detach().cpu(), return_counts=True)
+        unique_batch_subject, count_subject = torch.unique(batch_subjects, return_counts=True)
+        count_array = torch.zeros(unique_classes.shape[0]).to(int)
+        count_array[unique_batch_class.to(int)] = count_class
         with open(log_batch_path, 'a') as log_file:
-          log_file.write(f' Batch {count_batch+1}/{total_bateches} \n')
-          log_file.write(f'  unique_class   : {unique_batch_class.to(int).tolist()}\n')
-          log_file.write(f'  count_class    : {count_class.tolist()}\n')
-          log_file.write(f'  unique_subject : {unique_batch_subject.tolist()}\n')
-          log_file.write(f'  count_subject  : {count_subject.tolist()}\n')
+          log_file.write(f' Batch {count_batch+1}/{total_batches} \n')
+          log_file.write(f'  nr_sample_per_class : {count_array.tolist()}\n')
+          log_file.write(f'  unique_subject      : {unique_batch_subject.tolist()}\n')
+          log_file.write(f'  count_subject       : {count_subject.tolist()}\n')
           log_file.write("\n")
         count_batch += 1
+        
         # sk_conf_matrix = confusion_matrix(batch_y.detach().cpu(), output_postprocessed.detach().cpu())
         # train_confusion_matricies[epoch].compute()
         # print(train_confusion_matricies[epoch].compute())
       # train_confusion_matricies[epoch].compute()
       # train_accuracy_per_class[epoch] = conf_matrix.diag()/conf_matrix.sum(1) # inf if sum/0 or
       # Class and subject losses
+      
+      
       train_loss_per_class[epoch] = class_loss
       train_loss_per_subject[epoch] = subject_loss
 
