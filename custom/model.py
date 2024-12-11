@@ -216,7 +216,8 @@ class Model_Advanced: # Scenario_Advanced
                                                 init_weights=init_weights,
                                                 round_output_loss=round_output_loss,
                                                 shuffle_video_chunks=shuffle_video_chunks,
-                                                shuffle_training_batch=shuffle_training_batch
+                                                shuffle_training_batch=shuffle_training_batch,
+                                                train_csv_path=train_csv_path,
                                                 )
     
     return {'dict_results':dict_results, 
