@@ -48,7 +48,7 @@ class customDataset(torch.utils.data.Dataset):
     self.image_channels = 3
     self.clip_length = clip_length
     # self.set_path_labels('all')
-    # self.set_path_labels('train')
+    self.set_path_labels(path_labels)
     tmp = tools.get_unique_subjects_and_classes(self.path_labels)
     self.total_subjects, self.total_classes = len(tmp[0]), len(tmp[1])
 
@@ -246,35 +246,23 @@ class customDataset(torch.utils.data.Dataset):
     return list_indices
 
 class customSampler(Sampler):
-  def __init__(self,X,y,batch_size,apply_shuffle,epochs):
-    self.data = {}
-    self.idx_per_class = {}
-    self.X = X
-    self.y = y
-    self.batch_size = batch_size
-    self.shuffle = apply_shuffle
-    self.epochs = epochs
-    self.n_batches = math.ceil(len(X) / batch_size)
-    print(f'Number of batches: {self.n_batches}')
-    # unique_cls,count = torch.unique(y, return_counts=True)
-    # class_weights = 1. / count.float()
-    # for cls in unique_cls:
-    #   self.idx_per_class[cls.item()] = torch.nonzero(y == cls)
-    self.skf = None
-    self.split = None
-    if self.n_batches <= 1:
-      self.split = shuffle(torch.arange(len(X)))
-    else:
-      self.skf = StratifiedKFold(n_splits=self.n_batches, shuffle=apply_shuffle)
+  def __init__(self,path_cvs_dataset, batch_size, shuffle, random_state=0):
+    csv_array,_ = tools.get_array_from_csv(path_cvs_dataset)
+    self.y_labels = np.array(csv_array[:,2]).astype(int)
+    nr_samples = len(self.y_labels)
+    self.n_batch_size = batch_size
+    self.skf = StratifiedKFold(n_splits = nr_samples//batch_size + 1, shuffle=shuffle, random_state=random_state)
+    self.n_batches = self.skf.get_n_splits()
+    self.initialize()
     
+  def initialize(self):
+    _, count = np.unique(self.y_labels, return_counts=True)
+    max_member = np.max(count)
+    if max_member > self.skf.get_n_splits():
+      raise ValueError(f"n_splits = {len(self.y_labels)//self.n_batch_size +1} cannot be greater than max_count_member ({max_member}) ")
   def __iter__(self):
-    print(f'skf: {self.skf}')
-    print(f'split: {self.split}')
-    if self.skf is not None:
-      for _, split in self.skf.split(self.X, self.y):
-        yield split
-    else:
-      yield self.split
+    for _,test in self.skf.split(np.zeros(self.y_labels.shape[0]), self.y_labels):
+      yield test
       
-  def len(self):
+  def __len__(self):
     return self.n_batches
