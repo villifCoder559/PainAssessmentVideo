@@ -103,7 +103,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     # print(f' dict_data {dict_data}')
     tools.save_dict_data(dict_data=dict_data, saving_folder_path=features_folder_saving_path)
     
-  def k_fold_cross_validation(is_validation=False,round_output_loss=False,shuffle_video_chunks=True):
+  def k_fold_cross_validation(is_validation=False,round_output_loss=False,shuffle_video_chunks=True,shuffle_training_batch=True):
     """
     Perform k-fold cross-validation on the dataset and train the model.
     This function performs k-fold cross-validation by splitting the dataset into k folds,
@@ -137,11 +137,11 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                    total_classes=model_advanced.dataset.total_classes)
 
       dict_train = train_model(dict_csv_path= path_csv_kth_fold,
-                                            train_folder_saving_path=saving_path_kth_fold,
-                                            batch_size=batch_size_training,
-                                            is_validation=is_validation,
-                                            round_output_loss=round_output_loss,
-                                            shuffle_video_chunks=shuffle_video_chunks)
+                               train_folder_saving_path=saving_path_kth_fold,
+                               is_validation=is_validation,
+                               round_output_loss=round_output_loss,
+                               shuffle_video_chunks=shuffle_video_chunks,
+                               shuffle_training_batch=shuffle_training_batch)
             # Generate and save plots of the training and test results
       # tools.plot_losses(train_losses=dict_train['dict_results']['train_losses'], 
       #                   test_losses=dict_train['dict_results']['test_losses'], 
@@ -296,11 +296,16 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     list_saving_paths_k_fold.append(train_folder_path)
     
   else: 
-    fold_results = k_fold_cross_validation()
+    fold_results = k_fold_cross_validation(is_validation=is_validation,
+                                           round_output_loss=is_round_output_loss,
+                                           shuffle_video_chunks=is_shuffle_video_chunks,
+                                           shuffle_training_batch=is_shuffle_training_batch)
     list_dict_csv_path = fold_results['list_path_csv_kth_fold'] # list of dictionaries with paths to CSV files for each fold
     list_saving_paths_k_fold = fold_results['list_saving_paths'] # list of saving paths for each fold
-    for i,dict_train in enumerate(list_dict_csv_path):
-      plot_loss_details(dict_train, list_saving_paths_k_fold[i],epochs)
+    for i,dict_train in enumerate(fold_results['fold_results']):
+      plot_loss_details(dict_train=dict_train, 
+                        train_folder_path=list_saving_paths_k_fold[i],
+                        epochs=epochs)
   
 
   key_test_dataset = 'test' if not is_validation else 'val'
@@ -408,7 +413,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
         
         # plot graph chunks prediciton for 2 samplesID
         rnd_perm_idx = torch.randperm(len(dict_backbone_feats['list_sample_id']))
-        for i,sample_id in enumerate(dict_backbone_feats['list_sample_id'][rnd_perm_idx][:10]):
+        for i,sample_id in enumerate(dict_backbone_feats['list_sample_id'][rnd_perm_idx][:4]):
           folder_subject = os.path.join(train_folder_path,f'plot_chunks_prediction_{split_dataset_name}')
           if not os.path.exists(folder_subject):
             os.makedirs(folder_subject)
@@ -484,81 +489,7 @@ def create_unique_video_per_prediction(train_folder_path, dict_cvs_path, sample_
                                               output_fps=4)
 
 
-# def predict_per_video(path_csv, sample_ids, model_advanced, root_folder_path):
-#   """
-#   Predicts the labels for each video in the dataset and saves the results.
-#   Args:
-#     path_csv (str): Path to the csv file containing the dataset.
-#     sample_ids (list): List of sample IDs for which to make predictions.
-#   Returns:
-#     dict: A dictionary containing the results of the predictions.
-#   """
-#   print(f'root_folder_path {root_folder_path}')
-#   if not os.path.exists(root_folder_path):
-#     os.makedirs(root_folder_path)
-#   # create csv_file with the sample_ids from path_csv
-#   array_csv,cols = tools.get_array_from_csv(path_csv)
-#   new_csv = []
-#   for sample_id in sample_ids: # subject_id, subject_name, class_id, class_name, sample_id, sample_name)
-#     print(f'sample_id {sample_id}')
-#     idx = np.where((array_csv[:,4]).astype(int) == sample_id)[0][0]
-#     # print(f'idx {idx}')
-#     new_csv.append(array_csv[idx])
-#   new_csv = np.vstack(new_csv).astype(str)
-#   # save new csv using dataframe
-#   path_csv = os.path.join(root_folder_path,'pred_per_video.csv')
-#   new_csv = pd.DataFrame(new_csv, columns=cols,)
-#   # print(f'{new_csv}')
-#   new_csv.to_csv(path_csv,index=False,sep='\t')
-#   # print(f'new_csv in {path_csv}')
-#   with torch.no_grad():
-#     dict_feats = model_advanced._extract_features(path_csv_dataset = path_csv)
-#     y_pred = model_advanced.head.predict(dict_feats['features'].reshape(dict_feats['features'].shape[0], dict_feats['features'].shape[1], -1))
-  
-#   dict_feats['features'] = dict_feats['features'].detach().cpu()
-#   dict_feats['list_labels'] = dict_feats['list_labels'].detach().cpu()
-#   torch.cuda.empty_cache()
-#   # print(f'y_pred.shape {y_pred.shape}')
-#   list_input_video_path = tools.get_list_video_path_from_csv(path_csv)
-#   for i,element in enumerate(zip(sample_ids,list_input_video_path)):
-#     sample_id = element[0] 
-#     input_video_path_id = [element[1]]
-#     output_video_path = os.path.join(root_folder_path,f'video_{sample_id}.mp4')
-#     idx = np.where(dict_feats['list_sample_id'] == sample_id)[0]
-
-#     list_ground_truth_idx = dict_feats['list_labels'][idx]
-#     idx_prediction = y_pred.reshape(y_pred.shape[0],-1)[idx].detach().cpu()
-#     # print(f'idx_prediction.shape {idx_prediction.shape}')
-#     # print(f'list_ground_truth_idx.shape {list_ground_truth_idx.shape}')
-#     # print(f'{dict_feats["list_labels"].shape}')
-#     # print(f'all_predictions shape {idx_prediction.shape}') # [33,2]
-#     if idx_prediction.shape[1] != list_ground_truth_idx.shape[1]:
-#       list_ground_truth_idx = list_ground_truth_idx.repeat(1,idx_prediction.shape[1])
-#     # print("\n")
-#     # print(f'list_ground_truth shape {list_ground_truth_idx}') # [n_videos,n_windows] ex [1,2]
-#     # print(f'all_predictions shape {idx_prediction}') # [n_videos,n_windows] ex [1,2]
-#     # print(f'dict_feats["list_frames"] {dict_feats["list_frames"][idx]}') # [n_videos,n_windows,n_frames] ex [1,2,16]
-#     # print(f'list_input_video_path {input_video_path_id}') # [1]
-#     # print("\n")
-#     tools.save_frames_as_video(list_input_video_path=input_video_path_id, # [n_video=1]
-#                               list_frame_indices=dict_feats['list_frames'][idx], # [1,2,16]
-#                               output_video_path=output_video_path, # string
-#                               all_predictions=idx_prediction,#  [1,2]
-#                               list_ground_truth=list_ground_truth_idx, # -> [1,2] 
-#                               output_fps=4)
-#     tools.plot_prediction_chunks_per_subject(predictions=idx_prediction,
-#                                            title=f'Prediction {sample_id}',
-#                                            saving_path=root_folder_path)
-#   torch.cuda.empty_cache()
-  
 def _plot_confusion_matricies(epochs, dict_train, confusion_matrix_path):
-  # confusion_tensors_train = [tools.get_accuracy_from_confusion_matrix(confusion.compute())['mean_accuracy'] for confusion in dict_train['dict_results']['train_confusion_matricies']]
-  # confusion_tensors_test = [tools.get_accuracy_from_confusion_matrix(confusion.compute())['mean_accuracy'] for confusion in dict_train['dict_results']['test_confusion_matricies']]
-  # print(f'confusion_tensors_train {confusion_tensors_train}')
-  # print(f'confusion_tensors_test {confusion_tensors_test}')
-  # tools.plot_losses(train_losses=confusion_tensors_train,test_losses=confusion_tensors_test,saving_path=os.path.join(confusion_matrix_path,'confusion_matrix_mean_accuracy.png'))
-  # list_labels = torch.arange(0, len(dict_train['dict_results']['y_unique']))
-  # tools.plot_all_accuracy(confusion_tensors_train, list_labels=list_labels, confusion_matrix_path)
   for epoch in range(epochs): 
     tools.plot_confusion_matrix(confusion_matrix=dict_train['dict_results']['train_confusion_matricies'][epoch],
                                 title=f'Train_{epoch} confusion matrix',
