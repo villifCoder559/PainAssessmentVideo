@@ -620,11 +620,15 @@ class HeadGRU:
         unique_batch_subject, count_subject = torch.unique(batch_subjects, return_counts=True)
         count_array = torch.zeros(unique_classes.shape[0]).to(int)
         count_array[unique_batch_class.to(int)] = count_class
+        free_gpu_mem,total_gpu_mem = torch.cuda.mem_get_info()
+        total_gpu_mem = total_gpu_mem / 1024 ** 3
+        free_gpu_mem = free_gpu_mem / 1024 ** 3
         with open(log_batch_path, 'a') as log_file:
           log_file.write(f' Batch {count_batch+1}/{total_batches} \n')
           log_file.write(f'  nr_sample_per_class : {count_array.tolist()}\n')
           log_file.write(f'  unique_subject      : {unique_batch_subject.tolist()}\n')
           log_file.write(f'  count_subject       : {count_subject.tolist()}\n')
+          log_file.write(f'  GPU free/total (GB) : {free_gpu_mem:.2f}/{total_gpu_mem:.2f}\n')
           log_file.write("\n")
         count_batch += 1
         
