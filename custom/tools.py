@@ -134,60 +134,60 @@ def get_accuracy_from_confusion_matrix(confusion_matrix):
     'weighted_recall': weighted_recall,
   }
 
-def plot_accuracy_confusion_matrix(train_confusion_matricies,test_confusion_matricies, title='', saving_path=None):
-  if isinstance(train_confusion_matricies[0], MulticlassConfusionMatrix):
-    train_confusion_matricies = torch.stack([train_confusion_matricies[i].compute() for i in range(len(train_confusion_matricies))])
-  if isinstance(test_confusion_matricies[0], MulticlassConfusionMatrix):
-    test_confusion_matricies=torch.stack([test_confusion_matricies[i].compute() for i in range(len(test_confusion_matricies))])
+def plot_accuracy_confusion_matrix(confusion_matricies, type_conf,title='', saving_path=None):
+  if isinstance(confusion_matricies[0], MulticlassConfusionMatrix):
+    confusion_matricies = torch.stack([confusion_matricies[i].compute() for i in range(len(confusion_matricies))])
+  # if isinstance(test_confusion_matricies[0], MulticlassConfusionMatrix):
+  #   test_confusion_matricies=torch.stack([test_confusion_matricies[i].compute() for i in range(len(test_confusion_matricies))])
   
-  list_train_acc_confusion_matrix = []
-  list_test_acc_confusion_matrix = []
-  for train_confusion_matrix in train_confusion_matricies:
-    list_train_acc_confusion_matrix.append(get_accuracy_from_confusion_matrix(train_confusion_matrix))
-  for test_confusion_matrix in test_confusion_matricies:
-    list_test_acc_confusion_matrix.append(get_accuracy_from_confusion_matrix(test_confusion_matrix))
-  keys = list_train_acc_confusion_matrix[0].keys()
+  list_acc_confusion_matrix = []
+  # list_test_acc_confusion_matrix = []
+  for confusion_matrix in confusion_matricies:
+    list_acc_confusion_matrix.append(get_accuracy_from_confusion_matrix(confusion_matrix))
+  # for test_confusion_matrix in test_confusion_matricies:
+  #   list_test_acc_confusion_matrix.append(get_accuracy_from_confusion_matrix(test_confusion_matrix))
+  keys = list_acc_confusion_matrix[0].keys()
   for key in keys:
     # print(f'key: {key}')
-    train_list_key_values = [list_train_acc_confusion_matrix[i][key] for i in range(len(list_train_acc_confusion_matrix))]
-    test_list_key_values = [list_test_acc_confusion_matrix[i][key] for i in range(len(list_test_acc_confusion_matrix))]
-    labels_train = []
-    labels_test = []
-    if len(train_list_key_values[0].shape) == 0:
-      labels_train.append(f'Training')
-      labels_test.append(f'Test')
+    list_key_values = [list_acc_confusion_matrix[i][key] for i in range(len(list_acc_confusion_matrix))]
+    # test_list_key_values = [list_test_acc_confusion_matrix[i][key] for i in range(len(list_test_acc_confusion_matrix))]
+    labels = []
+    # labels_test = []
+    if len(list_key_values[0].shape) == 0:
+      labels.append(f'{type_conf}')
+      # labels_test.append(f'Test')
     else:
-      for i in range(train_list_key_values[0].shape[0]):
-        labels_train.append(f'Train class {i}')
-        labels_test.append(f'Test class {i}')
+      for i in range(list_key_values[0].shape[0]):
+        labels.append(f'{type_conf} class {i}')
+        # labels_test.append(f'Test class {i}')
     plt.figure(figsize=(10, 5))
     
     # Plot train results
-    plt.plot(train_list_key_values, label=labels_train)
+    plt.plot(list_key_values, label=labels)
     plt.xlabel('Epochs')
     plt.ylabel(key)
-    plt.title(f'train_{key} over Epochs {title}')
+    plt.title(f'{type_conf} {key} over Epochs {title}')
     plt.legend()
     if saving_path is not None:
-      path=os.path.join(saving_path,f'train_{key}.png')
+      path=os.path.join(saving_path,f'{type_conf}_{key}.png')
       plt.savefig(path)
       print(f'Plot {key} over Epochs {title} saved to {path}.png')
     else:
       plt.show()
     
     #Plot test results  
-    plt.figure(figsize=(10, 5))
-    plt.plot(test_list_key_values, label=labels_test)
-    plt.xlabel('Epochs')
-    plt.ylabel(key)
-    plt.title(f'test_{key} over Epochs {title}')
-    plt.legend()
-    if saving_path is not None:
-      path=os.path.join(saving_path,f'test_{key}.png')
-      plt.savefig(path)
-      print(f'Plot {key} over Epochs {title} saved to {path}.png')
-    else:
-      plt.show()
+    # plt.figure(figsize=(10, 5))
+    # plt.plot(test_list_key_values, label=labels_test)
+    # plt.xlabel('Epochs')
+    # plt.ylabel(key)
+    # plt.title(f'test_{key} over Epochs {title}')
+    # plt.legend()
+    # if saving_path is not None:
+    #   path=os.path.join(saving_path,f'test_{key}.png')
+    #   plt.savefig(path)
+    #   print(f'Plot {key} over Epochs {title} saved to {path}.png')
+    # else:
+    #   plt.show()
 
 def plot_mae_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_subjects=None, saving_path=None):
   """ Plot Mean Absolute Error per participant. """
