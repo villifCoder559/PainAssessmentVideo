@@ -258,8 +258,11 @@ class customSampler(Sampler):
   def initialize(self):
     _, count = np.unique(self.y_labels, return_counts=True)
     max_member = np.max(count)
-    if max_member > self.skf.get_n_splits():
+    print(f'Max count member: {max_member}')
+    print(f'Number of splits: {self.skf.get_n_splits()}')
+    if max_member < self.skf.get_n_splits():
       raise ValueError(f"n_splits = {len(self.y_labels)//self.n_batch_size +1} cannot be greater than max_count_member ({max_member}) ")
+  
   def __iter__(self):
     for _,test in self.skf.split(np.zeros(self.y_labels.shape[0]), self.y_labels):
       yield test
