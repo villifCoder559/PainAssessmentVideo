@@ -15,7 +15,7 @@ import torch
 import numpy as np
 import time
 import json
-
+from sklearn.model_selection import StratifiedGroupKFold
 
 
 def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduction, sample_frame_strategy, 
@@ -26,7 +26,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    criterion = nn.L1Loss(), optimizer_fn = optim.Adam, lr = 0.001,random_state_split_dataset=42,
                    is_plot_dataset_distribution=True,is_plot_loss=True,is_plot_tsne_backbone_feats=True,is_plot_tsne_head_pred=True,
                    is_plot_tsne_gru_feats=True,is_create_video_prediction=True,is_create_video_prediction_per_video=True,is_validation=False,
-                   is_round_output_loss=False, is_shuffle_video_chunks=True,is_shuffle_training_batch=True):
+                   is_round_output_loss=False, is_shuffle_video_chunks=True,is_shuffle_training_batch=True,only_train=True):
 
   def plot_dataset_distribuition(csv_path,run_folder_path,per_class=True,per_partecipant=True,total_classes=None):
     #  Create folder to save the dataset distribution 
@@ -103,7 +103,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     # print(f' dict_data {dict_data}')
     tools.save_dict_data(dict_data=dict_data, saving_folder_path=features_folder_saving_path)
     
-  def k_fold_cross_validation(is_validation=False,round_output_loss=False,shuffle_video_chunks=True,shuffle_training_batch=True):
+  def k_fold_cross_validation(path_to_extracted_features,is_validation=False,round_output_loss=False,shuffle_video_chunks=True,shuffle_training_batch=True):
     """
     Perform k-fold cross-validation on the dataset and train the model.
     This function performs k-fold cross-validation by splitting the dataset into k folds,
@@ -119,33 +119,57 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     fold_results = []
     list_saving_paths = []
     list_path_csv_kth_fold = []
+    csv_array,cols = tools.get_array_from_csv(path_csv_dataset)
+    sgkf = StratifiedGroupKFold(n_splits=k_fold, random_state=random_state_split_dataset,shuffle=True)
+    y_labels = csv_array[:,2].astype(int)
+    subject_ids = csv_array[:,0].astype(int)
+    sample_ids = csv_array[:,4].astype(int)
+    # print(f' y_labels {y_labels}')
+    # print(f' subject_ids {subject_ids}')
+    # check is csv array and subject_ids are aligned
+    list_splits_idxs = []
+    for _, test_index in sgkf.split(X=torch.zeros(y_labels.shape), y=y_labels, groups=subject_ids): 
+      list_splits_idxs.append(test_index)
+    print(f' list_splits_idxs {list_splits_idxs}')
     for i in range(k_fold):
-      saving_path_kth_fold = os.path.join(train_folder_path,f'results_k{i}_cross_val')
-      list_saving_paths.append(saving_path_kth_fold)
+      test_idx_split = i % k_fold
+      val_idx_split = (i + 1) % k_fold
+      train_idxs_split = [j for j in range(k_fold) if j != test_idx_split and j != val_idx_split]
+      test_sample_ids = sample_ids[list_splits_idxs[test_idx_split]]
+      val_sample_ids = sample_ids[list_splits_idxs[val_idx_split]]
+      train_sample_ids = []
+      for idx in train_idxs_split:
+        train_sample_ids.extend(sample_ids[list_splits_idxs[idx]])
+      split_indices = {
+        'test': np.array([test_sample_ids,list_splits_idxs[test_idx_split]]),
+        'val': np.array([val_sample_ids,list_splits_idxs[val_idx_split]]),
+        'train': np.array([train_sample_ids,np.concatenate([list_splits_idxs[idx] for idx in train_idxs_split])])
+      }
+      saving_path_kth_fold = os.path.join(train_folder_path,f'k{i}_cross_val')
       if not os.path.exists(saving_path_kth_fold):
         os.makedirs(saving_path_kth_fold)
-      path_csv_kth_fold = tools._generate_train_test_validation(csv_path=model_advanced.dataset.path_labels,
-                                                              saving_path=saving_path_kth_fold,
-                                                              train_size=train_size,
-                                                              val_size=val_size,
-                                                              test_size=test_size,
-                                                              random_state=i)
+        
+      # Generate csv for train,test and validation
+      path_csv_kth_fold = {}
+      for k,v in split_indices.items():
+        csv_data = csv_array[v[1]]
+        tools.generate_csv(cols=cols, data=csv_data, saving_path=os.path.join(saving_path_kth_fold,f'{k}.csv'))
+        path_csv_kth_fold[k] = os.path.join(saving_path_kth_fold,f'{k}.csv')
+      
+      tools.save_split_indices(split_indices,saving_path_kth_fold)
+      list_saving_paths.append(saving_path_kth_fold)
       list_path_csv_kth_fold.append(path_csv_kth_fold) 
       for _,csv_path in path_csv_kth_fold.items():
         plot_dataset_distribuition(csv_path=csv_path, 
                                    run_folder_path=saving_path_kth_fold,
                                    total_classes=model_advanced.dataset.total_classes)
-
+      
       dict_train = train_model(dict_csv_path= path_csv_kth_fold,
-                               train_folder_saving_path=saving_path_kth_fold,
-                               is_validation=is_validation,
-                               round_output_loss=round_output_loss,
-                               shuffle_video_chunks=shuffle_video_chunks,
-                               shuffle_training_batch=shuffle_training_batch)
-            # Generate and save plots of the training and test results
-      # tools.plot_losses(train_losses=dict_train['dict_results']['train_losses'], 
-      #                   test_losses=dict_train['dict_results']['test_losses'], 
-      #                   saving_path=os.path.join(saving_path_kth_fold,'train_test_losses'))
+                              train_folder_saving_path=saving_path_kth_fold,
+                              is_validation=is_validation,
+                              round_output_loss=round_output_loss,
+                              shuffle_video_chunks=shuffle_video_chunks,
+                              shuffle_training_batch=shuffle_training_batch)
       
       tools.generate_plot_train_test_results(dict_results=dict_train['dict_results'], 
                                     count_subject_ids_train=dict_train['count_subject_ids_train'],
@@ -155,13 +179,17 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                     saving_path=saving_path_kth_fold)
       fold_results.append(dict_train)
 
+      # tools.save_dict_data(dict_data=split_indices, saving_folder_path=os.path.join(train_folder_path,f'k{i}_cross_val'))
+    # print(dict_single_fold_idx)
+
     best_results_idx = [fold_results[i]['dict_results']['best_model_idx'] for i in range(k_fold)]
+    best_results_state_dict = [fold_results[i]['dict_results']['best_model_state_dict'] for i in range(k_fold)]
     print(f'best_results_idx {best_results_idx}')
     dict_all_results = { 
                         'avg_train_loss_best_models': np.mean([fold_results[i]['dict_results']['train_losses'][best_results_idx[i]] for i in range(k_fold)]),
                         'avg_test_loss_best_models': np.mean([fold_results[i]['dict_results']['test_losses'][best_results_idx[i]] for i in range(k_fold)]),
-                        'avg_train_loss_per_class_best_models': np.mean([fold_results[i]['dict_results']['train_loss_per_class'][best_results_idx[i]] for i in range(k_fold)]),
-                        'avg_test_loss_per_class_best_models': np.mean([fold_results[i]['dict_results']['test_loss_per_class'][best_results_idx[i]] for i in range(k_fold)]),
+                        'avg_train_loss_per_class_best_models': np.mean([fold_results[i]['dict_results']['train_loss_per_class'][best_results_idx[i]] for i in range(k_fold)],axis=1),
+                        'avg_test_loss_per_class_best_models': np.mean([fold_results[i]['dict_results']['test_loss_per_class'][best_results_idx[i]] for i in range(k_fold)],axis=1),
                         # 'avg_train_loss_per_subject_best_models': np.mean([fold_results[i]['dict_results']['train_loss_per_subject'][best_results_idx[i]] for i in range(k_fold)]),
                         # 'avg_test_loss_per_subject_best_models': np.mean([fold_results[i]['dict_results']['test_loss_per_subject'][best_results_idx[i]] for i in range(k_fold)])
                         }
@@ -170,7 +198,9 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     return {'fold_results':fold_results,
             'list_saving_paths':list_saving_paths,
             'list_path_csv_kth_fold':list_path_csv_kth_fold,
-            'best_results_idx':best_results_idx}
+            'best_results_idx':best_results_idx,
+            'best_results_state_dict':best_results_state_dict
+            }
     
   ###############################
   # START of the main function  #
@@ -296,12 +326,14 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     list_saving_paths_k_fold.append(train_folder_path)
     
   else: 
-    fold_results = k_fold_cross_validation(is_validation=is_validation,
+    fold_results = k_fold_cross_validation(path_to_extracted_features=model_advanced.path_to_extracted_features,
+                                           is_validation=is_validation,
                                            round_output_loss=is_round_output_loss,
                                            shuffle_video_chunks=is_shuffle_video_chunks,
                                            shuffle_training_batch=is_shuffle_training_batch)
     list_dict_csv_path = fold_results['list_path_csv_kth_fold'] # list of dictionaries with paths to CSV files for each fold
     list_saving_paths_k_fold = fold_results['list_saving_paths'] # list of saving paths for each fold
+    list_best_model_state = fold_results['best_results_state_dict']
     for i,dict_train in enumerate(fold_results['fold_results']):
       plot_loss_details(dict_train=dict_train, 
                         train_folder_path=list_saving_paths_k_fold[i],
@@ -311,124 +343,130 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   key_test_dataset = 'test' if not is_validation else 'val'
   # dict_cvs_path = dict_cvs_path[key_test_dataset]
   # For each dataset used plot tsne considering all features from backbone per subject and per class
-  for dict_cvs_path,train_folder_path in zip(list_dict_csv_path,list_saving_paths_k_fold):
-    # create folder to save tsne plots
-    print(f"Creating folder to save tsne plots at {train_folder_path}")
-    saving_path_tsne = os.path.join(train_folder_path,'tsne')
-    if not os.path.exists(saving_path_tsne):
-      os.mkdir(saving_path_tsne)
   
-  # plot tsne considering all features from backbone per subject and per class
-    for split_dataset_name, split_dataset_csv_path in dict_cvs_path.items(): #{k = {"train", "test", "val"}; v = path_to_csv}
-      if split_dataset_name == key_test_dataset:
-        print(f'Split {split_dataset_name}')
-        with torch.no_grad():
-          dict_backbone_feats = model_advanced.extract_features(csv_path = split_dataset_csv_path)
-        backbone_feats = dict_backbone_feats['features'] # [nr_video * windows, T=8, patch_w=1, patch_h=1, emb=384] 
-        # print(f'backbone_feats {backbone_feats.shape}')
-        y_gt = dict_backbone_feats['list_labels']    
-        list_subject_id = dict_backbone_feats['list_subject_id']
-        tools.plot_tsne(X=backbone_feats,
-                      labels=y_gt,
-                      saving_path=os.path.join(saving_path_tsne,f'tsne_backbone_gt_{split_dataset_name}'),
-                      legend_label='class ',
-                      title=f'dataset {split_dataset_name} (from backbone per chunks)')
+  if not only_train:
+    for dict_cvs_path,train_folder_path,best_model_state_dict in zip(list_dict_csv_path,list_saving_paths_k_fold,list_best_model_state):
+      # create folder to save tsne plots
+      model_advanced.head.model.load_state_dict(best_model_state_dict)
+      print(f"Creating folder to save tsne plots at {train_folder_path}")
+      saving_path_tsne = os.path.join(train_folder_path,'tsne')
+      if not os.path.exists(saving_path_tsne):
+        os.mkdir(saving_path_tsne)
+    
+    # plot tsne considering all features from backbone per subject and per class
       
-        tools.plot_tsne(X=backbone_feats,
-                        labels=list_subject_id,
-                        saving_path=os.path.join(saving_path_tsne,f'tsne_backbone_subject_{split_dataset_name}'),
-                        legend_label='subject',
-                        title=f'dataset {split_dataset_name} (from backbone per chunks)')
-    
-        # plot tsne considering the prediction per subject and per class  
-        # y_pred shape [nr_video, nr_windows]
-        if head.value == HEAD.SVR.value:
-          y_pred = model_advanced.head.predict(backbone_feats)                                                  
+      for split_dataset_name, split_dataset_csv_path in dict_cvs_path.items(): #{k = {"train", "test", "val"}; v = path_to_csv}
+        if split_dataset_name == key_test_dataset:
+          print(f'Split {split_dataset_name}')
+          with torch.no_grad():
+            dict_backbone_feats = model_advanced.extract_features(csv_path = split_dataset_csv_path)
+          backbone_feats = dict_backbone_feats['features'] # [nr_video * windows, T=8, patch_w=1, patch_h=1, emb=384] 
+          # print(f'backbone_feats {backbone_feats.shape}')
+          y_gt = dict_backbone_feats['list_labels']    
+          list_subject_id = dict_backbone_feats['list_subject_id']
           tools.plot_tsne(X=backbone_feats,
-                          labels=y_pred,
-                          saving_path=os.path.join(saving_path_tsne,f'tsne_SVR_{split_dataset_name}_pred'),
-                          legend_label='class ',
-                          title=f'dataset {split_dataset_name} (from backbone)')
+                        labels=y_gt,
+                        apply_pca_before_tsne=True,
+                        saving_path=os.path.join(saving_path_tsne,f'tsne_backbone_gt_{split_dataset_name}'),
+                        legend_label='class ',
+                        title=f'dataset {split_dataset_name} (from backbone per chunks)')
         
-        elif head.value == HEAD.GRU.value:
-          # SHAPE X_gru_feats -> tuple(output[batch_size, seq_length, hidden_size], h_n: [num_layers,hidde_size])
-          X_gru_feats_padded, length_feature, subject_ids_per_sample_id = model_advanced.head.get_embeddings(X=backbone_feats,
-                                                                                     sample_id=dict_backbone_feats['list_sample_id'],
-                                                                                     subject_id=dict_backbone_feats['list_subject_id']) 
-          # print(f'length_feature {length_feature}')
-          # print(f'X_gru_feats_padded {X_gru_feats_padded.shape}')
-          # print(f'subject_ids_per_sample_id {subject_ids_per_sample_id.shape}')
-          X_gru_out_feats_padded_cpu = X_gru_feats_padded.detach().cpu()
-          # print(f'X_gru_out_feats_padded_cpu {X_gru_out_feats_padded_cpu.shape}')
-          X_gru_hn_feats_cpu = X_gru_feats_padded[torch.arange(X_gru_out_feats_padded_cpu.shape[0]),length_feature-1].detach().cpu().squeeze(dim=1) # final hidden state of the last GRU layer
-          
-          X_gru_out_feats_padded_cpu = torch.cat([X_gru_out_feats_padded_cpu[i,:length_feature[i]] for i in range(X_gru_out_feats_padded_cpu.shape[0])],dim=0)
-          # print(f'CAT_X_gru_out_feats_padded_cpu {X_gru_out_feats_padded_cpu.shape}')
-          # print(f'X_gru_hn_feats_cpu {X_gru_hn_feats_cpu.shape}')
-          del X_gru_feats_padded
-          torch.cuda.empty_cache()
-          # considerin 1 embedding per chunk
-          y_pred = model_advanced.head.predict(X=backbone_feats,
-                                             sample_id=dict_backbone_feats['list_sample_id'],
-                                             subject_id=dict_backbone_feats['list_subject_id'],
-                                             pred_only_last_time_step=False)
-          y_pred = y_pred.detach().cpu()
-          # print(f'y_pred {y_pred.shape}') # [nr_video,nr_windows,pred=1]
-          y_pred_unpadded = torch.cat([y_pred[i,:length_feature[i]] for i in range(y_pred.shape[0])])
-          tools.plot_tsne(X = X_gru_out_feats_padded_cpu,
-                        labels = torch.round(y_pred_unpadded),
-                        # title=f'{k}_{v} (from backbone)')
-                        title = f'dataset_{split_dataset_name} pred per chunks (using GRU features)',
-                        legend_label='class',
-                        saving_path = os.path.join(saving_path_tsne,f'tsne_GRU_{split_dataset_name}_pred'))
-          # considering 1 embedding per video
-          y_last_hidden = torch.stack([torch.round(y_pred[i,length_feature[i]-1]) for i in range(y_pred.shape[0])])
-          print(f'y_pred {y_pred}')
-          print(f'y_last_hidden {y_last_hidden}')
-          tools.plot_tsne(X = X_gru_hn_feats_cpu,
-                          labels = y_last_hidden,
-                          legend_label = 'class ',
-                          title = f'dataset_{split_dataset_name} pred per video (using GRU last_hidden feature)',
-                          saving_path = os.path.join(saving_path_tsne,f'tsne_GRU_{split_dataset_name}_gt'))
-          
-          # subject_ids_extended = torch.cat([subject_ids_per_sample_id[i].repeat(length_feature[i]) for i in range(subject_ids_per_sample_id.shape[0])])
-    
-          tools.plot_tsne(X = X_gru_hn_feats_cpu,
-                          labels = subject_ids_per_sample_id,
-                          title = f'dataset_{split_dataset_name} subjects per video (using GRU last_hidden feature)',
+          tools.plot_tsne(X=backbone_feats,
+                          labels=list_subject_id,
+                          apply_pca_before_tsne=True,
+                          saving_path=os.path.join(saving_path_tsne,f'tsne_backbone_subject_{split_dataset_name}'),
                           legend_label='subject',
-                          saving_path = os.path.join(saving_path_tsne,f'tsne_GRU_{split_dataset_name}_subject'))
-        
-        # Create video with predictions
-        # print(f'y_pred shape {y_pred.shape}')
-        # print(f'y_gt shape {y_gt.shape}')
-        # print(f'list_frames shape {dict_backbone_feats["list_frames"].shape}')
-        create_unique_video_per_prediction(train_folder_path=train_folder_path,
-                                          dict_cvs_path=dict_cvs_path,
-                                          dataset_name=split_dataset_name,
-                                          list_frames=dict_backbone_feats['list_frames'],
-                                          y_pred=y_pred_unpadded,
-                                          y=y_gt,
-                                          sample_ids=dict_backbone_feats['list_sample_id'])
-        
-        # plot graph chunks prediciton for 2 samplesID
-        rnd_perm_idx = torch.randperm(len(dict_backbone_feats['list_sample_id']))
-        for i,sample_id in enumerate(dict_backbone_feats['list_sample_id'][rnd_perm_idx][:4]):
-          folder_subject = os.path.join(train_folder_path,f'plot_chunks_prediction_{split_dataset_name}')
-          if not os.path.exists(folder_subject):
-            os.makedirs(folder_subject)
-          idx = np.where(dict_backbone_feats['list_sample_id'] == sample_id)[0]
-          print(f'idx {idx}')
-          print(f'len(idx) {len(idx)}')
-          tools.plot_prediction_chunks_per_subject(predictions=y_pred_unpadded[idx],
-                                                   n_chunks = len(idx),
-                                                   # [nr_video,num_clips,1] -> [nr_video,num_clips],
-                                                  #  sample_id=sample_id,
-                                                  #  gt=list_ground_truth[idx],
-                                                  title=f'sampleID: {sample_id} - {split_dataset_name}',
-                                                  saving_path=os.path.join(folder_subject,f'subject_{sample_id}_{split_dataset_name}'))
-          # if i == 10:
-          #   break
+                          title=f'dataset {split_dataset_name} (from backbone per chunks)')
+      
+          # plot tsne considering the prediction per subject and per class  
+          # y_pred shape [nr_video, nr_windows]
+          if head.value == HEAD.SVR.value:
+            y_pred = model_advanced.head.predict(backbone_feats)                                                  
+            tools.plot_tsne(X=backbone_feats,
+                            labels=y_pred,
+                            saving_path=os.path.join(saving_path_tsne,f'tsne_SVR_{split_dataset_name}_pred'),
+                            legend_label='class ',
+                            title=f'dataset {split_dataset_name} (from backbone)')
+          
+          elif head.value == HEAD.GRU.value:
+            # SHAPE X_gru_feats -> tuple(output[batch_size, seq_length, hidden_size], h_n: [num_layers,hidde_size])
+            X_gru_feats_padded, length_feature, subject_ids_per_sample_id = model_advanced.head.get_embeddings(X=backbone_feats,
+                                                                                      sample_id=dict_backbone_feats['list_sample_id'],
+                                                                                      subject_id=dict_backbone_feats['list_subject_id']) 
+            # print(f'length_feature {length_feature}')
+            # print(f'X_gru_feats_padded {X_gru_feats_padded.shape}')
+            # print(f'subject_ids_per_sample_id {subject_ids_per_sample_id.shape}')
+            X_gru_out_feats_padded_cpu = X_gru_feats_padded.detach().cpu()
+            # print(f'X_gru_out_feats_padded_cpu {X_gru_out_feats_padded_cpu.shape}')
+            X_gru_hn_feats_cpu = X_gru_feats_padded[torch.arange(X_gru_out_feats_padded_cpu.shape[0]),length_feature-1].detach().cpu().squeeze(dim=1) # final hidden state of the last GRU layer
+            
+            X_gru_out_feats_padded_cpu = torch.cat([X_gru_out_feats_padded_cpu[i,:length_feature[i]] for i in range(X_gru_out_feats_padded_cpu.shape[0])],dim=0)
+            # print(f'CAT_X_gru_out_feats_padded_cpu {X_gru_out_feats_padded_cpu.shape}')
+            # print(f'X_gru_hn_feats_cpu {X_gru_hn_feats_cpu.shape}')
+            del X_gru_feats_padded
+            torch.cuda.empty_cache()
+            # considerin 1 embedding per chunk
+            y_pred = model_advanced.head.predict(X=backbone_feats,
+                                              sample_id=dict_backbone_feats['list_sample_id'],
+                                              subject_id=dict_backbone_feats['list_subject_id'],
+                                              pred_only_last_time_step=False)
+            y_pred = y_pred.detach().cpu()
+            # print(f'y_pred {y_pred.shape}') # [nr_video,nr_windows,pred=1]
+            y_pred_unpadded = torch.cat([y_pred[i,:length_feature[i]] for i in range(y_pred.shape[0])])
+            tools.plot_tsne(X = X_gru_out_feats_padded_cpu,
+                          labels = torch.round(y_pred_unpadded),
+                          # title=f'{k}_{v} (from backbone)')
+                          title = f'dataset_{split_dataset_name} pred per chunks (using GRU features)',
+                          legend_label='class',
+                          saving_path = os.path.join(saving_path_tsne,f'tsne_GRU_{split_dataset_name}_pred'))
+            # considering 1 embedding per video
+            y_last_hidden = torch.stack([torch.round(y_pred[i,length_feature[i]-1]) for i in range(y_pred.shape[0])])
+            print(f'y_pred {y_pred}')
+            print(f'y_last_hidden {y_last_hidden}')
+            
+            tools.plot_tsne(X = X_gru_hn_feats_cpu,
+                            labels = y_last_hidden,
+                            legend_label = 'class ',
+                            title = f'dataset_{split_dataset_name} pred per video (using GRU last_hidden feature)',
+                            saving_path = os.path.join(saving_path_tsne,f'tsne_GRU_{split_dataset_name}_gt'))
+            
+            # subject_ids_extended = torch.cat([subject_ids_per_sample_id[i].repeat(length_feature[i]) for i in range(subject_ids_per_sample_id.shape[0])])
+            tools.plot_tsne(X = X_gru_hn_feats_cpu,
+                            labels = subject_ids_per_sample_id,
+                            title = f'dataset_{split_dataset_name} subjects per video (using GRU last_hidden feature)',
+                            legend_label='subject',
+                            saving_path = os.path.join(saving_path_tsne,f'tsne_GRU_{split_dataset_name}_subject'))
+          
+          # Create video with predictions
+          # print(f'y_pred shape {y_pred.shape}')
+          # print(f'y_gt shape {y_gt.shape}')
+          # print(f'list_frames shape {dict_backbone_feats["list_frames"].shape}')
+          create_unique_video_per_prediction(train_folder_path=train_folder_path,
+                                            dict_cvs_path=dict_cvs_path,
+                                            dataset_name=split_dataset_name,
+                                            list_frames=dict_backbone_feats['list_frames'],
+                                            y_pred=y_pred_unpadded,
+                                            y=y_gt,
+                                            sample_ids=dict_backbone_feats['list_sample_id'])
+          
+          # plot graph chunks prediciton for 2 samplesID
+          rnd_perm_idx = torch.randperm(len(dict_backbone_feats['list_sample_id']))
+          for i,sample_id in enumerate(dict_backbone_feats['list_sample_id'][rnd_perm_idx][:4]):
+            folder_subject = os.path.join(train_folder_path,f'plot_chunks_prediction_{split_dataset_name}')
+            if not os.path.exists(folder_subject):
+              os.makedirs(folder_subject)
+            idx = np.where(dict_backbone_feats['list_sample_id'] == sample_id)[0]
+            print(f'idx {idx}')
+            print(f'len(idx) {len(idx)}')
+            tools.plot_prediction_chunks_per_subject(predictions=y_pred_unpadded[idx],
+                                                    n_chunks = len(idx),
+                                                    # [nr_video,num_clips,1] -> [nr_video,num_clips],
+                                                    #  sample_id=sample_id,
+                                                    #  gt=list_ground_truth[idx],
+                                                    title=f'sampleID: {sample_id} - {split_dataset_name}',
+                                                    saving_path=os.path.join(folder_subject,f'subject_{sample_id}_{split_dataset_name}'))
+            # if i == 10:
+            #   break
   return {'model_advanced':model_advanced, 
           'dict_train':dict_train}
  
@@ -501,7 +539,10 @@ def _plot_confusion_matricies(epochs, dict_train, confusion_matrix_path):
   saving_path_precision_recall = os.path.join(confusion_matrix_path,'plot_over_epochs')
   if not os.path.exists(saving_path_precision_recall):
     os.makedirs(saving_path_precision_recall)
-  tools.plot_accuracy_confusion_matrix(train_confusion_matricies=dict_train['dict_results']['train_confusion_matricies'],
-                                       test_confusion_matricies=dict_train['dict_results']['test_confusion_matricies'],
+  tools.plot_accuracy_confusion_matrix(confusion_matricies=dict_train['dict_results']['train_confusion_matricies'],
+                                       type_conf='train',
+                                       saving_path=saving_path_precision_recall)
+  tools.plot_accuracy_confusion_matrix(confusion_matricies=dict_train['dict_results']['test_confusion_matricies'],
+                                       type_conf='test',
                                        saving_path=saving_path_precision_recall)
     
