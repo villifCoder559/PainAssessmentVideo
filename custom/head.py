@@ -184,19 +184,19 @@ class HeadSVR:
 
 
 
-  def predict(self, X):
-    """
-    Predicts the target values for the given input data using the trained SVR model.
+  # def predict(self, X):
+  #   """
+  #   Predicts the target values for the given input data using the trained SVR model.
 
-    Parameters:
-    X (array-like): The input data with shape (n_samples, n_features).
+  #   Parameters:
+  #   X (array-like): The input data with shape (n_samples, n_features).
 
-    Returns:
-    array: The predicted target values.
-    """
-    assert len(X.shape) == 2, f"Input shape should be (n_samples, n_features), got {X.shape}"
-    predictions = self.svr.predict(X)
-    return predictions
+  #   Returns:
+  #   array: The predicted target values.
+  #   """
+  #   assert len(X.shape) == 2, f"Input shape should be (n_samples, n_features), got {X.shape}"
+  #   predictions = self.svr.predict(X)
+  #   return predictions
 
   def k_fold_cross_validation(self, X, y, groups, k=3, list_saving_paths_k_val=None):
     """ k-fold cross-validation training of SVR model. """
@@ -570,9 +570,16 @@ class HeadGRU:
       with open(log_batch_path, 'a') as log_file:
         log_file.write(f'EPOCH {epoch+1}/{num_epochs}\n')
       for batch_X, batch_y, batch_subjects, batch_real_length_padded_feat in train_loader:
-        # print(f'device: {device}')
+        # # print(f'device: {device}')
+        if len(batch_X.shape) == 4:
+          batch_X = batch_X.squeeze(0)
+          batch_y = batch_y.squeeze(0)
+          batch_subjects = batch_subjects.squeeze(0)
+          batch_real_length_padded_feat = batch_real_length_padded_feat.squeeze(0)
         # print(f'batch_X shape: {batch_X.shape}')
-         
+        # print(f'batch_y shape: {batch_y.shape}')
+        # print(f'batch_subjects shape: {batch_subjects.shape}')
+        # print(f'batch_real_length_padded_feat shape: {batch_real_length_padded_feat.shape}') 
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
         optimizer.zero_grad()
         
@@ -631,7 +638,7 @@ class HeadGRU:
           log_file.write(f'  GPU free/total (GB) : {free_gpu_mem:.2f}/{total_gpu_mem:.2f}\n')
           log_file.write("\n")
         count_batch += 1
-        
+        print(f'{count_batch/len(train_loader)}  GPU free/total (GB) : {free_gpu_mem:.2f}/{total_gpu_mem:.2f}\n')
         # sk_conf_matrix = confusion_matrix(batch_y.detach().cpu(), output_postprocessed.detach().cpu())
         # train_confusion_matricies[epoch].compute()
         # print(train_confusion_matricies[epoch].compute())
@@ -689,7 +696,10 @@ class HeadGRU:
 
     # Save model weights
     if saving_path:
+      print('Load and save best model for next steps...')
       torch.save(best_model_state, os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth'))
+      # load the best model
+      # self.model.load_state_dict(best_model_state)
       print(f"Best model weights saved to {saving_path}")
     # # Plot losses
     # tools.plot_losses(train_losses=train_losses, test_losses=test_losses)
@@ -707,7 +717,8 @@ class HeadGRU:
       # 'test_accuracy_per_class': test_accuracy_per_class,
       'train_confusion_matricies': train_confusion_matricies,
       'test_confusion_matricies': test_confusion_matricies,
-      'best_model_idx': best_model_epoch
+      'best_model_idx': best_model_epoch,
+      'best_model_state': best_model_state
     }
 
   def evaluate(self, test_loader, criterion, device, unique_classes, unique_subjects, test_confusion_matricies, round_output_loss=True,log_file_path=None):
@@ -749,23 +760,23 @@ class HeadGRU:
     # Class and subject losses
     avg_loss = avg_test_loss / len(test_loader)
     # test_confusion_matricies.compute()
-    dict_precision_recall = tools.get_accuracy_from_confusion_matrix(test_confusion_matricies)
+    # dict_precision_recall = tools.get_accuracy_from_confusion_matrix(test_confusion_matricies)
     print(' Test')
     print(f'  Loss: {avg_loss:.4f} ')
     print(f'  Loss per_class   : {test_loss_per_class}')
-    print(f'  Prec. per_class  : {dict_precision_recall["precision_per_class"]}')
-    print(f'  Prec. macro      : {dict_precision_recall["macro_precision"]}')
-    print(f'  Prec. micro      : {dict_precision_recall["micro_precision"]}')
-    print(f'  Prec. weigh.     : {dict_precision_recall["weighted_precision"]}')
+    # print(f'  Prec. per_class  : {dict_precision_recall["precision_per_class"]}')
+    # print(f'  Prec. macro      : {dict_precision_recall["macro_precision"]}')
+    # print(f'  Prec. micro      : {dict_precision_recall["micro_precision"]}')
+    # print(f'  Prec. weigh.     : {dict_precision_recall["weighted_precision"]}')
     if log_file_path:
       with open(log_file_path, 'a') as log_file:
         log_file.write(f' Test\n')
         log_file.write(f'  Loss: {avg_loss:.4f}\n')
         log_file.write(f'  Loss per_class   : {test_loss_per_class}\n')
-        log_file.write(f'  Prec. per_class  : {dict_precision_recall["precision_per_class"]}\n')
-        log_file.write(f'  Prec. macro      : {dict_precision_recall["macro_precision"]}\n')
-        log_file.write(f'  Prec. micro      : {dict_precision_recall["micro_precision"]}\n')
-        log_file.write(f'  Prec. weigh.     : {dict_precision_recall["weighted_precision"]}\n')
+        # log_file.write(f'  Prec. per_class  : {dict_precision_recall["precision_per_class"]}\n')
+        # log_file.write(f'  Prec. macro      : {dict_precision_recall["macro_precision"]}\n')
+        # log_file.write(f'  Prec. micro      : {dict_precision_recall["micro_precision"]}\n')
+        # log_file.write(f'  Prec. weigh.     : {dict_precision_recall["weighted_precision"]}\n')
         log_file.write('\n')
     return {
       'test_loss':avg_loss,
@@ -782,11 +793,11 @@ class HeadGRU:
     Returns:
       torch.Tensor: The generated embeddings from the model's GRU layer.
     """
+    if device is None:
+      device = 'cuda' if torch.cuda.is_available() else 'cpu'
     X_padded,_,subject_ids_per_sample_id,length_features = self._group_features_by_sample_id(X=X, sample_ids=sample_id, subject_ids=subject_id)
     X_padded = X_padded.to(device)
     packed_input = pack_padded_sequence(X_padded, length_features, batch_first=True, enforce_sorted=False)
-    if device is None:
-      device = 'cuda' if torch.cuda.is_available() else 'cpu'
     self.model.to(device)
     self.model.eval()
     with torch.no_grad():
@@ -798,7 +809,7 @@ class HeadGRU:
     return out_padded, list_length, subject_ids_per_sample_id
 
   def predict(self, X,sample_id,subject_id,device=None,pred_only_last_time_step=True):
-    # TODO: pad the sequence input, technically it should start from backbone to extract the features from new videos
+    # CHECK: pad the sequence input, technically it should start from backbone to extract the features from new videos
     X_padded,_,_,_ = self._group_features_by_sample_id(X=X, sample_ids=sample_id, subject_ids=subject_id)
     # packed_input = pack_padded_sequence(batch_X, batch_real_length_padded_feat, batch_first=True, enforce_sorted=False)
     if device is None:
@@ -819,7 +830,8 @@ class CrossValidationGRU:
     self.num_layers = head.num_layers
     self.dropout = head.dropout
     self.output_size = head.output_size
-
+  
+  # deprecated
   def k_fold_cross_validation(self, X, y, group_ids, k=5, num_epochs=10, batch_size=32,
                                criterion=nn.L1Loss(), optimizer_fn=optim.Adam, lr=0.001,
                                list_saving_paths_k_val=None):
