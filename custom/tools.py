@@ -5,12 +5,14 @@ import os
 import pandas as pd
 from torchmetrics.classification import ConfusionMatrix,MulticlassConfusionMatrix
 from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
 from matplotlib.ticker import MaxNLocator
 import cv2
 import av
 import torch
 import json
 from openTSNE import TSNE as openTSNE
+import time
 
 # if os.name == 'posix':
   # from tsnecuda import TSNE as cudaTSNE # available only on Linux
@@ -349,6 +351,13 @@ def _generate_train_test_validation(csv_path, saving_path,train_size=0.8,val_siz
 
   return save_path_dict
 
+def save_split_indices(split_indices, folder_path):
+  if not os.path.exists(folder_path):
+    os.makedirs(folder_path)
+  split_indices_file = os.path.join(folder_path, 'split_indices.json')
+  with open(split_indices_file, 'w') as f:
+    json.dump(split_indices, f, cls=NpEncoder)
+
 def read_split_indices(folder_path):
   split_indices_file = os.path.join(folder_path, 'split_indices.json')
   with open(split_indices_file, 'r') as f:
@@ -552,7 +561,7 @@ def plot_prediction_chunks_per_subject(predictions, n_chunks,title,saving_path=N
   else:
     plt.show()
 
-def plot_tsne(X, labels, legend_label='', title = '', use_cuda=False, perplexity=1, saving_path=None):
+def plot_tsne(X, labels, apply_pca_before_tsne=False,legend_label='', title = '', use_cuda=False, perplexity=1, saving_path=None):
   """
   Plots the t-SNE reduction of the features in 2D with colors based on subject, gt, or predicted class.
   Args:
@@ -562,12 +571,13 @@ def plot_tsne(X, labels, legend_label='', title = '', use_cuda=False, perplexity
   """
   print(f'TSNE_X.shape: {X.shape}')
   print(f'TSNE_labels.shape: {labels.shape}')
+  start = time.time()
   if len(labels.shape) != 1:
     labels = labels.reshape(-1)
   unique_labels = np.unique(labels)
   color_map = plt.cm.get_cmap('tab20', len(unique_labels)) # FIX: if uniqelabels > 20 create maore a differnt plot
   color_dict = {val: color_map(i) for i, val in enumerate(unique_labels)}
-  perplexity = min(30, X.size(0) - 1)
+  perplexity = min(20, X.size(0)-1)
   if use_cuda and X.shape[0] > 194:
     print('Using CUDA')
     # tsne = cudaTSNE(n_components=2, perplexity=perplexity)
@@ -577,9 +587,28 @@ def plot_tsne(X, labels, legend_label='', title = '', use_cuda=False, perplexity
     # tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42, n_jobs=-1)
   X_cpu = X.detach().cpu().squeeze()
   X_cpu = X_cpu.reshape(X_cpu.shape[0], -1)
+  # apply PCA from scikit-learn to reduce the dimensionality of the data
+  if apply_pca_before_tsne:
+    n_components_pca = min(100, X_cpu.shape[0])
+    print(f'PCA using {n_components_pca} components...')
+    pca = PCA(n_components=n_components_pca)
+    X_cpu = pca.fit_transform(X_cpu)
   # print(f' X_cpu.shape: {X_cpu.shape}')
-  print(" Start t-SNE computation...")
+  print("Start t-SNE computation...")
   X_tsne = tsne.fit(X_cpu) # OpenTSNE
+  # get the folder of saving_path
+  # print(f'path {os.path.split(saving_path)[:-1]}')
+  path_log_tsne = os.path.join(os.path.split(saving_path)[:-1][0],'log_time_tsne.txt')
+  with open(path_log_tsne, 'a') as f:
+    f.write(f'{title} \n')
+    f.write(f'  time: {time.time()-start} secs\n')
+    f.write(f'  perplexity: {tsne.perplexity}\n')
+    f.write(f'  X_tsne.shape: {X_tsne.shape}\n')
+    f.write(f'  apply_pca_before_tsne: {apply_pca_before_tsne}\n')
+    if apply_pca_before_tsne:
+      f.write(f'  n_components_pca: {n_components_pca}\n')
+      f.write(f'  PCA explained variance ratio: {pca.explained_variance_ratio_.cumsum()}\n')
+    f.write('\n')
   # X_tsne = tsne.fit_transform(X_cpu) # in: X=(n_samples, n_features)
                                      # out: (n_samples, n_components=2)
   print(" t-SNE computation done.")
@@ -737,3 +766,8 @@ def _generate_csv_subsampled(csv_dataset_path, nr_samples_per_class=2):
   subsampled_df = pd.DataFrame(samples_subsampled, columns=video_labels_columns)
   subsampled_df.to_csv(save_path, index=False, sep='\t')
   print(f'Subsampled video labels saved to {save_path}')
+
+def generate_csv(cols, data, saving_path):
+  df = pd.DataFrame(data, columns=cols)
+  df.to_csv(saving_path, index=False, sep='\t')
+  print(f'CSV saved to {saving_path}')
