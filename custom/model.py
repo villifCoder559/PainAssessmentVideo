@@ -208,10 +208,15 @@ class Model_Advanced: # Scenario_Advanced
       print('Training using GRU.....')
       print(train_csv_path)
       dict_results = self.head.start_train_test(X_train=X_train, y_train=y_train, subject_ids_train=subject_ids_train,
-                                                sample_ids_test=sample_ids_test, sample_ids_train=sample_ids_train,
-                                                X_test=X_test, y_test=y_test, subject_ids_test=subject_ids_test, 
-                                                num_epochs=num_epochs, batch_size=self.batch_size_training,
-                                                criterion=criterion, optimizer_fn=optimizer_fn, lr=lr,
+                                                sample_ids_test=sample_ids_test, 
+                                                sample_ids_train=sample_ids_train,
+                                                X_test=X_test, 
+                                                y_test=y_test, 
+                                                subject_ids_test=subject_ids_test, 
+                                                num_epochs=num_epochs, 
+                                                batch_size=self.batch_size_training,
+                                                criterion=criterion, 
+                                                optimizer_fn=optimizer_fn, lr=lr,
                                                 saving_path=saving_path,
                                                 init_weights=init_weights,
                                                 round_output_loss=round_output_loss,
@@ -301,9 +306,7 @@ class Model_Advanced: # Scenario_Advanced
         #                         400 MB (base_model), 
         #                           4 GB (giant_model)
         # 
-        # video_feat_size = nr_clips * clip_length=16 * 3 * 224 * 224 * 4 (float32) = nr_clips * 9633792 bytes = 
-        #                 = nr_clips * 9.19 MB (float16 = 4.6 MB) => 
-        #                => 8 * 9.19 MB = 73.52 MB (float32) = 36.76 MB (float16)
+        # video_feat_size [nr_video,8,768] => 8700 * 8 * 768 * 4 = 204 MB
         #############################################################################################################
         # print(f'Elapsed time for {batch_size} samples: {time.time() - start}')
         data = data.to(device)
