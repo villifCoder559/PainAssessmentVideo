@@ -251,7 +251,8 @@ class customSampler(Sampler):
     self.y_labels = np.array(csv_array[:,2]).astype(int)
     nr_samples = len(self.y_labels)
     self.n_batch_size = batch_size
-    self.skf = StratifiedKFold(n_splits = nr_samples//batch_size + 1, shuffle=shuffle, random_state=random_state)
+    # -(-a//b) is the same as math.ceil(a/b)
+    self.skf = StratifiedKFold(n_splits = int(-(-nr_samples//batch_size)) , shuffle=shuffle, random_state=random_state)
     self.n_batches = self.skf.get_n_splits()
     self.initialize()
     
