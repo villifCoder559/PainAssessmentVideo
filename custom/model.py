@@ -231,10 +231,10 @@ class Model_Advanced: # Scenario_Advanced
             'count_subject_ids_train':count_subject_ids_train,
             'count_subject_ids_test':count_subject_ids_test}
     
-  def extract_features(self,csv_path):
+  def extract_features(self,csv_path,read_from_memory=True):
     dict_feature_extraction = {}
     print(f'csv_path:{csv_path}')
-    if os.path.exists(self.path_to_extracted_features) and os.listdir(self.path_to_extracted_features):
+    if read_from_memory and os.path.exists(self.path_to_extracted_features) and os.listdir(self.path_to_extracted_features):
       print('Loading features from SSD...')
       key = os.path.split(csv_path)[-1][:-4]
       # print('folder_indxs_path',os.path.split(train_csv_path)[:-1][0])
@@ -286,7 +286,7 @@ class Model_Advanced: # Scenario_Advanced
     self.dataset.set_path_labels(path_csv_dataset)
     dataloader = DataLoader(self.dataset, 
                             batch_size=self.batch_size_feat_extraction,
-                            num_workers=4,
+                            num_workers=1,
                             shuffle=False,
                             collate_fn=self.dataset._custom_collate_fn)
     # move the model to the device
