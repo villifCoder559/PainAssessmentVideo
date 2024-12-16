@@ -17,7 +17,7 @@ import time
 import json
 from sklearn.model_selection import StratifiedGroupKFold
 
-def generate_merged_video(folder_path_features,folder_tsne_results):
+def get_dict_all_features_from_model(sliding_windows,subject_id_list,classes,folder_path_tsne_results):
   def get_model_advanced(stride_window_in_video=16):
     model_type = MODEL_TYPE.VIDEOMAE_v2_S
     pooling_embedding_reduction = EMBEDDING_REDUCTION.MEAN_SPATIAL
@@ -37,7 +37,7 @@ def generate_merged_video(folder_path_features,folder_tsne_results):
       'hidden_size': 1024,
       'num_layers': 1,
       'dropout': 0.0,
-      'input_size': 768 * 8 # can be 384  (small), 768  (base), 1408  (large) [temporal_dim considered as input sequence for GRU]
+      'input_size': 384 * 8 # can be 384  (small), 768  (base), 1408  (large) [temporal_dim considered as input sequence for GRU]
                         # can be 384*8(small), 768*8(base), 1408*8(large) [temporal_dim considered feature in GRU] 
     }
     
@@ -52,15 +52,31 @@ def generate_merged_video(folder_path_features,folder_tsne_results):
                               stride_window=stride_window_in_video,
                               path_labels=path_cvs_dataset,
                               preprocess=preprocess,
-                              batch_size_training=2,
-                              batch_size_feat_extraction=2,
+                              batch_size_training=1,
+                              batch_size_feat_extraction=1,
                               head=head.value,
                               head_params=params,
                               download_if_unavailable=False,
                               features_folder_saving_path=features_folder_saving_path
                               )
     return model_advanced
+  
+  model_advanced = get_model_advanced(stride_window_in_video=sliding_windows)
+  csv_array,cols = tools.get_array_from_csv(model_advanced.dataset.path_labels) # subject_id, subject_name, class_id, class_name, sample_id, sample_name
+  print(csv_array)
+  idx_subjects = np.any([csv_array[:,0].astype(int) == id for id in subject_id_list],axis=0)
+  idx_classes = np.any([csv_array[:,2].astype(int) == id for id in classes],axis=0)
+  new_csv_array = csv_array[np.logical_and(idx_subjects,idx_classes)]
+  print(f'new_csv_array {new_csv_array.shape}')
+  path_new_csv=tools.save_csv_file(cols=cols,
+                      csv_array=new_csv_array,
+                      saving_path=folder_path_tsne_results,
+                      sliding_windows=sliding_windows)
+  dict_all_features = model_advanced.extract_features(csv_path=path_new_csv,read_from_memory=False)
+  dict_all_features['features'] = dict_all_features['features'].detach().cpu()
+  return dict_all_features
 
+def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subject_id_list,clip_list,class_list,sliding_windows,legend_label,create_video=True):
 
   def remove_plot(file_path):
     try:
@@ -73,19 +89,20 @@ def generate_merged_video(folder_path_features,folder_tsne_results):
     except Exception as e:
       print(f"Error occurred while deleting the file: {e}")
         
-  # TODO: select the right stride window for each video
+  # TODO: select the right stride window for each video when read data from SSD
   
-  subject_id_list = [5]
-  clips = [0,1,2,3,4,5,6,7]
-  classes = [0, 1, 2, 3, 4]
-  sliding_windows =  [16]
-  
-  # TODO: add select add pain class
-
-  
-  dict_all_features = tools.load_dict_data(folder_path_features)
-  print(dict_all_features.keys())
+  if sliding_windows != 16:
+    dict_all_features = get_dict_all_features_from_model(sliding_windows=sliding_windows,
+                                                         classes=class_list,
+                                                         subject_id_list=subject_id_list,
+                                                         folder_path_tsne_results=folder_path_tsne_results)
+  else:
+    dict_all_features = tools.load_dict_data(folder_path_features)
+    # print(dict_all_features.keys())
   idx_subjects = np.any([dict_all_features['list_subject_id'] == id for id in subject_id_list],axis=0)
+  idx_class = np.any([dict_all_features['list_labels'] == id for id in class_list],axis=0)
+  idx_subjects = np.logical_and(idx_subjects,idx_class)
+  
   list_frames = []
   list_sample_id = []
   list_subject_id = []
@@ -96,7 +113,7 @@ def generate_merged_video(folder_path_features,folder_tsne_results):
   list_sample_id_per_subject, list_count_clips = np.unique(dict_all_features['list_sample_id'][idx_subjects],return_counts=True) 
   for (sample_id,nr_clips) in zip(list_sample_id_per_subject,list_count_clips):
     # print(f'sample_id {sample_id}')
-    for clip in clips:
+    for clip in clip_list:
       if clip < nr_clips:
         idx = np.where(dict_all_features['list_sample_id'][idx_subjects] == sample_id)[0]
         list_frames.append(dict_all_features['list_frames'][idx_subjects][idx][clip])
@@ -113,34 +130,71 @@ def generate_merged_video(folder_path_features,folder_tsne_results):
   list_feature = np.array(list_feature)
   list_idx_list_frames = np.array(list_idx_list_frames)
 
-  X_tsne = tools.plot_tsne(X=torch.tensor(list_feature),plot=False)  
+  tsne_plot_path = os.path.join(folder_path_tsne_results,f'tsne_plot_{sliding_windows}_{legend_label}')
+  X_tsne = tools.plot_tsne(X=torch.tensor(list_feature),plot=False,saving_path=os.path.join(folder_path_tsne_results,'dummy'))
   min_x,min_y = X_tsne.min(axis=0)
   max_x,max_y = X_tsne.max(axis=0)
   axis_dict = {'min_x':min_x-3,'min_y':min_y-3,'max_x':max_x+3,'max_y':max_y+3}
   print(f'axis_dict {axis_dict}')
   list_image_path = []
-  for i in range(1,X_tsne.shape[0]+1):
-    print(i)
-    pth = tools.only_plot_tsne(X_tsne=X_tsne[:i],
-                         labels=list_subject_id[:i],
-                         legend_label='sampleID',
-                         title=f'{i}',
-                         saving_path=folder_tsne_results,
-                         axis_scale=axis_dict)
-    list_image_path.append(pth)
-  tools.generate_video_from_list_video_path(list_video_path=list_video_path,
-                                            list_frames=list_frames,
-                                            list_sample_id=list_sample_id,
-                                            list_y_gt=list_y_gt,
-                                            idx_list_frames=list_idx_list_frames,
-                                            saving_path=folder_tsne_results,
-                                            list_image_path=list_image_path)
-  for i in range(len(list_image_path)-1):
-    remove_plot(list_image_path[i])
+  if legend_label == 'clip':
+    labels_to_plot = list_idx_list_frames
+  elif legend_label == 'subject':
+    labels_to_plot = list_subject_id
+  elif legend_label == 'class':
+    labels_to_plot = list_y_gt
+  else:
+    raise ValueError('legend_label must be one of the following: "clip", "subject", "class"') 
   
+  labels_to_plot = list_idx_list_frames
+  if not os.path.exists(tsne_plot_path):
+    os.makedirs(tsne_plot_path)
+  title_plot = f'sliding_{sliding_windows}_subjects_{len(subject_id_list)}__clips_{len(clip_list)}__classes_{(class_list)}'
+  tools.only_plot_tsne(X_tsne=X_tsne,
+                       labels=labels_to_plot,
+                       saving_path=tsne_plot_path,
+                       title=title_plot,
+                       legend_label=legend_label,
+                       axis_scale=axis_dict)  
+  # generate config.txt to save all vars used
+
+  with open(os.path.join(folder_path_tsne_results,'config.txt'),'w') as f:
+    f.write(f'subject_id_list: {subject_id_list}\n')
+    f.write(f'clips: {clip_list}\n')
+    f.write(f'classes: {class_list}\n')
+    f.write(f'sliding_windows: {sliding_windows}\n')
+  if create_video:
+    video_saving_path = os.path.join(folder_path_tsne_results,'video')
+    if not os.path.exists(video_saving_path):
+      os.makedirs(video_saving_path)  
+    for i in range(1,X_tsne.shape[0]+1):
+      print(i)
+      pth = tools.only_plot_tsne(X_tsne=X_tsne[:i],
+                          labels=labels_to_plot[:i],
+                          legend_label=legend_label,
+                          title=f'{title_plot}_{i}',
+                          saving_path=video_saving_path,
+                          axis_scale=axis_dict,
+                          last_point_bigger=True)
+      list_image_path.append(pth)
+    tools.generate_video_from_list_video_path(list_video_path=list_video_path,
+                                              list_frames=list_frames,
+                                              list_sample_id=list_sample_id,
+                                              list_y_gt=list_y_gt,
+                                              idx_list_frames=list_idx_list_frames,
+                                              saving_path=video_saving_path,
+                                              list_image_path=list_image_path)
+    for i in range(len(list_image_path)):
+      remove_plot(list_image_path[i])
+      
+#ATTENTION: This function is old, use plot_and_generate_video instead  
 def plot_tsne_per_subject(folder_path_features,folder_tsne_results):
   print('Loading features from SSD...')
+  sliding_windows = 16
+  # if sliding_windows == 16:
   dict_all_features = tools.load_dict_data(folder_path_features)
+  # else:
+  #   dict
   # TODO: select the right stride window for each video
   
   subject_id_list = [5]
