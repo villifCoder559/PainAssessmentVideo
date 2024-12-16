@@ -40,7 +40,7 @@ def save_csv_file(cols,csv_array,saving_path,sliding_windows):
     sliding_windows (bool): Whether to save the data with sliding windows or not.
   """
   df = pd.DataFrame(csv_array, columns=cols)
-  csv_path = os.path.join(saving_path, f'video_labels{sliding_windows}.csv')
+  csv_path = os.path.join(saving_path, f'video_labels_{sliding_windows}.csv')
   if not os.path.exists(saving_path):
     os.makedirs(saving_path)
   if sliding_windows:
@@ -624,7 +624,7 @@ def plot_tsne(X, labels=None, apply_pca_before_tsne=False,legend_label='', title
     with open(path_log_tsne, 'a') as f:
       f.write(f'{title} \n')
       f.write(f'  time: {time.time()-start} secs\n')
-      f.write(f'  perplexity: {tsne.affinities.perplexity}\n')
+      f.write(f'  perplexity: {X_tsne.affinities.perplexities}\n')
       f.write(f'  X_tsne.shape: {X_tsne.shape}\n')
       f.write(f'  apply_pca_before_tsne: {apply_pca_before_tsne}\n')
       if apply_pca_before_tsne:
@@ -642,7 +642,7 @@ def plot_tsne(X, labels=None, apply_pca_before_tsne=False,legend_label='', title
     return np.array(X_tsne)
   # print(f' labels shape: {labels.shape}')
 
-def only_plot_tsne(X_tsne, labels, legend_label='', title='', saving_path=None,axis_scale=None):
+def only_plot_tsne(X_tsne, labels, legend_label='', title='', saving_path=None,axis_scale=None,last_point_bigger=False):
   unique_labels = np.unique(labels)
   color_map = plt.cm.get_cmap('tab10', len(unique_labels))
   color_dict = {val: color_map(i) for i, val in enumerate(unique_labels)}
@@ -651,17 +651,20 @@ def only_plot_tsne(X_tsne, labels, legend_label='', title='', saving_path=None,a
   if axis_scale is not None:
     plt.xlim(axis_scale['min_x'],axis_scale['max_x'])
     plt.ylim(axis_scale['min_y'],axis_scale['max_y'])
+  if last_point_bigger:
+    sizes = [50] * (X_tsne.shape[0] - 1 ) + [200]
+    sizes = np.array(sizes)
+    print(f'sizes: {sizes.shape}')
   for val in unique_labels:
     idx = (labels == val) # ATT: there was a .squeeze() here 
     # print(f'idx shape: {idx.shape}')
     # print(f'X_tsne[{idx},0].shape: {X_tsne[idx,0].shape}')
     # print(f'X_tsne[{idx},1].shape: {X_tsne[idx,1].shape}')
-    if axis_scale is not None:
-      sizes = [50] * (X_tsne[idx].shape[0] - 1) + [200]
-    print(f'sizes: {sizes}')
+    if sizes is not None:
+      print(f'sizes: {sizes[idx]}')
     print(f'X_tsne[idx,0].shape: {X_tsne[idx,0].shape}')
     print(f'X_tsne[idx,1].shape: {X_tsne[idx,1].shape}')
-    plt.scatter(X_tsne[idx,0], X_tsne[idx,1], color=color_dict[val], label=f'{legend_label} {val}', alpha=0.7,s=sizes if sizes is not None else 50)
+    plt.scatter(X_tsne[idx,0], X_tsne[idx,1], color=color_dict[val], label=f'{legend_label} {val}', alpha=0.7,s=sizes[idx] if sizes is not None else 50)
   
   if legend_label != 'subject':
     plt.legend()
