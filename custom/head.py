@@ -639,6 +639,8 @@ class HeadGRU:
           log_file.write("\n")
         count_batch += 1
         print(f'{count_batch/len(train_loader)}  GPU free/total (GB) : {free_gpu_mem:.2f}/{total_gpu_mem:.2f}\n')
+        del batch_X, batch_y
+        torch.cuda.empty_cache()
         # sk_conf_matrix = confusion_matrix(batch_y.detach().cpu(), output_postprocessed.detach().cpu())
         # train_confusion_matricies[epoch].compute()
         # print(train_confusion_matricies[epoch].compute())
@@ -756,13 +758,14 @@ class HeadGRU:
             subj_idx = np.where(unique_subjects == subj)[0][0]
             subject_loss[subj_idx] += criterion(outputs[mask], batch_y[mask]).item()
         test_confusion_matricies.update(output_postprocessed.detach().cpu(),batch_y.detach().cpu())
-
+        del batch_y, batch_X
+        torch.cuda.empty_cache()
     # Class and subject losses
     avg_loss = avg_test_loss / len(test_loader)
     # test_confusion_matricies.compute()
     # dict_precision_recall = tools.get_accuracy_from_confusion_matrix(test_confusion_matricies)
     print(' Test')
-    print(f'  Loss: {avg_loss:.4f} ')
+    print(f'  Loss             : {avg_loss:.4f} ')
     print(f'  Loss per_class   : {test_loss_per_class}')
     # print(f'  Prec. per_class  : {dict_precision_recall["precision_per_class"]}')
     # print(f'  Prec. macro      : {dict_precision_recall["macro_precision"]}')
@@ -771,7 +774,7 @@ class HeadGRU:
     if log_file_path:
       with open(log_file_path, 'a') as log_file:
         log_file.write(f' Test\n')
-        log_file.write(f'  Loss: {avg_loss:.4f}\n')
+        log_file.write(f'  Loss             : {avg_loss:.4f}\n')
         log_file.write(f'  Loss per_class   : {test_loss_per_class}\n')
         # log_file.write(f'  Prec. per_class  : {dict_precision_recall["precision_per_class"]}\n')
         # log_file.write(f'  Prec. macro      : {dict_precision_recall["macro_precision"]}\n')
