@@ -17,7 +17,193 @@ import time
 import json
 from sklearn.model_selection import StratifiedGroupKFold
 
+def generate_merged_video(folder_path_features,folder_tsne_results):
+  def get_model_advanced(stride_window_in_video=16):
+    model_type = MODEL_TYPE.VIDEOMAE_v2_S
+    pooling_embedding_reduction = EMBEDDING_REDUCTION.MEAN_SPATIAL
+    pooling_clips_reduction = CLIPS_REDUCTION.NONE
+    sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
+    # path_dict ={
+    #   'all' : os.path.join('partA','starting_point','samples.csv'),
+      # 'train' : os.path.join('partA','starting_point','train_21.csv'),
+      # 'val' : os.path.join('partA','starting_point','val_26.csv'),
+      # 'test' : os.path.join('partA','starting_point','test_5.csv')
+    # }
+    path_dataset = os.path.join('partA','video','video')  
+    path_cvs_dataset = os.path.join('partA','starting_point','samples.csv')
+    head = HEAD.GRU
+    # if head == 'GRU':
+    params = {
+      'hidden_size': 1024,
+      'num_layers': 1,
+      'dropout': 0.0,
+      'input_size': 768 * 8 # can be 384  (small), 768  (base), 1408  (large) [temporal_dim considered as input sequence for GRU]
+                        # can be 384*8(small), 768*8(base), 1408*8(large) [temporal_dim considered feature in GRU] 
+    }
+    
+    preprocess = AutoImageProcessor.from_pretrained(os.path.join("local_model_directory","preprocessor_config.json"))
+    features_folder_saving_path = os.path.join('partA','video','features',f'{os.path.split(path_cvs_dataset)[-1][:-4]}_{stride_window_in_video}') # get the name of the csv file
+    
+    model_advanced = Model_Advanced(model_type=model_type,
+                              path_dataset=path_dataset,
+                              embedding_reduction=pooling_embedding_reduction,
+                              clips_reduction=pooling_clips_reduction,
+                              sample_frame_strategy=sample_frame_strategy,
+                              stride_window=stride_window_in_video,
+                              path_labels=path_cvs_dataset,
+                              preprocess=preprocess,
+                              batch_size_training=2,
+                              batch_size_feat_extraction=2,
+                              head=head.value,
+                              head_params=params,
+                              download_if_unavailable=False,
+                              features_folder_saving_path=features_folder_saving_path
+                              )
+    return model_advanced
 
+
+  def remove_plot(file_path):
+    try:
+      os.remove(file_path)
+      print(f"File '{file_path}' deleted successfully.")
+    except FileNotFoundError:
+      print(f"File '{file_path}' not found.")
+    except PermissionError:
+      print(f"Permission denied to delete the file '{file_path}'.")
+    except Exception as e:
+      print(f"Error occurred while deleting the file: {e}")
+        
+  # TODO: select the right stride window for each video
+  
+  subject_id_list = [5]
+  clips = [0,1,2,3,4,5,6,7]
+  classes = [0, 1, 2, 3, 4]
+  sliding_windows =  [16]
+  
+  # TODO: add select add pain class
+
+  
+  dict_all_features = tools.load_dict_data(folder_path_features)
+  print(dict_all_features.keys())
+  idx_subjects = np.any([dict_all_features['list_subject_id'] == id for id in subject_id_list],axis=0)
+  list_frames = []
+  list_sample_id = []
+  list_subject_id = []
+  list_video_path = []
+  list_feature = []
+  list_idx_list_frames = []
+  list_y_gt = []
+  list_sample_id_per_subject, list_count_clips = np.unique(dict_all_features['list_sample_id'][idx_subjects],return_counts=True) 
+  for (sample_id,nr_clips) in zip(list_sample_id_per_subject,list_count_clips):
+    # print(f'sample_id {sample_id}')
+    for clip in clips:
+      if clip < nr_clips:
+        idx = np.where(dict_all_features['list_sample_id'][idx_subjects] == sample_id)[0]
+        list_frames.append(dict_all_features['list_frames'][idx_subjects][idx][clip])
+        list_sample_id.append(sample_id)
+        list_video_path.append(dict_all_features['list_path'][idx_subjects][idx][clip])
+        list_feature.append(dict_all_features['features'][idx_subjects][idx][clip])
+        list_y_gt.append(dict_all_features['list_labels'][idx_subjects][idx][clip])
+        list_subject_id.append(dict_all_features['list_subject_id'][idx_subjects][idx][clip])
+        list_idx_list_frames.append(clip)
+  # print(f'list_clips {list_frames.shape}')
+  list_frames = np.array(list_frames)
+  list_sample_id = np.array(list_sample_id)
+  list_video_path = np.array(list_video_path)
+  list_feature = np.array(list_feature)
+  list_idx_list_frames = np.array(list_idx_list_frames)
+
+  X_tsne = tools.plot_tsne(X=torch.tensor(list_feature),plot=False)  
+  min_x,min_y = X_tsne.min(axis=0)
+  max_x,max_y = X_tsne.max(axis=0)
+  axis_dict = {'min_x':min_x-3,'min_y':min_y-3,'max_x':max_x+3,'max_y':max_y+3}
+  print(f'axis_dict {axis_dict}')
+  list_image_path = []
+  for i in range(1,X_tsne.shape[0]+1):
+    print(i)
+    pth = tools.only_plot_tsne(X_tsne=X_tsne[:i],
+                         labels=list_subject_id[:i],
+                         legend_label='sampleID',
+                         title=f'{i}',
+                         saving_path=folder_tsne_results,
+                         axis_scale=axis_dict)
+    list_image_path.append(pth)
+  tools.generate_video_from_list_video_path(list_video_path=list_video_path,
+                                            list_frames=list_frames,
+                                            list_sample_id=list_sample_id,
+                                            list_y_gt=list_y_gt,
+                                            idx_list_frames=list_idx_list_frames,
+                                            saving_path=folder_tsne_results,
+                                            list_image_path=list_image_path)
+  for i in range(len(list_image_path)-1):
+    remove_plot(list_image_path[i])
+  
+def plot_tsne_per_subject(folder_path_features,folder_tsne_results):
+  print('Loading features from SSD...')
+  dict_all_features = tools.load_dict_data(folder_path_features)
+  # TODO: select the right stride window for each video
+  
+  subject_id_list = [5]
+  idx_subjects = np.any([dict_all_features['list_subject_id'] == id for id in subject_id_list],axis=0)
+  # print(f'idx_all {dict_all_features["list_path"][idx_subjects]}')
+  
+  # for k,v in dict_all_features.items():
+  #   print(f'key {k} - shape {v.shape}')
+  for id in subject_id_list:
+    idx_subject = np.where(dict_all_features['list_subject_id'] == id)
+    subject_dict = {k:v[idx_subject] for k,v in dict_all_features.items()}
+    folder_tsne_results = os.path.join(folder_tsne_results,f'personID_{id}')
+    if not os.path.exists(folder_tsne_results):
+      os.makedirs(folder_tsne_results)
+      
+    # plot per class given a subject
+    for cls in np.unique(subject_dict['list_labels']):
+      title = f"personID-{id}-sampleID-ALL_gt-{cls}"
+      # if not os.path.exists(os.path.join(folder_tsne_results,title)):
+      #   os.makedirs(os.path.join(folder_tsne_results,title))  
+      idx_cls = np.where(subject_dict['list_labels'] == cls)
+      
+      X_tsne = tools.plot_tsne(X=subject_dict['features'][idx_cls],
+                      labels=subject_dict['list_labels'][idx_cls],
+                      apply_pca_before_tsne=False,
+                      saving_path=os.path.join(folder_tsne_results,'dummy'), # saving_path log file considers the parent folder
+                      plot=False)
+      
+      # tools.only_plot_tsne(X_tsne=X_tsne,
+      #                      labels=subject_dict['list_labels'][idx_cls],
+      #                      saving_path=folder_tsne_results,
+      #                      title=title,
+      #                      legend_label='gt ')
+      unique_sample_id,nr_clips_per_video = np.unique(subject_dict['list_sample_id'][idx_cls],return_counts=True)
+      concat_nr_clips_per_video = np.concatenate([np.arange(nr_clips_per_video[i]) for i in range(nr_clips_per_video.shape[0])])
+      tools.only_plot_tsne(X_tsne=X_tsne,
+                           labels=concat_nr_clips_per_video,
+                           saving_path=folder_tsne_results,
+                           title=title,
+                           legend_label='clip ')
+    
+    # plot per one video given a subject
+    for i in range(subject_dict['features'].shape[0]):
+      title = f"personID-{id}_sampleID-{subject_dict['list_sample_id'][i]}_gt-{subject_dict['list_labels'][i]}"
+      if not os.path.exists(os.path.join(folder_tsne_results,f'{title}')):
+        os.makedirs(os.path.join(folder_tsne_results,f'{title}'))
+      nr_clips = subject_dict['features'][i].shape[0]
+      X_tsne = tools.plot_tsne(X=subject_dict['features'][i],
+                      labels=subject_dict['list_labels'][i],
+                      apply_pca_before_tsne=False,
+                      saving_path=os.path.join(folder_tsne_results,'dummy'), # saving_path log file considers the parent folder
+                      legend_label='gt ',
+                      title=title,
+                      plot=False)
+      
+      tools.only_plot_tsne(X_tsne=X_tsne,
+                           labels=range(nr_clips),
+                           saving_path=folder_tsne_results,
+                           title=title,
+                           legend_label='clip ')
+      break
+    break
+  
 def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduction, sample_frame_strategy, 
                    path_csv_dataset, path_video_dataset, head, stride_window_in_video, 
                    head_params, preprocess,k_fold=1, is_save_features_extracted=False,
@@ -40,12 +226,12 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                     per_partecipant=per_partecipant,
                                     saving_path=dataset_folder_path,
                                     total_classes=total_classes) # 1  plot
-    
-    tools.plot_dataset_distribution_mean_std_duration(csv_path=csv_path,
-                                                      video_path=path_video_dataset,
-                                                      per_class=per_class, 
-                                                      per_partecipant=per_partecipant, 
-                                                      saving_path=dataset_folder_path) # 2 plots
+    # TODO: Remove comments to plot the mean and std of the dataset
+    # tools.plot_dataset_distribution_mean_std_duration(csv_path=csv_path,
+    #                                                   video_path=path_video_dataset,
+    #                                                   per_class=per_class, 
+    #                                                   per_partecipant=per_partecipant, 
+    #                                                   saving_path=dataset_folder_path) # 2 plots
 
   def train_model(dict_csv_path, train_folder_saving_path, is_validation=False,round_output_loss=False,shuffle_video_chunks=True,
                   shuffle_training_batch=True):
@@ -183,7 +369,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     # print(dict_single_fold_idx)
 
     best_results_idx = [fold_results[i]['dict_results']['best_model_idx'] for i in range(k_fold)]
-    best_results_state_dict = [fold_results[i]['dict_results']['best_model_state_dict'] for i in range(k_fold)]
+    best_results_state_dict = [fold_results[i]['dict_results']['best_model_state'] for i in range(k_fold)]
     print(f'best_results_idx {best_results_idx}')
     dict_all_results = { 
                         'avg_train_loss_best_models': np.mean([fold_results[i]['dict_results']['train_losses'][best_results_idx[i]] for i in range(k_fold)]),
