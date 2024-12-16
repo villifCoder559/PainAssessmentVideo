@@ -29,6 +29,28 @@ class NpEncoder(json.JSONEncoder):
       return obj.tolist()
     return super(NpEncoder, self).default(obj)
 
+def save_csv_file(cols,csv_array,saving_path,sliding_windows):
+  """
+  Save the CSV file with the given columns and array of data.
+
+  Args:
+    cols (list): List of column names for the CSV file.
+    csv_array (np.ndarray): Array of data to be saved in the CSV file.
+    saving_path (str): Path to save the CSV file.
+    sliding_windows (bool): Whether to save the data with sliding windows or not.
+  """
+  df = pd.DataFrame(csv_array, columns=cols)
+  csv_path = os.path.join(saving_path, f'video_labels{sliding_windows}.csv')
+  if not os.path.exists(saving_path):
+    os.makedirs(saving_path)
+  if sliding_windows:
+    df.to_csv(csv_path, index=False, sep='\t')
+  else:
+    df.to_csv(csv_path, index=False)
+  print(f'CSV file saved to {csv_path}')
+  return csv_path
+
+
 def save_dict_data(dict_data, saving_folder_path):
   """
   Save the dictionary containing numpy and torch elements to the specified path.
@@ -602,7 +624,7 @@ def plot_tsne(X, labels=None, apply_pca_before_tsne=False,legend_label='', title
     with open(path_log_tsne, 'a') as f:
       f.write(f'{title} \n')
       f.write(f'  time: {time.time()-start} secs\n')
-      f.write(f'  perplexity: {tsne.perplexity}\n')
+      f.write(f'  perplexity: {tsne.affinities.perplexity}\n')
       f.write(f'  X_tsne.shape: {X_tsne.shape}\n')
       f.write(f'  apply_pca_before_tsne: {apply_pca_before_tsne}\n')
       if apply_pca_before_tsne:
@@ -812,7 +834,7 @@ def generate_video_from_list_video_path(list_video_path, list_frames, idx_list_f
     list_image_path (list, optional): List of paths to images to be merged with the video frames. Defaults to None.
   """
   out = None
-  output_fps = 8
+  output_fps = 4
   for video_path, frames, sample_id, clip, y_gt, image_path in (zip(list_video_path, list_frames, list_sample_id, idx_list_frames, list_y_gt, list_image_path or [None]*len(list_video_path))):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -851,8 +873,9 @@ def generate_video_from_list_video_path(list_video_path, list_frames, idx_list_f
         combined_frame[:image.shape[0], frame_width:(frame_width + image.shape[1])] = image
         frame = combined_frame
 
-      cv2.putText(frame, f'Sample ID: {sample_id} clip {clip}', (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
-      cv2.putText(frame, f'Ground Truth: {y_gt}', (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
+      cv2.putText(frame, f'Sample ID: {sample_id}', (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
+      cv2.putText(frame, f'Clip {clip}', (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
+      cv2.putText(frame, f'Clip {clip}', (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 0), 2, cv2.LINE_AA)
       out.write(frame)
     
     for _ in range(output_fps // 2):
