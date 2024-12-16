@@ -148,8 +148,4 @@ VideoMAEv2
 partA/
 PartA/
 history_run/
-tsne_Results/config.txt
-tsne_Results/log_time_tsne.txt
-tsne_Results/tsne_plot_16_clip/sliding_16_subjects_1__clips_2__classes_1_clip.png
-tsne_Results/video/40_clip.png
-tsne_Results/video/video.mp4
+tsne_Results/
