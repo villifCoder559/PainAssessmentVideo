@@ -6,6 +6,7 @@ import math
 import numpy as np
 import torch
 import time
+from concurrent.futures import ThreadPoolExecutor
 # import cv2
 from custom.helper import SAMPLE_FRAME_STRATEGY
 from sklearn.model_selection import GroupShuffleSplit
@@ -69,74 +70,71 @@ class customDataset(torch.utils.data.Dataset):
   def __len__(self):
     return len(self.video_labels)
 
-
   def __getitem__(self, idx):
     """
     Retrieve a sample from the dataset at the given index.
     Args:
       idx (int): Index of the sample to retrieve.
     Returns:
-      dict: A dictionary containing the following keys:
-        - 'preprocess' (torch.Tensor): Preprocessed video frames with shape 
-          [nr_clips, batch_video=1, clip_length, channels=3, H=224, W=224].
-        - 'labels' (torch.Tensor): Labels for the video frames with shape [nr_clips].
-        - 'subject_id' (torch.Tensor): Subject IDs for the video frames with shape [nr_clips].
-        - 'sample_id' (torch.Tensor): Sample IDs for the video frames with shape [nr_clips].
-        - 'path' (numpy.ndarray): Paths to the video files with shape (nr_clips,).
-        - 'frame_list' (torch.Tensor): Indices of the frames sampled from the video with shape [nr_clips, clip_length].
+      dict: A dictionary containing preprocessed video data and metadata.
     """
-    # split in csv_array ["subject_id, subject_name, class_id, class_name, sample_id, sample_name"]
-    csv_array = self.video_labels.iloc[idx,0].split('\t') 
-    video_path = os.path.join(self.path_dataset, csv_array[1], csv_array[5])
-    video_path += '.mp4'
+    # Extract metadata from CSV
+    csv_array = self.video_labels.iloc[idx, 0].split('\t')
+    video_path = os.path.join(self.path_dataset, csv_array[1], csv_array[5] + '.mp4')
+    
+    # Open video container and get total frames
     container = av.open(video_path)
     tot_frames = container.streams.video[0].frames
-    
+
+    # Sample frame indices using the provided strategy
     list_indices = self.sample_frame_strategy(tot_frames)
-    start_time_load_video = time.time()
-    frames_list=[self._read_video_pyav(container,indices) for indices in list_indices]
-    # print(f'Frames list shape: {len(frames_list)}')
-    # print(f'list[0] shape: {frames_list[0].shape}')
-    # print('time to load video:', time.time()-start_time_load_video)
-    # start_time_preprocess = time.time()
-    preprocessed_tensors = torch.stack([self.preprocess(list(frames), return_tensors="pt")['pixel_values'] for frames in frames_list])
-    # print(f'Preprocessed tensors shape: {preprocessed_tensors.shape}')
-    # print('Time to preprocess video', time.time()-start_time_preprocess)
-    # preprocessed output shape [2, 1, 16, 3, 224, 224] -> [nr_clips, batch_video, clip_length, RGB_channels=3, H=224, W=224]
-    # print(len(frames_list))
-    path = np.repeat(video_path, preprocessed_tensors.shape[0])
+
+    # Load and preprocess frames
+    # start_time_load_video = time.time()
+    frames_list = [self._read_video_pyav(container, indices) for indices in list_indices]
     
-    unit_vector = torch.ones(preprocessed_tensors.shape[0],dtype=torch.int16)    
+    # Preprocess frames and stack into a tensor
+    preprocessed_tensors = torch.stack(
+        [self.preprocess(list(frames), return_tensors="pt")['pixel_values'] for frames in frames_list]
+    )
+    
+    # Create metadata tensors
+    nr_clips = preprocessed_tensors.shape[0]
+    path = np.repeat(video_path, nr_clips)
+    
+    unit_vector = torch.ones(nr_clips, dtype=torch.int16)
     sample_id = unit_vector * int(csv_array[4])
     labels = unit_vector * int(csv_array[2])
     subject_id = unit_vector * int(csv_array[0])
-    return  {'preprocess':preprocessed_tensors, # shape [nr_clips, batch_video=1, clip_length, channels=3, H=224, W=224]
-             'labels': labels,  # torch shape [nr_clips]
-             'subject_id': subject_id, # torch shape [nr_clips]
-             'sample_id': sample_id, # torch shape [nr_clips]
-             'path': path, # np shape (nr_clips,)
-             'frame_list': list_indices} #torch shape [nr_clips, clip_length]
 
-  def _read_video_pyav(self,container, indices):
-    '''
+    return {
+        'preprocess': preprocessed_tensors,
+        'labels': labels,
+        'subject_id': subject_id,
+        'sample_id': sample_id,
+        'path': path,
+        'frame_list': list_indices
+    }
+
+  def _read_video_pyav(self, container, indices):
+    """
     Decode the video with PyAV decoder.
     Args:
         container (`av.container.input.InputContainer`): PyAV container.
         indices (`List[int]`): List of frame indices to decode.
     Returns:
-        result (np.ndarray): np array of decoded frames of shape (num_frames, height, width, 3).
-    '''
+        result (np.ndarray): Array of decoded frames of shape (num_frames, height, width, 3).
+    """
     
     frames = []
     container.seek(0)
-    start_index = indices[0]
-    end_index = indices[-1]
     for i, frame in enumerate(container.decode(video=0)):
-        if i > end_index:
-            break
-        if i >= start_index and i in indices:
-            frames.append(frame)
-    return np.stack([x.to_ndarray(format="rgb24") for x in frames])
+      if i > indices[-1]:
+          break
+      if i in indices:
+          frames.append(frame.to_ndarray(format="rgb24"))
+            
+    return np.stack(frames)
 
   def _custom_collate_fn(self, batch):
     """
