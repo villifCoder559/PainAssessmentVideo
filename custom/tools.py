@@ -561,7 +561,8 @@ def plot_prediction_chunks_per_subject(predictions, n_chunks,title,saving_path=N
   else:
     plt.show()
 
-def plot_tsne(X, labels, apply_pca_before_tsne=False,legend_label='', title = '', use_cuda=False, perplexity=1, saving_path=None):
+ 
+def plot_tsne(X, labels=None, apply_pca_before_tsne=False,legend_label='', title = '', use_cuda=False, perplexity=1, saving_path=None,plot=True):
   """
   Plots the t-SNE reduction of the features in 2D with colors based on subject, gt, or predicted class.
   Args:
@@ -570,13 +571,11 @@ def plot_tsne(X, labels, apply_pca_before_tsne=False,legend_label='', title = ''
     perplexity (int, optional): Perplexity parameter for t-SNE. Defaults to 20.
   """
   print(f'TSNE_X.shape: {X.shape}')
-  print(f'TSNE_labels.shape: {labels.shape}')
   start = time.time()
-  if len(labels.shape) != 1:
+  if labels is not None and len(labels.shape) != 1:
+    print(f'labels shape: {labels.shape}')
     labels = labels.reshape(-1)
-  unique_labels = np.unique(labels)
-  color_map = plt.cm.get_cmap('tab20', len(unique_labels)) # FIX: if uniqelabels > 20 create maore a differnt plot
-  color_dict = {val: color_map(i) for i, val in enumerate(unique_labels)}
+    # unique_labels = np.unique(labels)
   perplexity = min(20, X.size(0)-1)
   if use_cuda and X.shape[0] > 194:
     print('Using CUDA')
@@ -598,37 +597,64 @@ def plot_tsne(X, labels, apply_pca_before_tsne=False,legend_label='', title = ''
   X_tsne = tsne.fit(X_cpu) # OpenTSNE
   # get the folder of saving_path
   # print(f'path {os.path.split(saving_path)[:-1]}')
-  path_log_tsne = os.path.join(os.path.split(saving_path)[:-1][0],'log_time_tsne.txt')
-  with open(path_log_tsne, 'a') as f:
-    f.write(f'{title} \n')
-    f.write(f'  time: {time.time()-start} secs\n')
-    f.write(f'  perplexity: {tsne.perplexity}\n')
-    f.write(f'  X_tsne.shape: {X_tsne.shape}\n')
-    f.write(f'  apply_pca_before_tsne: {apply_pca_before_tsne}\n')
-    if apply_pca_before_tsne:
-      f.write(f'  n_components_pca: {n_components_pca}\n')
-      f.write(f'  PCA explained variance ratio: {pca.explained_variance_ratio_.cumsum()}\n')
-    f.write('\n')
+  if saving_path:
+    path_log_tsne = os.path.join(os.path.split(saving_path)[:-1][0],'log_time_tsne.txt')
+    with open(path_log_tsne, 'a') as f:
+      f.write(f'{title} \n')
+      f.write(f'  time: {time.time()-start} secs\n')
+      f.write(f'  perplexity: {tsne.perplexity}\n')
+      f.write(f'  X_tsne.shape: {X_tsne.shape}\n')
+      f.write(f'  apply_pca_before_tsne: {apply_pca_before_tsne}\n')
+      if apply_pca_before_tsne:
+        f.write(f'  n_components_pca: {n_components_pca}\n')
+        f.write(f'  PCA explained variance ratio: {pca.explained_variance_ratio_.cumsum()}\n')
+      f.write('\n')
   # X_tsne = tsne.fit_transform(X_cpu) # in: X=(n_samples, n_features)
                                      # out: (n_samples, n_components=2)
-  print(" t-SNE computation done.")
-  print(f' X_tsne.shape: {X_tsne.shape}')
+  # print(" t-SNE computation done.")
+  # print(f' X_tsne.shape: {X_tsne.shape}')
+  if plot:
+    only_plot_tsne(X_tsne, labels, legend_label=legend_label, title=title, saving_path=saving_path)
+  else:
+    # print(f'X_tsne type: {np.array(X_tsne)}')
+    return np.array(X_tsne)
   # print(f' labels shape: {labels.shape}')
+
+def only_plot_tsne(X_tsne, labels, legend_label='', title='', saving_path=None,axis_scale=None):
+  unique_labels = np.unique(labels)
+  color_map = plt.cm.get_cmap('tab10', len(unique_labels))
+  color_dict = {val: color_map(i) for i, val in enumerate(unique_labels)}
   plt.figure(figsize=(10, 8))
-  
+  sizes=None
+  if axis_scale is not None:
+    plt.xlim(axis_scale['min_x'],axis_scale['max_x'])
+    plt.ylim(axis_scale['min_y'],axis_scale['max_y'])
   for val in unique_labels:
-    idx = (labels == val).squeeze()
-    plt.scatter(X_tsne[idx,0], X_tsne[idx,1], color=color_dict[val], label=f'{legend_label} {val}', alpha=0.7)
+    idx = (labels == val) # ATT: there was a .squeeze() here 
+    # print(f'idx shape: {idx.shape}')
+    # print(f'X_tsne[{idx},0].shape: {X_tsne[idx,0].shape}')
+    # print(f'X_tsne[{idx},1].shape: {X_tsne[idx,1].shape}')
+    if axis_scale is not None:
+      sizes = [50] * (X_tsne[idx].shape[0] - 1) + [200]
+    print(f'sizes: {sizes}')
+    print(f'X_tsne[idx,0].shape: {X_tsne[idx,0].shape}')
+    print(f'X_tsne[idx,1].shape: {X_tsne[idx,1].shape}')
+    plt.scatter(X_tsne[idx,0], X_tsne[idx,1], color=color_dict[val], label=f'{legend_label} {val}', alpha=0.7,s=sizes if sizes is not None else 50)
   
   if legend_label != 'subject':
     plt.legend()
   plt.title(f'{title} (Colored by {legend_label})')
   plt.xlabel('t-SNE Component 1')
   plt.ylabel('t-SNE Component 2')
+  plt.plot()
   if saving_path is None:
     plt.show()
   else:
-    plt.savefig(saving_path+'.png')
+    pth = os.path.join(saving_path,f'{title}_{legend_label}.png')
+    print(pth)
+    plt.savefig(pth)
+    print(f'Plot saved to {saving_path}.png')
+    return pth
 
 def get_list_video_path_from_csv(csv_path, cols_csv_idx=[1,5], union_segment='_'):
   list_samples,_ = get_array_from_csv(csv_path) # subject_id, subject_name, class_id, class_name, sample_id, sample_name
@@ -675,11 +701,11 @@ def save_frames_as_video(list_input_video_path, list_frame_indices,sample_ids, o
   """
   # Open the original video
   out = None
-  print(f' list_input_video_path: {list_input_video_path}')
-  print(f' list_frame_indices: {list_frame_indices.shape}')
-  print(f' sample_ids: {sample_ids.shape}')
-  print(f' all_predictions: {all_predictions.shape}')
-  print(f' list_ground_truth: {list_ground_truth.shape}')
+  # print(f' list_input_video_path: {list_input_video_path}')
+  # print(f' list_frame_indices: {list_frame_indices.shape}')
+  # print(f' sample_ids: {sample_ids.shape}')
+  # print(f' all_predictions: {all_predictions.shape}')
+  # print(f' list_ground_truth: {list_ground_truth.shape}')
   
   unique_sample_ids = np.unique(sample_ids,return_counts=False)
   for input_video_path, sample_id in (zip(list_input_video_path,unique_sample_ids)): # i->[0...33]
@@ -771,3 +797,72 @@ def generate_csv(cols, data, saving_path):
   df = pd.DataFrame(data, columns=cols)
   df.to_csv(saving_path, index=False, sep='\t')
   print(f'CSV saved to {saving_path}')
+  
+def generate_video_from_list_video_path(list_video_path, list_frames, idx_list_frames, list_sample_id, list_y_gt, saving_path, list_image_path=None):
+  """
+  Generate a video by extracting specific frames from a list of videos.
+
+  Args:
+    list_video_path (list): List of paths to the input video files.
+    list_frames (list): List of lists, where each sublist contains the frame indices to extract from the corresponding video.
+    idx_list_frames (list): List of indices corresponding to the frames to be extracted.
+    list_sample_id (list): List of sample IDs corresponding to the videos.
+    list_y_gt (list): List of ground truth labels corresponding to the videos.
+    saving_path (str): Path to save the generated video.
+    list_image_path (list, optional): List of paths to images to be merged with the video frames. Defaults to None.
+  """
+  out = None
+  output_fps = 8
+  for video_path, frames, sample_id, clip, y_gt, image_path in (zip(list_video_path, list_frames, list_sample_id, idx_list_frames, list_y_gt, list_image_path or [None]*len(list_video_path))):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+      raise IOError(f"Error: Unable to open video file: {video_path}")
+
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    frame_size = (frame_width, frame_height)
+    
+    black_frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 1
+    font_color = (255, 255, 255)
+    thickness = 2
+    
+    fourcc = cv2.VideoWriter_fourcc(*'avc1')
+    if list_image_path:
+      image = cv2.imread(image_path)
+      image_height, image_width = image.shape[:2]
+      frame_size = (frame_width + image_width, max(frame_height, image_height))
+      print(f'frame_size: {frame_size}')
+    if out is None:
+      out = cv2.VideoWriter(os.path.join(saving_path, 'video.mp4'), fourcc, output_fps, frame_size)
+
+    for frame_idx in frames:
+      cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+      ret, frame = cap.read()
+      if not ret:
+        print(f"Warning: Failed to read frame {frame_idx} from video {video_path}")
+        continue
+
+      if image_path:
+        image = cv2.imread(image_path)
+        combined_frame = np.zeros((frame_size[1], frame_size[0], 3), dtype=np.uint8)
+        combined_frame[:frame_height, :frame_width] = frame
+        combined_frame[:image.shape[0], frame_width:(frame_width + image.shape[1])] = image
+        frame = combined_frame
+
+      cv2.putText(frame, f'Sample ID: {sample_id} clip {clip}', (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
+      cv2.putText(frame, f'Ground Truth: {y_gt}', (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
+      out.write(frame)
+    
+    for _ in range(output_fps // 2):
+      number_frame = black_frame.copy()
+      out.write(number_frame)
+
+  cap.release()
+  out.release()
+  print(f"Generated video saved to folder {saving_path}")
+    
+  
+# def save_tsne_incrementsl_plots_(X_tsne, labels, saving_path):
+  
