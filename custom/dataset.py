@@ -15,6 +15,7 @@ import custom.tools as tools
 from sklearn.model_selection import StratifiedKFold
 from torch.utils.data import  Sampler
 from sklearn.utils import shuffle
+import torchvision.transforms as transforms
 
 class customDataset(torch.utils.data.Dataset):
   def __init__(self,path_dataset, path_labels, preprocess, sample_frame_strategy, batch_size=1, stride_window=2, clip_length=16,stride_inside_window=1):
@@ -52,6 +53,12 @@ class customDataset(torch.utils.data.Dataset):
     self.set_path_labels(path_labels)
     tmp = tools.get_unique_subjects_and_classes(self.path_labels)
     self.total_subjects, self.total_classes = len(tmp[0]), len(tmp[1])
+    # self.preprocess_torchvision = transforms.Compose([
+    #                               transforms.ToTensor(),  # Convert PIL image to tensor and scale pixel values to [0, 1]
+    #                               transforms.Resize(224),  # Resize so that shortest edge is 224 (bilinear interpolation by default)
+    #                               transforms.CenterCrop((224, 224)),  # Center crop to 224x224
+    #                               transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize
+    #                               ])
 
   def set_path_labels(self, path):
     """
@@ -78,35 +85,48 @@ class customDataset(torch.utils.data.Dataset):
     Returns:
       dict: A dictionary containing preprocessed video data and metadata.
     """
+    start_time= time.time()
     # Extract metadata from CSV
     csv_array = self.video_labels.iloc[idx, 0].split('\t')
     video_path = os.path.join(self.path_dataset, csv_array[1], csv_array[5] + '.mp4')
     
     # Open video container and get total frames
-    container = av.open(video_path)
+    container = av.open(video_path,options={'hwaccel': 'cuda', 'hwaccel_device': '0'})
     tot_frames = container.streams.video[0].frames
-
+    width_frames = container.streams.video[0].width
+    height_frames = container.streams.video[0].height
     # Sample frame indices using the provided strategy
     list_indices = self.sample_frame_strategy(tot_frames)
 
     # Load and preprocess frames
+    # print(f'list_indices shape: {list_indices.shape}')
     # start_time_load_video = time.time()
-    frames_list = [self._read_video_pyav(container, indices) for indices in list_indices]
+    # frames_list = [self._read_video_pyav(container, indices) for indices in list_indices]
+    frames_list = self._read_video_pyav(container,list_indices= list_indices,width_frames=width_frames,height_frames=height_frames)
+    # print(f'Frames list shape: {frames_list.shape}') # shape torch.Size([11, 16, 1038, 1388, 3])
+    nr_clips = frames_list.shape[0]
+    nr_frames = frames_list.shape[1]
+    frames_list = frames_list.reshape(-1,*frames_list.shape[2:])
+    # end_time_load_video = time.time()
+    # print(f'Elapsed time load video: {end_time_load_video-start_time_load_video}')
     
     # Preprocess frames and stack into a tensor
-    preprocessed_tensors = torch.stack(
-        [self.preprocess(list(frames), return_tensors="pt")['pixel_values'] for frames in frames_list]
-    )
-    
+    # start_time_preprocess = time.time()
+    preprocessed_tensors=self.preprocess(list(frames_list), return_tensors="pt")['pixel_values']
+    preprocessed_tensors = preprocessed_tensors.reshape(nr_clips, nr_frames, *preprocessed_tensors.shape[2:]) 
+    # print(f'Elapsed time preprocess: {time.time()-start_time_preprocess}')
+    # print(f'Preprocessed tensors shape: {preprocessed_tensors.shape}')
     # Create metadata tensors
-    nr_clips = preprocessed_tensors.shape[0]
+    
     path = np.repeat(video_path, nr_clips)
     
     unit_vector = torch.ones(nr_clips, dtype=torch.int16)
     sample_id = unit_vector * int(csv_array[4])
     labels = unit_vector * int(csv_array[2])
     subject_id = unit_vector * int(csv_array[0])
-
+    end_time = time.time()
+    print(f'Elapsed total time: {end_time-start_time}')
+    print(f'preprocessed_tensors shape: {preprocessed_tensors.shape}')
     return {
         'preprocess': preprocessed_tensors,
         'labels': labels,
@@ -116,25 +136,28 @@ class customDataset(torch.utils.data.Dataset):
         'frame_list': list_indices
     }
 
-  def _read_video_pyav(self, container, indices):
-    """
-    Decode the video with PyAV decoder.
-    Args:
-        container (`av.container.input.InputContainer`): PyAV container.
-        indices (`List[int]`): List of frame indices to decode.
-    Returns:
-        result (np.ndarray): Array of decoded frames of shape (num_frames, height, width, 3).
-    """
-    
-    frames = []
+  def _read_video_pyav(self, container, list_indices,width_frames,height_frames):
+    # ATTENTION: Assume that list_indices is sorted, can be fix using max and min 
+    start_frame_idx = list_indices[:, 0]
+    end_frame_idx = list_indices[:, -1]
+    num_clips, clip_length = list_indices.shape
+    # idx_frame_saved = torch.zeros(num_clips,clip_length, dtype=torch.int32)
+    extracted_frames = torch.zeros(num_clips, clip_length, height_frames, width_frames, self.image_channels, dtype=torch.uint8)
+    pos = torch.zeros(num_clips, dtype=torch.int32)
     container.seek(0)
+    max_end_frame = end_frame_idx.max().item()
     for i, frame in enumerate(container.decode(video=0)):
-      if i > indices[-1]:
-          break
-      if i in indices:
-          frames.append(frame.to_ndarray(format="rgb24"))
-            
-    return np.stack(frames)
+      if i > max_end_frame:
+        break  
+      
+      mask = (start_frame_idx <= i) & (end_frame_idx >= i)  
+      if mask.any():
+        frame_rgb = torch.tensor(frame.to_ndarray(format="rgb24"), dtype=torch.uint8)
+        extracted_frames[mask, pos[mask].long()] = frame_rgb
+        # idx_frame_saved[mask, pos[mask].long()] = i
+        pos[mask] += 1
+    
+    return extracted_frames #,idx_frame_saved
 
   def _custom_collate_fn(self, batch):
     """
