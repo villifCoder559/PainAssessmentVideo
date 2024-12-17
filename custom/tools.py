@@ -666,8 +666,8 @@ def only_plot_tsne(X_tsne, labels, legend_label='', title='', saving_path=None,a
     print(f'X_tsne[idx,1].shape: {X_tsne[idx,1].shape}')
     plt.scatter(X_tsne[idx,0], X_tsne[idx,1], color=color_dict[val], label=f'{legend_label} {val}', alpha=0.7,s=sizes[idx] if sizes is not None else 50)
   
-  if legend_label != 'subject':
-    plt.legend()
+  # if legend_label != 'subject':
+  plt.legend()
   plt.title(f'{title} (Colored by {legend_label})')
   plt.xlabel('t-SNE Component 1')
   plt.ylabel('t-SNE Component 2')
