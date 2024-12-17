@@ -27,7 +27,7 @@ class customDataset(torch.utils.data.Dataset):
     
     self.path_dataset = path_dataset
     self.path_labels = path_labels
-    self.preprocess = preprocess
+    # self.preprocess = preprocess
     self.type_sample_frame_strategy = sample_frame_strategy
     # self.video_labels = pd.read_csv(path_labels)
     if sample_frame_strategy == SAMPLE_FRAME_STRATEGY.UNIFORM:
@@ -77,9 +77,9 @@ class customDataset(torch.utils.data.Dataset):
   def __len__(self):
     return len(self.video_labels)
   
-  def preprocess_images(self,tensors):
+  def preprocess_images(self, tensors):
     """
-    Preprocess a batch of image tensors.
+    Preprocess a batch of image tensors and plot the preprocessed images.
     
     Args:
         tensors (torch.Tensor): A tensor of shape (B, C, H, W) where:
@@ -91,25 +91,49 @@ class customDataset(torch.utils.data.Dataset):
     Returns:
         torch.Tensor: Preprocessed tensor of shape (B, C, 224, 224).
     """
-    # Parameters from your configuration
     crop_size = (224, 224)
     rescale_factor = 0.00392156862745098  # 1/255
     image_mean = [0.485, 0.456, 0.406]
     image_std = [0.229, 0.224, 0.225]
     shortest_edge = 224
     
-    # Transform pipeline
     transform = T.Compose([
       T.Resize(shortest_edge),  # Resize the shortest edge to 224, preserving aspect ratio
-      T.CenterCrop(crop_size) if True else T.RandomCrop(crop_size),  # Center crop
+      T.CenterCrop(crop_size),  # Center crop
       T.Lambda(lambda x: x * rescale_factor),  # Rescale (1/255)
       T.Normalize(mean=image_mean, std=image_std)  # Normalize
     ])
     
-    # Apply transform to each image in the batch
     preprocessed_tensors = torch.stack([transform(t) for t in tensors])
     
+    # Plot the preprocessed images
+    # self.plot_preprocessed_images(preprocessed_tensors[:4])
+    
     return preprocessed_tensors
+
+  def plot_preprocessed_images(self, tensors):
+    """
+    Plot a batch of preprocessed image tensors.
+    
+    Args:
+        tensors (torch.Tensor): A tensor of shape (B, C, H, W) where:
+                                B = batch size,
+                                C = number of channels,
+                                H = height,
+                                W = width.
+    """
+    num_images = min(tensors.shape[0], 4)  # Plot up to 4 images
+    fig, axes = plt.subplots(1, num_images, figsize=(15, 5))
+    
+    for i in range(num_images):
+      image = tensors[i].permute(1, 2, 0).numpy()
+      image = image * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])  # Unnormalize
+      image = np.clip(image, 0, 1)
+      
+      axes[i].imshow(image)
+      axes[i].axis('off')
+    
+    plt.show()
   
   def __getitem__(self, idx):
     """
@@ -217,7 +241,6 @@ class customDataset(torch.utils.data.Dataset):
         - 'path' (numpy.ndarray): shape (nr_video * nr_windows).
         - 'list_frames' (torch.Tensor): shape [nr_video * nr_windows].
     """
-    
     data = torch.cat([batch[index]['preprocess'].squeeze().transpose(1,2) for index in range(len(batch))], dim=0) 
     data = data.reshape(-1,self.image_channels, self.clip_length, self.image_resize_h, self.image_resize_w) 
 
@@ -244,7 +267,7 @@ class customDataset(torch.utils.data.Dataset):
     return {
         'path_dataset': self.path_dataset,
         'path_labels': self.path_labels,
-        'preprocess': self.preprocess.__class__.__name__,
+        # 'preprocess': self.preprocess.__class__.__name__,
         'sample_frame_strategy': self.type_sample_frame_strategy.name,
         'clip_length': self.clip_length,
         'stride_window': self.stride_window,
