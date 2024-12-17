@@ -584,7 +584,7 @@ def plot_prediction_chunks_per_subject(predictions, n_chunks,title,saving_path=N
     plt.show()
 
  
-def plot_tsne(X, labels=None, apply_pca_before_tsne=False,legend_label='', title = '', use_cuda=False, perplexity=1, saving_path=None,plot=True):
+def plot_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=False,legend_label='', title = '', use_cuda=False, perplexity=1, saving_path=None,plot=True):
   """
   Plots the t-SNE reduction of the features in 2D with colors based on subject, gt, or predicted class.
   Args:
@@ -599,13 +599,9 @@ def plot_tsne(X, labels=None, apply_pca_before_tsne=False,legend_label='', title
     labels = labels.reshape(-1)
     # unique_labels = np.unique(labels)
   perplexity = min(20, X.size(0)-1)
-  if use_cuda and X.shape[0] > 194:
-    print('Using CUDA')
-    # tsne = cudaTSNE(n_components=2, perplexity=perplexity)
-  else:
-    print('Using CPU')
-    tsne = openTSNE(n_components=2, perplexity=perplexity, random_state=42,n_jobs = -1)
-    # tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42, n_jobs=-1)
+  print('Using CPU')
+  tsne = openTSNE(n_components=tsne_n_component, perplexity=perplexity, random_state=42, n_jobs = -1)
+
   X_cpu = X.detach().cpu().squeeze()
   X_cpu = X_cpu.reshape(X_cpu.shape[0], -1)
   # apply PCA from scikit-learn to reduce the dimensionality of the data
@@ -642,43 +638,72 @@ def plot_tsne(X, labels=None, apply_pca_before_tsne=False,legend_label='', title
     return np.array(X_tsne)
   # print(f' labels shape: {labels.shape}')
 
-def only_plot_tsne(X_tsne, labels, legend_label='', title='', saving_path=None,axis_scale=None,last_point_bigger=False):
+
+def only_plot_tsne(X_tsne, labels, tot_labels = None,legend_label='', title='', saving_path=None, axis_scale=None, last_point_bigger=False, plot_trajectory=False, clip_length=None,list_axis_name=None):
   unique_labels = np.unique(labels)
-  color_map = plt.cm.get_cmap('tab10', len(unique_labels))
+  if tot_labels is None:
+    color_map = plt.cm.get_cmap('copper', len(unique_labels))
+  else:
+    color_map = plt.cm.get_cmap('copper', tot_labels)
   color_dict = {val: color_map(i) for i, val in enumerate(unique_labels)}
-  plt.figure(figsize=(10, 8))
-  sizes=None
-  if axis_scale is not None:
-    plt.xlim(axis_scale['min_x'],axis_scale['max_x'])
-    plt.ylim(axis_scale['min_y'],axis_scale['max_y'])
-  if last_point_bigger:
-    sizes = [50] * (X_tsne.shape[0] - 1 ) + [200]
-    sizes = np.array(sizes)
-    print(f'sizes: {sizes.shape}')
-  for val in unique_labels:
-    idx = (labels == val) # ATT: there was a .squeeze() here 
-    # print(f'idx shape: {idx.shape}')
-    # print(f'X_tsne[{idx},0].shape: {X_tsne[idx,0].shape}')
-    # print(f'X_tsne[{idx},1].shape: {X_tsne[idx,1].shape}')
-    if sizes is not None:
-      print(f'sizes: {sizes[idx]}')
-    print(f'X_tsne[idx,0].shape: {X_tsne[idx,0].shape}')
-    print(f'X_tsne[idx,1].shape: {X_tsne[idx,1].shape}')
-    plt.scatter(X_tsne[idx,0], X_tsne[idx,1], color=color_dict[val], label=f'{legend_label} {val}', alpha=0.7,s=sizes[idx] if sizes is not None else 50)
+  sizes = None
+  fig = plt.figure(figsize=(10, 8))
   
-  # if legend_label != 'subject':
+  # Check if data is 3D or 2D
+  if X_tsne.shape[1] == 3:  # 3D case
+    ax = fig.add_subplot(111, projection='3d')
+    if axis_scale is not None:
+      ax.set_xlim(axis_scale['min_x'], axis_scale['max_x'])
+      ax.set_ylim(axis_scale['min_y'], axis_scale['max_y'])
+      ax.set_zlim(axis_scale['min_z'], axis_scale['max_z'])
+    for val in unique_labels:
+      idx = (labels == val)
+      label = f'{legend_label} {val}'
+      if clip_length is not None and legend_label == 'clip':
+        label = f'{legend_label} [{clip_length * val}, {clip_length * (val+1) - 1}]'
+      ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], X_tsne[idx, 2], color=color_dict[val], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
+    if plot_trajectory:
+      ax.plot(X_tsne[:, 0], X_tsne[:, 1], X_tsne[:, 2], linestyle='--', color=color_dict[0], label='Trajectory', alpha=0.7)
+    if list_axis_name is not None:
+      ax.set_xlabel(list_axis_name[0])
+      ax.set_ylabel(list_axis_name[1])
+      ax.set_zlabel(list_axis_name[2])
+    else:
+      ax.set_xlabel('t-SNE Component 1')
+      ax.set_ylabel('t-SNE Component 2')
+      ax.set_zlabel('t-SNE Component 3')
+  
+  else:  # 2D case
+    ax = fig.add_subplot(111)
+    if axis_scale is not None:
+      ax.set_xlim(axis_scale['min_x'], axis_scale['max_x'])
+      ax.set_ylim(axis_scale['min_y'], axis_scale['max_y'])
+    if last_point_bigger:
+      sizes = [50] * (X_tsne.shape[0] - 1) + [200]
+      sizes = np.array(sizes)
+    for val in unique_labels:
+      idx = (labels == val)
+      label = f'{legend_label} {val}'
+      if clip_length is not None and legend_label == 'clip':
+        label = f'{legend_label} [{clip_length * val}, {clip_length * (val+1) - 1}]'
+      ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[val], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
+    if plot_trajectory:
+      ax.plot(X_tsne[:, 0], X_tsne[:, 1], linestyle='--', color=color_dict[0], label='Trajectory', alpha=0.7)
+    if list_axis_name is not None:
+      ax.set_xlabel(list_axis_name[0])
+      ax.set_ylabel(list_axis_name[1])
+    else:
+      ax.set_xlabel('t-SNE Component 1')
+      ax.set_ylabel('t-SNE Component 2')
+  
   plt.legend()
   plt.title(f'{title} (Colored by {legend_label})')
-  plt.xlabel('t-SNE Component 1')
-  plt.ylabel('t-SNE Component 2')
-  plt.plot()
+  
   if saving_path is None:
     plt.show()
   else:
-    pth = os.path.join(saving_path,f'{title}_{legend_label}.png')
-    print(pth)
+    pth = os.path.join(saving_path, f'{title}_{legend_label}.png')
     plt.savefig(pth)
-    print(f'Plot saved to {saving_path}.png')
     return pth
 
 def get_list_video_path_from_csv(csv_path, cols_csv_idx=[1,5], union_segment='_'):
