@@ -15,7 +15,7 @@ import custom.tools as tools
 from sklearn.model_selection import StratifiedKFold
 from torch.utils.data import  Sampler
 from sklearn.utils import shuffle
-import torchvision.transforms as transforms
+import torchvision.transforms as T
 
 class customDataset(torch.utils.data.Dataset):
   def __init__(self,path_dataset, path_labels, preprocess, sample_frame_strategy, batch_size=1, stride_window=2, clip_length=16,stride_inside_window=1):
@@ -54,7 +54,7 @@ class customDataset(torch.utils.data.Dataset):
     tmp = tools.get_unique_subjects_and_classes(self.path_labels)
     self.total_subjects, self.total_classes = len(tmp[0]), len(tmp[1])
     # self.preprocess_torchvision = transforms.Compose([
-    #                               transforms.ToTensor(),  # Convert PIL image to tensor and scale pixel values to [0, 1]
+    #                               # transforms.ToTensor(),  # Convert PIL image to tensor and scale pixel values to [0, 1]
     #                               transforms.Resize(224),  # Resize so that shortest edge is 224 (bilinear interpolation by default)
     #                               transforms.CenterCrop((224, 224)),  # Center crop to 224x224
     #                               transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize
@@ -76,7 +76,41 @@ class customDataset(torch.utils.data.Dataset):
     
   def __len__(self):
     return len(self.video_labels)
-
+  
+  def preprocess_images(self,tensors):
+    """
+    Preprocess a batch of image tensors.
+    
+    Args:
+        tensors (torch.Tensor): A tensor of shape (B, C, H, W) where:
+                                B = batch size,
+                                C = number of channels,
+                                H = height,
+                                W = width.
+    
+    Returns:
+        torch.Tensor: Preprocessed tensor of shape (B, C, 224, 224).
+    """
+    # Parameters from your configuration
+    crop_size = (224, 224)
+    rescale_factor = 0.00392156862745098  # 1/255
+    image_mean = [0.485, 0.456, 0.406]
+    image_std = [0.229, 0.224, 0.225]
+    shortest_edge = 224
+    
+    # Transform pipeline
+    transform = T.Compose([
+      T.Resize(shortest_edge),  # Resize the shortest edge to 224, preserving aspect ratio
+      T.CenterCrop(crop_size) if True else T.RandomCrop(crop_size),  # Center crop
+      T.Lambda(lambda x: x * rescale_factor),  # Rescale (1/255)
+      T.Normalize(mean=image_mean, std=image_std)  # Normalize
+    ])
+    
+    # Apply transform to each image in the batch
+    preprocessed_tensors = torch.stack([transform(t) for t in tensors])
+    
+    return preprocessed_tensors
+  
   def __getitem__(self, idx):
     """
     Retrieve a sample from the dataset at the given index.
@@ -100,21 +134,23 @@ class customDataset(torch.utils.data.Dataset):
 
     # Load and preprocess frames
     # print(f'list_indices shape: {list_indices.shape}')
-    # start_time_load_video = time.time()
+    start_time_load_video = time.time()
     # frames_list = [self._read_video_pyav(container, indices) for indices in list_indices]
     frames_list = self._read_video_pyav(container,list_indices= list_indices,width_frames=width_frames,height_frames=height_frames)
     # print(f'Frames list shape: {frames_list.shape}') # shape torch.Size([11, 16, 1038, 1388, 3])
     nr_clips = frames_list.shape[0]
     nr_frames = frames_list.shape[1]
     frames_list = frames_list.reshape(-1,*frames_list.shape[2:])
-    # end_time_load_video = time.time()
-    # print(f'Elapsed time load video: {end_time_load_video-start_time_load_video}')
+    end_time_load_video = time.time()
+    print(f'Elapsed time load video: {end_time_load_video-start_time_load_video}')
     
     # Preprocess frames and stack into a tensor
-    # start_time_preprocess = time.time()
-    preprocessed_tensors=self.preprocess(list(frames_list), return_tensors="pt")['pixel_values']
-    preprocessed_tensors = preprocessed_tensors.reshape(nr_clips, nr_frames, *preprocessed_tensors.shape[2:]) 
-    # print(f'Elapsed time preprocess: {time.time()-start_time_preprocess}')
+    start_time_preprocess = time.time()
+    print(f'Frames list shape: {frames_list.shape}')
+    preprocessed_tensors = self.preprocess_images(frames_list.permute(0,3,1,2))
+    end_time_preprocess = time.time()
+    print(f'Elapsed time preprocess: {end_time_preprocess-start_time_preprocess}')
+    preprocessed_tensors = preprocessed_tensors.reshape(nr_clips, nr_frames, *preprocessed_tensors.shape[1:]) 
     # print(f'Preprocessed tensors shape: {preprocessed_tensors.shape}')
     # Create metadata tensors
     
