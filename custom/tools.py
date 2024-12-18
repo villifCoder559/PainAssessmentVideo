@@ -633,7 +633,8 @@ def plot_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=False,l
   # print(" t-SNE computation done.")
   # print(f' X_tsne.shape: {X_tsne.shape}')
   if plot:
-    only_plot_tsne(X_tsne, labels, legend_label=legend_label, title=title, saving_path=saving_path)
+    only_plot_tsne(X_tsne, labels, legend_label=legend_label, title=title, saving_path=os.path.split(saving_path)[:-1][0])
+    return np.array(X_tsne)
   else:
     # print(f'X_tsne type: {np.array(X_tsne)}')
     return np.array(X_tsne)
@@ -699,17 +700,19 @@ def only_plot_tsne(X_tsne, labels, tot_labels = None,legend_label='', title='', 
   
   plt.legend()
   plt.title(f'{title} (Colored by {legend_label})')
-  fig.canvas.draw()
-  rgb_array = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-  width, height = fig.canvas.get_width_height()
-  rgb_array = rgb_array.reshape(height, width, 3)
+
   plt.close(fig)
   if saving_path is None:
     # plt.show()
+    fig.canvas.draw()
+    rgb_array = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    width, height = fig.canvas.get_width_height()
+    rgb_array = rgb_array.reshape(height, width, 3)
     return rgb_array
   else:
     pth = os.path.join(saving_path, f'{title}_{legend_label}.png')
-    plt.savefig(pth)
+    fig.savefig(pth)
+    print(f'Plot saved to {pth}')
     return pth
 
 def get_list_video_path_from_csv(csv_path, cols_csv_idx=[1,5], union_segment='_'):
