@@ -108,7 +108,7 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
     filter_idx = np.any([dict_all_features['list_sample_id'] == id for id in plot_only_sample_id_list],axis=0)
   # Filter for clip_list
   _, list_count_clips = np.unique(dict_all_features['list_sample_id'],return_counts=True)
-  arange_clip = np.arange(max(list_count_clips)) # suppose clip_list is ordered
+  arange_clip = range(max(list_count_clips)) # suppose clip_list is ordered
   clip_list_array = np.array([True if i in clip_list else False for i in arange_clip]) 
   filter_clip = np.concatenate([clip_list_array[:end] for end in list_count_clips])
   filter_idx = np.logical_and(filter_idx,filter_clip)
@@ -141,7 +141,7 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
   
   tsne_plot_path = os.path.join(folder_path_tsne_results,f'tsne_plot_{sliding_windows}_{legend_label}')
   
-  X_tsne = tools.plot_tsne(X=torch.tensor(list_feature),
+  X_tsne = tools.plot_tsne(X=list_feature,
                            plot=False,
                            saving_path=os.path.join(folder_path_tsne_results,'dummy'),
                            tsne_n_component=tsne_n_component,
@@ -162,7 +162,6 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
     axis_dict = {'min_x':min_x-3,'min_y':min_y-3,'min_z':min_z-3,'max_x':max_x+3,'max_y':max_y+3,'max_z':max_z+3}
   
   print(f'axis_dict {axis_dict}')
-  list_image_path = []
   if legend_label == 'clip':
     labels_to_plot = list_idx_list_frames
   elif legend_label == 'subject':
@@ -198,20 +197,26 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
   if create_video:
     video_saving_path = os.path.join(folder_path_tsne_results,'video')
     if not os.path.exists(video_saving_path):
-      os.makedirs(video_saving_path)  
+      os.makedirs(video_saving_path)
+    list_rgb_image_plot = []  
+    start = time.time()
     for i in range(1,X_tsne.shape[0]+1):
-      print(i)
-      pth = tools.only_plot_tsne(X_tsne=X_tsne[:i],
+      list_rgb_image_plot.append(
+                    tools.only_plot_tsne(X_tsne=X_tsne[:i],
                           labels=labels_to_plot[:i],
                           legend_label=legend_label,
                           title=f'{title_plot}_{i}',
-                          saving_path=video_saving_path,
+                          # saving_path=video_saving_path,
                           axis_scale=axis_dict,
                           tot_labels=len(np.unique(labels_to_plot)),
                           plot_trajectory=True if plot_only_sample_id_list is not None else False,
                           last_point_bigger=True,
-                          list_axis_name=list_axis_name)
-      list_image_path.append(pth)
+                          list_axis_name=list_axis_name))
+      # list_image_path.append(pth)
+      if i % 20 == 0:
+        print(f'{i}/{X_tsne.shape[0]} plots done')
+    print(f'Elapsed time to get all plots: {time.time()-start} s')
+    start = time.time()
     tools.generate_video_from_list_video_path(list_video_path=list_video_path,
                                               list_frames=list_frames,
                                               list_sample_id=list_sample_id,
@@ -219,9 +224,10 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
                                               list_subject_id=list_subject_id,
                                               idx_list_frames=list_idx_list_frames,
                                               saving_path=video_saving_path,
-                                              list_image_path=list_image_path)
-    for i in range(len(list_image_path)):
-      remove_plot(list_image_path[i])
+                                              list_rgb_image_plot=list_rgb_image_plot)
+    print(f'Elapsed time to generate video: {time.time()-start} s')
+    # for i in range(len(list_image_path)):
+    #   remove_plot(list_image_path[i])
       
 #ATTENTION: This function is old, use plot_and_generate_video instead  
 def plot_tsne_per_subject(folder_path_features,folder_tsne_results):
