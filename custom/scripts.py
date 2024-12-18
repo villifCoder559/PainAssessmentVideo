@@ -142,7 +142,7 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
   tsne_plot_path = os.path.join(folder_path_tsne_results,f'tsne_plot_{sliding_windows}_{legend_label}')
   
   X_tsne = tools.plot_tsne(X=list_feature,
-                           plot=False,
+                           plot=True,
                            saving_path=os.path.join(folder_path_tsne_results,'dummy'),
                            tsne_n_component=tsne_n_component,
                            apply_pca_before_tsne=apply_pca_before_tsne)
