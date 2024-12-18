@@ -132,12 +132,12 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
   list_idx_list_frames=np.concatenate([np.arange(end) for end in list_count_clips])[filter_idx]
 
   print('Elasped time to get all features: ',time.time()-time_start)
-  print(f'list_frames {list_frames.shape}')
-  print(f'list_sample_id {list_sample_id.shape}')
-  print(f'list_video_path {list_video_path.shape}')
-  print(f'list_feature {list_feature.shape}')
-  print(f'list_idx_list_frames {list_idx_list_frames.shape}')
-  print(f'list_y_gt {list_y_gt.shape}')
+  # print(f'list_frames {list_frames.shape}')
+  # print(f'list_sample_id {list_sample_id.shape}')
+  # print(f'list_video_path {list_video_path.shape}')
+  # print(f'list_feature {list_feature.shape}')
+  # print(f'list_idx_list_frames {list_idx_list_frames.shape}')
+  # print(f'list_y_gt {list_y_gt.shape}')
   
   tsne_plot_path = os.path.join(folder_path_tsne_results,f'tsne_plot_{sliding_windows}_{legend_label}')
   
@@ -171,7 +171,7 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
   else:
     raise ValueError('legend_label must be one of the following: "clip", "subject", "class"') 
   
-  labels_to_plot = list_idx_list_frames
+  # labels_to_plot = list_idx_list_frames
   # print(f'clip_length {dict_all_features["list_frames"][filter_idx].shape[1]}')
   if not os.path.exists(tsne_plot_path):
     os.makedirs(tsne_plot_path)
