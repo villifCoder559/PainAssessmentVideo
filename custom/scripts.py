@@ -82,7 +82,7 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
   def remove_plot(file_path):
     try:
       os.remove(file_path)
-      print(f"File '{file_path}' deleted successfully.")
+      # print(f"File '{file_path}' deleted successfully.")
     except FileNotFoundError:
       print(f"File '{file_path}' not found.")
     except PermissionError:
@@ -99,15 +99,20 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
   else:
     dict_all_features = tools.load_dict_data(folder_path_features)
     # print(dict_all_features.keys())
-  
+  time_start = time.time()
   idx_subjects = np.any([dict_all_features['list_subject_id'] == id for id in subject_id_list],axis=0)
   idx_class = np.any([dict_all_features['list_labels'] == id for id in class_list],axis=0)
-  print(f'shape idx_subjects {idx_subjects.shape}')
   filter_idx = np.logical_and(idx_subjects,idx_class)
   if plot_only_sample_id_list is not None:
     print(f'Warning: Using sample id will ignore subject_id_list and class_list')
     filter_idx = np.any([dict_all_features['list_sample_id'] == id for id in plot_only_sample_id_list],axis=0)
-  time_start = time.time()
+  # Filter for clip_list
+  _, list_count_clips = np.unique(dict_all_features['list_sample_id'],return_counts=True)
+  arange_clip = np.arange(max(list_count_clips)) # suppose clip_list is ordered
+  clip_list_array = np.array([True if i in clip_list else False for i in arange_clip]) 
+  filter_clip = np.concatenate([clip_list_array[:end] for end in list_count_clips])
+  filter_idx = np.logical_and(filter_idx,filter_clip)
+  
   list_frames = []
   list_sample_id = []
   list_subject_id = []
@@ -115,44 +120,17 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
   list_feature = []
   list_idx_list_frames = []
   list_y_gt = []
-  list_to_plot, list_count_clips = np.unique(dict_all_features['list_sample_id'][filter_idx],return_counts=True) 
-  
-  for (sample_id,nr_clips) in zip(list_to_plot,list_count_clips):
-    # print(f'sample_id {sample_id}')
-    # for clip in clip_list:
-    idx = np.where(dict_all_features['list_sample_id'][filter_idx] == sample_id)[0]
-    clip_list_per_sample = [i for i in clip_list if i < nr_clips]
-    list_frames.append(dict_all_features['list_frames'][filter_idx][idx][clip_list_per_sample])
-    list_sample_id.append(dict_all_features['list_sample_id'][filter_idx][idx][clip_list_per_sample])
-    list_video_path.append(dict_all_features['list_path'][filter_idx][idx][clip_list_per_sample])
-    list_feature.append(dict_all_features['features'][filter_idx][idx][clip_list_per_sample])
-    list_y_gt.append(dict_all_features['list_labels'][filter_idx][idx][clip_list_per_sample])
-    list_subject_id.append(dict_all_features['list_subject_id'][filter_idx][idx][clip_list_per_sample])
-    list_idx_list_frames.append(clip_list_per_sample)
-      # if clip < nr_clips:
-      #   list_frames.append(dict_all_features['list_frames'][filter_idx][idx][clip])
-      #   list_sample_id.append(sample_id)
-      #   list_video_path.append(dict_all_features['list_path'][filter_idx][idx][clip])
-      #   list_feature.append(dict_all_features['features'][filter_idx][idx][clip])
-      #   list_y_gt.append(dict_all_features['list_labels'][filter_idx][idx][clip])
-      #   list_subject_id.append(dict_all_features['list_subject_id'][filter_idx][idx][clip])
-      #   list_idx_list_frames.append(clip)
-      # """ 
-      #     list_frames (320, 16)
-      #     list_sample_id (320,)
-      #     list_video_path (320,)
-      #     list_feature (320, 8, 1, 1, 768)
-      #     list_idx_list_frames (320,)
-      #     list_y_gt (320,)
-      # """
-      
-  # print(f'list_clips {list_frames.shape}')
-  list_frames = np.concatenate(list_frames)
-  list_sample_id = np.concatenate(list_sample_id)
-  list_video_path = np.concatenate(list_video_path)
-  list_feature = np.concatenate(list_feature)
-  list_idx_list_frames = np.concatenate(list_idx_list_frames)
-  list_y_gt = np.concatenate(list_y_gt)
+
+  list_frames=dict_all_features['list_frames'][filter_idx]
+  list_sample_id=dict_all_features['list_sample_id'][filter_idx]
+  list_video_path=dict_all_features['list_path'][filter_idx]
+  list_feature=dict_all_features['features'][filter_idx]
+  # print(f'length list_feature {len(list_feature)}')
+  list_y_gt=dict_all_features['list_labels'][filter_idx]
+  list_subject_id=dict_all_features['list_subject_id'][filter_idx]
+  # print(f'list_sample_id {list_sample_id}')
+  list_idx_list_frames=np.concatenate([np.arange(end) for end in list_count_clips])[filter_idx]
+
   print('Elasped time to get all features: ',time.time()-time_start)
   print(f'list_frames {list_frames.shape}')
   print(f'list_sample_id {list_sample_id.shape}')
@@ -199,7 +177,7 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
   if not os.path.exists(tsne_plot_path):
     os.makedirs(tsne_plot_path)
   if plot_only_sample_id_list is None:
-    title_plot = f'sliding_{sliding_windows}_subjects_{len(subject_id_list)}__clips_{len(clip_list)}__classes_{(class_list)}'
+    title_plot = f'sliding_{sliding_windows}_tot-subjects_{len(subject_id_list)}__clips_{clip_list}__classes_{(class_list)}'
   else:
     title_plot = f'sliding_{sliding_windows}_sample_id_{plot_only_sample_id_list}__clips_{len(clip_list)}__classes_{(np.unique(list_y_gt))}__subjectID_{np.unique(list_subject_id)}'
   tools.only_plot_tsne(X_tsne=X_tsne,
@@ -238,6 +216,7 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
                                               list_frames=list_frames,
                                               list_sample_id=list_sample_id,
                                               list_y_gt=list_y_gt,
+                                              list_subject_id=list_subject_id,
                                               idx_list_frames=list_idx_list_frames,
                                               saving_path=video_saving_path,
                                               list_image_path=list_image_path)
