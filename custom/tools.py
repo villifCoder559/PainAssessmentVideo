@@ -600,7 +600,7 @@ def plot_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=False,l
     # unique_labels = np.unique(labels)
   perplexity = min(20, X.size(0)-1)
   print('Using CPU')
-  tsne = openTSNE(n_components=tsne_n_component, perplexity=perplexity, random_state=42, n_jobs = -1)
+  tsne = openTSNE(n_components=tsne_n_component, perplexity=perplexity, random_state=42, n_jobs = 1)
 
   X_cpu = X.detach().cpu().squeeze()
   X_cpu = X_cpu.reshape(X_cpu.shape[0], -1)
@@ -613,6 +613,7 @@ def plot_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=False,l
   # print(f' X_cpu.shape: {X_cpu.shape}')
   print("Start t-SNE computation...")
   X_tsne = tsne.fit(X_cpu) # OpenTSNE
+  print(f'X_tsne shape: {X_tsne.shape}')
   # get the folder of saving_path
   # print(f'path {os.path.split(saving_path)[:-1]}')
   if saving_path:
@@ -685,7 +686,7 @@ def only_plot_tsne(X_tsne, labels, tot_labels = None,legend_label='', title='', 
       idx = (labels == val)
       label = f'{legend_label} {val}'
       if clip_length is not None and legend_label == 'clip':
-        label = f'{legend_label} [{clip_length * val}, {clip_length * (val+1) - 1}]'
+        label = f'{legend_label} {val} [{clip_length * val}, {clip_length * (val+1) - 1}]'
       ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[val], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
     if plot_trajectory:
       ax.plot(X_tsne[:, 0], X_tsne[:, 1], linestyle='--', color=color_dict[0], label='Trajectory', alpha=0.7)
@@ -848,7 +849,7 @@ def generate_csv(cols, data, saving_path):
   df.to_csv(saving_path, index=False, sep='\t')
   print(f'CSV saved to {saving_path}')
   
-def generate_video_from_list_video_path(list_video_path, list_frames, idx_list_frames, list_sample_id, list_y_gt, saving_path, list_image_path=None):
+def generate_video_from_list_video_path(list_video_path, list_frames, list_subject_id, idx_list_frames, list_sample_id, list_y_gt, saving_path, list_image_path=None):
   """
   Generate a video by extracting specific frames from a list of videos.
 
@@ -863,7 +864,9 @@ def generate_video_from_list_video_path(list_video_path, list_frames, idx_list_f
   """
   out = None
   output_fps = 4
-  for video_path, frames, sample_id, clip, y_gt, image_path in (zip(list_video_path, list_frames, list_sample_id, idx_list_frames, list_y_gt, list_image_path or [None]*len(list_video_path))):
+  for video_path, frames, sample_id, clip, y_gt, image_path, subject_id in (zip(list_video_path, list_frames, list_sample_id, idx_list_frames,
+                                                                    list_y_gt, list_image_path or [None]*len(list_video_path),
+                                                                    list_subject_id)):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
       raise IOError(f"Error: Unable to open video file: {video_path}")
@@ -872,11 +875,11 @@ def generate_video_from_list_video_path(list_video_path, list_frames, idx_list_f
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_size = (frame_width, frame_height)
     
-    black_frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 1
-    font_color = (255, 255, 255)
-    thickness = 2
+    # black_frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
+    # font = cv2.FONT_HERSHEY_SIMPLEX
+    # font_scale = 1
+    # font_color = (255, 255, 255)
+    # thickness = 2
     
     fourcc = cv2.VideoWriter_fourcc(*'avc1')
     if list_image_path:
@@ -890,6 +893,7 @@ def generate_video_from_list_video_path(list_video_path, list_frames, idx_list_f
     for frame_idx in frames:
       cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
       ret, frame = cap.read()
+      # fps = cap.get(cv2.CAP_PROP_FPS)
       if not ret:
         print(f"Warning: Failed to read frame {frame_idx} from video {video_path}")
         continue
@@ -902,13 +906,14 @@ def generate_video_from_list_video_path(list_video_path, list_frames, idx_list_f
         frame = combined_frame
 
       cv2.putText(frame, f'Sample ID: {sample_id}', (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
-      cv2.putText(frame, f'Clip {clip}', (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
-      cv2.putText(frame, f'Clip {clip}', (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 0), 2, cv2.LINE_AA)
+      cv2.putText(frame, f'pain class {y_gt}', (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
+      cv2.putText(frame, f'Clip {clip} ', (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
+      cv2.putText(frame, f'Frame range [{frames[0]},{frames[-1]}] ', (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
       out.write(frame)
     
-    for _ in range(output_fps // 2):
-      number_frame = black_frame.copy()
-      out.write(number_frame)
+    # for _ in range(output_fps // 2):
+    #   number_frame = black_frame.copy()
+    #   out.write(number_frame)
 
   cap.release()
   out.release()
