@@ -858,7 +858,7 @@ def generate_csv(cols, data, saving_path):
   df = pd.DataFrame(data, columns=cols)
   df.to_csv(saving_path, index=False, sep='\t')
   print(f'CSV saved to {saving_path}')
-  
+
 def generate_video_from_list_video_path(list_video_path, list_frames, list_subject_id, idx_list_frames, list_sample_id, list_y_gt, saving_path, list_rgb_image_plot=None):
   """
   Generate a video by extracting specific frames from a list of videos.
@@ -876,33 +876,55 @@ def generate_video_from_list_video_path(list_video_path, list_frames, list_subje
   output_fps = 4
   count = 0
   print('Generating video...')
+  current_video_path = None
+  fourcc = cv2.VideoWriter_fourcc(*'avc1')
   for video_path, frames, sample_id, clip, y_gt, image, subject_id in (zip(list_video_path, list_frames, list_sample_id, idx_list_frames,
                                                                     list_y_gt, list_rgb_image_plot or [None]*len(list_video_path),
                                                                     list_subject_id)):
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-      raise IOError(f"Error: Unable to open video file: {video_path}")
+    if current_video_path is None or current_video_path != video_path:
+      print(f'video_path: {video_path}')
+      if current_video_path is not None:
+        cap.release()
+      cap = cv2.VideoCapture(video_path)
+      if not cap.isOpened():
+        raise IOError(f"Error: Unable to open video file: {video_path}")
 
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    frame_size = (frame_width, frame_height)
-
-    fourcc = cv2.VideoWriter_fourcc(*'avc1')
+      frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+      frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+      frame_size = (frame_width, frame_height)
+      frames_to_process = []
+      while True:
+        ret, frame = cap.read()
+        if not ret:
+          break
+        frames_to_process.append(frame)    
+      current_video_path = video_path
+    # else:
+    #   cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+      
     if list_rgb_image_plot:
       # image = cv2.imread(image_path)
       image_height, image_width = image.shape[:2]
       frame_size = (frame_width + image_width, max(frame_height, image_height))
     if out is None:
       out = cv2.VideoWriter(os.path.join(saving_path, 'video.mp4'), fourcc, output_fps, frame_size)
-
-    for frame_idx in frames:
+    
+    overlay_text = [
+        f'Sample ID  : {sample_id}',
+        f'Subject ID : {subject_id}',
+        f'Pain class : {y_gt}',
+        f'Clip num.  : {clip}',
+        f'Frame range: [{frames[0]},{frames[-1]}]'
+    ]
+    
+    for frame in frames_to_process[frames[0]:frames[-1]+1]:
       # print(f'type frame_idx: {type(frame_idx)}')
-      cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
-      ret, frame = cap.read()
-      # fps = cap.get(cv2.CAP_PROP_FPS)
-      if not ret:
-        print(f"Warning: Failed to read frame {frame_idx} from video {video_path}")
-        continue
+      # cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
+      # ret, frame = cap.read()
+      # # fps = cap.get(cv2.CAP_PROP_FPS)
+      # if not ret:
+      #   print(f"Warning: Failed to read frame {frame_idx} from video {video_path}")
+      #   continue
 
       if image is not None:
         # image = cv2.imread(image_path)
@@ -910,12 +932,14 @@ def generate_video_from_list_video_path(list_video_path, list_frames, list_subje
         combined_frame[:frame_height, :frame_width] = frame
         combined_frame[:image.shape[0], frame_width:(frame_width + image.shape[1])] = image
         frame = combined_frame
+      for i, text in enumerate(overlay_text):
+        cv2.putText(frame, text, (50, 50 + i * 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
 
-      cv2.putText(frame, f'Sample ID  : {sample_id}', (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
-      cv2.putText(frame, f'Subject ID : {subject_id}', (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
-      cv2.putText(frame, f'Pain class : {y_gt}', (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
-      cv2.putText(frame, f'Clip num.  : {clip} ', (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
-      cv2.putText(frame, f'Frame range: [{frames[0]},{frames[-1]}] ', (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
+      # cv2.putText(frame, f'Sample ID  : {sample_id}', (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
+      # cv2.putText(frame, f'Subject ID : {subject_id}', (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
+      # cv2.putText(frame, f'Pain class : {y_gt}', (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
+      # cv2.putText(frame, f'Clip num.  : {clip} ', (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
+      # cv2.putText(frame, f'Frame range: [{frames[0]},{frames[-1]}] ', (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
       out.write(frame)
     count+=1
     if count % 10 == 0:
@@ -924,7 +948,6 @@ def generate_video_from_list_video_path(list_video_path, list_frames, list_subje
     #   number_frame = black_frame.copy()
     #   out.write(number_frame)
 
-  cap.release()
   out.release()
   print(f"Generated video saved to folder {saving_path}")
     
