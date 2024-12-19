@@ -606,13 +606,15 @@ def plot_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=False,l
   X_cpu = X_cpu.reshape(X_cpu.shape[0], -1)
   # apply PCA from scikit-learn to reduce the dimensionality of the data
   if apply_pca_before_tsne:
-    n_components_pca = min(100, X_cpu.shape[0])
+    n_components_pca = min(50, X_cpu.shape[0])
     print(f'PCA using {n_components_pca} components...')
     pca = PCA(n_components=n_components_pca)
     X_cpu = pca.fit_transform(X_cpu)
+    # X_cpu = X_cpu[:, 1:]  # Exclude the first principal component
   # print(f' X_cpu.shape: {X_cpu.shape}')
   print("Start t-SNE computation...")
   X_tsne = tsne.fit(X_cpu) # OpenTSNE
+  # X_tsne = X_cpu
   print(f'X_tsne shape: {X_tsne.shape}')
   # get the folder of saving_path
   # print(f'path {os.path.split(saving_path)[:-1]}')
@@ -621,7 +623,7 @@ def plot_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=False,l
     with open(path_log_tsne, 'a') as f:
       f.write(f'{title} \n')
       f.write(f'  time: {time.time()-start} secs\n')
-      f.write(f'  perplexity: {X_tsne.affinities.perplexities}\n')
+      # f.write(f'  perplexity: {X_tsne.affinities.perplexities}\n')
       f.write(f'  X_tsne.shape: {X_tsne.shape}\n')
       f.write(f'  apply_pca_before_tsne: {apply_pca_before_tsne}\n')
       if apply_pca_before_tsne:
@@ -641,12 +643,12 @@ def plot_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=False,l
   # print(f' labels shape: {labels.shape}')
 
 
-def only_plot_tsne(X_tsne, labels, tot_labels = None,legend_label='', title='', saving_path=None, axis_scale=None, last_point_bigger=False, plot_trajectory=False, clip_length=None,list_axis_name=None):
+def only_plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', title='', saving_path=None, axis_scale=None, last_point_bigger=False, plot_trajectory=False, clip_length=None,list_axis_name=None):
   unique_labels = np.unique(labels)
   if tot_labels is None:
-    color_map = plt.cm.get_cmap('copper', len(unique_labels))
+    color_map = plt.cm.get_cmap(cmap, len(unique_labels))
   else:
-    color_map = plt.cm.get_cmap('copper', tot_labels)
+    color_map = plt.cm.get_cmap(cmap, tot_labels)
   color_dict = {val: color_map(i) for i, val in enumerate(unique_labels)}
   sizes = None
   fig = plt.figure(figsize=(10, 8))
@@ -659,7 +661,7 @@ def only_plot_tsne(X_tsne, labels, tot_labels = None,legend_label='', title='', 
       ax.set_ylim(axis_scale['min_y'], axis_scale['max_y'])
       ax.set_zlim(axis_scale['min_z'], axis_scale['max_z'])
     for val in unique_labels:
-      idx = (labels == val)
+      idx = np.array(labels == val)
       label = f'{legend_label} {val}'
       if clip_length is not None and legend_label == 'clip':
         label = f'{legend_label} [{clip_length * val}, {clip_length * (val+1) - 1}]'
@@ -684,7 +686,7 @@ def only_plot_tsne(X_tsne, labels, tot_labels = None,legend_label='', title='', 
       sizes = [50] * (X_tsne.shape[0] - 1) + [200]
       sizes = np.array(sizes)
     for val in unique_labels:
-      idx = (labels == val)
+      idx = np.array(labels == val)
       label = f'{legend_label} {val}'
       if clip_length is not None and legend_label == 'clip':
         label = f'{legend_label} {val} [{clip_length * val}, {clip_length * (val+1) - 1}]'
