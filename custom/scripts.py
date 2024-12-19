@@ -77,20 +77,9 @@ def get_dict_all_features_from_model(sliding_windows,subject_id_list,classes,fol
   return dict_all_features
 
 # TODO: select the right stride window for each video when read data from SSD
-def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subject_id_list,clip_list,class_list,sliding_windows,legend_label,create_video=True,plot_only_sample_id_list=None,tsne_n_component=2,plot_third_dim_time=False,apply_pca_before_tsne=False):
+def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subject_id_list,clip_list,class_list,sliding_windows,legend_label,create_video=True,
+                            plot_only_sample_id_list=None,tsne_n_component=2,plot_third_dim_time=False,apply_pca_before_tsne=False,cmap='copper'):
 
-  def remove_plot(file_path):
-    try:
-      os.remove(file_path)
-      # print(f"File '{file_path}' deleted successfully.")
-    except FileNotFoundError:
-      print(f"File '{file_path}' not found.")
-    except PermissionError:
-      print(f"Permission denied to delete the file '{file_path}'.")
-    except Exception as e:
-      print(f"Error occurred while deleting the file: {e}")
-        
-  
   if sliding_windows != 16:
     dict_all_features = get_dict_all_features_from_model(sliding_windows=sliding_windows,
                                                          classes=class_list,
@@ -99,6 +88,7 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
   else:
     dict_all_features = tools.load_dict_data(folder_path_features)
     # print(dict_all_features.keys())
+  print(f'dict_all_features["list_subject_id"] shape {dict_all_features["list_subject_id"].shape}')
   time_start = time.time()
   idx_subjects = np.any([dict_all_features['list_subject_id'] == id for id in subject_id_list],axis=0)
   idx_class = np.any([dict_all_features['list_labels'] == id for id in class_list],axis=0)
@@ -187,7 +177,8 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
                        plot_trajectory = True if plot_only_sample_id_list is not None else False,
                        clip_length=dict_all_features['list_frames'][filter_idx].shape[1],
                        axis_scale=axis_dict,
-                       list_axis_name=list_axis_name)  
+                       list_axis_name=list_axis_name,
+                       cmap=cmap)  
 
   with open(os.path.join(folder_path_tsne_results,'config.txt'),'w') as f:
     f.write(f'subject_id_list: {subject_id_list}\n')
