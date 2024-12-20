@@ -4,7 +4,7 @@ from sklearn.model_selection import cross_val_score, KFold, StratifiedKFold, cro
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import GridSearchCV, GroupKFold,GroupShuffleSplit
 from sklearn.metrics import mean_absolute_error
-
+# from IPython.display import clear_output
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
@@ -13,7 +13,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 import custom.tools as tools
 from torchmetrics.classification import ConfusionMatrix
-from sklearn.metrics import confusion_matrix
+import math
 import os
 from datetime import datetime
 import torch.nn.init as init
@@ -374,19 +374,39 @@ class GRUModel(nn.Module):
       out = self.fc(out_padded).squeeze(dim=2) # [batch, seq_len, output_size=1]
     return out
 
-  def _initialize_weights(self):
+  def _initialize_weights(self,init_type='default'):
     # Initialize GRU weights
-    for name, param in self.gru.named_parameters():
-      if 'weight_ih' in name:
-          torch.nn.init.xavier_uniform_(param.data)
-      elif 'weight_hh' in name:
-          torch.nn.init.orthogonal_(param.data)
-      elif 'bias' in name:
-          param.data.fill_(0)
-    # Initialize Linear weights
-    init.xavier_uniform_(self.fc.weight)  # Xavier uniform initialization
-    if self.fc.bias is not None:
-        init.zeros_(self.fc.bias)
+    if init_type == 'xavier':
+      for name, param in self.gru.named_parameters():
+        if 'weight_ih' in name:
+            torch.nn.init.xavier_uniform_(param.data)
+        elif 'weight_hh' in name:
+            torch.nn.init.orthogonal_(param.data)
+        elif 'bias' in name:
+            param.data.fill_(0)
+      # Initialize Linear weights
+      init.xavier_uniform_(self.fc.weight)  # Xavier uniform initialization
+      if self.fc.bias is not None:
+          init.zeros_(self.fc.bias)
+          
+    elif init_type == 'uniform':
+      for name, param in self.gru.named_parameters():
+        if 'weight_ih' in name:
+            torch.nn.init.uniform_(param.data, a=-math.sqrt(1/self.hidden_size), b=math.sqrt(1/self.hidden_size))
+        elif 'weight_hh' in name:
+            torch.nn.init.uniform_(param.data, a=-math.sqrt(1/self.hidden_size), b=math.sqrt(1/self.hidden_size))
+        elif 'bias' in name:
+            torch.nn.init.uniform_(param.data, a=-math.sqrt(1/self.hidden_size), b=math.sqrt(1/self.hidden_size))
+      # Initialize Linear weights
+      init.uniform_(self.fc.weight, a=-0.1, b=0.1)
+      if self.fc.bias is not None:
+          init.uniform_(self.fc.bias, a=-0.1, b=0.1)
+    elif init_type == 'default':
+      self.gru.reset_parameters()
+      self.fc.reset_parameters()
+    else:
+      raise ValueError(f"Unknown initialization type: {init_type}")
+      
 
 class HeadGRU:
   def __init__(self, input_size, hidden_size, num_layers, dropout=0.0, output_size=1):
