@@ -78,9 +78,10 @@ def get_dict_all_features_from_model(sliding_windows,subject_id_list,classes,fol
 
 # TODO: select the right stride window for each video when read data from SSD
 def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subject_id_list,clip_list,class_list,sliding_windows,legend_label,create_video=True,
-                            plot_only_sample_id_list=None,tsne_n_component=2,plot_third_dim_time=False,apply_pca_before_tsne=False,cmap='copper'):
+                            plot_only_sample_id_list=None,tsne_n_component=2,plot_third_dim_time=False,apply_pca_before_tsne=False,cmap='copper',
+                            sort_elements=True,axis_dict=None):
 
-  if sliding_windows != 16:
+  if sliding_windows != 16 and sliding_windows!=4:
     dict_all_features = get_dict_all_features_from_model(sliding_windows=sliding_windows,
                                                          classes=class_list,
                                                          subject_id_list=subject_id_list,
@@ -101,7 +102,7 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
   arange_clip = range(max(list_count_clips)) # suppose clip_list is ordered
   clip_list_array = np.array([True if i in clip_list else False for i in arange_clip]) 
   filter_clip = np.concatenate([clip_list_array[:end] for end in list_count_clips])
-  filter_idx = np.logical_and(filter_idx,filter_clip)
+  filter_idx = np.logical_and(filter_idx, filter_clip)
   
   list_frames = []
   list_sample_id = []
@@ -120,14 +121,24 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
   list_subject_id=dict_all_features['list_subject_id'][filter_idx]
   # print(f'list_sample_id {list_sample_id}')
   list_idx_list_frames=np.concatenate([np.arange(end) for end in list_count_clips])[filter_idx]
-
+  
+  if sort_elements:
+    class_bool_idxs = [list_y_gt == i for i in class_list]
+    list_frames = torch.cat([list_frames[bool_idx] for bool_idx in class_bool_idxs])
+    list_sample_id = torch.cat([list_sample_id[bool_idx] for bool_idx in class_bool_idxs])
+    list_video_path = np.concatenate([list_video_path[bool_idx] for bool_idx in class_bool_idxs])
+    list_feature = torch.cat([list_feature[bool_idx] for bool_idx in class_bool_idxs])
+    list_y_gt = torch.cat([list_y_gt[bool_idx] for bool_idx in class_bool_idxs])
+    list_subject_id = torch.cat([list_subject_id[bool_idx] for bool_idx in class_bool_idxs])
+    list_idx_list_frames = np.concatenate([list_idx_list_frames[bool_idx] for bool_idx in class_bool_idxs])
+  
   print('Elasped time to get all features: ',time.time()-time_start)
-  # print(f'list_frames {list_frames.shape}')
-  # print(f'list_sample_id {list_sample_id.shape}')
-  # print(f'list_video_path {list_video_path.shape}')
-  # print(f'list_feature {list_feature.shape}')
-  # print(f'list_idx_list_frames {list_idx_list_frames.shape}')
-  # print(f'list_y_gt {list_y_gt.shape}')
+  print(f'list_frames {list_frames.shape}')
+  print(f'list_sample_id {list_sample_id.shape}')
+  print(f'list_video_path {list_video_path.shape}')
+  print(f'list_feature {list_feature.shape}')
+  print(f'list_idx_list_frames {list_idx_list_frames.shape}')
+  print(f'list_y_gt {list_y_gt.shape}')
   
   tsne_plot_path = os.path.join(folder_path_tsne_results,f'tsne_plot_{sliding_windows}_{legend_label}')
   
@@ -142,14 +153,15 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
     X_tsne = np.concatenate([X_tsne,np.expand_dims(list_idx_list_frames,axis=1)],axis=1)
     X_tsne = X_tsne[:,[2,0,1]] 
     list_axis_name = ['nr_clip','t-SNE_x','t-SNE_y']
-  if X_tsne.shape[1] == 2:
-    min_x,min_y = X_tsne.min(axis=0)
-    max_x,max_y = X_tsne.max(axis=0)
-    axis_dict = {'min_x':min_x-3,'min_y':min_y-3,'max_x':max_x+3,'max_y':max_y+3}
-  else:
-    min_x,min_y,min_z = X_tsne.min(axis=0)
-    max_x,max_y,max_z = X_tsne.max(axis=0)
-    axis_dict = {'min_x':min_x-3,'min_y':min_y-3,'min_z':min_z-3,'max_x':max_x+3,'max_y':max_y+3,'max_z':max_z+3}
+  if axis_dict is None:
+    if X_tsne.shape[1] == 2:
+      min_x,min_y = X_tsne.min(axis=0)
+      max_x,max_y = X_tsne.max(axis=0)
+      axis_dict = {'min_x':min_x-3,'min_y':min_y-3,'max_x':max_x+3,'max_y':max_y+3}
+    else:
+      min_x,min_y,min_z = X_tsne.min(axis=0)
+      max_x,max_y,max_z = X_tsne.max(axis=0)
+      axis_dict = {'min_x':min_x-3,'min_y':min_y-3,'min_z':min_z-3,'max_x':max_x+3,'max_y':max_y+3,'max_z':max_z+3}
   
   print(f'axis_dict {axis_dict}')
   if legend_label == 'clip':
@@ -176,6 +188,7 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
                        legend_label=legend_label,
                        plot_trajectory = True if plot_only_sample_id_list is not None else False,
                        clip_length=dict_all_features['list_frames'][filter_idx].shape[1],
+                       stride_windows=sliding_windows,
                        axis_scale=axis_dict,
                        list_axis_name=list_axis_name,
                        cmap=cmap)  
@@ -199,19 +212,20 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
                           title=f'{title_plot}_{i}',
                           # saving_path=video_saving_path,
                           axis_scale=axis_dict,
+                          clip_length=dict_all_features['list_frames'][filter_idx].shape[1],
+                          stride_windows=sliding_windows,
                           tot_labels=len(np.unique(labels_to_plot)),
                           plot_trajectory=True if plot_only_sample_id_list is not None else False,
                           last_point_bigger=True,
                           list_axis_name=list_axis_name))
-      # list_image_path.append(pth)
-      if i % 20 == 0:
-        print(f'{i}/{X_tsne.shape[0]} plots done')
+
     print(f'Elapsed time to get all plots: {time.time()-start} s')
     start = time.time()
     tools.generate_video_from_list_video_path(list_video_path=list_video_path,
                                               list_frames=list_frames,
                                               list_sample_id=list_sample_id,
                                               list_y_gt=list_y_gt,
+                                              output_fps=25,
                                               list_subject_id=list_subject_id,
                                               idx_list_frames=list_idx_list_frames,
                                               saving_path=video_saving_path,
@@ -219,7 +233,7 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
     print(f'Elapsed time to generate video: {time.time()-start} s')
     # for i in range(len(list_image_path)):
     #   remove_plot(list_image_path[i])
-      
+
 #ATTENTION: This function is old, use plot_and_generate_video instead  
 def plot_tsne_per_subject(folder_path_features,folder_tsne_results):
   print('Loading features from SSD...')
