@@ -1,0 +1,35 @@
+## Directory Descriptions
+
+### `custom/`
+Contains custom modules and scripts for this project.
+
+### `extract_feature.py`
+Script for extracting features from the video dataset.
+
+### `history_run/`
+Contains directories for different runs of the model training and evaluation.
+
+### `local_model_directory/`
+Contains local model configurations and preprocessor settings.
+- `preprocessor_config.json`: Configuration file for the preprocessor.
+
+### `partA/`
+Contains the data and video files from Biovid dataset.
+- `starting_point/`:  Contains CSV files, agreement, and README file to understand the Biovid dataset structure.
+- `video/video`: Video files.
+- `video/features/`: Contains the extracted features. Each folder includes a README file with details about the contents.
+
+### `requirements.txt`
+Lists the dependencies required for the project.
+
+### `test.ipynb`
+Jupyter notebook for testing and experimenting with the model and data.
+
+### `VideoMAEv2/`
+Contains the original VideoMAEv2 model from https://github.com/OpenGVLab/VideoMAEv2 and related scripts.
+## ATTENTION
+I applied the following changes:
+  - A `pretrained/` folder has been added to store the pretrained VideoMAEv2 model.
+  - The `forward_features` function in `VideoMAEv2/models/modeling_finetune.py` has been modified:
+  - Added `return_embedding=False` at line 429.
+  - Added lines 444-445 to obtain the embedding before the classification process.
