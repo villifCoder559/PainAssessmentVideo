@@ -215,12 +215,14 @@ def plot_accuracy_confusion_matrix(confusion_matricies, type_conf,title='', savi
 
 def plot_mae_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_subjects=None, saving_path=None):
   """ Plot Mean Absolute Error per participant. """
-  plt.figure(figsize=(10, 5))
-  plt.bar(uniqie_subject_ids, mae_per_subject, color='green')
+  plt.figure(figsize=(15, 5))
+  plt.bar(uniqie_subject_ids, mae_per_subject,width=1.5, color='green')
   plt.xlabel('Participant')
   plt.ylabel('Mean Absolute Error')
   plt.title(f'Mean Absolute Error per Participant {title}')
-  plt.xticks(uniqie_subject_ids)  # Show each element in x-axis
+  plt.xticks(fontsize=11,rotation=45)
+  filter_elements = np.array([True if mae > 0.0 else False for mae in mae_per_subject])
+  plt.xticks(uniqie_subject_ids[filter_elements])  # Show each element in x-axis
   if count_subjects is not None:
     for id,count in count_subjects.items():
       idx = np.where(id == uniqie_subject_ids)[0]
@@ -233,6 +235,7 @@ def plot_mae_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_sub
 
 def plot_losses(train_losses, test_losses, saving_path=None):
   plt.figure(figsize=(10, 5))
+  plt.yticks(fontsize=12)
   plt.plot(train_losses, label='Training Loss')
   plt.plot(test_losses, label='Test Loss')
   plt.xlabel('Epochs')
@@ -643,7 +646,7 @@ def plot_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=False,l
   # print(f' labels shape: {labels.shape}')
 
 
-def only_plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', title='', saving_path=None, axis_scale=None, last_point_bigger=False, plot_trajectory=False, clip_length=None,list_axis_name=None):
+def only_plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', title='', saving_path=None, axis_scale=None, last_point_bigger=False, plot_trajectory=False, stride_windows=None,clip_length=None,list_axis_name=None):
   unique_labels = np.unique(labels)
   if tot_labels is None:
     color_map = plt.cm.get_cmap(cmap, len(unique_labels))
@@ -663,8 +666,8 @@ def only_plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label=
     for val in unique_labels:
       idx = np.array(labels == val)
       label = f'{legend_label} {val}'
-      if clip_length is not None and legend_label == 'clip':
-        label = f'{legend_label} [{clip_length * val}, {clip_length * (val+1) - 1}]'
+      if clip_length is not None and stride_windows is not None and legend_label == 'clip':
+        label = f'{legend_label} [{stride_windows * val}, {clip_length + stride_windows * (val) - 1}]'
       ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], X_tsne[idx, 2], color=color_dict[val], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
     if plot_trajectory:
       ax.plot(X_tsne[:, 0], X_tsne[:, 1], X_tsne[:, 2], linestyle='--', color=color_dict[0], label='Trajectory', alpha=0.7)
@@ -689,7 +692,7 @@ def only_plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label=
       idx = np.array(labels == val)
       label = f'{legend_label} {val}'
       if clip_length is not None and legend_label == 'clip':
-        label = f'{legend_label} {val} [{clip_length * val}, {clip_length * (val+1) - 1}]'
+        label = f'{legend_label} [{stride_windows * val}, {clip_length + stride_windows * (val) - 1}]'
       ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[val], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
     if plot_trajectory:
       ax.plot(X_tsne[:, 0], X_tsne[:, 1], linestyle='--', color=color_dict[0], label='Trajectory', alpha=0.7)
@@ -859,7 +862,7 @@ def generate_csv(cols, data, saving_path):
   df.to_csv(saving_path, index=False, sep='\t')
   print(f'CSV saved to {saving_path}')
 
-def generate_video_from_list_video_path(list_video_path, list_frames, list_subject_id, idx_list_frames, list_sample_id, list_y_gt, saving_path, list_rgb_image_plot=None):
+def generate_video_from_list_video_path(list_video_path, list_frames, list_subject_id, idx_list_frames, list_sample_id, list_y_gt, saving_path, output_fps=4,list_rgb_image_plot=None):
   """
   Generate a video by extracting specific frames from a list of videos.
 
@@ -873,7 +876,7 @@ def generate_video_from_list_video_path(list_video_path, list_frames, list_subje
     list_image_path (list, optional): List of paths to images to be merged with the video frames. Defaults to None.
   """
   out = None
-  output_fps = 4
+  # output_fps = 4
   count = 0
   print('Generating video...')
   current_video_path = None
@@ -902,7 +905,7 @@ def generate_video_from_list_video_path(list_video_path, list_frames, list_subje
     # else:
     #   cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
       
-    if list_rgb_image_plot:
+    if image is not None:
       # image = cv2.imread(image_path)
       image_height, image_width = image.shape[:2]
       frame_size = (frame_width + image_width, max(frame_height, image_height))
@@ -944,6 +947,7 @@ def generate_video_from_list_video_path(list_video_path, list_frames, list_subje
     count+=1
     if count % 10 == 0:
       print(f'Processed {count}/{list_video_path.shape[0]} videos')
+    # black_frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
     # for _ in range(output_fps // 2):
     #   number_frame = black_frame.copy()
     #   out.write(number_frame)
