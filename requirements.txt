@@ -5,6 +5,7 @@ CONDA
 -matplotlib=3.9.2
 -torchmetrics=1.5.2
 -dataframe_image=0.1.1
+-openTSNE=1.0.2
 
 PIP
 -av==13.1.0
