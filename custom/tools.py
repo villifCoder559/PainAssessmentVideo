@@ -3,7 +3,7 @@ import numpy as np
 from sklearn.model_selection import GroupShuffleSplit
 import os
 import pandas as pd
-from torchmetrics.classification import ConfusionMatrix,MulticlassConfusionMatrix
+from torchmetrics.classification import ConfusionMatrix, MulticlassConfusionMatrix
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 from matplotlib.ticker import MaxNLocator
@@ -13,6 +13,7 @@ import torch
 import json
 from openTSNE import TSNE as openTSNE
 import time
+
 
 # if os.name == 'posix':
   # from tsnecuda import TSNE as cudaTSNE # available only on Linux
@@ -28,6 +29,7 @@ class NpEncoder(json.JSONEncoder):
     if isinstance(obj, np.ndarray):
       return obj.tolist()
     return super(NpEncoder, self).default(obj)
+
 
 def save_csv_file(cols,csv_array,saving_path,sliding_windows):
   """
