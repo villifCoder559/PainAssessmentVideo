@@ -2,18 +2,18 @@ import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.vision import FaceAligner,FaceLandmarksConnections,FaceAlignerOptions
-from pympler import asizeof
+from scipy.spatial import Delaunay
 import os
 import time
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 
-class FaceExtractor:
+class FaceExtractor: 
   LEFT_EYE_INDEXES = [33, 133]  # Example: Left eye corners
   RIGHT_EYE_INDEXES = [362, 263]  # Example: Right eye corners
   NOSE_INDEX = 1  # Example: Nose tip
-  FACE_OVAL_ROUTE = [(conn.start,conn.end) for conn in FaceLandmarksConnections.FACE_LANDMARKS_FACE_OVAL]
+  FACE_OVAL = [(conn.start,conn.end) for conn in FaceLandmarksConnections.FACE_LANDMARKS_FACE_OVAL]
   FACE_TESSELATION = [(conn.start,conn.end) for conn in FaceLandmarksConnections.FACE_LANDMARKS_TESSELATION]
   # TARGET = 199
   def __init__(self,
@@ -58,12 +58,24 @@ class FaceExtractor:
       'visionRunningMode': running_mode
     }
     
-  def align_face(self,mp_image):
+  def align_face(self,image):
+    """
+    Aligns the face in the given MediaPipe image.
+    This method takes a MediaPipe image, checks if it is a valid MediaPipe Image object,
+    and aligns the face in the image using the MediaPipe face aligner. If no face is detected,
+    it returns None.
+    Args:
+      mp_image (mp.Image or numpy.ndarray): The input image. It can be a MediaPipe Image object
+      or a numpy array representing the image data.
+    Returns:
+      numpy.ndarray or None: The aligned face image as a numpy array if a face is detected,
+      otherwise None.
+    """
     #check if is mp image
-    if not isinstance(mp_image,mp.Image):
-      mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=mp_image)
-      # raise ValueError("Input must be a MediaPipe Image object.")
-    aligned_image = self.mp_face_aligner.align(mp_image)
+    if not isinstance(image,mp.Image):
+      image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
+    
+    aligned_image = self.mp_face_aligner.align(image)
     if aligned_image is None:
       print("No face detected.")
       return None
@@ -172,8 +184,6 @@ class FaceExtractor:
 
     return list_centered_landmarks
   
-  
-  
   def get_numpy_array(self,landmarks):
     return np.array([[lm.x,lm.y,lm.z] for lm in landmarks])
   
@@ -205,10 +215,21 @@ class FaceExtractor:
       return [mp.tasks.components.containers.NormalizedLandmark(x=ln[0],y=ln[1],z=ln[2]) for ln in mean_face_landmarks],count_frame
       
   def convert_from_numpy_to_NormalizedLandmark(self,landmarks):
-    return [mp.tasks.components.containers.NormalizedLandmark(x=ln[0],y=ln[1],z=ln[2]) for ln in landmarks]
-    
+    if landmarks.shape[1] == 3:
+      return [mp.tasks.components.containers.NormalizedLandmark(x=ln[0],y=ln[1],z=ln[2]) for ln in landmarks]
+    elif landmarks.shape[1] == 2:
+      return [mp.tasks.components.containers.NormalizedLandmark(x=ln[0],y=ln[1]) for ln in landmarks]
+    else:
+      raise ValueError("Invalid landmarks shape. Must be (n,2) or (n,3).")
+  
+  def extract_frame_oval_from_img(self,img,landmarks):
+    routes_idx = self.FACE_OVAL
+    routes = self._find_coords_point(routes_idx, landmarks, img)
+    out_img,_ = self._extract_face_oval_from_img(img, routes)
+    return out_img  
+  
   def generate_face_oval_video(self,path_video_input,path_video_output,align=False):
-    routes_idx = self.FACE_OVAL_ROUTE
+    routes_idx = self.FACE_OVAL
     new_video = []
     frame_list = self._get_list_frame(path_video_input,align=align)
     detection_result_list = self.extract_facial_landmarks(frame_list)
@@ -271,7 +292,7 @@ class FaceExtractor:
     
     return warped_img
   
-  def plot_landmarks(self,image, landmarks, connections=None):
+  def plot_landmarks(self,image, landmarks, connections=None,list_evidence_landmarks=[]):
     """
     Plots facial landmarks on the given image.
     Args:
@@ -285,6 +306,8 @@ class FaceExtractor:
         - landmarks_coords (list): A list of dictionaries containing the x, y, and z coordinates of each landmark.
     """
     # Create a copy of the image to draw on
+    # if len(list_evidence_landmarks) == 0:
+    #   list_evidence_landmarks = [self.NOSE_INDEX]
     annotated_image = image.copy()
     height, width, _ = image.shape
     landmarks_coords = []
@@ -293,9 +316,9 @@ class FaceExtractor:
       x = int(landmark.x * width)
       y = int(landmark.y * height)
       landmarks_coords.append({'x':landmark.x,'y':landmark.y,'z':landmark.z})
-      if idx == self.NOSE_INDEX:
+      if idx in list_evidence_landmarks:
         # print(f'Nose_coords x: {landmark.x}, y: {landmark.y}')
-        cv2.circle(annotated_image, (x, y), radius=2, color=(0, 0, 255), thickness=-1)
+        cv2.circle(annotated_image, (x, y), radius=2, color=(0, 0, 255), thickness=5)
       # else:
       #   # if idx in self.LEFT_EYE_INDEXES:
       #   cv2.circle(annotated_image, (x, y), radius=2, color=(255, 0, 0), thickness=-1)
@@ -317,4 +340,24 @@ class FaceExtractor:
     # cv2.imshow('Landmarks', annotated_image)
     # cv2.waitKey(0)
     # cv2.destroyAllWindows()
-    
+  
+  def plot_landmarks_triangulation(self,image,landmarks):
+    img = image.copy()
+    if landmarks.shape[1] > 2:
+      landmarks = landmarks[:,:2]
+    if np.max(landmarks) <= 1 and np.min(landmarks) >= 0:
+      landmarks = landmarks * (img.shape[1],img.shape[0])
+      landmarks = landmarks.astype(np.int32)
+    tri = Delaunay(landmarks)
+    for triangle in tri.simplices:
+      p1 = landmarks[triangle[0]]
+      p2 = landmarks[triangle[1]]
+      p3 = landmarks[triangle[2]]
+      cv2.line(img, tuple(p1), tuple(p2), (0, 0, 255), 1)
+      cv2.line(img, tuple(p2), tuple(p3), (0, 0, 255), 1)
+      cv2.line(img, tuple(p3), tuple(p1), (0, 0, 255), 1)
+      cv2.circle(img, tuple(p1), 2, (255, 0, 0), -1)
+      cv2.circle(img, tuple(p2), 2, (255, 0, 0), -1)
+      cv2.circle(img, tuple(p3), 2, (255, 0, 0), -1)
+    return img
+  
