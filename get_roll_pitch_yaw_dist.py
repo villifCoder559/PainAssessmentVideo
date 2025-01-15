@@ -8,7 +8,7 @@ import pandas as pd
 import copy
 import pickle
 
-def get_roll_pitch_yaw_from_video(video_path,mp_face_mesh,face_mesh,show_video=False,error_log_folder=os.path.path("partA","video","roll_pitch_yaw_per_subject")):
+def get_roll_pitch_yaw_from_video(video_path,mp_face_mesh,face_mesh,show_video=False,error_log_folder=os.path.join("partA","video","roll_pitch_yaw_per_subject")):
   if show_video:
     mp_drawing = mp.solutions.drawing_utils
     drawing_spec = mp_drawing.DrawingSpec(color=(128,0,128),thickness=2,circle_radius=1)
@@ -45,7 +45,7 @@ def get_roll_pitch_yaw_from_video(video_path,mp_face_mesh,face_mesh,show_video=F
           if idx == 33 or idx == 263 or idx ==1 or idx == 61 or idx == 291 or idx==199 or idx == 133 or idx == 362:
             if idx ==1:
               nose_2d = (lm.x * img_w,lm.y * img_h)
-              nose_3d = (lm.x * img_w,lm.y * img_h,lm.z * 3000)
+              # nose_3d = (lm.x * img_w,lm.y * img_h,lm.z * 3000)
             x,y = int(lm.x * img_w),int(lm.y * img_h)
             face_2d.append([x,y])
             face_3d.append(([x,y,lm.z]))
@@ -122,13 +122,13 @@ def save_results(dict_results,root_folder_path):
     subject_folder_path = os.path.join(root_folder_path,sbj_name)
     if not os.path.exists(subject_folder_path):
       os.makedirs(os.path.join(subject_folder_path))
-    with open(os.path.join(subject_folder_path,f'{sbj_name}.txt'),'w') as f:
+    with open(os.path.join(subject_folder_path,f'log_{sbj_name}.txt'),'w') as f:
       # f.write(f'{sbj_name},')
       for key in dict_results[sbj_name].keys():
         f.write(f'{key}:\n')
         for angle in dict_results[sbj_name][key].keys():
           f.write(f' {angle}:{dict_results[sbj_name][key][angle]}\n')
-    pickle.dump(dict_results[sbj_name],open(os.path.join(subject_folder_path,f'{sbj_name}.pkl'),'wb'))
+    pickle.dump(dict_results[sbj_name],open(os.path.join(subject_folder_path,f'dict_{sbj_name}.pkl'),'wb'))
     print(f'{sbj_name} results saved in {subject_folder_path}')
   pickle.dump(dict_results,open(os.path.join(root_folder_path,'dict_results_all_subjects.pkl'),'wb'))
   print(f'All results saved in {root_folder_path}')  
@@ -197,6 +197,7 @@ if __name__ == '__main__':
     print(f'dict pitch: {dict_pitch}')
     print(f'dict yaw: {dict_yaw}')
     dict_results[sbj_name] = {'roll':copy.deepcopy(dict_roll),'pitch':copy.deepcopy(dict_pitch),'yaw':copy.deepcopy(dict_yaw)}
-    break
+
   print(f'current working directory: {os.getcwd()}')
   save_results(dict_results,os.path.join('partA','video','roll_pitch_yaw_per_subject'))
+  
