@@ -8,6 +8,7 @@ import time
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
+import copy
 # from tools_face_elaboration import rigid_transform_3D, plot_landmarks_triangulation, get_frontalized_img
 
 class FaceExtractor: 
@@ -16,6 +17,7 @@ class FaceExtractor:
   NOSE_INDEX = 1  # Example: Nose tip
   FACE_OVAL = [(conn.start,conn.end) for conn in FaceLandmarksConnections.FACE_LANDMARKS_FACE_OVAL]
   FACE_TESSELATION = [(conn.start,conn.end) for conn in FaceLandmarksConnections.FACE_LANDMARKS_TESSELATION]
+  RGB_IMAGE_BACKGROUND = (255, 0, 255)
   # TARGET = 199
   def __init__(self,
                min_face_detection_confidence=0.5,
@@ -123,7 +125,7 @@ class FaceExtractor:
     mask = cv2.fillConvexPoly(mask, np.array(routes), 1)
     mask = mask.astype(bool)
       
-    out = np.zeros_like(img,dtype=np.uint8)
+    out = np.zeros_like(img) + 255
     out[mask] = img[mask]
     return out, mask
   
@@ -346,35 +348,35 @@ class FaceExtractor:
     # cv2.waitKey(0)
     # cv2.destroyAllWindows()
   
-  def generate_face_oval_video(self,path_video_input,path_video_output,align=False):
-    routes_idx = self.FACE_OVAL
-    new_video = []
-    frame_list = self._get_list_frame(path_video_input,align=align)
-    detection_result_list = self.extract_facial_landmarks(frame_list)
-    start_time = time.time()
-    for (img, _), detection_result in zip(frame_list, detection_result_list):
-      landmarks = detection_result.face_landmarks[0]
-      landmarks = self.center_wrt_nose(landmarks)
-      routes = self._find_coords_point(routes_idx, landmarks, img)
-      out_img,_ = self._extract_face_oval_from_img(img, routes)
-      # print(f'out_img shape: {out_img.shape}')
-      new_video.append(out_img)
+  # def generate_face_oval_video(self,path_video_input,path_video_output,align=False):
+  #   routes_idx = self.FACE_OVAL
+  #   new_video = []
+  #   frame_list = self._get_list_frame(path_video_input,align=align)
+  #   detection_result_list = self.extract_facial_landmarks(frame_list)
+  #   start_time = time.time()
+  #   for (img, _), detection_result in zip(frame_list, detection_result_list):
+  #     landmarks = detection_result.face_landmarks[0]
+  #     landmarks = self.center_wrt_nose(landmarks)
+  #     routes = self._find_coords_point(routes_idx, landmarks, img)
+  #     out_img,_ = self._extract_face_oval_from_img(img, routes)
+  #     # print(f'out_img shape: {out_img.shape}')
+  #     new_video.append(out_img)
 
-    print(f'Time to generate face oval video: {time.time()-start_time} s')
-    # print(f'dict_max_dim: {dict_max_dim}')
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    fps = 25
-    height, width,_ = new_video[0].shape
-    print(f'height: {height}, width: {width}')
-    if not os.path.exists(os.path.dirname(path_video_output)):
-      os.makedirs(os.path.dirname(path_video_output))
-    output_video = cv2.VideoWriter(path_video_output, fourcc, fps, (width, height))
-    start_time = time.time()
-    for frame in new_video:
-      output_video.write(frame)
-    output_video.release()
-    print(f'Time to write video: {time.time()-start_time} s')
-    print(f"Video saved at {path_video_output}")
+  #   print(f'Time to generate face oval video: {time.time()-start_time} s')
+  #   # print(f'dict_max_dim: {dict_max_dim}')
+  #   fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+  #   fps = 25
+  #   height, width,_ = new_video[0].shape
+  #   print(f'height: {height}, width: {width}')
+  #   if not os.path.exists(os.path.dirname(path_video_output)):
+  #     os.makedirs(os.path.dirname(path_video_output))
+  #   output_video = cv2.VideoWriter(path_video_output, fourcc, fps, (width, height))
+  #   start_time = time.time()
+  #   for frame in new_video:
+  #     output_video.write(frame)
+  #   output_video.release()
+  #   print(f'Time to write video: {time.time()-start_time} s')
+  #   print(f"Video saved at {path_video_output}")
   
   def frontalize_img(self,frame,ref_landmarks,frontalization_mode='SVD',align=True):                                                                             
     
@@ -400,10 +402,9 @@ class FaceExtractor:
     else:
       orig_frame = np.copy(frame)
     # landmarks = self.extract_facial_landmarks([(frame, 0)])
-    
     landmarks = self.extract_facial_landmarks([(orig_frame, 0)])
     landmarks = np.array([[lm.x, lm.y, lm.z] for lm in landmarks[0].face_landmarks[0]])
-    orig_frame,_ = self.extract_frame_oval_from_img(orig_frame,landmarks)
+    # orig_frame,_ = self.extract_frame_oval_from_img(orig_frame,landmarks)
     
     # orig_frame,boolen_landmarks_mask = self.extract_frame_oval_from_img(orig_frame,landmarks)
     # landmarks = np.array([[lm.x, lm.y, lm.z] for lm in landmarks[0].face_landmarks[0]])
@@ -420,6 +421,7 @@ class FaceExtractor:
       bottom_right_corner = (int(np.max(rot_trans_landmarks[:, 0]*frontalized_img_SVD.shape[1])), 
                          int(np.max(rot_trans_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
       
+      # cv2.fillConvexPoly(img, filler, 255)
       # print(f'top_left_corner: x {top_left_corner[0]}, y {top_left_corner[1]}')
       # print(f'bottom_right_corner: x {bottom_right_corner[0]}, y {bottom_right_corner[1]}')
       # cv2.circle(frontalized_img_SVD, top_left_corner, radius=4, color=(255, 255, 255), thickness=-1)
@@ -427,8 +429,8 @@ class FaceExtractor:
       frontalized_img_SVD = self.post_process_frontalized_img(frontalized_img=frontalized_img_SVD,
                                                               top_left_corner=top_left_corner,
                                                               bottom_right_corner=bottom_right_corner,
-                                                              boolen_landmarks_mask=None)
-      
+                                                              landmarks=rot_trans_landmarks)
+
       return frontalized_img_SVD,rot_trans_landmarks
     
     elif frontalization_mode == 'CV2':
@@ -445,11 +447,45 @@ class FaceExtractor:
 
   # def post_process_frontalized_img(self,frontalized_img):
      
-  def post_process_frontalized_img(self,frontalized_img,top_left_corner,bottom_right_corner,boolen_landmarks_mask):
+  def post_process_frontalized_img(self,frontalized_img,top_left_corner,bottom_right_corner,landmarks):
     # fill the image with face as much as possible
+    # orig_image = copy.deepcopy(frontalized_img)
+    print(f'landmarks shape {landmarks.shape}')
+    landmarks = (landmarks * 256).astype(int)
+    mask = np.zeros((frontalized_img.shape[0], frontalized_img.shape[1]))
+    filler = cv2.convexHull(landmarks[:,:2])
+    mask = cv2.fillConvexPoly(mask, filler, 1).astype(bool)
+          
+    # out = np.zeros_like(frontalized_img)
+    # out[mask] = frontalized_img[mask]
+    # fig, ax = plt.subplots(1,2, figsize=(12,12))
+    # # print(f'img[mask] shape: {frontalized_img[dupl_mask].shape}')
+    # ax[0].imshow(out)
+    # ax[1].imshow(mask)
+
+    center_pixel = (frontalized_img.shape[1]//2,frontalized_img.shape[0]//2)
+    coords_face = np.argwhere(mask)
+    count = 0
+    print(f'len coords: {len(coords_face)}')
+    for coord in coords_face:
+      x = coord[1]
+      y = coord[0]
+      if frontalized_img[y,x][0] >= 240 or frontalized_img[y,x][1] >= 240 or frontalized_img[y,x][2] >= 240:
+        count += 1
+        # mirror the pixel
+        mirror_x = center_pixel[0] - (x - center_pixel[0]) 
+        frontalized_img[y,x] = frontalized_img[y,mirror_x]
+    print(f'count changes: {count}')
+    # bgr_frame = cv2.cvtColor(frontalized_img, cv2.COLOR_RGB2BGR)
+    # gray_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2GRAY)
+    # _, bw_image = cv2.threshold(gray_frame, 150, 255, cv2.THRESH_BINARY)
+    # fig,ax = plt.subplots(1,2,figsize=(12,12))
+    # ax[0].imshow(bw_image,cmap='gray')
+    # ax[1].imshow(frontalized_img)
+    # frontalized_img = cv2.inpaint(frontalized_img, bw_image, 3, cv2.INPAINT_TELEA)
     frontalized_img = frontalized_img[top_left_corner[1]:bottom_right_corner[1],top_left_corner[0]:bottom_right_corner[0]]
     frontalized_img=cv2.resize(frontalized_img,(256,256))
-
+    
     return frontalized_img
   
   def rigid_transform_3D(self,A, B):
