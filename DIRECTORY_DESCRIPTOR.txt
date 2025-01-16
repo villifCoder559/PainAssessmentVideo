@@ -27,6 +27,7 @@ Jupyter notebook for testing and experimenting with the model and data.
 
 ### `VideoMAEv2/`
 Contains the original VideoMAEv2 model from https://github.com/OpenGVLab/VideoMAEv2 and related scripts.
+
 ## ATTENTION
 I applied the following changes:
   - A `pretrained/` folder has been added to store the pretrained VideoMAEv2 model.
