@@ -6,8 +6,10 @@ from torch.utils.data import DataLoader
 import numpy as np
 import os
 from transformers import AutoImageProcessor
+import custom.tools as tools
+import time
 
-model_type = MODEL_TYPE.VIDEOMAE_v2_S
+model_type = MODEL_TYPE.VIDEOMAE_v2_B
 pooling_embedding_reduction = EMBEDDING_REDUCTION.MEAN_SPATIAL
 pooling_clips_reduction = CLIPS_REDUCTION.NONE
 sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
@@ -52,6 +54,7 @@ def _extract_features(dataset,path_csv_dataset,batch_size_feat_extraction,backbo
   # move the model to the device
   backbone.model.to(device)
   backbone.model.eval()
+  start = time.time()
   with torch.no_grad():
     # start_total_time = time.time()
     # start = time.time()
@@ -69,12 +72,15 @@ def _extract_features(dataset,path_csv_dataset,batch_size_feat_extraction,backbo
       # video_feat_size [nr_video,8,768] => 8700 * 8 * 768 * 4 = 204 MB
       #############################################################################################################
       # print(f'Elapsed time for {batch_size} samples: {time.time() - start}')
-      print(f'data shape {data.shape}')
+      # print(f'data shape {data.shape}')
+      
       data = data.to(device)
       with torch.no_grad():
     # Extract features from clips -> return [B, clips/tubelets, W/patch_w, H/patch_h, emb_dim] 
         feature = backbone.forward_features(x=data)
       # feature -> [2, 8, 1, 1, 384]
+      # print(f'sample_id {sample_id}')
+      # print(f'feature shape {feature.shape}')
       list_frames.append(list_sampled_frames)
       list_features.append(feature.detach().cpu())
       list_labels.append(labels)
@@ -83,10 +89,14 @@ def _extract_features(dataset,path_csv_dataset,batch_size_feat_extraction,backbo
       list_path.append(path)
       count += 1
       # if count % 10 == 0:
-      print(f'Batch {count}/{len(dataloader)}')
-      print(f'GPU:\n Free : {torch.cuda.mem_get_info()[0]/1024/1024/1024:.2f} GB \n total: {torch.cuda.mem_get_info()[1]/1024/1024/1024:.2f} GB')
+      print(f'\nBatch {count}/{len(dataloader)}')
+      print(f'GPU:\n Free : {torch.cuda.mem_get_info()[0]/1024/1024/1024:.2f} GB \n total: {torch.cuda.mem_get_info()[1]/1024/1024/1024:.2f} GB\n')
       del data, feature
       torch.cuda.empty_cache()
+      end = time.time()
+      print(f'Elapsed time: {((end - start//60//60)):.0f}h {((end - start//60%60)):.0f} m {((end - start%60)):.0f} s')
+      expected_end = (end - start) * (len(dataloader) / count)
+      print(f'Expected time: {expected_end//60//60:.0f} h {expected_end//60%60:.0f} m {expected_end%60:.0f} s')
       # start = time.time()
   # print(f'Elapsed time for total feature extraction: {time.time() - start_total_time}')
   # print('Feature extraceton done')
@@ -104,16 +114,27 @@ def _extract_features(dataset,path_csv_dataset,batch_size_feat_extraction,backbo
 
   return dict_data 
 
-preprocess = AutoImageProcessor.from_pretrained(os.path.join("local_model_directory","preprocessor_config.json"))
+print('Model type:',model_type)
+# preprocess = AutoImageProcessor.from_pretrained(os.path.join("local_model_directory","preprocessor_config.json"))
 custom_ds = customDataset(path_dataset=path_dataset,
                           path_labels=path_labels,
                           sample_frame_strategy=sample_frame_strategy,
-                          stride_window=12,
-                          preprocess=preprocess,
+                          stride_window=16,
+                          preprocess=None,
                           clip_length=16)
+
+# custom_ds.__getitem__(90)
+# custom_ds.__getitem__(294)
+# custom_ds.__getitem__(885)
 backbone_model = backbone(model_type=model_type)
 
 dict_data = _extract_features(dataset=custom_ds,
                               path_csv_dataset=path_labels,
                               batch_size_feat_extraction=1,
                               backbone=backbone_model)
+
+tools.save_dict_data(dict_data=dict_data,
+                    saving_folder_path=os.path.join('partA','video','features','samples_16_frontalized'))
+import gc
+gc.collect()
+torch.cuda.empty_cache()
