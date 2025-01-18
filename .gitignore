@@ -151,3 +151,5 @@ history_run/
 tsne_Results/
 
 .codegpt
+test_frontalization_imgs/
+tsne_Results_frontalized/
