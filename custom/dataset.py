@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import time
 from concurrent.futures import ThreadPoolExecutor
-# import cv2
+import cv2
 from custom.helper import SAMPLE_FRAME_STRATEGY
 from sklearn.model_selection import GroupShuffleSplit
 import matplotlib.pyplot as plt
@@ -16,9 +16,12 @@ from sklearn.model_selection import StratifiedKFold
 from torch.utils.data import  Sampler
 from sklearn.utils import shuffle
 import torchvision.transforms as T
+import custom.faceExtractor as extractor
+import pickle
 
 class customDataset(torch.utils.data.Dataset):
-  def __init__(self,path_dataset, path_labels, preprocess, sample_frame_strategy, batch_size=1, stride_window=2, clip_length=16,stride_inside_window=1):
+  def __init__(self,path_dataset, path_labels, sample_frame_strategy, stride_window=2, clip_length=16,stride_inside_window=1,
+               preprocess_align=False,preprocess_frontalize=False,preprocess_crop_detection=False):
     assert os.path.exists(path_dataset), f"Dataset path {path_dataset} does not exist."
     # assert os.path.exists(path_labels), f"Labels path {path_labels} does not exist."
     assert clip_length > 0, f"Clip length must be greater than 0."
@@ -44,7 +47,9 @@ class customDataset(torch.utils.data.Dataset):
     elif sample_frame_strategy == SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING:
       self.sample_frame_strategy = self._random_sampling
       Warning(f"The {SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING} sampling strategy does not take into account the stride window.")
-    
+    self.preprocess_align = preprocess_align
+    self.preprocess_frontalize = preprocess_frontalize
+    self.preprocess_crop_detection = preprocess_crop_detection
     self.image_resize_w = 224
     self.image_resize_h = 224
     self.image_channels = 3
@@ -53,6 +58,9 @@ class customDataset(torch.utils.data.Dataset):
     self.set_path_labels(path_labels)
     tmp = tools.get_unique_subjects_and_classes(self.path_labels)
     self.total_subjects, self.total_classes = len(tmp[0]), len(tmp[1])
+    self.face_extractor = extractor.FaceExtractor()
+    self.reference_landmarks = pickle.load(open(os.path.join('partA', 'video', 'mean_face_landmarks_per_subject', 'all_subjects_mean_landmarks.pkl'), 'rb'))
+    self.reference_landmarks = self.reference_landmarks['mean_facial_landmarks']
     # self.preprocess_torchvision = transforms.Compose([
     #                               # transforms.ToTensor(),  # Convert PIL image to tensor and scale pixel values to [0, 1]
     #                               transforms.Resize(224),  # Resize so that shortest edge is 224 (bilinear interpolation by default)
@@ -143,37 +151,61 @@ class customDataset(torch.utils.data.Dataset):
     Returns:
       dict: A dictionary containing preprocessed video data and metadata.
     """
-    start_time= time.time()
+    # start_time= time.time()
     # Extract metadata from CSV
     csv_array = self.video_labels.iloc[idx, 0].split('\t')
     video_path = os.path.join(self.path_dataset, csv_array[1], csv_array[5] + '.mp4')
-    
+    # print(f'video_path: {video_path}')
     # Open video container and get total frames
-    container = av.open(video_path,options={'hwaccel': 'cuda', 'hwaccel_device': '0'})
-    tot_frames = container.streams.video[0].frames
-    width_frames = container.streams.video[0].width
-    height_frames = container.streams.video[0].height
+    # container = av.open(video_path,options={'hwaccel': 'cuda', 'hwaccel_device': '0'})
+    # tot_frames = container.streams.video[0].frames
+    # width_frames = container.streams.video[0].width
+    # height_frames = container.streams.video[0].height
     # Sample frame indices using the provided strategy
+    container = cv2.VideoCapture(video_path)
+    tot_frames = int(container.get(cv2.CAP_PROP_FRAME_COUNT))
+    if self.preprocess_align or self.preprocess_frontalize or self.preprocess_crop_detection:
+      width_frames = 256
+      height_frames = 256
+    else:
+      width_frames = container.get(cv2.CAP_PROP_FRAME_WIDTH)
+      height_frames = container.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    # width_frames = int(container.get(cv2.CAP_PROP_FRAME_WIDTH))
+    # print(f'Width frames: {width_frames}')
+    # height_frames = int(container.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    # print(f'Height frames: {height_frames}')
     list_indices = self.sample_frame_strategy(tot_frames)
 
     # Load and preprocess frames
     # print(f'list_indices shape: {list_indices.shape}')
-    start_time_load_video = time.time()
+    # start_time_load_video = time.time()
+    frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames)
+    # Generate video from frames_list and save to partA/video
+    tools.generate_video_from_list_frame(list_frame = frames_list.reshape(-1,height_frames,width_frames,3),
+                                         path_video_output=os.path.join('partA','video','video_from_feat_extr_align',f'{csv_array[5]}.mp4'))
+    print('frame_list_align',len(frames_list))
+    # self.preprocess_crop_detection = True
+    # self.preprocess_align = False
+    # self.preprocess_frontalize = False
+    # frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames)
+    # print('frame_list_detect',len(frames_list))
+    # tools.generate_video_from_list_frame(list_frame = frames_list.reshape(-1,height_frames,width_frames,3),
+    #                                      path_video_output=os.path.join('partA','video','video_from_feat_extr_crop',f'{csv_array[5]}.mp4'))
+    # frames_list = self._read_video_pyav(container,list_indices= list_indices,width_frames=width_frames,height_frames=height_frames)
     # frames_list = [self._read_video_pyav(container, indices) for indices in list_indices]
-    frames_list = self._read_video_pyav(container,list_indices= list_indices,width_frames=width_frames,height_frames=height_frames)
     # print(f'Frames list shape: {frames_list.shape}') # shape torch.Size([11, 16, 1038, 1388, 3])
     nr_clips = frames_list.shape[0]
     nr_frames = frames_list.shape[1]
     frames_list = frames_list.reshape(-1,*frames_list.shape[2:])
-    end_time_load_video = time.time()
-    print(f'Elapsed time load video: {end_time_load_video-start_time_load_video}')
+    # end_time_load_video = time.time()
+    # print(f'Elapsed time load video: {end_time_load_video-start_time_load_video}')
     
     # Preprocess frames and stack into a tensor
-    start_time_preprocess = time.time()
-    print(f'Frames list shape: {frames_list.shape}')
+    # start_time_preprocess = time.time()
+    # print(f'Frames list shape: {frames_list.shape}') 
     preprocessed_tensors = self.preprocess_images(frames_list.permute(0,3,1,2))
-    end_time_preprocess = time.time()
-    print(f'Elapsed time preprocess: {end_time_preprocess-start_time_preprocess}')
+    # end_time_preprocess = time.time()
+    # print(f'Elapsed time preprocess: {end_time_preprocess-start_time_preprocess}')
     preprocessed_tensors = preprocessed_tensors.reshape(nr_clips, nr_frames, *preprocessed_tensors.shape[1:]) 
     # print(f'Preprocessed tensors shape: {preprocessed_tensors.shape}')
     # Create metadata tensors
@@ -184,9 +216,9 @@ class customDataset(torch.utils.data.Dataset):
     sample_id = unit_vector * int(csv_array[4])
     labels = unit_vector * int(csv_array[2])
     subject_id = unit_vector * int(csv_array[0])
-    end_time = time.time()
-    print(f'Elapsed total time: {end_time-start_time}')
-    print(f'preprocessed_tensors shape: {preprocessed_tensors.shape}')
+    # end_time = time.time()
+    # print(f'Elapsed total time: {end_time-start_time}')
+    # print(f'preprocessed_tensors shape: {preprocessed_tensors.shape}')
     return {
         'preprocess': preprocessed_tensors,
         'labels': labels,
@@ -195,7 +227,58 @@ class customDataset(torch.utils.data.Dataset):
         'path': path,
         'frame_list': list_indices
     }
-
+  def _read_video_cv2_and_process(self,container,list_indices,width_frames,height_frames):
+    # Assume list_indices is sorted
+    start_frame_idx = list_indices[:, 0]
+    end_frame_idx = list_indices[:, -1]
+    num_clips, clip_length = list_indices.shape
+    # idx_frame_saved = torch.zeros(num_clips,clip_length, dtype=torch.int32)
+    extracted_frames = torch.zeros(num_clips, clip_length, height_frames, width_frames, self.image_channels, dtype=torch.uint8)
+    pos = torch.zeros(num_clips, dtype=torch.int32)
+    i = 0
+    max_end_frame = end_frame_idx.max().item()
+    while container.isOpened():
+      ret, frame = container.read()
+      if not ret:
+        break
+      if i > max_end_frame:
+        break
+      frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+      if self.preprocess_align:
+        frame = self.face_extractor.align_face(frame)
+      if self.preprocess_crop_detection:
+        frame = self.face_extractor.crop_face_detection(frame)
+      if self.preprocess_frontalize:
+        start = time.time()
+        frame,_ = self.face_extractor.frontalize_img(frame=frame,
+                                                    ref_landmarks=self.reference_landmarks,
+                                                    frontalization_mode='SVD',
+                                                    align=self.preprocess_align)
+        print(f'Time to frontalize frame {time.time()-start}')
+      mask = (start_frame_idx <= i) & (end_frame_idx >= i)  
+      
+      if mask.any():
+        frame_rgb = torch.tensor(frame, dtype=torch.uint8)
+        extracted_frames[mask, pos[mask].long()] = frame_rgb
+        # idx_frame_saved[mask, pos[mask].long()] = i
+        pos[mask] += 1
+      i += 1
+    # container.seek(0)
+    # max_end_frame = end_frame_idx.max().item()
+    # for i, frame in enumerate(container.decode(video=0)):
+    #   if i > max_end_frame:
+    #     break  
+      
+    #   mask = (start_frame_idx <= i) & (end_frame_idx >= i)  
+    #   if mask.any():
+    #     frame_rgb = torch.tensor(frame.to_ndarray(format="rgb24"), dtype=torch.uint8)
+    #     extracted_frames[mask, pos[mask].long()] = frame_rgb
+    #     # idx_frame_saved[mask, pos[mask].long()] = i
+    #     pos[mask] += 1
+    
+    return extracted_frames #,idx_frame_saved
+  
+  # too slow
   def _read_video_pyav(self, container, list_indices,width_frames,height_frames):
     # ATTENTION: Assume that list_indices is sorted, can be fix using max and min 
     start_frame_idx = list_indices[:, 0]
@@ -271,7 +354,9 @@ class customDataset(torch.utils.data.Dataset):
         'sample_frame_strategy': self.type_sample_frame_strategy.name,
         'clip_length': self.clip_length,
         'stride_window': self.stride_window,
-        'stride_inside_window': self.stride_inside_window
+        'stride_inside_window': self.stride_inside_window,
+        'preprocess_align': self.preprocess_align,
+        'preprocess_frontalize': self.preprocess_frontalize
     }  
   
   def _single_uniform_sampling(self, video_len):
