@@ -15,8 +15,10 @@ class MODEL_TYPE(Enum):
 class EMBEDDING_REDUCTION(Enum):  
   # [B,t,p,p,emb] -> [B,1,p,p,emb] ex: [3,8,14,14,768] -> [3,1,14,14,768]
   MEAN_TEMPORAL = (1) 
+  
   # [B,t,p,p,emb] -> [B,t,1,1,emb] ex: [3,8,14,14,768] -> [3,8,1,1,768]
   MEAN_SPATIAL = (2,3) 
+  
   # [B,t,p,p,emb] -> [B,1,1,1,emb] ex: [3,8,14,14,768] -> [3,1,1,1,768]
   MEAN_TEMPORAL_SPATIAL = (1,2,3)
   NONE = None
@@ -25,7 +27,6 @@ class CLIPS_REDUCTION(Enum):
   # [B,t,p,p,emb] -> [1,t,p,p,emb] ex: [3,8,14,14,768] -> [1,8,14,14,768]
   MEAN = (0)
   NONE = None
-  # MAX = "max"
 
 class HEAD(Enum):
   SVR = 'SVR'
