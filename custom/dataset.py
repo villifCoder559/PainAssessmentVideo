@@ -186,7 +186,6 @@ class customDataset(torch.utils.data.Dataset):
       saving_folder_path = os.path.join('partA','video','features','samples_16_cropped_aligned')
       tools.generate_video_from_list_frame(list_frame = frames_list.reshape(-1,height_frames,width_frames,3),
                                           path_video_output=os.path.join(saving_folder_path,'video',f'{csv_array[5]}.mp4'))
-    print('frame_list_align',len(frames_list))
     # self.preprocess_crop_detection = True
     # self.preprocess_align = False
     # self.preprocess_frontalize = False
