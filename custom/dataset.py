@@ -181,8 +181,11 @@ class customDataset(torch.utils.data.Dataset):
     # start_time_load_video = time.time()
     frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames)
     # Generate video from frames_list and save to partA/video
-    tools.generate_video_from_list_frame(list_frame = frames_list.reshape(-1,height_frames,width_frames,3),
-                                         path_video_output=os.path.join('partA','video','video_from_feat_extr_align',f'{csv_array[5]}.mp4'))
+    # generate video with 1% probability
+    if np.random.rand() < 0.01:
+      saving_folder_path = os.path.join('partA','video','features','samples_16_cropped_aligned')
+      tools.generate_video_from_list_frame(list_frame = frames_list.reshape(-1,height_frames,width_frames,3),
+                                          path_video_output=os.path.join(saving_folder_path,'video',f'{csv_array[5]}.mp4'))
     print('frame_list_align',len(frames_list))
     # self.preprocess_crop_detection = True
     # self.preprocess_align = False
