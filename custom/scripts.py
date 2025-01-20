@@ -88,7 +88,7 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
                                                          folder_path_tsne_results=folder_path_tsne_results)
   else:
     dict_all_features = tools.load_dict_data(folder_path_features)
-    # print(dict_all_features.keys())
+  # print(dict_all_features.keys())
   print(f'dict_all_features["list_subject_id"] shape {dict_all_features["list_subject_id"].shape}')
   time_start = time.time()
   idx_subjects = np.any([dict_all_features['list_subject_id'] == id for id in subject_id_list],axis=0)
@@ -142,8 +142,8 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
   
   tsne_plot_path = os.path.join(folder_path_tsne_results,f'tsne_plot_{sliding_windows}_{legend_label}')
   
-  X_tsne = tools.plot_tsne(X=list_feature,
-                           plot=True,
+  X_tsne = tools.compute_tsne(X=list_feature,
+                           plot=False,
                            saving_path=os.path.join(folder_path_tsne_results,'dummy'),
                            tsne_n_component=tsne_n_component,
                            apply_pca_before_tsne=apply_pca_before_tsne)
@@ -181,7 +181,8 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
     title_plot = f'sliding_{sliding_windows}_tot-subjects_{len(subject_id_list)}__clips_{clip_list}__classes_{(class_list)}'
   else:
     title_plot = f'sliding_{sliding_windows}_sample_id_{plot_only_sample_id_list}__clips_{len(clip_list)}__classes_{(np.unique(list_y_gt))}__subjectID_{np.unique(list_subject_id)}'
-  tools.only_plot_tsne(X_tsne=X_tsne,
+  print('START ONLY PLOT TSNE')
+  tools.plot_tsne(X_tsne=X_tsne,
                        labels=labels_to_plot,
                        saving_path=tsne_plot_path,
                        title=title_plot,
@@ -192,7 +193,7 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
                        axis_scale=axis_dict,
                        list_axis_name=list_axis_name,
                        cmap=cmap)  
-
+  print('END ONLY PLOT TSNE')
   with open(os.path.join(folder_path_tsne_results,'config.txt'),'w') as f:
     f.write(f'subject_id_list: {subject_id_list}\n')
     f.write(f'clips: {clip_list}\n')
@@ -204,9 +205,10 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
       os.makedirs(video_saving_path)
     list_rgb_image_plot = []  
     start = time.time()
+    print(f'X_tsne.shape {X_tsne.shape}')
     for i in range(1,X_tsne.shape[0]+1):
       list_rgb_image_plot.append(
-                    tools.only_plot_tsne(X_tsne=X_tsne[:i],
+                    tools.plot_tsne(X_tsne=X_tsne[:i],
                           labels=labels_to_plot[:i],
                           legend_label=legend_label,
                           title=f'{title_plot}_{i}',
@@ -218,14 +220,14 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
                           plot_trajectory=True if plot_only_sample_id_list is not None else False,
                           last_point_bigger=True,
                           list_axis_name=list_axis_name))
-
+      print(f'Elapsed time to get plot {i}: {time.time()-start} s')
     print(f'Elapsed time to get all plots: {time.time()-start} s')
     start = time.time()
     tools.generate_video_from_list_video_path(list_video_path=list_video_path,
                                               list_frames=list_frames,
                                               list_sample_id=list_sample_id,
                                               list_y_gt=list_y_gt,
-                                              output_fps=25,
+                                              output_fps=10,
                                               list_subject_id=list_subject_id,
                                               idx_list_frames=list_idx_list_frames,
                                               saving_path=video_saving_path,
@@ -264,7 +266,7 @@ def plot_tsne_per_subject(folder_path_features,folder_tsne_results):
       #   os.makedirs(os.path.join(folder_tsne_results,title))  
       idx_cls = np.where(subject_dict['list_labels'] == cls)
       
-      X_tsne = tools.plot_tsne(X=subject_dict['features'][idx_cls],
+      X_tsne = tools.compute_tsne(X=subject_dict['features'][idx_cls],
                       labels=subject_dict['list_labels'][idx_cls],
                       apply_pca_before_tsne=False,
                       saving_path=os.path.join(folder_tsne_results,'dummy'), # saving_path log file considers the parent folder
@@ -277,7 +279,7 @@ def plot_tsne_per_subject(folder_path_features,folder_tsne_results):
       #                      legend_label='gt ')
       unique_sample_id,nr_clips_per_video = np.unique(subject_dict['list_sample_id'][idx_cls],return_counts=True)
       concat_nr_clips_per_video = np.concatenate([np.arange(nr_clips_per_video[i]) for i in range(nr_clips_per_video.shape[0])])
-      tools.only_plot_tsne(X_tsne=X_tsne,
+      tools.plot_tsne(X_tsne=X_tsne,
                            labels=concat_nr_clips_per_video,
                            saving_path=folder_tsne_results,
                            title=title,
@@ -289,7 +291,7 @@ def plot_tsne_per_subject(folder_path_features,folder_tsne_results):
       if not os.path.exists(os.path.join(folder_tsne_results,f'{title}')):
         os.makedirs(os.path.join(folder_tsne_results,f'{title}'))
       nr_clips = subject_dict['features'][i].shape[0]
-      X_tsne = tools.plot_tsne(X=subject_dict['features'][i],
+      X_tsne = tools.compute_tsne(X=subject_dict['features'][i],
                       labels=subject_dict['list_labels'][i],
                       apply_pca_before_tsne=False,
                       saving_path=os.path.join(folder_tsne_results,'dummy'), # saving_path log file considers the parent folder
@@ -297,7 +299,7 @@ def plot_tsne_per_subject(folder_path_features,folder_tsne_results):
                       title=title,
                       plot=False)
       
-      tools.only_plot_tsne(X_tsne=X_tsne,
+      tools.plot_tsne(X_tsne=X_tsne,
                            labels=range(nr_clips),
                            saving_path=folder_tsne_results,
                            title=title,
@@ -651,14 +653,14 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
           # print(f'backbone_feats {backbone_feats.shape}')
           y_gt = dict_backbone_feats['list_labels']    
           list_subject_id = dict_backbone_feats['list_subject_id']
-          tools.plot_tsne(X=backbone_feats,
+          tools.compute_tsne(X=backbone_feats,
                         labels=y_gt,
                         apply_pca_before_tsne=True,
                         saving_path=os.path.join(saving_path_tsne,f'tsne_backbone_gt_{split_dataset_name}'),
                         legend_label='class ',
                         title=f'dataset {split_dataset_name} (from backbone per chunks)')
         
-          tools.plot_tsne(X=backbone_feats,
+          tools.compute_tsne(X=backbone_feats,
                           labels=list_subject_id,
                           apply_pca_before_tsne=True,
                           saving_path=os.path.join(saving_path_tsne,f'tsne_backbone_subject_{split_dataset_name}'),
@@ -669,7 +671,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
           # y_pred shape [nr_video, nr_windows]
           if head.value == HEAD.SVR.value:
             y_pred = model_advanced.head.predict(backbone_feats)                                                  
-            tools.plot_tsne(X=backbone_feats,
+            tools.compute_tsne(X=backbone_feats,
                             labels=y_pred,
                             saving_path=os.path.join(saving_path_tsne,f'tsne_SVR_{split_dataset_name}_pred'),
                             legend_label='class ',
@@ -700,7 +702,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
             y_pred = y_pred.detach().cpu()
             # print(f'y_pred {y_pred.shape}') # [nr_video,nr_windows,pred=1]
             y_pred_unpadded = torch.cat([y_pred[i,:length_feature[i]] for i in range(y_pred.shape[0])])
-            tools.plot_tsne(X = X_gru_out_feats_padded_cpu,
+            tools.compute_tsne(X = X_gru_out_feats_padded_cpu,
                           labels = torch.round(y_pred_unpadded),
                           # title=f'{k}_{v} (from backbone)')
                           title = f'dataset_{split_dataset_name} pred per chunks (using GRU features)',
@@ -711,14 +713,14 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
             print(f'y_pred {y_pred}')
             print(f'y_last_hidden {y_last_hidden}')
             
-            tools.plot_tsne(X = X_gru_hn_feats_cpu,
+            tools.compute_tsne(X = X_gru_hn_feats_cpu,
                             labels = y_last_hidden,
                             legend_label = 'class ',
                             title = f'dataset_{split_dataset_name} pred per video (using GRU last_hidden feature)',
                             saving_path = os.path.join(saving_path_tsne,f'tsne_GRU_{split_dataset_name}_gt'))
             
             # subject_ids_extended = torch.cat([subject_ids_per_sample_id[i].repeat(length_feature[i]) for i in range(subject_ids_per_sample_id.shape[0])])
-            tools.plot_tsne(X = X_gru_hn_feats_cpu,
+            tools.compute_tsne(X = X_gru_hn_feats_cpu,
                             labels = subject_ids_per_sample_id,
                             title = f'dataset_{split_dataset_name} subjects per video (using GRU last_hidden feature)',
                             legend_label='subject',
@@ -795,16 +797,7 @@ def create_unique_video_per_prediction(train_folder_path, dict_cvs_path, sample_
   
   list_input_video_path = tools.get_list_video_path_from_csv(dict_cvs_path[dataset_name])
   output_video_path = os.path.join(video_folder_path,f'video_all_{dataset_name}.mp4')
-  
-  # print(f'y_pred shape {y_pred.shape}') # [36]
-  # print(f'y shape {y.shape}') # [36]
-  # print(f'{list_frames.shape}') # [36, 16]
-  # all_predictions = y_pred.reshape(y_pred.shape[0],-1) # [33,2,1] -> [33,2]
-  # # list_ground_truth = y # [33,1]
-  # if all_predictions.shape[1] != y.shape[1]:
-  #   y = y.repeat(1,all_predictions.shape[1])
-  # print(f'all_predictions shape {all_predictions.shape}') # [33,2]
-  # print(f'list_ground_truth shape {y.shape}') # [33,1]
+
   tools.save_frames_as_video(list_input_video_path=list_input_video_path, # [n_video=33]
                                               list_frame_indices=list_frames, # [33,2,16]
                                               output_video_path=output_video_path, # string
