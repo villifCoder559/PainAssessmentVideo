@@ -1,6 +1,6 @@
 from custom.dataset import customDataset
 from custom.backbone import backbone
-from custom.helper import CLIPS_REDUCTION,EMBEDDING_REDUCTION,MODEL_TYPE,SAMPLE_FRAME_STRATEGY, HEAD
+from custom.helper import CLIPS_REDUCTION,EMBEDDING_REDUCTION,MODEL_TYPE,SAMPLE_FRAME_STRATEGY, HEAD, GLOBAL_PATH
 import torch
 from torch.utils.data import DataLoader
 import numpy as np
@@ -81,7 +81,7 @@ def _extract_features(dataset,path_csv_dataset,batch_size_feat_extraction,backbo
         feature = backbone.forward_features(x=data)
       # feature -> [2, 8, 1, 1, 384]
       # print(f'sample_id {sample_id}')
-      # print(f'feature shape {feature.shape}')
+      print(f'feature shape {feature.shape}')
       list_frames.append(list_sampled_frames)
       list_features.append(feature.detach().cpu())
       list_labels.append(labels)
@@ -95,7 +95,8 @@ def _extract_features(dataset,path_csv_dataset,batch_size_feat_extraction,backbo
       del data, feature
       torch.cuda.empty_cache()
       end = time.time()
-      print(f'Elapsed time: {((end - start//60//60)):.0f} h {((end - start//60%60)):.0f} m {((end - start%60)):.0f} s')
+      # print(f'{end}')
+      print(f'Elapsed time: {((end - start)//60//60):.0f} h {(((end - start)//60%60)):.0f} m {(((end - start)%60)):.0f} s')
       expected_end = (end - start) * (len(dataloader) / count)
       print(f'Expected time: {expected_end//60//60:.0f} h {expected_end//60%60:.0f} m {expected_end%60:.0f} s')
       break
@@ -147,7 +148,7 @@ config_dict = {
   'preprocess_crop_detection': True,
   'batch_size_feat_extraction': 1,
 }
-saving_folder_path = os.path.join('partA','video','features','samples_16_cropped_aligned')
+saving_folder_path = os.path.join(GLOBAL_PATH.NAS_PATH,'partA','video','features','samples_16_cropped_aligned')
 tools.save_dict_data(dict_data=dict_data,
                     saving_folder_path=saving_folder_path)
 

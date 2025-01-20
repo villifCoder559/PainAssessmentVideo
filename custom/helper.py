@@ -32,3 +32,6 @@ class HEAD(Enum):
   SVR = 'SVR'
   GRU = 'GRU'
 
+class GLOBAL_PATH:
+  NAS_PATH = os.path.join('/equilibrium','fvilli')
+  
