@@ -15,7 +15,8 @@ class backbone:
       assert os.path.exists(model_type.value), f"Model not found at {model_type.value}. Please set download_if_unavailable=True to download the model."
       
     if MODEL_TYPE.VIDEOMAE_v2_G_pt_1200e == model_type:
-      self.model = self._load_model_pretrained(model_type) # FIX: use load_model_finetune, this version doesn't have forward_features function
+      raise NotImplementedError("This version of the model doesn't have forward_features function.")
+      # self.model = self._load_model_pretrained(model_type) # FIX: use load_model_finetune, this version doesn't have forward_features function
     else:
       self.model = self._load_model_finetune(model_type)
       self.tubelet_size = self.model.patch_embed.tubelet_size
