@@ -17,10 +17,14 @@ ref_landmarks = load_reference_landmarks(os.path.join('partA', 'video', 'mean_fa
 frame_list = tools.get_list_frame_from_video_path(video_path=list_video_path[0])
 list_frontalized_frames = []
 start = time.time()
-limit = 2
+limit = len(frame_list)
 for frame in frame_list[:limit]:
   list_frontalized_frames.append(face_extractor.frontalize_img(frame=frame,
                                 ref_landmarks=ref_landmarks,
                                 time_logs=True) )
 end = time.time()
+time_dict = face_extractor.total_time
+print('Time logs:')
+for k,v in time_dict.items():
+  print(f' {k}: {v:.2f} s')
 print(f'Time to frontalized {limit} frames: {end-start:.2f} s')
