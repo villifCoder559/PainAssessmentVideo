@@ -13,7 +13,7 @@ import torch
 import json
 from openTSNE import TSNE as openTSNE
 import time
-
+from custom.faceExtractor import FaceExtractor
 
 # if os.name == 'posix':
   # from tsnecuda import TSNE as cudaTSNE # available only on Linux
@@ -424,7 +424,7 @@ def plot_confusion_matrix(confusion_matrix, title, saving_path):
   fig, _ = confusion_matrix.plot() 
   fig.suptitle(title)
   fig.savefig(saving_path+'.png')
-  # matplotlib.pyplot.close()
+  plt.close()
 
 def get_unique_subjects_and_classes(csv_path):
   """
@@ -589,7 +589,7 @@ def plot_prediction_chunks_per_subject(predictions, n_chunks,title,saving_path=N
     plt.show()
 
  
-def plot_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=False,legend_label='', title = '', use_cuda=False, perplexity=1, saving_path=None,plot=True):
+def compute_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=False,legend_label='', title = '', perplexity=1, saving_path=None,plot=True):
   """
   Plots the t-SNE reduction of the features in 2D with colors based on subject, gt, or predicted class.
   Args:
@@ -640,7 +640,7 @@ def plot_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=False,l
   # print(" t-SNE computation done.")
   # print(f' X_tsne.shape: {X_tsne.shape}')
   if plot:
-    only_plot_tsne(X_tsne, labels, legend_label=legend_label, title=title, saving_path=os.path.split(saving_path)[:-1][0])
+    plot_tsne(X_tsne, labels, legend_label=legend_label, title=title, saving_path=os.path.split(saving_path)[:-1][0])
     return np.array(X_tsne)
   else:
     # print(f'X_tsne type: {np.array(X_tsne)}')
@@ -648,7 +648,7 @@ def plot_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=False,l
   # print(f' labels shape: {labels.shape}')
 
 
-def only_plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', title='', saving_path=None, axis_scale=None, last_point_bigger=False, plot_trajectory=False, stride_windows=None,clip_length=None,list_axis_name=None):
+def plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', title='', saving_path=None, axis_scale=None, last_point_bigger=False, plot_trajectory=False, stride_windows=None,clip_length=None,list_axis_name=None):
   unique_labels = np.unique(labels)
   if tot_labels is None:
     color_map = plt.cm.get_cmap(cmap, len(unique_labels))
@@ -957,6 +957,25 @@ def generate_video_from_list_video_path(list_video_path, list_frames, list_subje
   out.release()
   print(f"Generated video saved to folder {saving_path}")
     
-  
+def generate_video_from_list_frame(list_frame,path_video_output,fps=25):
+  if not os.path.exists(os.path.split(path_video_output)[0]):
+    os.makedirs(os.path.split(path_video_output)[0])
+  out = cv2.VideoWriter(path_video_output, cv2.VideoWriter_fourcc(*'avc1'), fps, (list_frame[0].shape[1], list_frame[0].shape[0]))
+  for frame in list_frame:
+    if not isinstance(frame,np.ndarray):
+      frame = np.array(frame)
+    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    out.write(frame)
+  out.release()
+  print(f'Video saved to {path_video_output}')
 # def save_tsne_incrementsl_plots_(X_tsne, labels, saving_path):
   
+def get_list_frame_from_video_path(video_path):
+  cap = cv2.VideoCapture(video_path)
+  frame_list = []
+  while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+      break
+    frame_list.append(frame)
+  return frame_list
