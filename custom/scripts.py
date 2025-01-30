@@ -1,5 +1,4 @@
-from custom.helper import CLIPS_REDUCTION,EMBEDDING_REDUCTION,MODEL_TYPE,SAMPLE_FRAME_STRATEGY
-import os
+from custom.helper import CLIPS_REDUCTION,EMBEDDING_REDUCTION,MODEL_TYPE,SAMPLE_FRAME_STRATEGY,GLOBAL_PATH
 from custom.model import Model_Advanced
 from transformers import AutoImageProcessor
 from custom.head import HeadSVR, HeadGRU
@@ -16,6 +15,7 @@ import numpy as np
 import time
 import json
 from sklearn.model_selection import StratifiedGroupKFold
+import os
 
 def get_dict_all_features_from_model(sliding_windows,subject_id_list,classes,folder_path_tsne_results):
   def get_model_advanced(stride_window_in_video=16):
@@ -308,14 +308,17 @@ def plot_tsne_per_subject(folder_path_features,folder_tsne_results):
     break
   
 def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduction, sample_frame_strategy, 
-                   path_csv_dataset, path_video_dataset, head, stride_window_in_video, 
-                   head_params, preprocess,k_fold=1, is_save_features_extracted=False,
+                   path_csv_dataset, path_video_dataset, head, stride_window_in_video, features_folder_saving_path,head_params,
+                   k_fold=1, is_save_features_extracted=False,
+                   global_foder_name=os.path.join(GLOBAL_PATH.NAS_PATH,'history_run'),
                    train_size = 0.8, val_size=0.1, test_size=0.1, is_download_if_unavailable=False, 
                    batch_size_training = 1, batch_size_feat_extraction = 3,epochs = 10, 
                    criterion = nn.L1Loss(), optimizer_fn = optim.Adam, lr = 0.001,random_state_split_dataset=42,
                    is_plot_dataset_distribution=True,is_plot_loss=True,is_plot_tsne_backbone_feats=True,is_plot_tsne_head_pred=True,
                    is_plot_tsne_gru_feats=True,is_create_video_prediction=True,is_create_video_prediction_per_video=True,is_validation=False,
-                   is_round_output_loss=False, is_shuffle_video_chunks=True,is_shuffle_training_batch=True,only_train=True):
+                   is_round_output_loss=False, is_shuffle_video_chunks=True,is_shuffle_training_batch=True,only_train=True,
+                   init_network='default',
+                   regularization_lambda=0.1,regularization_loss='L2'):
 
   def plot_dataset_distribuition(csv_path,run_folder_path,per_class=True,per_partecipant=True,total_classes=None):
     #  Create folder to save the dataset distribution 
@@ -330,14 +333,14 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                     saving_path=dataset_folder_path,
                                     total_classes=total_classes) # 1  plot
     # TODO: Remove comments to plot the mean and std of the dataset
-    # tools.plot_dataset_distribution_mean_std_duration(csv_path=csv_path,
-    #                                                   video_path=path_video_dataset,
-    #                                                   per_class=per_class, 
-    #                                                   per_partecipant=per_partecipant, 
-    #                                                   saving_path=dataset_folder_path) # 2 plots
+    tools.plot_dataset_distribution_mean_std_duration(csv_path=csv_path,
+                                                      video_path=path_video_dataset,
+                                                      per_class=per_class, 
+                                                      per_partecipant=per_partecipant, 
+                                                      saving_path=dataset_folder_path) # 2 plots
 
   def train_model(dict_csv_path, train_folder_saving_path, is_validation=False,round_output_loss=False,shuffle_video_chunks=True,
-                  shuffle_training_batch=True):
+                  shuffle_training_batch=True,init_network='default',regularization_lambda=0.0,regularization_loss='L2'):
     """
     Trains a model using the specified dataset and saves the results.\n
     Args:
@@ -377,7 +380,10 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                       saving_path=train_folder_saving_path,
                                       round_output_loss=round_output_loss,
                                       shuffle_video_chunks=shuffle_video_chunks,
-                                      shuffle_training_batch=shuffle_training_batch
+                                      shuffle_training_batch=shuffle_training_batch,
+                                      init_network=init_network,
+                                      regularization_lambda=regularization_lambda,
+                                      regularization_loss=regularization_loss
                                       )
     return dict_train  
   
@@ -391,8 +397,9 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     dict_data = model_advanced.extract_features(csv_path=csv_path)
     # print(f' dict_data {dict_data}')
     tools.save_dict_data(dict_data=dict_data, saving_folder_path=features_folder_saving_path)
-    
-  def k_fold_cross_validation(path_to_extracted_features,is_validation=False,round_output_loss=False,shuffle_video_chunks=True,shuffle_training_batch=True):
+  
+  def k_fold_cross_validation(path_to_extracted_features,is_validation=False,round_output_loss=False,shuffle_video_chunks=True,shuffle_training_batch=True,
+                            init_network='default',regularization_lambda=0.01,regularization_loss='L2'):
     """
     Perform k-fold cross-validation on the dataset and train the model.
     This function performs k-fold cross-validation by splitting the dataset into k folds,
@@ -405,9 +412,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
         - 'list_path_csv_kth_fold': A list of dictionaries with paths to CSV files for each fold.
         - 'best_results_idx': A list of indices indicating the best model for each fold.
     """
-    fold_results = []
-    list_saving_paths = []
-    list_path_csv_kth_fold = []
+    # list_saving_paths = []
+    # list_path_csv_kth_fold = []
     csv_array,cols = tools.get_array_from_csv(path_csv_dataset)
     sgkf = StratifiedGroupKFold(n_splits=k_fold, random_state=random_state_split_dataset,shuffle=True)
     y_labels = csv_array[:,2].astype(int)
@@ -420,7 +426,9 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     for _, test_index in sgkf.split(X=torch.zeros(y_labels.shape), y=y_labels, groups=subject_ids): 
       list_splits_idxs.append(test_index)
     print(f' list_splits_idxs {list_splits_idxs}')
+    list_val_results = []
     for i in range(k_fold):
+      fold_results = []
       test_idx_split = i % k_fold
       val_idx_split = (i + 1) % k_fold
       train_idxs_split = [j for j in range(k_fold) if j != test_idx_split and j != val_idx_split]
@@ -437,59 +445,204 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
       saving_path_kth_fold = os.path.join(train_folder_path,f'k{i}_cross_val')
       if not os.path.exists(saving_path_kth_fold):
         os.makedirs(saving_path_kth_fold)
-        
       # Generate csv for train,test and validation
       path_csv_kth_fold = {}
-      for k,v in split_indices.items():
+      for key,v in split_indices.items():
         csv_data = csv_array[v[1]]
-        tools.generate_csv(cols=cols, data=csv_data, saving_path=os.path.join(saving_path_kth_fold,f'{k}.csv'))
-        path_csv_kth_fold[k] = os.path.join(saving_path_kth_fold,f'{k}.csv')
+        tools.generate_csv(cols=cols, data=csv_data, saving_path=os.path.join(saving_path_kth_fold,f'{key}.csv'))
+        path_csv_kth_fold[key] = os.path.join(saving_path_kth_fold,f'{key}.csv')
       
-      tools.save_split_indices(split_indices,saving_path_kth_fold)
-      list_saving_paths.append(saving_path_kth_fold)
-      list_path_csv_kth_fold.append(path_csv_kth_fold) 
+      # tools.save_split_indices(split_indices,saving_path_kth_fold)
+      # list_saving_paths.append(saving_path_kth_fold)
+      # list_path_csv_kth_fold.append(path_csv_kth_fold) 
       for _,csv_path in path_csv_kth_fold.items():
         plot_dataset_distribuition(csv_path=csv_path, 
                                    run_folder_path=saving_path_kth_fold,
                                    total_classes=model_advanced.dataset.total_classes)
+      sub_k_fold_list = [list_splits_idxs[idx] for idx in train_idxs_split]
+      sub_k_fold_list.append(list_splits_idxs[val_idx_split])
+      sub_path_csv_kth_fold = {}
+      for sub_idx in range(k_fold-1):
+        saving_path_kth_sub_fold = os.path.join(saving_path_kth_fold,f'k{i}_cross_val_sub_{sub_idx}')
+        train_sub_idx = [j for j in range(k_fold-1) if j != sub_idx] 
+        split_indices = {
+          'val': np.array([sample_ids[sub_k_fold_list[sub_idx]],sub_k_fold_list[sub_idx]]),
+          'train': np.array([sample_ids[np.concatenate([sub_k_fold_list[j] for j in train_sub_idx])],
+                             np.concatenate([sub_k_fold_list[j] for j in train_sub_idx])])
+        }
+        for k,v in split_indices.items():
+          csv_data = csv_array[v[1]]
+          if not os.path.exists(saving_path_kth_sub_fold):
+            os.makedirs(saving_path_kth_sub_fold)
+          tools.generate_csv(cols=cols, data=csv_data, saving_path=os.path.join(saving_path_kth_sub_fold,f'{k}.csv'))
+          sub_path_csv_kth_fold[f'{k}'] = os.path.join(saving_path_kth_sub_fold,f'{k}.csv')
+        tools.save_split_indices(split_indices,saving_path_kth_sub_fold)
+        
+        dict_train = train_model(dict_csv_path= sub_path_csv_kth_fold,
+                                train_folder_saving_path=saving_path_kth_sub_fold,
+                                is_validation=True,
+                                round_output_loss=round_output_loss,
+                                shuffle_video_chunks=shuffle_video_chunks,
+                                shuffle_training_batch=shuffle_training_batch,
+                                init_network=init_network,
+                                regularization_loss=regularization_loss,
+                                regularization_lambda=regularization_lambda)
       
-      dict_train = train_model(dict_csv_path= path_csv_kth_fold,
-                              train_folder_saving_path=saving_path_kth_fold,
-                              is_validation=is_validation,
-                              round_output_loss=round_output_loss,
-                              shuffle_video_chunks=shuffle_video_chunks,
-                              shuffle_training_batch=shuffle_training_batch)
+        tools.generate_plot_train_test_results(dict_results=dict_train['dict_results'], 
+                                      count_subject_ids_train=dict_train['count_subject_ids_train'],
+                                      count_subject_ids_test=dict_train['count_subject_ids_test'],
+                                      count_y_test=dict_train['count_y_test'], 
+                                      count_y_train=dict_train['count_y_train'],
+                                      saving_path=saving_path_kth_sub_fold)
+        fold_results.append(dict_train)
+
+      best_results_idx = [fold_results[i]['dict_results']['best_model_idx'] for i in range(k_fold-1)]
+      best_results_state_dict = [fold_results[i]['dict_results']['best_model_state'] for i in range(k_fold-1)]
+      print(f'best_results_idx {best_results_idx}')
+      dict_all_results = { 
+                          'avg_train_loss_best_models': np.mean([fold_results[i]['dict_results']['train_losses'][best_results_idx[i]] for i in range(k_fold-1)]),
+                          'avg_test_loss_best_models': np.mean([fold_results[i]['dict_results']['test_losses'][best_results_idx[i]] for i in range(k_fold-1)]),
+                          'avg_train_loss_per_class_best_models': np.mean([fold_results[i]['dict_results']['train_loss_per_class'][best_results_idx[i]] for i in range(k_fold-1)],axis=1),
+                          'avg_test_loss_per_class_best_models': np.mean([fold_results[i]['dict_results']['test_loss_per_class'][best_results_idx[i]] for i in range(k_fold-1)],axis=1),
+                          # 'avg_train_loss_per_subject_best_models': np.mean([fold_results[i]['dict_results']['train_loss_per_subject'][best_results_idx[i]] for i in range(k_fold)]),
+                          # 'avg_test_loss_per_subject_best_models': np.mean([fold_results[i]['dict_results']['test_loss_per_subject'][best_results_idx[i]] for i in range(k_fold)])
+                          }
+      with open(os.path.join(saving_path_kth_fold,'results_k_fold.txt'),'w') as f:
+        f.write(str(dict_all_results))
+      # use best result model with the test set
+      list_losses = [dict_train['dict_results']['test_losses'] for dict_train in fold_results]
+      best_model_folder_idx = np.argmin([losses[best_results_idx[i]] for i,losses in enumerate(list_losses)])
+      # best_model_state_dict = fold_results[best_model_idx]['dict_results']['best_model_state']
+      best_model_idx = fold_results[best_model_folder_idx]['dict_results']['best_model_idx']
+      path_model_weights = os.path.join(saving_path_kth_fold,f'k{i}_cross_val_sub_{best_model_folder_idx}',f'best_model_ep_{best_model_idx}.pth')
+      dict_val = model_advanced.evaluate_from_model(path_model_weights=path_model_weights,
+                                         csv_path=sub_path_csv_kth_fold['val'],
+                                         log_file_path=os.path.join(saving_path_kth_sub_fold,'val_results.txt'))
+      list_val_results.append(dict_val)
       
-      tools.generate_plot_train_test_results(dict_results=dict_train['dict_results'], 
-                                    count_subject_ids_train=dict_train['count_subject_ids_train'],
-                                    count_subject_ids_test=dict_train['count_subject_ids_test'],
-                                    count_y_test=dict_train['count_y_test'], 
-                                    count_y_train=dict_train['count_y_train'],
-                                    saving_path=saving_path_kth_fold)
-      fold_results.append(dict_train)
-
-      # tools.save_dict_data(dict_data=split_indices, saving_folder_path=os.path.join(train_folder_path,f'k{i}_cross_val'))
-    # print(dict_single_fold_idx)
-
-    best_results_idx = [fold_results[i]['dict_results']['best_model_idx'] for i in range(k_fold)]
-    best_results_state_dict = [fold_results[i]['dict_results']['best_model_state'] for i in range(k_fold)]
-    print(f'best_results_idx {best_results_idx}')
-    dict_all_results = { 
-                        'avg_train_loss_best_models': np.mean([fold_results[i]['dict_results']['train_losses'][best_results_idx[i]] for i in range(k_fold)]),
-                        'avg_test_loss_best_models': np.mean([fold_results[i]['dict_results']['test_losses'][best_results_idx[i]] for i in range(k_fold)]),
-                        'avg_train_loss_per_class_best_models': np.mean([fold_results[i]['dict_results']['train_loss_per_class'][best_results_idx[i]] for i in range(k_fold)],axis=1),
-                        'avg_test_loss_per_class_best_models': np.mean([fold_results[i]['dict_results']['test_loss_per_class'][best_results_idx[i]] for i in range(k_fold)],axis=1),
-                        # 'avg_train_loss_per_subject_best_models': np.mean([fold_results[i]['dict_results']['train_loss_per_subject'][best_results_idx[i]] for i in range(k_fold)]),
-                        # 'avg_test_loss_per_subject_best_models': np.mean([fold_results[i]['dict_results']['test_loss_per_subject'][best_results_idx[i]] for i in range(k_fold)])
-                        }
-    with open(os.path.join(train_folder_path,'results_k_fold.txt'),'w') as f:
-      f.write(str(dict_all_results))
-    return {'fold_results':fold_results,
-            'list_saving_paths':list_saving_paths,
-            'list_path_csv_kth_fold':list_path_csv_kth_fold,
+    with open(os.path.join(train_folder_path,'total_results_k_fold.txt'),'w') as f:
+      for i,dict_val in enumerate(list_val_results):
+        f.write(f'k_{i}\n')
+        for k,v in dict_val.items():
+          f.write(f' {k} : {v}\n')
+    dict_final_results = {
+      'avg_train_loss_best_models': np.mean([dict_val['test_loss'] for dict_val in list_val_results]),
+      'avg_train_loss_per_class_best_models': np.mean([dict_val['test_loss_per_class'] for dict_val in list_val_results],axis=0),
+      # 'avg_train_loss_per_subject_best_models': np.mean([dict_val['test_loss_per_subject'] for dict_val in list_val_results],axis=0),
+    }
+    with open(os.path.join(train_folder_path,'final_results.txt'),'w') as f:
+      f.write(f'Final results {k_fold} cross-validation\n')  
+      for k,v in dict_final_results.items():
+        f.write(f' {k} : {v}\n')  
+    return {'list_val_results':list_val_results,
+            # 'list_saving_paths':list_saving_paths,
+            # 'list_path_csv_kth_fold':list_path_csv_kth_fold,
             'best_results_idx':best_results_idx,
             'best_results_state_dict':best_results_state_dict
             }
+      
+  # def k_fold_cross_validation(path_to_extracted_features,is_validation=False,round_output_loss=False,shuffle_video_chunks=True,shuffle_training_batch=True,
+  #                             init_network='default',regularization_lambda=0.01,regularization_loss='L2'):
+  #   """
+  #   Perform k-fold cross-validation on the dataset and train the model.
+  #   This function performs k-fold cross-validation by splitting the dataset into k folds,
+  #   training the model on each fold, and evaluating the performance. It saves the results
+  #   and plots for each fold, and calculates the average performance metrics across all folds.
+  #   Returns:
+  #     dict: A dictionary containing the following keys:
+  #       - 'fold_results': A list of dictionaries with training results for each fold.
+  #       - 'list_saving_paths': A list of paths where results for each fold are saved.
+  #       - 'list_path_csv_kth_fold': A list of dictionaries with paths to CSV files for each fold.
+  #       - 'best_results_idx': A list of indices indicating the best model for each fold.
+  #   """
+  #   fold_results = []
+  #   list_saving_paths = []
+  #   list_path_csv_kth_fold = []
+  #   csv_array,cols = tools.get_array_from_csv(path_csv_dataset)
+  #   sgkf = StratifiedGroupKFold(n_splits=k_fold, random_state=random_state_split_dataset,shuffle=True)
+  #   y_labels = csv_array[:,2].astype(int)
+  #   subject_ids = csv_array[:,0].astype(int)
+  #   sample_ids = csv_array[:,4].astype(int)
+  #   # print(f' y_labels {y_labels}')
+  #   # print(f' subject_ids {subject_ids}')
+  #   # check is csv array and subject_ids are aligned
+  #   list_splits_idxs = []
+  #   for _, test_index in sgkf.split(X=torch.zeros(y_labels.shape), y=y_labels, groups=subject_ids): 
+  #     list_splits_idxs.append(test_index)
+  #   print(f' list_splits_idxs {list_splits_idxs}')
+  #   for i in range(k_fold):
+  #     test_idx_split = i % k_fold
+  #     val_idx_split = (i + 1) % k_fold
+  #     train_idxs_split = [j for j in range(k_fold) if j != test_idx_split and j != val_idx_split]
+  #     test_sample_ids = sample_ids[list_splits_idxs[test_idx_split]]
+  #     val_sample_ids = sample_ids[list_splits_idxs[val_idx_split]]
+  #     train_sample_ids = []
+  #     for idx in train_idxs_split:
+  #       train_sample_ids.extend(sample_ids[list_splits_idxs[idx]])
+  #     split_indices = {
+  #       'test': np.array([test_sample_ids,list_splits_idxs[test_idx_split]]),
+  #       'val': np.array([val_sample_ids,list_splits_idxs[val_idx_split]]),
+  #       'train': np.array([train_sample_ids,np.concatenate([list_splits_idxs[idx] for idx in train_idxs_split])])
+  #     }
+  #     saving_path_kth_fold = os.path.join(train_folder_path,f'k{i}_cross_val')
+  #     if not os.path.exists(saving_path_kth_fold):
+  #       os.makedirs(saving_path_kth_fold)
+        
+  #     # Generate csv for train,test and validation
+  #     path_csv_kth_fold = {}
+  #     for k,v in split_indices.items():
+  #       csv_data = csv_array[v[1]]
+  #       tools.generate_csv(cols=cols, data=csv_data, saving_path=os.path.join(saving_path_kth_fold,f'{k}.csv'))
+  #       path_csv_kth_fold[k] = os.path.join(saving_path_kth_fold,f'{k}.csv')
+      
+  #     tools.save_split_indices(split_indices,saving_path_kth_fold)
+  #     list_saving_paths.append(saving_path_kth_fold)
+  #     list_path_csv_kth_fold.append(path_csv_kth_fold) 
+  #     for _,csv_path in path_csv_kth_fold.items():
+  #       plot_dataset_distribuition(csv_path=csv_path, 
+  #                                  run_folder_path=saving_path_kth_fold,
+  #                                  total_classes=model_advanced.dataset.total_classes)
+      
+  #     dict_train = train_model(dict_csv_path= path_csv_kth_fold,
+  #                             train_folder_saving_path=saving_path_kth_fold,
+  #                             is_validation=is_validation,
+  #                             round_output_loss=round_output_loss,
+  #                             shuffle_video_chunks=shuffle_video_chunks,
+  #                             shuffle_training_batch=shuffle_training_batch,
+  #                             init_network=init_network,
+  #                             regularization_loss=regularization_loss,
+  #                             regularization_lambda=regularization_lambda)
+      
+  #     tools.generate_plot_train_test_results(dict_results=dict_train['dict_results'], 
+  #                                   count_subject_ids_train=dict_train['count_subject_ids_train'],
+  #                                   count_subject_ids_test=dict_train['count_subject_ids_test'],
+  #                                   count_y_test=dict_train['count_y_test'], 
+  #                                   count_y_train=dict_train['count_y_train'],
+  #                                   saving_path=saving_path_kth_fold)
+  #     fold_results.append(dict_train)
+
+  #     # tools.save_dict_data(dict_data=split_indices, saving_folder_path=os.path.join(train_folder_path,f'k{i}_cross_val'))
+  #   # print(dict_single_fold_idx)
+
+  #   best_results_idx = [fold_results[i]['dict_results']['best_model_idx'] for i in range(k_fold)]
+  #   best_results_state_dict = [fold_results[i]['dict_results']['best_model_state'] for i in range(k_fold)]
+  #   print(f'best_results_idx {best_results_idx}')
+  #   dict_all_results = { 
+  #                       'avg_train_loss_best_models': np.mean([fold_results[i]['dict_results']['train_losses'][best_results_idx[i]] for i in range(k_fold)]),
+  #                       'avg_test_loss_best_models': np.mean([fold_results[i]['dict_results']['test_losses'][best_results_idx[i]] for i in range(k_fold)]),
+  #                       'avg_train_loss_per_class_best_models': np.mean([fold_results[i]['dict_results']['train_loss_per_class'][best_results_idx[i]] for i in range(k_fold)],axis=1),
+  #                       'avg_test_loss_per_class_best_models': np.mean([fold_results[i]['dict_results']['test_loss_per_class'][best_results_idx[i]] for i in range(k_fold)],axis=1),
+  #                       # 'avg_train_loss_per_subject_best_models': np.mean([fold_results[i]['dict_results']['train_loss_per_subject'][best_results_idx[i]] for i in range(k_fold)]),
+  #                       # 'avg_test_loss_per_subject_best_models': np.mean([fold_results[i]['dict_results']['test_loss_per_subject'][best_results_idx[i]] for i in range(k_fold)])
+  #                       }
+  #   with open(os.path.join(train_folder_path,'results_k_fold.txt'),'w') as f:
+  #     f.write(str(dict_all_results))
+  #   return {'fold_results':fold_results,
+  #           'list_saving_paths':list_saving_paths,
+  #           'list_path_csv_kth_fold':list_path_csv_kth_fold,
+  #           'best_results_idx':best_results_idx,
+  #           'best_results_state_dict':best_results_state_dict
+  #           }
     
   ###############################
   # START of the main function  #
@@ -504,7 +657,6 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'head': head.name,
     'stride_window_in_video': stride_window_in_video,
     'head_params': head_params,
-    'preprocess': preprocess.__class__.__name__,
     'k_fold': k_fold,
     'train_size': train_size,
     'val_size': val_size,
@@ -529,7 +681,6 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'shuffle_video_chunks': is_shuffle_video_chunks,
     'shuffle_training_batch':is_shuffle_training_batch
   }
-  features_folder_saving_path = os.path.join('partA','video','features',f'{os.path.split(path_csv_dataset)[-1][:-4]}_{stride_window_in_video}') # get the name of the csv file
   # Create the model
   model_advanced = Model_Advanced(model_type=model_type,
                                   path_dataset=path_video_dataset,
@@ -538,7 +689,6 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   sample_frame_strategy=sample_frame_strategy,
                                   stride_window=stride_window_in_video,
                                   path_labels=path_csv_dataset,
-                                  preprocess=preprocess,
                                   batch_size_training=batch_size_training,
                                   batch_size_feat_extraction=batch_size_feat_extraction,
                                   head=head.value,
@@ -548,7 +698,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   )
   
   # Check if the global folder exists 
-  global_foder_name = 'history_run'
+  # global_foder_name = os.path.join(GLOBAL_PATH.NAS_PATH,'history_run')
+  print(f'Global folder name {global_foder_name}')
   if not os.path.exists(global_foder_name):
     os.makedirs(global_foder_name)
   
@@ -607,32 +758,41 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                              dict_csv_path=dict_cvs_path,
                              train_folder_saving_path=train_folder_path,
                              round_output_loss=is_round_output_loss,
-                             shuffle_video_chunks=is_shuffle_video_chunks)
+                             shuffle_video_chunks=is_shuffle_video_chunks,
+                             init_network=init_network,
+                             regularization_loss=regularization_loss,
+                             regularization_lambda=regularization_lambda)
     
     # plot loss details
     plot_loss_details(dict_train, train_folder_path, epochs)
     list_dict_csv_path.append(dict_cvs_path)
     list_saving_paths_k_fold.append(train_folder_path)
-    
+    # return dict_train, list_dict_csv_path, list_saving_paths_k_fold
   else: 
     fold_results = k_fold_cross_validation(path_to_extracted_features=model_advanced.path_to_extracted_features,
                                            is_validation=is_validation,
                                            round_output_loss=is_round_output_loss,
                                            shuffle_video_chunks=is_shuffle_video_chunks,
-                                           shuffle_training_batch=is_shuffle_training_batch)
-    list_dict_csv_path = fold_results['list_path_csv_kth_fold'] # list of dictionaries with paths to CSV files for each fold
-    list_saving_paths_k_fold = fold_results['list_saving_paths'] # list of saving paths for each fold
-    list_best_model_state = fold_results['best_results_state_dict']
-    for i,dict_train in enumerate(fold_results['fold_results']):
-      plot_loss_details(dict_train=dict_train, 
-                        train_folder_path=list_saving_paths_k_fold[i],
-                        epochs=epochs)
+                                           shuffle_training_batch=is_shuffle_training_batch,
+                                           init_network=init_network,
+                                           regularization_loss=regularization_loss,
+                                           regularization_lambda=regularization_lambda)
+    # list_dict_csv_path = fold_results['list_path_csv_kth_fold'] # list of dictionaries with paths to CSV files for each fold
+    # list_saving_paths_k_fold = fold_results['list_saving_paths'] # list of saving paths for each fold
+    # list_best_model_state = fold_results['best_results_state_dict']
+    # for i,dict_train in enumerate(fold_results['fold_results']):
+    #   plot_loss_details(dict_train=dict_train, 
+    #                     train_folder_path=list_saving_paths_k_fold[i],
+    #                     epochs=epochs)
   
-
+    # return fold_results, list_dict_csv_path, list_saving_paths_k_fold, list_best_model_state
+  
+  
   key_test_dataset = 'test' if not is_validation else 'val'
   # dict_cvs_path = dict_cvs_path[key_test_dataset]
   # For each dataset used plot tsne considering all features from backbone per subject and per class
   
+  # TO FIX
   if not only_train:
     for dict_cvs_path,train_folder_path,best_model_state_dict in zip(list_dict_csv_path,list_saving_paths_k_fold,list_best_model_state):
       # create folder to save tsne plots
