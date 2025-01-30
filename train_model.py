@@ -8,9 +8,11 @@ import torch.nn as nn
 import torch.optim as optim
 import custom.scripts as scripts
 import argparse
+from custom.helper import GLOBAL_PATH
 
-def train(model_type,global_path,epochs,lr):
-  model_type = MODEL_TYPE.VIDEOMAE_v2_B
+def train(model_type,epochs,lr,path_csv_dataset,feature_folder_saving_path,global_foder_name,path_dataset,k_fold):
+  emb_dim = 768 if 'B' in model_type else 384
+  model_type = MODEL_TYPE.VIDEOMAE_v2_B if model_type == 'B' else MODEL_TYPE.VIDEOMAE_v2_S
   pooling_embedding_reduction = EMBEDDING_REDUCTION.MEAN_SPATIAL
   pooling_clips_reduction = CLIPS_REDUCTION.NONE
   sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
@@ -20,24 +22,24 @@ def train(model_type,global_path,epochs,lr):
     # 'val' : os.path.join('partA','starting_point','val_26.csv'),
     # 'test' : os.path.join('partA','starting_point','test_5.csv')
   # }
-  print(f'global_path: {global_path}')
-  if global_path:
-    path_dataset = os.path.join(GLOBAL_PATH.NAS_PATH,'partA','video','video')  
-    path_cvs_dataset = os.path.join(GLOBAL_PATH.NAS_PATH,'partA','starting_point','samples_exc_no_detection.csv')
-    feature_folder_saving_path = os.path.join(GLOBAL_PATH.NAS_PATH,'partA','video','features','samples_16_aligned_cropped')  
-    global_foder_name=os.path.join(GLOBAL_PATH.NAS_PATH,'history_run')
-  else:
-    path_dataset = os.path.join('partA','video','video')  
-    path_cvs_dataset = os.path.join('partA','starting_point','samples_exc_no_detection.csv')
-    feature_folder_saving_path = os.path.join('partA','video','features','samples_16_aligned_cropped')
-    global_foder_name= 'history_run'
+  # print(f'global_path: {global_path}')
+  # if global_path:
+  #   path_dataset = os.path.join(GLOBAL_PATH.NAS_PATH,'partA','video','video')  
+  #   path_csv_dataset = os.path.join(GLOBAL_PATH.NAS_PATH,'partA','starting_point','samples_exc_no_detection.csv')
+  #   feature_folder_saving_path = os.path.join(GLOBAL_PATH.NAS_PATH,'partA','video','features','samples_16_aligned_cropped')  
+  #   global_foder_name=os.path.join(GLOBAL_PATH.NAS_PATH,'history_run')
+  # else:
+  #   path_dataset = os.path.join('partA','video','video')  
+  #   path_csv_dataset = os.path.join('partA','starting_point','samples_exc_no_detection.csv')
+  #   feature_folder_saving_path = os.path.join('partA','video','features','samples_16_aligned_cropped')
+  #   global_foder_name= 'history_run'
   head = HEAD.GRU
   stride_window_in_video = 16
   params = {
     'hidden_size': 1024,
     'num_layers': 2,
     'dropout': 0.0,
-    'input_size': 768 * 8 # can be 384  (small), 768  (base), 1408  (large) [temporal_dim considered as input sequence for GRU]
+    'input_size': emb_dim * 8 # can be 384  (small), 768  (base), 1408  (large) [temporal_dim considered as input sequence for GRU]
                       # can be 384*8(small), 768*8(base), 1408*8(large) [temporal_dim considered feature in GRU] 
   }
   # features_folder_saving_path = os.path.join('partA','video','features',f'{os.path.split(path_csv_dataset)[-1][:-4]}_{stride_window_in_video}') # get the name of the csv file
@@ -49,13 +51,13 @@ def train(model_type,global_path,epochs,lr):
                             pooling_embedding_reduction=pooling_embedding_reduction, 
                             pooling_clips_reduction=pooling_clips_reduction, 
                             sample_frame_strategy=sample_frame_strategy, 
-                            path_csv_dataset=path_cvs_dataset, 
+                            path_csv_dataset=path_csv_dataset, 
                             path_video_dataset=path_dataset,
                             head=head,
                             stride_window_in_video=stride_window_in_video, 
                             head_params=params,
                             global_foder_name=global_foder_name,
-                            k_fold = 5,
+                            k_fold = k_fold,
                             epochs = epochs,
                             train_size=0.8,
                             test_size=0.1,
@@ -85,14 +87,38 @@ def train(model_type,global_path,epochs,lr):
                             is_shuffle_video_chunks=False,
                             is_download_if_unavailable=False
                           )
+
+def generate_path(path):
+  return os.path.join(GLOBAL_PATH.NAS_PATH,path)
+
 if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='Train model')
   parser.add_argument('--mt', type=str, default='B', help='Model type. Can be either B or S')
-  parser.add_argument('--gp', type=int, default=0, help='Global path')
+  parser.add_argument('--gp', action='store_true', help='Global path')
   parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
   parser.add_argument('--ep', type=int, default=500, help='Number of epochs')
+  parser.add_argument('--csv', type=str, default=os.path.join('partA','starting_point','samples_exc_no_detection.csv'), help='Path to csv file')
+  parser.add_argument('--ffsp', type=str, default=os.path.join('partA','video','features','samples_16_aligned_cropped'), help='Path to feature folder saving path')
+  parser.add_argument('--global_folder_name', type=str, default='history_run', help='Global folder name for logging')
+  parser.add_argument('--path_video_dataset', type=str, default=os.path.join('partA','video','video'), help='Path to dataset')
+  parser.add_argument('--k_fold', type=int, default=3, help='Number of k fold cross validation')
+  #Example : python3 train_model.py --mt B --lr 0.01 --ep 500 --csv partA/starting_point/samples_exc_no_detection.csv --ffsp partA/video/features/samples_16_aligned_cropped --global_folder_name history_run --path_video_dataset partA/video/video --k_fold 3
+  # path_dataset = os.path.join('partA','video','video')  
+  # path_csv_dataset = os.path.join('partA','starting_point','samples_exc_no_detection.csv')
+  # feature_folder_saving_path = os.path.join('partA','video','features','samples_16_aligned_cropped')
+  # global_foder_name= 'history_run'
   args = parser.parse_args()
+  if args.gp:
+    args.csv = generate_path(args.csv)
+    args.ffsp = generate_path(args.ffsp)
+    args.path_video_dataset = generate_path(args.path_video_dataset)
+    args.global_folder_name = generate_path(args.global_folder_name)
   train(model_type=args.mt,
-        global_path=args.gp,
         epochs=args.ep,
-        lr=args.lr)
+        lr=args.lr,
+        path_csv_dataset=args.csv,
+        feature_folder_saving_path=args.ffsp,
+        global_foder_name=args.global_folder_name,
+        path_dataset=args.path_video_dataset,
+        k_fold=args.k_fold
+        )
