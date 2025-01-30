@@ -163,14 +163,15 @@ class customDataset(torch.utils.data.Dataset):
     # width_frames = container.streams.video[0].width
     # height_frames = container.streams.video[0].height
     # Sample frame indices using the provided strategy
+    # if os.path.exists(video_path):
     container = cv2.VideoCapture(video_path)
     tot_frames = int(container.get(cv2.CAP_PROP_FRAME_COUNT))
     if self.preprocess_align or self.preprocess_frontalize or self.preprocess_crop_detection:
       width_frames = 256
       height_frames = 256
     else:
-      width_frames = container.get(cv2.CAP_PROP_FRAME_WIDTH)
-      height_frames = container.get(cv2.CAP_PROP_FRAME_HEIGHT)
+      width_frames = int(container.get(cv2.CAP_PROP_FRAME_WIDTH))
+      height_frames = int(container.get(cv2.CAP_PROP_FRAME_HEIGHT))
     # width_frames = int(container.get(cv2.CAP_PROP_FRAME_WIDTH))
     # print(f'Width frames: {width_frames}')
     # height_frames = int(container.get(cv2.CAP_PROP_FRAME_HEIGHT))
