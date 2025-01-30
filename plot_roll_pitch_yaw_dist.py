@@ -3,6 +3,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from pathlib import Path
 
 def plot_roll_pitch_yaw_dist(dict_subject,png_folder):
   fig,ax = plt.subplots(3,1,figsize=(10,10))
@@ -14,8 +15,8 @@ def plot_roll_pitch_yaw_dist(dict_subject,png_folder):
     ax[i].set_xlabel('Angle (degrees)')
     ax[i].set_ylabel('Frequency')
     
-    
-  fig.suptitle('Roll, pitch, and yaw distribution')
+  subject_name = Path(png_folder).parts[-2]
+  fig.suptitle(f'Roll, pitch, yaw distribution {subject_name} ')
   plt.tight_layout()
   # png_folder = os.path.split(pkl_path)[0]
   plt.savefig(png_folder)
