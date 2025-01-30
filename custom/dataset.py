@@ -21,7 +21,7 @@ import pickle
 
 class customDataset(torch.utils.data.Dataset):
   def __init__(self,path_dataset, path_labels, sample_frame_strategy, stride_window=2, clip_length=16,stride_inside_window=1,
-               preprocess_align=False,preprocess_frontalize=False,preprocess_crop_detection=False):
+               preprocess_align=False,preprocess_frontalize=False,preprocess_crop_detection=False,saving_folder_path_extracted_video=None):
     assert os.path.exists(path_dataset), f"Dataset path {path_dataset} does not exist."
     # assert os.path.exists(path_labels), f"Labels path {path_labels} does not exist."
     assert clip_length > 0, f"Clip length must be greater than 0."
@@ -55,6 +55,7 @@ class customDataset(torch.utils.data.Dataset):
     self.image_channels = 3
     self.clip_length = clip_length
     # self.set_path_labels('all')
+    self.saving_folder_path_extracted_video = saving_folder_path_extracted_video
     self.set_path_labels(path_labels)
     tmp = tools.get_unique_subjects_and_classes(self.path_labels)
     self.total_subjects, self.total_classes = len(tmp[0]), len(tmp[1])
@@ -182,10 +183,10 @@ class customDataset(torch.utils.data.Dataset):
     frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames)
     # Generate video from frames_list and save to partA/video
     # generate video with 1% probability
-    if np.random.rand() < 0.01:
-      saving_folder_path = os.path.join('partA','video','features','samples_16_cropped_aligned')
+    if np.random.rand() < 0.01 and self.saving_folder_path_extracted_video is not None:
+    # saving_folder_path = os.path.join('partA','video','features','samples_16_cropped_aligned_fixed','video')
       tools.generate_video_from_list_frame(list_frame = frames_list.reshape(-1,height_frames,width_frames,3),
-                                          path_video_output=os.path.join(saving_folder_path,'video',f'{csv_array[5]}.mp4'))
+                                          path_video_output=os.path.join(self.saving_folder_path_extracted_video,f'{csv_array[5]}.mp4'))
     # self.preprocess_crop_detection = True
     # self.preprocess_align = False
     # self.preprocess_frontalize = False
@@ -255,7 +256,8 @@ class customDataset(torch.utils.data.Dataset):
         frame,_ = self.face_extractor.frontalize_img(frame=frame,
                                                     ref_landmarks=self.reference_landmarks,
                                                     frontalization_mode='SVD',
-                                                    align=self.preprocess_align)
+                                                    v2=True,
+                                                    align=True)
         print(f'Time to frontalize frame {time.time()-start}')
       mask = (start_frame_idx <= i) & (end_frame_idx >= i)  
       
