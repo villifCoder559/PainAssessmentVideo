@@ -14,6 +14,7 @@ import json
 from openTSNE import TSNE as openTSNE
 import time
 from custom.faceExtractor import FaceExtractor
+from tqdm import tqdm
 
 # if os.name == 'posix':
   # from tsnecuda import TSNE as cudaTSNE # available only on Linux
@@ -63,14 +64,15 @@ def save_dict_data(dict_data, saving_folder_path):
   """
   if not os.path.exists(saving_folder_path):
     os.makedirs(saving_folder_path)
-  
-  for key, value in dict_data.items():
+  print(f'Saving dictionary data to {saving_folder_path}...')
+  for key, value in tqdm(dict_data.items(), desc="Saving files"):
     if isinstance(value, torch.Tensor):
       torch.save(value, os.path.join(saving_folder_path, f"{key}.pt"))
     elif isinstance(value, np.ndarray):
       np.save(os.path.join(saving_folder_path, f"{key}.npy"), value)
     else:
-      raise ValueError(f"Unsupported data type for key {key}: {type(value)}")
+      print(f"Unsupported data type for key {key}: {type(value)}")
+      # raise ValueError(f"Unsupported data type for key {key}: {type(value)}")
   print(f'Dictionary data saved to {saving_folder_path}')
 
 def load_dict_data(saving_folder_path):
@@ -89,6 +91,8 @@ def load_dict_data(saving_folder_path):
       dict_data[file[:-3]] = torch.load(os.path.join(saving_folder_path, file))
     elif file.endswith(".npy"):
       dict_data[file[:-4]] = np.load(os.path.join(saving_folder_path, file))
+    else:
+      print(f"Unsupported file format: {file}")
   return dict_data
 
 def plot_mae_per_class(unique_classes, mae_per_class, title='', count_classes=None, saving_path=None):
@@ -100,6 +104,7 @@ def plot_mae_per_class(unique_classes, mae_per_class, title='', count_classes=No
   plt.ylabel('Mean Absolute Error')
   plt.xticks(unique_classes)  # Show each element in x-axis
   plt.title(f'Mean Absolute Error per Class {title}')
+  plt.close()
   
   if count_classes is not None:
     for cls,count in count_classes.items():
@@ -589,7 +594,7 @@ def plot_prediction_chunks_per_subject(predictions, n_chunks,title,saving_path=N
     plt.show()
 
  
-def compute_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=False,legend_label='', title = '', perplexity=1, saving_path=None,plot=True):
+def compute_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=False,legend_label='', title = '', perplexity=1, saving_path=None,plot=True,cmap='copper'):
   """
   Plots the t-SNE reduction of the features in 2D with colors based on subject, gt, or predicted class.
   Args:
@@ -603,7 +608,7 @@ def compute_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=Fals
     print(f'labels shape: {labels.shape}')
     labels = labels.reshape(-1)
     # unique_labels = np.unique(labels)
-  perplexity = min(20, X.size(0)-1)
+  perplexity = min(20, X.shape[0]-1)
   print('Using CPU')
   tsne = openTSNE(n_components=tsne_n_component, perplexity=perplexity, random_state=42, n_jobs = 1)
 
@@ -625,6 +630,8 @@ def compute_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=Fals
   # print(f'path {os.path.split(saving_path)[:-1]}')
   if saving_path:
     path_log_tsne = os.path.join(os.path.split(saving_path)[:-1][0],'log_time_tsne.txt')
+    if not os.path.exists(os.path.split(saving_path)[:-1][0]):
+      os.makedirs(os.path.split(saving_path)[:-1][0])
     with open(path_log_tsne, 'a') as f:
       f.write(f'{title} \n')
       f.write(f'  time: {time.time()-start} secs\n')
@@ -640,7 +647,12 @@ def compute_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=Fals
   # print(" t-SNE computation done.")
   # print(f' X_tsne.shape: {X_tsne.shape}')
   if plot:
-    plot_tsne(X_tsne, labels, legend_label=legend_label, title=title, saving_path=os.path.split(saving_path)[:-1][0])
+    plot_tsne(X_tsne=X_tsne,
+              labels=labels,
+              cmap=cmap,
+              legend_label=legend_label,
+              title=title,
+              saving_path=saving_path)
     return np.array(X_tsne)
   else:
     # print(f'X_tsne type: {np.array(X_tsne)}')
@@ -717,7 +729,11 @@ def plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', t
     rgb_array = rgb_array.reshape(height, width, 3)
     return rgb_array
   else:
-    pth = os.path.join(saving_path, f'{title}_{legend_label}.png')
+    print(f'Saving plot to {saving_path}')
+    if saving_path[-4:] != '.png':
+      pth = os.path.join(saving_path, f'{title}_{legend_label}.png')
+    else:
+      pth = saving_path
     fig.savefig(pth)
     print(f'Plot saved to {pth}')
     return pth
@@ -736,16 +752,15 @@ def get_list_video_path_from_csv(csv_path, cols_csv_idx=[1,5], union_segment='_'
 
 def get_array_from_csv(csv_path):
   """
-  Reads a CSV file, converts it to a NumPy array, and processes each entry by splitting
-  the first column using a tab delimiter. The processed entries are then stacked into
-  a single NumPy array.
+  Reads a CSV file and converts it into a NumPy array.
 
   Args:
     csv_path (str): The file path to the CSV file.
 
   Returns:
-    np.ndarray: A NumPy array containing the processed entries from the CSV file.\n
-                (BIOVID cols-> subject_id, subject_name, class_id, class_name, sample_id, sample_name)
+    tuple: A tuple containing:
+      - np.ndarray: Array where each row represents a sample from the CSV file.
+      - np.ndarray: Array containing the column names from the CSV file.
   """
   csv_array = pd.read_csv(csv_path)  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
   cols_array = csv_array.columns.to_numpy()[0].split('\t')
@@ -977,5 +992,6 @@ def get_list_frame_from_video_path(video_path):
     ret, frame = cap.read()
     if not ret:
       break
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     frame_list.append(frame)
   return frame_list
