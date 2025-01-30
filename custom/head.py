@@ -33,7 +33,8 @@ class head:
                           hidden_size=head_params['hidden_size'], num_layers=head_params['num_layers'])
     self.head_type = head_type
 
-  def train(self, X_train, y_train, X_test, y_test, subject_ids_train, subject_ids_test, sample_ids_train, sample_ids_test=None, num_epochs=100,criterion=nn.L1Loss(),optimizer=optim.Adam):
+  def train(self, X_train, y_train, X_test, y_test, subject_ids_train, subject_ids_test, sample_ids_train, sample_ids_test=None, num_epochs=100,criterion=nn.L1Loss(),optimizer=optim.Adam,
+            init_network='default', regularization_loss='L1', regularization_lambda=0.01):
     """
     Train the model using the provided training and testing data.
 
@@ -61,7 +62,8 @@ class head:
     elif isinstance(self.head, HeadGRU):
       dict_results = self.head.start_train_test(X_train, y_train, sample_ids_train, subject_ids_train,
                              X_test, y_test, subject_ids_test,
-                             num_epochs, criterion=criterion, optimizer=optimizer)
+                             num_epochs, init_network=init_network, criterion=criterion, optimizer=optimizer,
+                             regularization_loss=regularization_loss, regularization_lambda=regularization_lambda)
       # self.plot_loss(dict_results['train_losses'], dict_results['test_losses'])
     return dict_results
 
@@ -376,6 +378,7 @@ class GRUModel(nn.Module):
 
   def _initialize_weights(self,init_type='default'):
     # Initialize GRU weights
+    print(f'  GRU Network initialized: {init_type}')
     if init_type == 'xavier':
       for name, param in self.gru.named_parameters():
         if 'weight_ih' in name:
@@ -414,6 +417,7 @@ class HeadGRU:
     self.hidden_size = hidden_size
     self.num_layers = num_layers
     self.dropout = dropout
+    self.reconstruction_factor = None
     self.output_size = output_size
     self.params = {
       'input_size': int(input_size),
@@ -422,11 +426,15 @@ class HeadGRU:
       'dropout': float(dropout),
       'output_size': int(output_size)
     }
+    print(f'\n\nself.params: {self.params}\n\n')
     self.model = GRUModel(input_size, hidden_size, num_layers, dropout, output_size)
 
   def get_params_configuration(self):
     return self.params
-  
+  def load_state_weights(self, path):
+    self.model.load_state_dict(torch.load(path))
+    print(f'Model weights loaded from {path}')
+
   def _group_features_by_sample_id(self, X, sample_ids, subject_ids, y=None):
     """
     Groups features by sample ID and pads sequences to the same length.
@@ -462,7 +470,7 @@ class HeadGRU:
       y_train_per_sample_id.append(torch.mean(y[mask].float())) # in Biovid dataset, target is the same for all windows in video, not in UNBC
       subject_ids_per_sample_id.append(subject_ids[mask][0])
     padded_sequence = torch.nn.utils.rnn.pad_sequence(X_per_sample_id, batch_first=True)
-    # print(f'GROUP-_padded_sequence.shape: {padded_sequence.shape}')
+    
     length_features = torch.tensor(length_features)
     # print(f'GROUP-length_features.shape: {length_features}')
     subject_ids_per_sample_id = torch.tensor(subject_ids_per_sample_id)
@@ -472,17 +480,33 @@ class HeadGRU:
                                                    self.input_size)
     
     return padded_sequence, y_train_per_sample_id, subject_ids_per_sample_id, length_features
-
+  def get_data_loader(self, X, y, subject_ids, sample_ids, batch_size=2, shuffle=True,reconstruction_factor=None):
+    padded_X, packed_y, packed_subject_ids, length_seq = self._group_features_by_sample_id(X=X,
+                                                                                           y=y,
+                                                                                           sample_ids=sample_ids,
+                                                                                           subject_ids=subject_ids)
+    if self.reconstruction_factor is None:
+      if reconstruction_factor is not None:
+        self.reconstruction_factor = reconstruction_factor
+      else:
+        raise ValueError("Reconstruction factor is not set.")
+       
+    dataset = TensorDataset(padded_X, 
+                            packed_y, 
+                            packed_subject_ids, 
+                            self.reconstruction_factor)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+  
   def start_train_test(self, X_train, y_train, subject_ids_train,train_csv_path,
                        X_test, y_test, subject_ids_test,sample_ids_train, sample_ids_test, 
                        shuffle_video_chunks=True,shuffle_training_batch=True,
                        num_epochs=10, batch_size=2, criterion=nn.L1Loss(), # fix batch_size = 1
                        optimizer_fn=optim.Adam, lr=0.0001, saving_path=None, init_weights=True, round_output_loss=False,
-                       ):
+                       init_network='default',regularization_loss='L1',regularization_lambda=0.01):
 
     # Init model weights
     if init_weights:
-      self.model._initialize_weights()
+      self.model._initialize_weights(init_type=init_network)
 
     # Reshape inputs
     # print(f'X_train.shape: {X_train.shape}') # [36, 8, 1, 1, 384] # 
@@ -497,21 +521,18 @@ class HeadGRU:
 
     # X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], -1)
     # X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], -1)
-    padded_X_train, packed_y_train, packed_subject_ids_train, length_seq_train = self._group_features_by_sample_id(X=X_train,y=y_train, sample_ids=sample_ids_train, subject_ids=subject_ids_train)
-    padded_X_test, packed_y_test, packed_subject_ids_test, len_seq_test = self._group_features_by_sample_id(X=X_test,y=y_test, sample_ids=sample_ids_test, subject_ids=subject_ids_test)
- 
-    
-    # padded_X_train = padded_X_train.reshape(padded_X_train.shape[0], # (batch_size)||| nr_videos  
-    #                                                           -1,    # (seq_len)   ||| nr_windows * temp_size OR nr_windows  
-    #                                                self.input_size)
-    # padded_X_test = padded_X_test.reshape(padded_X_test.shape[0], # (batch_size)||| nr_videos
-    #                                                         -1,   # (seq_len)   ||| nr_windows                          OR nr_windows * temp_size
-    #                                             self.input_size)  # (input_dim) ||| [temp_size*patch_h*patch_w*emb_dim] OR [patch_h*patch_w*emb_dim]
-    # padded_X_train.shape [nr_videos, nr_windows(not fixed), temp_size, patch_h, patch_w, emd_dim]
-    # DataLoaders
-    # print(f'packed_y_train.shape: {packed_y_train.shape}')
-    # print(f'packed_subject_ids_train.shape: {packed_subject_ids_train.shape}')
+    padded_X_train, packed_y_train, packed_subject_ids_train, length_seq_train = self._group_features_by_sample_id(X=X_train,
+                                                                                                                   y=y_train,
+                                                                                                                   sample_ids=sample_ids_train,
+                                                                                                                   subject_ids=subject_ids_train)
+    padded_X_test, packed_y_test, packed_subject_ids_test, len_seq_test = self._group_features_by_sample_id(X=X_test,
+                                                                                                            y=y_test,
+                                                                                                            sample_ids=sample_ids_test,
+                                                                                                            subject_ids=subject_ids_test)
+
     extension_for_length_seq = X_embed_temp_size/(self.input_size/X_emb_dim) # is 1 if temp_size=8 is considered in input_dim, otherwise I have to considere the extension in the padding for computing the real length of the video
+    self.reconstruction_factor = extension_for_length_seq * len_seq_test
+    print(f'reconstruction_factor: {self.reconstruction_factor} = {extension_for_length_seq} * {len_seq_test}')
     train_dataset = TensorDataset(padded_X_train, 
                                   packed_y_train,           # [nr_videos]
                                   packed_subject_ids_train, # [nr_videos]
@@ -522,15 +543,6 @@ class HeadGRU:
                                  packed_subject_ids_test,
                                  len_seq_test * extension_for_length_seq)
 
-    # unique_classes, class_counts = torch.unique(packed_y_train, return_counts=True)
-    # class_weights = 1.0 / class_counts.float()
-    # sample_weights = class_weights[packed_y_train.long()]
-    # # Create the WeightedRandomSampler
-    # sampler_weighted = WeightedRandomSampler(weights=sample_weights, num_samples=len(sample_weights), replacement=False)
-    # # Create DataLoaders
-    # train_loader = DataLoader(train_dataset, sampler=sampler_weighted, batch_size=batch_size, num_workers=1)
-    # test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-    # try:
     train_loader = None
     try:
       print('Try to use custom DataLoader...')
@@ -596,6 +608,7 @@ class HeadGRU:
           batch_y = batch_y.squeeze(0)
           batch_subjects = batch_subjects.squeeze(0)
           batch_real_length_padded_feat = batch_real_length_padded_feat.squeeze(0)
+        print(f'batch_subjects: {batch_subjects}')
         # print(f'batch_X shape: {batch_X.shape}')
         # print(f'batch_y shape: {batch_y.shape}')
         # print(f'batch_subjects shape: {batch_subjects.shape}')
@@ -612,11 +625,18 @@ class HeadGRU:
 
         packed_input = pack_padded_sequence(batch_X, batch_real_length_padded_feat, batch_first=True, enforce_sorted=False)
         # print(f'X_tmp.shape: {X_tmp.shape}')
+        # print packed input shape
+        print(f'packed_input.data.shape: {packed_input.data.shape}')
         outputs = self.model.forward(x=packed_input, pred_only_last_time_step=True)
         # print(f'outputs.shape: {outputs.shape}')
         if round_output_loss:
           outputs = torch.round(outputs)
+        # add l2 regularization
+        
         loss = criterion(outputs, batch_y)
+        if regularization_loss == 'L1':
+          l1_norm = sum(p.abs().sum() for p in self.model.parameters())
+          loss += regularization_lambda * l1_norm
         epoch_loss += loss.item()
         # Backward pass and optimization
         loss.backward()
@@ -650,15 +670,15 @@ class HeadGRU:
         free_gpu_mem,total_gpu_mem = torch.cuda.mem_get_info()
         total_gpu_mem = total_gpu_mem / 1024 ** 3
         free_gpu_mem = free_gpu_mem / 1024 ** 3
+        count_batch += 1
         with open(log_batch_path, 'a') as log_file:
-          log_file.write(f' Batch {count_batch+1}/{total_batches} \n')
+          log_file.write(f' Batch {count_batch}/{total_batches} \n')
           log_file.write(f'  nr_sample_per_class : {count_array.tolist()}\n')
           log_file.write(f'  unique_subject      : {unique_batch_subject.tolist()}\n')
           log_file.write(f'  count_subject       : {count_subject.tolist()}\n')
           log_file.write(f'  GPU free/total (GB) : {free_gpu_mem:.2f}/{total_gpu_mem:.2f}\n')
           log_file.write("\n")
-        count_batch += 1
-        print(f'{count_batch/len(train_loader)}  GPU free/total (GB) : {free_gpu_mem:.2f}/{total_gpu_mem:.2f}\n')
+        print(f'\nBatch: {count_batch}/{len(train_loader)}  \nGPU free/total (GB) : {free_gpu_mem:.2f}/{total_gpu_mem:.2f}\n')
         del batch_X, batch_y
         torch.cuda.empty_cache()
         # sk_conf_matrix = confusion_matrix(batch_y.detach().cpu(), output_postprocessed.detach().cpu())
@@ -711,7 +731,7 @@ class HeadGRU:
       test_loss_per_class[epoch] = dict_eval['test_loss_per_class']
       test_loss_per_subject[epoch] = dict_eval['test_loss_per_subject']
       # Save the best model
-      if dict_eval['test_loss'] < best_test_loss:
+      if dict_eval['test_loss'] < best_test_loss or best_model_epoch == -1:
         best_test_loss = dict_eval['test_loss']
         best_model_state = self.model.state_dict()
         best_model_epoch = epoch
@@ -722,7 +742,7 @@ class HeadGRU:
       torch.save(best_model_state, os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth'))
       # load the best model
       # self.model.load_state_dict(best_model_state)
-      print(f"Best model weights saved to {saving_path}")
+      print(f"Best model weights saved to {os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth')}")
     # # Plot losses
     # tools.plot_losses(train_losses=train_losses, test_losses=test_losses)
     # self.model.to('cpu')
@@ -857,7 +877,8 @@ class CrossValidationGRU:
   # deprecated
   def k_fold_cross_validation(self, X, y, group_ids, k=5, num_epochs=10, batch_size=32,
                                criterion=nn.L1Loss(), optimizer_fn=optim.Adam, lr=0.001,
-                               list_saving_paths_k_val=None):
+                               list_saving_paths_k_val=None,init_network='default',
+                               regularization_loss='L1',regularization_lambda=0.01):
     """
     Perform k-fold cross-validation using GroupShuffleSplit.
 
@@ -897,7 +918,8 @@ class CrossValidationGRU:
       fold_result = model.start_train_test(
         X_train, y_train, groups_train, X_test, y_test, groups_test,
         num_epochs=num_epochs, batch_size=batch_size, criterion=criterion,
-        optimizer_fn=optimizer_fn, lr=lr
+        optimizer_fn=optimizer_fn, lr=lr, init_network=init_network,
+        regularization_loss=regularization_loss, regularization_lambda=regularization_lambda
       )
 
       fold_results.append(fold_result)
