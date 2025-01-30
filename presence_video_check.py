@@ -15,19 +15,27 @@ def main(csv_path,video_path,log_folder_path):
   for folder in list_video_folder:
     sample_folder = os.path.join(video_path,folder)
     list_video_name += [f.split('.mp4')[0] for f in os.listdir(sample_folder) if f.endswith('.mp4')]
-
+  print(f'list_video_name: {len(list_video_name)}')
   # list_video_name = [f.split('.mp4')[0] for f in list_video_name]
   count = 0
   log_file = os.path.join(log_folder_path,f'log_video_{csv_name[:-4]}.txt')
   if os.path.exists(log_file):
     os.remove(os.path.join(log_file))
-  
+  count_pos = 0
+  print(list_csv_sample)
   for sample in list_csv_sample:
     if sample not in list_video_name:
       print(f'{sample} not in {video_path}')
       count += 1
       with open(log_file,'a') as f:
-        f.write(f'{sample}, \n')
+        f.write(f'{sample}.mp4\n')
+    # else:
+    #   count_pos += 1
+    #   list_video_name.remove(sample)
+      # print(f'len: {len(list_video_name)}')
+      #
+  print(f'Number of video in the folder: {len(list_video_name)}')
+  print(f'Number of video in the csv   : {len(list_csv_sample)}')
   print(f'Number of video not in folder: {count}')
   print(f'logs saved in {log_file}')
   # print(f'csv name: {}')
@@ -45,10 +53,11 @@ if __name__ == '__main__':
     args.video_path = generate_path(args.f_video_path)
     args.log_folder_path = generate_path(args.log_folder_path)
     print(f'csv path: {args.csv_path}\n')
-    print(f'video path: {args.video_path}')
+    print(f'video path: {args.f_video_path}')
   if not os.path.exists(args.log_folder_path):
     os.makedirs(args.log_folder_path)
   print(f'log folder path: {args.log_folder_path}\n')
+  
   main(csv_path=args.csv_path,
        video_path=args.f_video_path,
        log_folder_path=args.log_folder_path)
