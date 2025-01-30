@@ -7,11 +7,10 @@ import argparse
 import numpy as np
 from pathlib import Path
 from mediapipe.tasks.python import vision
-
-
+from custom.helper import GLOBAL_PATH
 
 def generate_path(path):
-  return os.path.join('/equilibrium','fvilli','PainAssessmentVideo',path)
+  return os.path.join(GLOBAL_PATH.NAS_PATH,'PainAssessmentVideo',path)
 
 def load_reference_landmarks(path):
   ref_landmarks = pickle.load(open(path, 'rb'))
@@ -28,8 +27,9 @@ def main(generate_video,stop_after,csv_path,path_folder_output,list_target_video
   root_video_path = os.path.split(os.path.split(csv_list_video_path[0])[0])[0]
   list_video_path = []
   if list_target_video is not None:
-    list_target_video = np.array([os.path.join(root_video_path,video) for video in list_target_video])
+    list_target_video = np.array([os.path.join(root_video_path,video.split('-')[0],video) for video in list_target_video])
     for video in list_target_video:
+      # folder_sample = 
       mask = (csv_list_video_path == video)
       list_video_path.append(csv_list_video_path[mask][0])
   else:
@@ -107,7 +107,11 @@ if __name__ == '__main__':
   parser.add_argument('--to_', type=int, default=None, help='Frontalize video untill the index (excluded). Set None to get all video')
   parser.add_argument('--log_er_p', type=str, default=os.path.join('partA','video','video_frontalized'), help='Path to log error file')
   args = parser.parse_args()
-  
+  if args.ltv[0].endswith('.txt'):
+    list_video = []
+    with open(args.ltv[0],'r') as f:
+      list_video = f.readlines()
+    args.ltv = [video.strip() for video in list_video]
   if args.g_path:
     os.chdir('/equilibrium/fvilli/PainAssessmentVideo')
     args.csv = generate_path(args.csv)
