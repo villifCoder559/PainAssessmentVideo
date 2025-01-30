@@ -333,11 +333,11 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                     saving_path=dataset_folder_path,
                                     total_classes=total_classes) # 1  plot
     # TODO: Remove comments to plot the mean and std of the dataset
-    tools.plot_dataset_distribution_mean_std_duration(csv_path=csv_path,
-                                                      video_path=path_video_dataset,
-                                                      per_class=per_class, 
-                                                      per_partecipant=per_partecipant, 
-                                                      saving_path=dataset_folder_path) # 2 plots
+    # tools.plot_dataset_distribution_mean_std_duration(csv_path=csv_path,
+    #                                                   video_path=path_video_dataset,
+    #                                                   per_class=per_class, 
+    #                                                   per_partecipant=per_partecipant, 
+    #                                                   saving_path=dataset_folder_path) # 2 plots
 
   def train_model(dict_csv_path, train_folder_saving_path, is_validation=False,round_output_loss=False,shuffle_video_chunks=True,
                   shuffle_training_batch=True,init_network='default',regularization_lambda=0.0,regularization_loss='L2'):
@@ -785,7 +785,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     #                     train_folder_path=list_saving_paths_k_fold[i],
     #                     epochs=epochs)
   
-    # return fold_results, list_dict_csv_path, list_saving_paths_k_fold, list_best_model_state
+    return fold_results, list_dict_csv_path, list_saving_paths_k_fold
   
   
   key_test_dataset = 'test' if not is_validation else 'val'
