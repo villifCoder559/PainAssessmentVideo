@@ -18,12 +18,13 @@ from custom.head import HeadSVR, HeadGRU, CrossValidationGRU
 import os
 import json
 from sklearn.manifold import TSNE
+from torchmetrics.classification import ConfusionMatrix
 import time
 # from tsnecuda import TSNE as cudaTSNE # available only on Linux
 
 class Model_Advanced: # Scenario_Advanced
   def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,
-              path_labels, preprocess, sample_frame_strategy, head, head_params, download_if_unavailable=False,
+              path_labels, sample_frame_strategy, head, head_params, download_if_unavailable=False,
               batch_size_feat_extraction=1,batch_size_training=1,stride_window=2,clip_length=16,
               features_folder_saving_path=''):
     """
@@ -34,7 +35,6 @@ class Model_Advanced: # Scenario_Advanced
     clips_reduction (int): Dimension reduction for clips.
     path_dataset (str): Path to the dataset.
     path_labels (str): Path to the labels.
-    preprocess (callable): Preprocessing function for the data.
     sample_frame_strategy (str): Strategy for sampling frames.
     download_if_unavailable (bool, optional): Flag to download the model if unavailable. Defaults to False.
     batch_size (int, optional): Batch size for data loading. Defaults to 1.
@@ -45,13 +45,11 @@ class Model_Advanced: # Scenario_Advanced
     """
     self.backbone = backbone(model_type, download_if_unavailable)
     self.neck = neck(embedding_reduction, clips_reduction)
-    self.dataset = customDataset(path_dataset, 
-                                 path_labels, 
-                                 preprocess, 
-                                 sample_frame_strategy, 
+    self.dataset = customDataset(path_dataset=path_dataset, 
+                                 path_labels=path_labels, 
+                                 sample_frame_strategy=sample_frame_strategy, 
                                  stride_window=stride_window, 
-                                 clip_length=clip_length,
-                                 batch_size=batch_size_feat_extraction)
+                                 clip_length=clip_length)
     self.batch_size_training = batch_size_training
     self.batch_size_feat_extraction = batch_size_feat_extraction
     # self.dataloader = DataLoader(self.dataset, 
@@ -66,10 +64,49 @@ class Model_Advanced: # Scenario_Advanced
       self.head = HeadGRU(**head_params)
     self.path_to_extracted_features = features_folder_saving_path
 
-  
+  def evaluate_from_model(self,path_model_weights, csv_path, log_file_path,criterion=nn.L1Loss(), round_output_loss=False):
+    """
+    Evaluate the model using the specified dataset.
+    Parameters:
+      csv_path (str): Path to the CSV file containing the dataset.
+      criterion (torch.nn.Module, optional): Loss function to be used. Default is nn.L1Loss().
+      round_output_loss (bool, optional): Flag to round the output loss. Default is False.
+    Returns:
+      dict: A dictionary containing the results of the evaluation process, including:
+      - 'losses': List of losses.
+      - 'loss_per_class': Loss per class, reshaped to (1, -1).
+      - 'loss_per_subject': Loss per subject, reshaped to (1, -1).
+      - 'subject_ids_unique': Unique subject IDs.
+      - 'y_unique': Unique classes.
+    """
+    dict_feature_extraction = self.extract_features(csv_path)
+    X = dict_feature_extraction['features']
+    y = dict_feature_extraction['list_labels']
+    subject_ids = dict_feature_extraction['list_subject_id']
+    sample_ids = dict_feature_extraction['list_sample_id']
+    unique_classes = np.unique(y)
+    test_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=unique_classes.shape[0] + 1)
+    # load weights
+    self.head.load_state_weights(path=path_model_weights)
+    test_loader = self.head.get_data_loader(X=X, 
+                                            y=y, 
+                                            subject_ids=subject_ids,
+                                            sample_ids=sample_ids,
+                                            batch_size=self.batch_size_training)
+    dict_test = self.head.evaluate(test_loader=test_loader,
+                                   criterion=criterion, 
+                                   device='cuda' if torch.cuda.is_available() else 'cpu',
+                                   round_output_loss=round_output_loss,
+                                   log_file_path=log_file_path,
+                                   test_confusion_matricies=test_confusion_matricies,
+                                   unique_classes=unique_classes,
+                                   unique_subjects=np.unique(subject_ids)
+                                      )
+    return dict_test
   def train(self, train_csv_path, test_csv_path, num_epochs=10, criterion=nn.L1Loss(),
             optimizer_fn=optim.Adam, lr=0.0001,saving_path=None,init_weights=True,round_output_loss=False,
-            shuffle_video_chunks=True,shuffle_training_batch=True):
+            shuffle_video_chunks=True,shuffle_training_batch=True,init_network='default',
+            regularization_loss='L1',regularization_lambda=0.01):
     """
     Train the model using the specified training and testing datasets.
     Parameters:
@@ -150,6 +187,9 @@ class Model_Advanced: # Scenario_Advanced
                                                 shuffle_video_chunks=shuffle_video_chunks,
                                                 shuffle_training_batch=shuffle_training_batch,
                                                 train_csv_path=train_csv_path,
+                                                init_network=init_network,
+                                                regularization_loss=regularization_loss,
+                                                regularization_lambda=regularization_lambda,
                                                 )
     
     return {'dict_results':dict_results, 
@@ -301,19 +341,19 @@ class Model_Advanced: # Scenario_Advanced
     
     return feature
     
-  def run_grid_search(self, param_grid,k_cross_validation=5): #
-    if isinstance(self.head, HeadSVR):
-      print('GridSearch using SVR...')
-      self.dataset.set_path_labels('val')
-      X, y, subjects_id,_ , _, _ = self.extract_features()
-      X = X.reshape(X.shape[0],-1).detach().cpu().numpy()
-      y = y.squeeze().detach().cpu().numpy()
-      # print(subjects_id.shape)
-      grid_search, list_split_indices =self.head.run_grid_search(param_grid=param_grid, X=X, y=y, groups=subjects_id, k_cross_validation=k_cross_validation)
+  # def run_grid_search(self, param_grid,k_cross_validation=5): #
+  #   if isinstance(self.head, HeadSVR):
+  #     print('GridSearch using SVR...')
+  #     self.dataset.set_path_labels('val')
+  #     X, y, subjects_id,_ , _, _ = self.extract_features()
+  #     X = X.reshape(X.shape[0],-1).detach().cpu().numpy()
+  #     y = y.squeeze().detach().cpu().numpy()
+  #     # print(subjects_id.shape)
+  #     grid_search, list_split_indices =self.head.run_grid_search(param_grid=param_grid, X=X, y=y, groups=subjects_id, k_cross_validation=k_cross_validation)
       
-      return grid_search, list_split_indices, subjects_id, y
-    else:
-      return None
+  #     return grid_search, list_split_indices, subjects_id, y
+  #   else:
+  #     return None
 
   def save_configuration(self, saving_path):
     """
@@ -334,6 +374,7 @@ class Model_Advanced: # Scenario_Advanced
       'stride_window': self.dataset.stride_window,
       'clip_length': self.dataset.clip_length,
       'head': self.head.params,
+      'features_folder_saving_path': self.path_to_extracted_features
       # 'head_params': self.head.get_params() if hasattr(self.head, 'get_params') else {}
     }
     with open(saving_path, 'w') as config_file:
