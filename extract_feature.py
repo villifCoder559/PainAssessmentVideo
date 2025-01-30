@@ -9,153 +9,188 @@ from transformers import AutoImageProcessor
 import custom.tools as tools
 import time
 import pickle
-
-model_type = MODEL_TYPE.VIDEOMAE_v2_B
-pooling_embedding_reduction = EMBEDDING_REDUCTION.MEAN_SPATIAL
-pooling_clips_reduction = CLIPS_REDUCTION.NONE
-sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
-
-path_dataset = os.path.join('partA','video','video')
-path_labels = os.path.join('partA','starting_point','samples_exc_no_detection.csv')
-
-def _extract_features(dataset,path_csv_dataset,batch_size_feat_extraction,backbone):
-  """
-  Extract features from the dataset specified by the CSV file path.
-
-  Args:
-    path_csv_dataset (str): Path to the CSV file containing dataset information.
-    batch_size (int, optional): Number of samples per batch to load. Default is 2.
-
-  Returns:
-    dict: A dictionary containing the following keys:
-      - 'features' (torch.Tensor): shape [n_video * n_clips, temporal_dim=8, patch_h, patch_w, emb_dim].
-      - 'list_labels' (torch.Tensor): shape [n_video * n_clips].
-      - 'list_subject_id' (torch.Tensor): shape (n_video * n_clips).
-      - 'list_sample_id' (torch.Tensor): shape (n_video * n_clips).
-      - 'list_path' (np.ndarray): shape (n_video * n_clips,).
-      - 'list_frames' (torch.Tensor): shape [n_video * n_clips, n_frames].
-
-  """
-  
-  device = 'cuda' if torch.cuda.is_available() else 'cpu'
-  print(f"extracting features using.... {device}")
-  list_features = []
-  list_labels = []
-  list_subject_id = []
-  list_sample_id = []
-  list_path = []
-  list_frames = []
-  count = 0
-  dataset.set_path_labels(path_csv_dataset)
-  dataloader = DataLoader(dataset, 
-                          batch_size=batch_size_feat_extraction,
-                          # num_workers=1,
-                          shuffle=False,
-                          collate_fn=dataset._custom_collate_fn)
-  # move the model to the device
-  backbone.model.to(device)
-  backbone.model.eval()
-  start = time.time()
-  with torch.no_grad():
-    # start_total_time = time.time()
-    # start = time.time()
-    for data, labels, subject_id,sample_id, path, list_sampled_frames in dataloader:
-      #############################################################################################################
-      # data shape -> [nr_clips, clip_length=16, channels=3, H=224, W=224]
-      # 
-      # nr_clips  = floor((total_frames-clip_length=16)/stride_window) + 1
-      #           BIOVID -> floor((138-16)/4)) + 1 = 31
-      # 
-      # self.backbone.model ->   85 MB (small_model), 
-      #                         400 MB (base_model), 
-      #                           4 GB (giant_model)
-      # 
-      # video_feat_size [nr_video,8,768] => 8700 * 8 * 768 * 4 = 204 MB
-      #############################################################################################################
-      # print(f'Elapsed time for {batch_size} samples: {time.time() - start}')
-      # print(f'data shape {data.shape}')
-      
-      data = data.to(device)
-      with torch.no_grad():
-    # Extract features from clips -> return [B, clips/tubelets, W/patch_w, H/patch_h, emb_dim] 
-        feature = backbone.forward_features(x=data)
-      # feature -> [2, 8, 1, 1, 384]
-      # print(f'sample_id {sample_id}')
-      print(f'feature shape {feature.shape}')
-      list_frames.append(list_sampled_frames)
-      list_features.append(feature.detach().cpu())
-      list_labels.append(labels)
-      list_sample_id.append(sample_id)
-      list_subject_id.append(subject_id)
-      list_path.append(path)
-      count += 1
-      # if count % 10 == 0:
-      print(f'\nBatch {count}/{len(dataloader)}')
-      print(f'GPU:\n Free : {torch.cuda.mem_get_info()[0]/1024/1024/1024:.2f} GB \n total: {torch.cuda.mem_get_info()[1]/1024/1024/1024:.2f} GB\n')
-      del data, feature
-      torch.cuda.empty_cache()
-      end = time.time()
-      # print(f'{end}')
-      print(f'Elapsed time: {((end - start)//60//60):.0f} h {(((end - start)//60%60)):.0f} m {(((end - start)%60)):.0f} s')
-      expected_end = (end - start) * (len(dataloader) / count)
-      print(f'Expected time: {expected_end//60//60:.0f} h {expected_end//60%60:.0f} m {expected_end%60:.0f} s')
-      break
-      # start = time.time()
-  # print(f'Elapsed time for total feature extraction: {time.time() - start_total_time}')
-  # print('Feature extraceton done')
-  backbone.model.to('cpu')
-  # print('backbone moved to cpu')
-  # print(f'torch.cat features {torch.cat(list_features,dim=0).shape}')
-  dict_data = {
-    'features': torch.cat(list_features,dim=0),  # [n_video * n_clips, temporal_dim=8, patch_h, patch_w, emb_dim] 630GB
-    'list_labels': torch.cat(list_labels,dim=0),  # [n_video * n_clips] 8700 * 10 * 4 = 340 KB
-    'list_subject_id': torch.cat(list_subject_id).squeeze(),  # (n_video * n_clips) 8700 * 10 * 4 = 340 KB
-    'list_sample_id': torch.cat(list_sample_id),  # (n_video * n_clips) 8700 * 10 * 4 = 340 KB
-    'list_path': np.concatenate(list_path),  # (n_video * n_clips,) 8700 * 10 * 4 = 340 KB
-    'list_frames': torch.cat(list_frames,dim=0)  # [n_video * n_clips, n_frames] 8700 * 10 * 4 = 340 KB
-  }
-
-  return dict_data 
-
-print('Model type:',model_type)
-
-custom_ds = customDataset(path_dataset=path_dataset,
-                          path_labels=path_labels,
-                          sample_frame_strategy=sample_frame_strategy,
-                          stride_window=16,
-                          clip_length=16,
-                          preprocess_align=True,
-                          preprocess_frontalize=False,
-                          preprocess_crop_detection=True)
-
-backbone_model = backbone(model_type=model_type)
-
-dict_data = _extract_features(dataset=custom_ds,
-                              path_csv_dataset=path_labels,
-                              batch_size_feat_extraction=1,
-                              backbone=backbone_model)
-config_dict = {
-  'path_dataset': path_dataset,
-  'path_labels': path_labels,
-  'model_type': model_type,
-  'pooling_embedding_reduction': pooling_embedding_reduction,
-  'pooling_clips_reduction': pooling_clips_reduction,
-  'sample_frame_strategy': sample_frame_strategy,
-  'stride_window': 16,
-  'clip_length': 16,
-  'preprocess_align': True,
-  'preprocess_frontalize': False,
-  'preprocess_crop_detection': True,
-  'batch_size_feat_extraction': 1,
-}
-saving_folder_path = os.path.join(GLOBAL_PATH.NAS_PATH,'partA','video','features','samples_16_cropped_aligned')
-tools.save_dict_data(dict_data=dict_data,
-                    saving_folder_path=saving_folder_path)
-
-with open(os.path.join(saving_folder_path,'config_dict.pkl'),'wb') as f:
-  pickle.dump(config_dict,f)
-  print(f'config saved in {os.path.join(saving_folder_path,"config_dict.pkl")}')
-
 import gc
-gc.collect()
-torch.cuda.empty_cache()
+import argparse
+
+def main(csv_index,global_path,model_type,saving_chunk_size=100,  preprocess_align = False,
+         preprocess_crop_detection = False,preprocess_frontalize = True):
+  if model_type == 'B':
+    model_type = MODEL_TYPE.VIDEOMAE_v2_B
+  elif model_type == 'S':
+    model_type = MODEL_TYPE.VIDEOMAE_v2_S
+  else:
+    raise ValueError('Model type not recognized. Please use "B" or "S"')
+    
+  pooling_embedding_reduction = EMBEDDING_REDUCTION.MEAN_SPATIAL
+  pooling_clips_reduction = CLIPS_REDUCTION.NONE
+  sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
+  if global_path:
+    path_dataset = os.path.join(GLOBAL_PATH.NAS_PATH,'partA','video','video')
+    path_labels = os.path.join(GLOBAL_PATH.NAS_PATH,'partA','starting_point',f'samples_exc_no_detection{csv_index}.csv')
+    log_file_path = os.path.join(GLOBAL_PATH.NAS_PATH,'partA','video','features',f'samples_16_cropped_aligned{csv_index}','log_file.txt')
+    saving_folder_path = os.path.join(GLOBAL_PATH.NAS_PATH,'partA','video','features',f'samples_16_cropped_aligned{csv_index}')
+    print(f'saving_folder_path: {saving_folder_path}')
+  else:
+    path_dataset = os.path.join('partA','video','video')
+    path_labels = os.path.join('partA','starting_point',f'samples_exc_no_detection{csv_index}.csv')
+    log_file_path = os.path.join('partA','video','features',f'samples_16_cropped_aligned{csv_index}','log_file.txt')
+    saving_folder_path = os.path.join('partA','video','features',f'samples_16_cropped_aligned{csv_index}')
+
+  def _write_log_file(log_message):
+    if not os.path.exists(os.path.dirname(log_file_path)):
+      os.makedirs(os.path.dirname(log_file_path))
+    with open(log_file_path,'a') as f:
+      f.write(log_message+'\n')
+
+  def _extract_features(dataset,path_csv_dataset,batch_size_feat_extraction,backbone):
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"extracting features using.... {device}")
+    list_features = []
+    list_labels = []
+    list_subject_id = []
+    list_sample_id = []
+    list_path = []
+    list_frames = []
+    count = 0
+    dataset.set_path_labels(path_csv_dataset)
+    dataloader = DataLoader(dataset, 
+                batch_size=batch_size_feat_extraction,
+                shuffle=False,
+                collate_fn=dataset._custom_collate_fn)
+    backbone.model.to(device)
+    backbone.model.eval()
+    count = 0
+    start = time.time()
+    with torch.no_grad():
+      for data, labels, subject_id,sample_id, path, list_sampled_frames in dataloader:
+        data = data.to(device)
+        with torch.no_grad():
+          feature = backbone.forward_features(x=data) # [1,8,14,14,768]
+        feature = torch.mean(feature,dim=pooling_embedding_reduction.value,keepdim=True)
+        print(f'feature shape {feature.shape}')
+        list_frames.append(list_sampled_frames)
+        list_features.append(feature.detach().cpu())
+        list_labels.append(labels)
+        list_sample_id.append(sample_id)
+        list_subject_id.append(subject_id)
+        list_path.append(path)
+        count += 1
+        print(f'\nBatch {count}/{len(dataloader)}')
+        print(f'GPU:\n Free : {torch.cuda.mem_get_info()[0]/1024/1024/1024:.2f} GB \n total: {torch.cuda.mem_get_info()[1]/1024/1024/1024:.2f} GB\n')
+        del data, feature
+        torch.cuda.empty_cache()
+        end = time.time()
+        print(f'Elapsed time: {((end - start)//60//60):.0f} h {(((end - start)//60%60)):.0f} m {(((end - start)%60)):.0f} s')
+        expected_end = (end - start) * (len(dataloader) / count)
+        print(f'Expected time: {expected_end//60//60:.0f} h {expected_end//60%60:.0f} m {expected_end%60:.0f} s')
+        if count % 10 == 0:
+          _write_log_file(f'Batch {count}/{len(dataloader)}')
+        if count % saving_chunk_size == 0:
+          dict_data = {
+            'features': torch.cat(list_features,dim=0),
+            'list_labels': torch.cat(list_labels,dim=0),
+            'list_subject_id': torch.cat(list_subject_id).squeeze(),
+            'list_sample_id': torch.cat(list_sample_id),
+            'list_path': np.concatenate(list_path),
+            'list_frames': torch.cat(list_frames,dim=0)
+          }
+          dict_data_size = dict_data["features"].element_size()*dict_data["features"].nelement()/1024/1024
+          tools.save_dict_data(dict_data=dict_data,
+                    saving_folder_path=os.path.join(saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)))
+          _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} with size {dict_data_size:.2f} MB \n time elapsed: {((end - start)//60//60):.0f} h {(((end - start)//60%60)):.0f} m {(((end - start)%60)):.0f} s\n')
+          list_features = []
+          list_labels = []
+          list_subject_id = []
+          list_sample_id = []
+          list_path = []
+          list_frames = []
+          del dict_data
+    backbone.model.to('cpu')
+    if len(list_features)>0:
+      dict_data = {
+        'features': torch.cat(list_features,dim=0),
+        'list_labels': torch.cat(list_labels,dim=0),
+        'list_subject_id': torch.cat(list_subject_id).squeeze(),
+        'list_sample_id': torch.cat(list_sample_id),
+        'list_path': np.concatenate(list_path),
+        'list_frames': torch.cat(list_frames,dim=0)
+      }
+      tools.save_dict_data(dict_data=dict_data,
+                  saving_folder_path=os.path.join(saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)))
+      _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} \n')
+  print('Model type:',model_type)
+  
+  preprocess_align = False
+  preprocess_crop_detection = False
+  preprocess_frontalize = True
+  
+  custom_ds = customDataset(path_dataset=path_dataset,
+                path_labels=path_labels,
+                sample_frame_strategy=sample_frame_strategy,
+                stride_window=16,
+                clip_length=16,
+                preprocess_align=preprocess_align,
+                preprocess_frontalize=preprocess_frontalize,
+                preprocess_crop_detection=preprocess_crop_detection,
+                saving_folder_path_extracted_video=os.path.join('partA','video','features','samples_16_frontalized_fixed','video'))
+  
+  backbone_model = backbone(model_type=model_type)
+  config_dict = {
+    'path_dataset': path_dataset,
+    'path_labels': path_labels,
+    'model_type': model_type,
+    'pooling_embedding_reduction': pooling_embedding_reduction,
+    'pooling_clips_reduction': pooling_clips_reduction,
+    'sample_frame_strategy': sample_frame_strategy,
+    'stride_window': 16,
+    'clip_length': 16,
+    'preprocess_align': preprocess_align,
+    'preprocess_frontalize': preprocess_frontalize,
+    'preprocess_crop_detection': preprocess_crop_detection,
+    'batch_size_feat_extraction': 1,
+  }
+  if not os.path.exists(saving_folder_path):
+    os.makedirs(saving_folder_path)
+  with open(os.path.join(saving_folder_path,'config_dict.pkl'),'wb') as f:
+    pickle.dump(config_dict,f)
+    print(f'config_dict saved in {os.path.join(saving_folder_path,"config_dict.pkl")}')
+  with open(os.path.join(saving_folder_path,'config_dict.txt'),'w') as f:
+    for k,v in config_dict.items():
+      f.write(f'{k}: {v}\n')
+    print(f'config txt saved in {os.path.join(saving_folder_path,"config_dict.txt")}')
+  _extract_features(dataset=custom_ds,
+                  path_csv_dataset=path_labels,
+                  batch_size_feat_extraction=1,
+                  backbone=backbone_model)
+  gc.collect()
+  torch.cuda.empty_cache()
+  
+  
+if __name__ == "__main__":
+  parser = argparse.ArgumentParser(description='Extract features from video dataset.')
+  parser.add_argument('--csv_idx', type=str, required=True, help='CSV index to use for the dataset.')
+  parser.add_argument('--g_path', type=int, required=False, help='Add /equilibrium/fvilli/ to the path if g_path != 0', default=0)
+  parser.add_argument('--model_type', type=str, required=False, default="B")
+  parser.add_argument('--saving_after', type=int, required=False, default=100,help='Number of batch to save in one file')
+  parser.add_argument('--prep_al', action='store_true', help='Preprocess align')
+  parser.add_argument('--prep_crop', action='store_true', help='Preprocess crop')
+  parser.add_argument('--prep_front', action='store_true', help='Preprocess frontalize')
+  args = parser.parse_args()
+  print(args)
+  main(csv_index=str(args.csv_idx),
+       global_path=args.g_path,
+       model_type=args.model_type,
+       saving_chunk_size=args.saving_after,
+       preprocess_align=args.prep_al,
+       preprocess_crop_detection=args.prep_crop,
+       preprocess_frontalize=args.prep_front)
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
