@@ -12,8 +12,10 @@ import pickle
 import gc
 import argparse
 
-def main(csv_index,global_path,model_type,saving_chunk_size=100,  preprocess_align = False,
-         preprocess_crop_detection = False,preprocess_frontalize = True):
+def main(model_type,saving_chunk_size=100,  preprocess_align = False,
+         preprocess_crop_detection = False,preprocess_frontalize = True,path_dataset=None,path_labels=None,
+         log_file_path=None,root_saving_folder_path=None
+         ):
   if model_type == 'B':
     model_type = MODEL_TYPE.VIDEOMAE_v2_B
   elif model_type == 'S':
@@ -24,18 +26,7 @@ def main(csv_index,global_path,model_type,saving_chunk_size=100,  preprocess_ali
   pooling_embedding_reduction = EMBEDDING_REDUCTION.MEAN_SPATIAL
   pooling_clips_reduction = CLIPS_REDUCTION.NONE
   sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
-  if global_path:
-    path_dataset = os.path.join(GLOBAL_PATH.NAS_PATH,'partA','video','video')
-    path_labels = os.path.join(GLOBAL_PATH.NAS_PATH,'partA','starting_point',f'samples_exc_no_detection{csv_index}.csv')
-    log_file_path = os.path.join(GLOBAL_PATH.NAS_PATH,'partA','video','features',f'samples_16_cropped_aligned{csv_index}','log_file.txt')
-    saving_folder_path = os.path.join(GLOBAL_PATH.NAS_PATH,'partA','video','features',f'samples_16_cropped_aligned{csv_index}')
-    print(f'saving_folder_path: {saving_folder_path}')
-  else:
-    path_dataset = os.path.join('partA','video','video')
-    path_labels = os.path.join('partA','starting_point',f'samples_exc_no_detection{csv_index}.csv')
-    log_file_path = os.path.join('partA','video','features',f'samples_16_cropped_aligned{csv_index}','log_file.txt')
-    saving_folder_path = os.path.join('partA','video','features',f'samples_16_cropped_aligned{csv_index}')
-
+  
   def _write_log_file(log_message):
     if not os.path.exists(os.path.dirname(log_file_path)):
       os.makedirs(os.path.dirname(log_file_path))
@@ -96,8 +87,8 @@ def main(csv_index,global_path,model_type,saving_chunk_size=100,  preprocess_ali
           }
           dict_data_size = dict_data["features"].element_size()*dict_data["features"].nelement()/1024/1024
           tools.save_dict_data(dict_data=dict_data,
-                    saving_folder_path=os.path.join(saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)))
-          _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} with size {dict_data_size:.2f} MB \n time elapsed: {((end - start)//60//60):.0f} h {(((end - start)//60%60)):.0f} m {(((end - start)%60)):.0f} s\n')
+                    saving_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)))
+          _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(root_saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} with size {dict_data_size:.2f} MB \n time elapsed: {((end - start)//60//60):.0f} h {(((end - start)//60%60)):.0f} m {(((end - start)%60)):.0f} s\n')
           list_features = []
           list_labels = []
           list_subject_id = []
@@ -116,13 +107,9 @@ def main(csv_index,global_path,model_type,saving_chunk_size=100,  preprocess_ali
         'list_frames': torch.cat(list_frames,dim=0)
       }
       tools.save_dict_data(dict_data=dict_data,
-                  saving_folder_path=os.path.join(saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)))
-      _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} \n')
+                  saving_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)))
+      _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(root_saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} \n')
   print('Model type:',model_type)
-  
-  preprocess_align = False
-  preprocess_crop_detection = False
-  preprocess_frontalize = True
   
   custom_ds = customDataset(path_dataset=path_dataset,
                 path_labels=path_labels,
@@ -132,7 +119,7 @@ def main(csv_index,global_path,model_type,saving_chunk_size=100,  preprocess_ali
                 preprocess_align=preprocess_align,
                 preprocess_frontalize=preprocess_frontalize,
                 preprocess_crop_detection=preprocess_crop_detection,
-                saving_folder_path_extracted_video=os.path.join('partA','video','features','samples_16_frontalized_fixed','video'))
+                saving_folder_path_extracted_video=None)
   
   backbone_model = backbone(model_type=model_type)
   config_dict = {
@@ -149,15 +136,15 @@ def main(csv_index,global_path,model_type,saving_chunk_size=100,  preprocess_ali
     'preprocess_crop_detection': preprocess_crop_detection,
     'batch_size_feat_extraction': 1,
   }
-  if not os.path.exists(saving_folder_path):
-    os.makedirs(saving_folder_path)
-  with open(os.path.join(saving_folder_path,'config_dict.pkl'),'wb') as f:
+  if not os.path.exists(root_saving_folder_path):
+    os.makedirs(root_saving_folder_path)
+  with open(os.path.join(root_saving_folder_path,'config_dict.pkl'),'wb') as f:
     pickle.dump(config_dict,f)
-    print(f'config_dict saved in {os.path.join(saving_folder_path,"config_dict.pkl")}')
-  with open(os.path.join(saving_folder_path,'config_dict.txt'),'w') as f:
+    print(f'config_dict saved in {os.path.join(root_saving_folder_path,"config_dict.pkl")}')
+  with open(os.path.join(root_saving_folder_path,'config_dict.txt'),'w') as f:
     for k,v in config_dict.items():
       f.write(f'{k}: {v}\n')
-    print(f'config txt saved in {os.path.join(saving_folder_path,"config_dict.txt")}')
+    print(f'config txt saved in {os.path.join(root_saving_folder_path,"config_dict.txt")}')
   _extract_features(dataset=custom_ds,
                   path_csv_dataset=path_labels,
                   batch_size_feat_extraction=1,
@@ -165,25 +152,43 @@ def main(csv_index,global_path,model_type,saving_chunk_size=100,  preprocess_ali
   gc.collect()
   torch.cuda.empty_cache()
   
-  
+def generate_path(path):
+  return os.path.join(GLOBAL_PATH.NAS_PATH,path)
+
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description='Extract features from video dataset.')
-  parser.add_argument('--csv_idx', type=str, required=True, help='CSV index to use for the dataset.')
-  parser.add_argument('--g_path', type=int, required=False, help='Add /equilibrium/fvilli/ to the path if g_path != 0', default=0)
+  parser.add_argument('--gp', action='store_true', help='Global path')
   parser.add_argument('--model_type', type=str, required=False, default="B")
   parser.add_argument('--saving_after', type=int, required=False, default=100,help='Number of batch to save in one file')
   parser.add_argument('--prep_al', action='store_true', help='Preprocess align')
   parser.add_argument('--prep_crop', action='store_true', help='Preprocess crop')
   parser.add_argument('--prep_front', action='store_true', help='Preprocess frontalize')
+  parser.add_argument('--path_dataset', type=str, default=os.path.join('partA','video','video'), help='Path to dataset')
+  parser.add_argument('--path_labels', type=str, default=os.path.join('partA','starting_point','samples_exc_no_detection.csv'), help='Path to csv file')
+  parser.add_argument('--saving_folder_path', type=str, default=os.path.join('partA','video','features','samples_16_cropped_aligned'), help='Path to saving folder')
+  parser.add_argument('--log_file_path', type=str, default=os.path.join('partA','video','features','samples_16_cropped_aligned','log_file.txt'), help='Path to log file')
+  # prompt example complete: python3 extract_feature.py --csv_idx 1 --gp --model_type B --saving_after 100 --prep_al --prep_crop --prep_front --path_dataset partA/video/video --path_labels partA/starting_point/samples_exc_no_detection.csv --log_file_path partA/video/features/samples_16_cropped_aligned/log_file.txt --saving_folder_path partA/video/features/samples_16_cropped_aligned
   args = parser.parse_args()
+  if args.gp:
+    args.path_dataset = generate_path(args.path_dataset)
+    args.path_labels = generate_path(args.path_labels)
+    args.log_file_path = generate_path(args.log_file_path)
+    args.saving_folder_path = generate_path(args.saving_folder_path)
+    print(f'\n\npath_dataset: {args.path_dataset}\n')
+    print(f'path_labels: {args.path_labels}')
+    print(f'log_file_path: {args.log_file_path}')
+    print(f'saving_folder_path: {args.saving_folder_path}')
   print(args)
-  main(csv_index=str(args.csv_idx),
-       global_path=args.g_path,
-       model_type=args.model_type,
+  main(model_type=args.model_type,
        saving_chunk_size=args.saving_after,
        preprocess_align=args.prep_al,
        preprocess_crop_detection=args.prep_crop,
-       preprocess_frontalize=args.prep_front)
+       preprocess_frontalize=args.prep_front,
+       path_dataset=args.path_dataset,
+       path_labels=args.path_labels,
+       log_file_path=args.log_file_path,
+       root_saving_folder_path=args.saving_folder_path,
+       )
   
   
   
