@@ -60,7 +60,7 @@ class head:
       # print(f'train_loss: {dict_results["train_losses"][-1]} \t test_loss: {dict_results["test_losses"][-1]}')
 
     elif isinstance(self.head, HeadGRU):
-      dict_results = self.head.start_train_test(X_train, y_train, sample_ids_train, subject_ids_train,
+      dict_results = self.head.start_train(X_train, y_train, sample_ids_train, subject_ids_train,
                              X_test, y_test, subject_ids_test,
                              num_epochs, init_network=init_network, criterion=criterion, optimizer=optimizer,
                              regularization_loss=regularization_loss, regularization_lambda=regularization_lambda)
@@ -497,8 +497,8 @@ class HeadGRU:
                             self.reconstruction_factor)
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
   
-  def start_train_test(self, X_train, y_train, subject_ids_train,train_csv_path,
-                       X_test, y_test, subject_ids_test,sample_ids_train, sample_ids_test, 
+  def start_train(self, X_train, y_train, subject_ids_train,train_csv_path,
+                       X_val, y_val, subject_ids_val,sample_ids_train, sample_ids_val, 
                        shuffle_video_chunks=True,shuffle_training_batch=True,
                        num_epochs=10, batch_size=2, criterion=nn.L1Loss(), # fix batch_size = 1
                        optimizer_fn=optim.Adam, lr=0.0001, saving_path=None, init_weights=True, round_output_loss=False,
@@ -525,23 +525,22 @@ class HeadGRU:
                                                                                                                    y=y_train,
                                                                                                                    sample_ids=sample_ids_train,
                                                                                                                    subject_ids=subject_ids_train)
-    padded_X_test, packed_y_test, packed_subject_ids_test, len_seq_test = self._group_features_by_sample_id(X=X_test,
-                                                                                                            y=y_test,
-                                                                                                            sample_ids=sample_ids_test,
-                                                                                                            subject_ids=subject_ids_test)
+    padded_X_val, packed_y_val, packed_subject_ids_val, len_seq_val = self._group_features_by_sample_id(X=X_val,
+                                                                                                            y=y_val,
+                                                                                                            sample_ids=sample_ids_val,
+                                                                                                            subject_ids=subject_ids_val)
 
     extension_for_length_seq = X_embed_temp_size/(self.input_size/X_emb_dim) # is 1 if temp_size=8 is considered in input_dim, otherwise I have to considere the extension in the padding for computing the real length of the video
-    self.reconstruction_factor = extension_for_length_seq * len_seq_test
-    print(f'reconstruction_factor: {self.reconstruction_factor} = {extension_for_length_seq} * {len_seq_test}')
+    self.reconstruction_factor = extension_for_length_seq * len_seq_val
     train_dataset = TensorDataset(padded_X_train, 
                                   packed_y_train,           # [nr_videos]
                                   packed_subject_ids_train, # [nr_videos]
                                   length_seq_train * extension_for_length_seq) # [nr_videos] To reconstruct the original length of the video (multiplied by temp_size)
     
-    test_dataset = TensorDataset(padded_X_test,   
-                                 packed_y_test,
-                                 packed_subject_ids_test,
-                                 len_seq_test * extension_for_length_seq)
+    test_dataset = TensorDataset(padded_X_val,   
+                                 packed_y_val,
+                                 packed_subject_ids_val,
+                                 len_seq_val * extension_for_length_seq)
 
     train_loader = None
     try:
@@ -556,7 +555,7 @@ class HeadGRU:
       train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle_training_batch)
 
     # catch
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    val_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
     # Device and optimizer setup
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -567,19 +566,21 @@ class HeadGRU:
     optimizer = optimizer_fn(self.model.parameters(), lr=lr)
 
     # Unique classes and subjects
-    unique_classes = np.unique(np.concatenate((y_train, y_test)))
-    unique_subjects = np.unique(np.concatenate((subject_ids_train, subject_ids_test)))
+    unique_classes = np.unique(np.concatenate((y_train, y_val)))
+    unique_subjects = np.unique(np.concatenate((subject_ids_train, subject_ids_val)))
 
     train_losses = []
-    test_losses = []
-    train_loss_per_class = np.zeros((num_epochs, unique_classes.shape[0]))
-    test_loss_per_class = np.zeros((num_epochs, unique_classes.shape[0]))
+    val_losses = []
+    nr_uniq_classes =list(range((max(unique_classes)+2)))[-1] # to get all classes in the confusion matrix, sometimes there are missing classes
+    # TOFIX: unique_classes.shape[0] is not the number of classes if there are missing classes
+    train_loss_per_class = np.zeros((num_epochs, nr_uniq_classes )) 
+    val_loss_per_class = np.zeros((num_epochs, nr_uniq_classes ))
     train_loss_per_subject = np.zeros((num_epochs, unique_subjects.shape[0]))
-    test_loss_per_subject = np.zeros((num_epochs, unique_subjects.shape[0]))
+    val_loss_per_subject = np.zeros((num_epochs, unique_subjects.shape[0]))
     # train_accuracy_per_class = np.zeros((num_epochs, unique_classes.shape[0] + 1)) # +1 for the null class
     # test_accuracy_per_class = np.zeros((num_epochs, unique_classes.shape[0] + 1)) # +1 for the null class
-    train_confusion_matricies = [ConfusionMatrix(task="multiclass",num_classes=unique_classes.shape[0] + 1) for _ in range(num_epochs)]
-    test_confusion_matricies = [ConfusionMatrix(task="multiclass",num_classes=unique_classes.shape[0] + 1) for _ in range(num_epochs)]
+    train_confusion_matricies = [ConfusionMatrix(task="multiclass",num_classes=(nr_uniq_classes+1) + 1) for _ in range(num_epochs)]
+    val_confusion_matricies = [ConfusionMatrix(task="multiclass",num_classes=(nr_uniq_classes+1) + 1) for _ in range(num_epochs)]
     
     best_test_loss = float('inf')
     best_model_state = None
@@ -593,7 +594,7 @@ class HeadGRU:
     for epoch in range(num_epochs):
       self.model.train()
       epoch_loss = 0.0
-      class_loss = np.zeros(unique_classes.shape[0])
+      class_loss = np.zeros(nr_uniq_classes)
       subject_loss = np.zeros(unique_subjects.shape[0])
       # class_counts = np.zeros(unique_classes.shape[0])
       # subject_counts = np.zeros(unique_subjects.shape[0])
@@ -608,7 +609,7 @@ class HeadGRU:
           batch_y = batch_y.squeeze(0)
           batch_subjects = batch_subjects.squeeze(0)
           batch_real_length_padded_feat = batch_real_length_padded_feat.squeeze(0)
-        print(f'batch_subjects: {batch_subjects}')
+        # print(f'batch_subjects: {batch_subjects}')
         # print(f'batch_X shape: {batch_X.shape}')
         # print(f'batch_y shape: {batch_y.shape}')
         # print(f'batch_subjects shape: {batch_subjects.shape}')
@@ -626,7 +627,7 @@ class HeadGRU:
         packed_input = pack_padded_sequence(batch_X, batch_real_length_padded_feat, batch_first=True, enforce_sorted=False)
         # print(f'X_tmp.shape: {X_tmp.shape}')
         # print packed input shape
-        print(f'packed_input.data.shape: {packed_input.data.shape}')
+        # print(f'packed_input.data.shape: {packed_input.data.shape}')
         outputs = self.model.forward(x=packed_input, pred_only_last_time_step=True)
         # print(f'outputs.shape: {outputs.shape}')
         if round_output_loss:
@@ -658,14 +659,16 @@ class HeadGRU:
             subj_idx = np.where(unique_subjects == subj)[0][0]
             subject_loss[subj_idx] += criterion(outputs[mask], batch_y[mask]).item()
             # subject_counts[subj_idx] += mask.sum().item()
-        outputs = torch.round(outputs)
-        output_postprocessed = torch.where((outputs >= 0) & (outputs < unique_classes.shape[0]), outputs, torch.tensor(unique_classes.shape[0], device=device)) #from 0 to unique_classes.shape[0] - 1
-        train_confusion_matricies[epoch].update(output_postprocessed.detach().cpu(),
+        outputs = torch.round(outputs).detach().cpu() # round to the nearest even number if 0.5
+        # output_postprocessed = torch.where((outputs >= 0) & (outputs < unique_classes.shape[0]), outputs, torch.tensor(unique_classes.shape[0], device=device)) #from 0 to unique_classes.shape[0] - 1
+        mask = torch.isin(outputs, torch.tensor(unique_classes))
+        output_postprocessed = outputs*mask
+        train_confusion_matricies[epoch].update(output_postprocessed,
                                                 batch_y.detach().cpu())
         
         unique_batch_class, count_class = torch.unique(batch_y.detach().cpu(), return_counts=True)
         unique_batch_subject, count_subject = torch.unique(batch_subjects, return_counts=True)
-        count_array = torch.zeros(unique_classes.shape[0]).to(int)
+        count_array = torch.zeros(nr_uniq_classes).to(int) 
         count_array[unique_batch_class.to(int)] = count_class
         free_gpu_mem,total_gpu_mem = torch.cuda.mem_get_info()
         total_gpu_mem = total_gpu_mem / 1024 ** 3
@@ -698,7 +701,7 @@ class HeadGRU:
       # print(f'Compute conf matrix calc {epoch}')
       # dict_precision_recall = tools.get_accuracy_from_confusion_matrix(test_confusion_matricies[epoch])
       current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-      print(f'Epoch [{epoch+1}/{num_epochs}] | {current_time}')
+      print(f'Epoch [{epoch}/{num_epochs}] | {current_time}')
       # test_accuracy_per_class[epoch] = dict_eval['test_accuracy_per_class']
       print(f' Train')
       print(f'  Loss             : {avg_train_loss:.4f} ')
@@ -709,7 +712,7 @@ class HeadGRU:
       # print(f'  Prec. weigh.     : {dict_precision_recall["weighted_precision"]}')
       # Save training log to an external file
       with open(log_file_path, 'a') as log_file:
-        log_file.write(f'Epoch [{epoch+1}/{num_epochs}] | {current_time}\n')
+        log_file.write(f'Epoch [{epoch}/{num_epochs}] | {current_time}\n')
         log_file.write(f' Train\n')
         log_file.write(f'  Loss             : {avg_train_loss:.4f}\n')
         log_file.write(f'  Loss per_class   : {train_loss_per_class[epoch]}\n')
@@ -722,17 +725,17 @@ class HeadGRU:
 
       # Evaluate
       dict_eval = self.evaluate(
-        test_loader=test_loader, criterion=criterion, device=device, unique_classes=unique_classes,
-        unique_subjects= unique_subjects, test_confusion_matricies= test_confusion_matricies[epoch],
+        val_loader=val_loader, criterion=criterion, device=device, unique_classes=unique_classes,nr_uniq_classes=nr_uniq_classes,
+        unique_subjects= unique_subjects, val_confusion_matricies= val_confusion_matricies[epoch],
         round_output_loss=round_output_loss, log_file_path=log_file_path)
       # test_accuracy_per_class[epoch] = dict_eval['test_accuracy_per_class']
       # Save test loss
-      test_losses.append(dict_eval['test_loss'])
-      test_loss_per_class[epoch] = dict_eval['test_loss_per_class']
-      test_loss_per_subject[epoch] = dict_eval['test_loss_per_subject']
+      val_losses.append(dict_eval['val_loss'])
+      val_loss_per_class[epoch] = dict_eval['val_loss_per_class']
+      val_loss_per_subject[epoch] = dict_eval['val_loss_per_subject']
       # Save the best model
-      if dict_eval['test_loss'] < best_test_loss or best_model_epoch == -1:
-        best_test_loss = dict_eval['test_loss']
+      if dict_eval['val_loss'] < best_test_loss or best_model_epoch == -1:
+        best_test_loss = dict_eval['val_loss']
         best_model_state = self.model.state_dict()
         best_model_epoch = epoch
 
@@ -750,28 +753,28 @@ class HeadGRU:
       'train_losses': train_losses,
       'train_loss_per_class': train_loss_per_class,
       'train_loss_per_subject': train_loss_per_subject,
-      'test_losses': test_losses,
-      'test_loss_per_class': test_loss_per_class,
-      'test_loss_per_subject': test_loss_per_subject,
+      'val_losses': val_losses,
+      'val_loss_per_class': val_loss_per_class,
+      'val_loss_per_subject': val_loss_per_subject,
       'y_unique': unique_classes,
       'subject_ids_unique': unique_subjects,
       # 'train_accuracy_per_class': train_accuracy_per_class,
       # 'test_accuracy_per_class': test_accuracy_per_class,
       'train_confusion_matricies': train_confusion_matricies,
-      'test_confusion_matricies': test_confusion_matricies,
+      'val_confusion_matricies': val_confusion_matricies,
       'best_model_idx': best_model_epoch,
       'best_model_state': best_model_state
     }
 
-  def evaluate(self, test_loader, criterion, device, unique_classes, unique_subjects, test_confusion_matricies, round_output_loss=True,log_file_path=None):
+  def evaluate(self, val_loader, criterion, device,nr_uniq_classes, unique_classes, unique_subjects, val_confusion_matricies, round_output_loss=True,log_file_path=None,is_test=False):
     self.model.eval()
     # self.model.to(device)
-    avg_test_loss = 0.0
-    test_loss_per_class = np.zeros(unique_classes.shape[0])
+    avg_val_loss = 0.0
+    val_loss_per_class = np.zeros(nr_uniq_classes)
     subject_loss = np.zeros(unique_subjects.shape[0])
 
     with torch.no_grad():
-      for batch_X, batch_y, batch_subjects, batch_real_length_padded_feat in test_loader:
+      for batch_X, batch_y, batch_subjects, batch_real_length_padded_feat in val_loader:
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
         # print(f'batch_X.shape: {batch_X.shape}')
         # Forward pass
@@ -780,9 +783,11 @@ class HeadGRU:
         if round_output_loss:
           outputs = torch.round(outputs)
         loss = criterion(outputs, batch_y)
-        avg_test_loss += loss.item()
-
-        output_postprocessed = torch.where((outputs >= 0) & (outputs < unique_classes.shape[0]), outputs, torch.tensor(unique_classes.shape[0], device=device))
+        avg_val_loss += loss.item()
+        outputs_cpu = torch.round(outputs.detach().cpu()) # round to the nearest even number if 0.5
+        mask = torch.isin(outputs_cpu, torch.tensor(unique_classes))
+        output_postprocessed = outputs_cpu*mask
+        # output_postprocessed = torch.where((outputs >= 0) & (outputs < unique_classes.shape[0]), outputs, torch.tensor(unique_classes.shape[0], device=device))
         # Compute per-class and per-subject losses
         for cls in unique_classes:
           mask = (batch_y == cls).reshape(-1)
@@ -790,41 +795,50 @@ class HeadGRU:
             class_idx = np.where(unique_classes == cls)[0][0]
             batch_y_class = batch_y[mask].reshape(-1, 1)
             outputs_class = outputs[mask].reshape(-1, 1)
-            test_loss_per_class[class_idx] += criterion(outputs_class, batch_y_class).item()
+            val_loss_per_class[class_idx] += criterion(outputs_class, batch_y_class).item()
 
         for subj in unique_subjects:
           mask = (batch_subjects == subj).reshape(-1)
           if mask.any():
             subj_idx = np.where(unique_subjects == subj)[0][0]
             subject_loss[subj_idx] += criterion(outputs[mask], batch_y[mask]).item()
-        test_confusion_matricies.update(output_postprocessed.detach().cpu(),batch_y.detach().cpu())
+        val_confusion_matricies.update(output_postprocessed.detach().cpu(),batch_y.detach().cpu())
         del batch_y, batch_X
         torch.cuda.empty_cache()
     # Class and subject losses
-    avg_loss = avg_test_loss / len(test_loader)
+    avg_loss = avg_val_loss / len(val_loader)
     # test_confusion_matricies.compute()
     # dict_precision_recall = tools.get_accuracy_from_confusion_matrix(test_confusion_matricies)
-    print(' Test')
+    print(' Val')
     print(f'  Loss             : {avg_loss:.4f} ')
-    print(f'  Loss per_class   : {test_loss_per_class}')
+    print(f'  Loss per_class   : {val_loss_per_class}')
     # print(f'  Prec. per_class  : {dict_precision_recall["precision_per_class"]}')
     # print(f'  Prec. macro      : {dict_precision_recall["macro_precision"]}')
     # print(f'  Prec. micro      : {dict_precision_recall["micro_precision"]}')
     # print(f'  Prec. weigh.     : {dict_precision_recall["weighted_precision"]}')
     if log_file_path:
       with open(log_file_path, 'a') as log_file:
-        log_file.write(f' Test\n')
+        log_file.write(f' Val\n')
         log_file.write(f'  Loss             : {avg_loss:.4f}\n')
-        log_file.write(f'  Loss per_class   : {test_loss_per_class}\n')
+        log_file.write(f'  Loss per_class   : {val_loss_per_class}\n')
         # log_file.write(f'  Prec. per_class  : {dict_precision_recall["precision_per_class"]}\n')
         # log_file.write(f'  Prec. macro      : {dict_precision_recall["macro_precision"]}\n')
         # log_file.write(f'  Prec. micro      : {dict_precision_recall["micro_precision"]}\n')
         # log_file.write(f'  Prec. weigh.     : {dict_precision_recall["weighted_precision"]}\n')
         log_file.write('\n')
-    return {
-      'test_loss':avg_loss,
-      'test_loss_per_class':  test_loss_per_class,
-      'test_loss_per_subject': subject_loss}
+    if not is_test:
+      return {
+        'val_loss':avg_loss,
+        'val_loss_per_class':  val_loss_per_class,
+        'val_loss_per_subject': subject_loss
+        }
+    else:
+      return{
+        'test_loss':avg_loss,
+        'test_loss_per_class':  val_loss_per_class,
+        'test_loss_per_subject': subject_loss
+        }
+      
 
   def get_embeddings(self, X,sample_id,subject_id, device=None):
     """
@@ -915,7 +929,7 @@ class CrossValidationGRU:
       # print('y_train shape', y_train.shape)
       # print('groups_train shape', groups_train.shape)
       # Train and test the model
-      fold_result = model.start_train_test(
+      fold_result = model.start_train(
         X_train, y_train, groups_train, X_test, y_test, groups_test,
         num_epochs=num_epochs, batch_size=batch_size, criterion=criterion,
         optimizer_fn=optimizer_fn, lr=lr, init_network=init_network,
