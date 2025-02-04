@@ -104,7 +104,6 @@ def plot_mae_per_class(unique_classes, mae_per_class, title='', count_classes=No
   plt.ylabel('Mean Absolute Error')
   plt.xticks(unique_classes)  # Show each element in x-axis
   plt.title(f'Mean Absolute Error per Class {title}')
-  plt.close()
   
   if count_classes is not None:
     for cls,count in count_classes.items():
@@ -114,6 +113,7 @@ def plot_mae_per_class(unique_classes, mae_per_class, title='', count_classes=No
     plt.savefig(saving_path)
   else:
     plt.show()
+  plt.close()
 
 def get_accuracy_from_confusion_matrix(confusion_matrix):
   """
@@ -205,7 +205,7 @@ def plot_accuracy_confusion_matrix(confusion_matricies, type_conf,title='', savi
       print(f'Plot {key} over Epochs {title} saved to {path}.png')
     else:
       plt.show()
-    
+    plt.close()
     #Plot test results  
     # plt.figure(figsize=(10, 5))
     # plt.plot(test_list_key_values, label=labels_test)
@@ -239,6 +239,7 @@ def plot_mae_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_sub
     print(f'Plot MAE per subject saved to {saving_path}.png')
   else:
     plt.show()
+  plt.close()
 
 def plot_losses(train_losses, test_losses, saving_path=None):
   plt.figure(figsize=(10, 5))
@@ -255,6 +256,7 @@ def plot_losses(train_losses, test_losses, saving_path=None):
     print(f'Plot losses saved to {saving_path}.png')
   else:
     plt.show()
+  plt.close()
 
 def _generate_train_test_validation(csv_path, saving_path,train_size=0.8,val_size=0.1,test_size=0.1, random_state=42):
   """
@@ -396,39 +398,39 @@ def read_split_indices(folder_path):
     split_indices = json.load(f)
   return split_indices
 
-def generate_plot_train_test_results(dict_results, count_y_train, count_y_test, count_subject_ids_train, count_subject_ids_test, saving_path):  
+def generate_plot_train_test_results(dict_results,best_model_idx, count_y_train, count_y_test, count_subject_ids_train, count_subject_ids_test, saving_path):  
   saving_path_losses = os.path.join(saving_path, 'losses')
   if not os.path.exists(saving_path_losses):
     os.makedirs(saving_path_losses)
   print(f'saving_path_losses: {saving_path_losses}')
   plot_mae_per_class(title='training', 
-                     mae_per_class=dict_results['train_loss_per_class'][-1], 
+                     mae_per_class=dict_results['train_loss_per_class'][best_model_idx], 
                      unique_classes=dict_results['y_unique'], count_classes=count_y_train,
-                     saving_path=os.path.join(saving_path_losses,'train_mae_per_class.png'))
+                     saving_path=os.path.join(saving_path_losses,f'train_mae_per_class_{best_model_idx}.png'))
   plot_mae_per_class(title='test',
-                     mae_per_class=dict_results['test_loss_per_class'][-1], 
+                     mae_per_class=dict_results['val_loss_per_class'][best_model_idx], 
                      unique_classes=dict_results['y_unique'], count_classes=count_y_test,
-                     saving_path=os.path.join(saving_path_losses,'test_mae_per_class.png'))
+                     saving_path=os.path.join(saving_path_losses,f'val_mae_per_class_{best_model_idx}.png'))
   
   plot_mae_per_subject(title='training', 
-                       mae_per_subject=dict_results['train_loss_per_subject'][-1], 
+                       mae_per_subject=dict_results['train_loss_per_subject'][best_model_idx], 
                        uniqie_subject_ids=dict_results['subject_ids_unique'],
                        count_subjects=count_subject_ids_train,
-                       saving_path=os.path.join(saving_path_losses,'train_mae_per_subject.png'))
+                       saving_path=os.path.join(saving_path_losses,f'train_mae_per_subject_{best_model_idx}.png'))
   plot_mae_per_subject(title='test',
-                       mae_per_subject=dict_results['test_loss_per_subject'][-1], 
+                       mae_per_subject=dict_results['val_loss_per_subject'][best_model_idx], 
                        uniqie_subject_ids=dict_results['subject_ids_unique'],
                        count_subjects=count_subject_ids_test,
-                       saving_path=os.path.join(saving_path_losses,'test_mae_per_subject.png'))
+                       saving_path=os.path.join(saving_path_losses,f'val_mae_per_subject_{best_model_idx}.png'))
   
-  plot_losses(dict_results['train_losses'], dict_results['test_losses'], saving_path=os.path.join(saving_path_losses,'train_test_loss.png'))
+  plot_losses(dict_results['train_losses'], dict_results['val_losses'], saving_path=os.path.join(saving_path_losses,'train_val_loss.png'))
       
 def plot_confusion_matrix(confusion_matrix, title, saving_path):
   # confusion_matrix must be from torchmetrics
   # assert not isinstance(confusion_matrix, ConfusionMatrix), 'confusion_matrix must be from torchmetrics.classification'
   fig, _ = confusion_matrix.plot() 
   fig.suptitle(title)
-  fig.savefig(saving_path+'.png')
+  fig.savefig(saving_path)
   plt.close()
 
 def get_unique_subjects_and_classes(csv_path):
@@ -467,8 +469,8 @@ def plot_dataset_distribution(csv_path, total_classes=None,per_class=False, per_
       else:
         plt.show()
       plt.xticks(fontsize=14,rotation=0)
-      
-    def plot_distribution_stacked(unique, title, class_counts,total_classes):
+      plt.close()
+    def plot_distribution_stacked(unique, title, class_counts,total_classes): # suppose that there is at least one sample per class
       # colors = ['blue', 'orange', 'green', 'red', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
       fig, ax = plt.subplots(figsize=(20, 10))
       cmap = plt.get_cmap('tab10')
@@ -476,7 +478,8 @@ def plot_dataset_distribution(csv_path, total_classes=None,per_class=False, per_
       bottom = np.zeros(len(unique))
       for i, (class_id, class_count) in enumerate(class_counts.items()):
         unique_people = np.sum(class_count > 0)
-        ax.bar(unique.astype(str), class_count, bottom=bottom, label=f'{class_id} ({unique_people}/{len(class_count)})',color=cmap[class_id])
+        
+        ax.bar(unique.astype(str), class_count, bottom=bottom, label=f'{class_id} ({unique_people}/{len(class_count)})',color=cmap[i])
         bottom += class_count
       ax.set_xlabel('User ID', fontsize=14)
       ax.set_ylabel('# Samples', fontsize=14)
@@ -491,7 +494,7 @@ def plot_dataset_distribution(csv_path, total_classes=None,per_class=False, per_
       else:
         plt.show()
       plt.xticks(fontsize=14,rotation=0)
-
+      plt.close()
     #Extract csv and postprocess
     csv_array = pd.read_csv(csv_path).to_numpy()  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
     list_samples = []
@@ -557,6 +560,7 @@ def plot_dataset_distribution_mean_std_duration(csv_path, video_path=None, per_c
       plt.savefig(os.path.join(saving_path,f'{title}_{dataset_name}.png'))
     else:
       plt.show()
+    plt.close()
   
   csv_array=pd.read_csv(csv_path).to_numpy() # subject_id, subject_name, class_id, class_name, sample_id, sample_name
   list_samples=[]
@@ -592,6 +596,7 @@ def plot_prediction_chunks_per_subject(predictions, n_chunks,title,saving_path=N
     plt.savefig(saving_path+'.png')
   else:
     plt.show()
+  plt.close()
 
  
 def compute_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=False,legend_label='', title = '', perplexity=1, saving_path=None,plot=True,cmap='copper'):
@@ -995,3 +1000,33 @@ def get_list_frame_from_video_path(video_path):
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     frame_list.append(frame)
   return frame_list
+
+def plot_bar(data, title, x_label, y_label, saving_path=None):
+  fig, ax = plt.subplots()
+  ax.bar(data.keys(), data.values())
+  ax.set_xlabel(x_label)
+  ax.set_ylabel(y_label)
+  ax.set_title(title)
+  # plt.xticks(rotation=45)
+  plt.tight_layout()
+  if saving_path is not None:
+    plt.savefig(saving_path)
+  else:
+    return fig
+  plt.close()
+
+def subplot_loss(dict_losses,x_label,y_label,list_title, saving_path=None):
+  fig, ax = plt.subplots(len(dict_losses),1, figsize=(20, 20))
+  i = 0
+  for k,v in dict_losses.items():
+    ax[i].bar(range(len(v)), v)
+    ax[i].set_xlabel(x_label)
+    ax[i].set_ylabel(y_label)
+    ax[i].set_title(list_title[i])
+    i+=1
+  plt.tight_layout()
+  if saving_path is not None:
+    plt.savefig(saving_path)
+  else:
+    return fig
+  plt.close()
