@@ -64,7 +64,7 @@ class Model_Advanced: # Scenario_Advanced
       self.head = HeadGRU(**head_params)
     self.path_to_extracted_features = features_folder_saving_path
 
-  def evaluate_from_model(self,path_model_weights, csv_path, log_file_path,criterion=nn.L1Loss(), round_output_loss=False):
+  def evaluate_from_model(self,path_model_weights, csv_path, log_file_path,criterion=nn.L1Loss(), round_output_loss=False,is_test=True):
     """
     Evaluate the model using the specified dataset.
     Parameters:
@@ -85,6 +85,7 @@ class Model_Advanced: # Scenario_Advanced
     subject_ids = dict_feature_extraction['list_subject_id']
     sample_ids = dict_feature_extraction['list_sample_id']
     unique_classes = np.unique(y)
+    nr_uniq_classes =list(range((max(unique_classes)+2)))[-1] 
     test_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=unique_classes.shape[0] + 1)
     # load weights
     self.head.load_state_weights(path=path_model_weights)
@@ -93,15 +94,18 @@ class Model_Advanced: # Scenario_Advanced
                                             subject_ids=subject_ids,
                                             sample_ids=sample_ids,
                                             batch_size=self.batch_size_training)
-    dict_test = self.head.evaluate(test_loader=test_loader,
+    dict_test = self.head.evaluate(val_loader=test_loader,
+                                   val_confusion_matricies=test_confusion_matricies,
+                                   is_test=is_test,
+                                   nr_uniq_classes=nr_uniq_classes,
                                    criterion=criterion, 
                                    device='cuda' if torch.cuda.is_available() else 'cpu',
                                    round_output_loss=round_output_loss,
                                    log_file_path=log_file_path,
-                                   test_confusion_matricies=test_confusion_matricies,
                                    unique_classes=unique_classes,
-                                   unique_subjects=np.unique(subject_ids)
-                                      )
+                                   unique_subjects=np.unique(subject_ids),
+                                   )
+                                      
     return dict_test
   def train(self, train_csv_path, test_csv_path, num_epochs=10, criterion=nn.L1Loss(),
             optimizer_fn=optim.Adam, lr=0.0001,saving_path=None,init_weights=True,round_output_loss=False,
@@ -171,12 +175,12 @@ class Model_Advanced: # Scenario_Advanced
     if isinstance(self.head, HeadGRU):
       print('Training using GRU.....')
       print(train_csv_path)
-      dict_results = self.head.start_train_test(X_train=X_train, y_train=y_train, subject_ids_train=subject_ids_train,
-                                                sample_ids_test=sample_ids_test, 
+      dict_results = self.head.start_train(X_train=X_train, y_train=y_train, subject_ids_train=subject_ids_train,
+                                                sample_ids_val=sample_ids_test, 
                                                 sample_ids_train=sample_ids_train,
-                                                X_test=X_test, 
-                                                y_test=y_test, 
-                                                subject_ids_test=subject_ids_test, 
+                                                X_val=X_test, 
+                                                y_val=y_test, 
+                                                subject_ids_val=subject_ids_test, 
                                                 num_epochs=num_epochs, 
                                                 batch_size=self.batch_size_training,
                                                 criterion=criterion, 
