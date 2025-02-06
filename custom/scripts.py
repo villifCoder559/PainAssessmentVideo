@@ -16,6 +16,7 @@ import time
 import json
 from sklearn.model_selection import StratifiedGroupKFold
 import os
+# import wandb
 
 def get_dict_all_features_from_model(sliding_windows,subject_id_list,classes,folder_path_tsne_results):
   def get_model_advanced(stride_window_in_video=16):
@@ -425,7 +426,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     # print(f' y_labels {y_labels}')
     # print(f' subject_ids {subject_ids}')
     # check is csv array and subject_ids are aligned
-    list_splits_idxs = []
+    list_splits_idxs = [] # contains indices for all k splits
     check_intersection = []
     for _, test_index in sgkf.split(X=torch.zeros(y_labels.shape), y=y_labels, groups=subject_ids): 
       list_splits_idxs.append(test_index)
@@ -448,46 +449,45 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
       test_idx_split = i % k_fold
       val_idx_split = (i + 1) % k_fold
       train_idxs_split = [j for j in range(k_fold) if j != test_idx_split and j != val_idx_split]
-      test_sample_ids = sample_ids[list_splits_idxs[test_idx_split]]
-      val_sample_ids = sample_ids[list_splits_idxs[val_idx_split]]
+      test_sample_ids = sample_ids[list_splits_idxs[test_idx_split]] # video sample_id list for test
+      val_sample_ids = sample_ids[list_splits_idxs[val_idx_split]] # video sample_id list for validation
       train_sample_ids = []
       for idx in train_idxs_split:
-        train_sample_ids.extend(sample_ids[list_splits_idxs[idx]])
+        train_sample_ids.extend(sample_ids[list_splits_idxs[idx]]) # video sample_id list for training
+      
       split_indices = {
-        'test': np.array([test_sample_ids,list_splits_idxs[test_idx_split]]),
-        'val': np.array([val_sample_ids,list_splits_idxs[val_idx_split]]),
-        'train': np.array([train_sample_ids,np.concatenate([list_splits_idxs[idx] for idx in train_idxs_split])])
+        'test': np.array([test_sample_ids,list_splits_idxs[test_idx_split]]),# [sample_ids,indices] for test
+        'val': np.array([val_sample_ids,list_splits_idxs[val_idx_split]]), # [sample_ids,indices] for validation
+        'train': np.array([train_sample_ids,np.concatenate([list_splits_idxs[idx] for idx in train_idxs_split])])# [sample_ids,indices] for training
       }
       saving_path_kth_fold = os.path.join(train_folder_path,f'k{i}_cross_val')
       if not os.path.exists(saving_path_kth_fold):
         os.makedirs(saving_path_kth_fold)
       # Generate csv for train,test and validation
       path_csv_kth_fold = {}
-      for key,v in split_indices.items():
-        csv_data = csv_array[v[1]]
+      for key,v in split_indices.items(): # [train,val,test]
+        csv_data = csv_array[v[1]] # get the data from .csv for the split in the kth fold
         tools.generate_csv(cols=cols, data=csv_data, saving_path=os.path.join(saving_path_kth_fold,f'{key}.csv'))
         path_csv_kth_fold[key] = os.path.join(saving_path_kth_fold,f'{key}.csv')
+      tools.save_split_indices(split_indices,saving_path_kth_fold)
       
-      # tools.save_split_indices(split_indices,saving_path_kth_fold)
-      # list_saving_paths.append(saving_path_kth_fold)
-      # list_path_csv_kth_fold.append(path_csv_kth_fold) 
       for _,csv_path in path_csv_kth_fold.items():
         plot_dataset_distribuition(csv_path=csv_path, 
                                    run_folder_path=saving_path_kth_fold,
                                    total_classes=model_advanced.dataset.total_classes)
-      sub_k_fold_list = [list_splits_idxs[idx] for idx in train_idxs_split]
-      sub_k_fold_list.append(list_splits_idxs[val_idx_split])
+      sub_k_fold_list = [list_splits_idxs[idx] for idx in train_idxs_split] # Get the split for the subfold considering train in kth fold...
+      sub_k_fold_list.append(list_splits_idxs[val_idx_split])               # ... and validation in kth fold
       sub_path_csv_kth_fold = {}
       
-      for sub_idx in range(k_fold-1):
+      for sub_idx in range(k_fold-1): # generate the train-val split for the subfold
         saving_path_kth_sub_fold = os.path.join(saving_path_kth_fold,f'k{i}_cross_val_sub_{sub_idx}')
-        train_sub_idx = [j for j in range(k_fold-1) if j != sub_idx] 
+        train_sub_idx = [j for j in range(k_fold-1) if j != sub_idx] # get the train indices for the subfold excluding the validation
         split_indices = {
-          'val': np.array([sample_ids[sub_k_fold_list[sub_idx]],sub_k_fold_list[sub_idx]]),
-          'train': np.array([sample_ids[np.concatenate([sub_k_fold_list[j] for j in train_sub_idx])],
+          'val': np.array([sample_ids[sub_k_fold_list[sub_idx]],sub_k_fold_list[sub_idx]]), # [sample_ids,indices] for validation
+          'train': np.array([sample_ids[np.concatenate([sub_k_fold_list[j] for j in train_sub_idx])], # [sample_ids,indices] for training
                              np.concatenate([sub_k_fold_list[j] for j in train_sub_idx])])
         }
-        for k,v in split_indices.items():
+        for k,v in split_indices.items(): # generaye csv for train and validation in the subfold
           csv_data = csv_array[v[1]]
           if not os.path.exists(saving_path_kth_sub_fold):
             os.makedirs(saving_path_kth_sub_fold)
@@ -508,6 +508,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
         best_model_epoch = dict_train['dict_results']['best_model_idx']
         dict_k_fold_logs[f'k-{i}_s-{sub_idx}_val-loss'] = dict_train['dict_results']['val_losses'][best_model_epoch]
         dict_k_fold_logs[f'k-{i}_s-{sub_idx}_train-loss'] = dict_train['dict_results']['train_losses'][best_model_epoch]
+        dict_k_fold_logs[f'l-{i}_s-{sub_idx}_train_macro_accuracy'] = dict_train['dict_results']['list_train_macro_accuracy'][best_model_epoch]
+        dict_k_fold_logs[f'l-{i}_s-{sub_idx}_val_macro_accuracy'] = dict_train['dict_results']['list_val_macro_accuracy'][best_model_epoch]
         
         dict_k_fold_logs[f'k-{i}_s-{sub_idx}_val-loss-class-avg'] = np.mean(dict_train['dict_results']['val_loss_per_class'][best_model_epoch])
         dict_k_fold_logs[f'k-{i}_s-{sub_idx}_val-loss-subject-avg'] = np.mean(dict_train['dict_results']['val_loss_per_subject'][best_model_epoch])
@@ -516,6 +518,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
         dict_k_fold_logs[f'k-{i}_s-{sub_idx}_train-loss-subject-avg'] = np.mean(dict_train['dict_results']['train_loss_per_subject'][best_model_epoch])
         
         plot_loss_details(dict_train=dict_train,train_folder_path=saving_path_kth_sub_fold,total_epochs=epochs)
+        # ADD ACCURACY IN CSV FOR TRAIN VAL and TEST
         # tools.generate_plot_train_test_results(dict_results=dict_train['dict_results'], 
         #                               count_subject_ids_train=dict_train['count_subject_ids_train'],
         #                               count_subject_ids_test=dict_train['count_subject_ids_test'],
@@ -538,33 +541,53 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                           }
       
       # use best result model with the test set
-      list_losses = [dict_train['dict_results']['val_losses'] for dict_train in fold_results_kth]
-      best_model_subfolder_idx = np.argmin([losses[best_results_idx[i]] for i,losses in enumerate(list_losses)])
+      list_valid_losses = [dict_train['dict_results']['val_losses'] for dict_train in fold_results_kth]
+      # get the best model according to the validation loss
+      best_model_subfolder_idx = np.argmin([losses[best_results_idx[i]] for i,losses in enumerate(list_valid_losses)])
       # best_model_state_dict = fold_results[best_model_idx]['dict_results']['best_model_state']
       best_model_epoch = fold_results_kth[best_model_subfolder_idx]['dict_results']['best_model_idx']
       list_best_model_idx.append(best_model_epoch)
       path_model_weights = os.path.join(saving_path_kth_fold,f'k{i}_cross_val_sub_{best_model_subfolder_idx}',f'best_model_ep_{best_model_epoch}.pth')
       # list_path_model_weights.append(path_model_weights)
       dict_results_model_weights[f'{i}'] = {'sub':best_model_subfolder_idx,'epoch':best_model_epoch}
-      with open(os.path.join(saving_path_kth_fold,'results_k_fold_train_test_mean.txt'),'w') as f:
-        f.write(str(dict_all_results))
+      # keep only the best model removing the others
+      for k,dict_best_result in dict_results_model_weights.items():
+        saving_path_kth_fold = os.path.join(train_folder_path,f'k{k}_cross_val')
+        k=int(k)
+        for j in range(k_fold-1):
+          # delete models except the best one
+          if j != dict_best_result['sub']:
+            path_folder_model_weights = os.path.join(saving_path_kth_fold,f'k{k}_cross_val_sub_{j}',)
+            # Get .pth file
+            for file in os.listdir(path_folder_model_weights):
+              if file.endswith(".pth"):
+                os.remove(os.path.join(path_folder_model_weights, file))
+        
+        with open(os.path.join(saving_path_kth_fold,'results_k_fold_train_test_mean.txt'),'w') as f:
+          f.write(str(dict_all_results))
       
       dict_test = model_advanced.evaluate_from_model(path_model_weights=path_model_weights,
-                                         csv_path=sub_path_csv_kth_fold['val'],
+                                         csv_path=sub_path_csv_kth_fold['val'], # sub_path_csv_kth_fold['val'],
                                          log_file_path=os.path.join(saving_path_kth_fold,'test_results.txt'),
                                          is_test=True)
+      tools.plot_confusion_matrix(confusion_matrix=dict_test['test_confusion_matrix'],
+                                  title=f'Confusion matrix Test folder k-{i} considering best model',
+                                  saving_path=os.path.join(saving_path_kth_fold,f'confusion_matrix_test_submodel_{best_model_subfolder_idx}.png'))
       
       dict_k_fold_logs[f'k-{i}_test-loss'] = dict_test['test_loss']
       dict_k_fold_logs[f'k-{i}_test-loss-class-avg'] = np.mean(dict_test['test_loss_per_class'])
       dict_k_fold_logs[f'k-{i}_test-loss-subject-avg'] = np.mean(dict_test['test_loss_per_subject'])
+      dict_k_fold_logs[f'k-{i}_test-accurracy'] = dict_test['test_macro_precision']
       
       dict_k_fold_logs[f'k-{i}_train-loss'] = fold_results_kth[best_model_subfolder_idx]['dict_results']['train_losses'][best_model_epoch]
       dict_k_fold_logs[f'k-{i}_train-loss-class-avg'] = np.mean(fold_results_kth[best_model_subfolder_idx]['dict_results']['train_loss_per_class'][best_model_epoch])
       dict_k_fold_logs[f'k-{i}_train-loss-subject-avg'] = np.mean(fold_results_kth[best_model_subfolder_idx]['dict_results']['train_loss_per_subject'][best_model_epoch])
+      dict_k_fold_logs[f'k-{i}_train_accuracy'] = fold_results_kth[best_model_subfolder_idx]['dict_results']['list_train_macro_accuracy'][best_model_epoch]
       
       dict_k_fold_logs[f'k-{i}_val-loss'] = fold_results_kth[best_model_subfolder_idx]['dict_results']['val_losses'][best_model_epoch]
       dict_k_fold_logs[f'k-{i}_val-loss-class-avg'] = np.mean(fold_results_kth[best_model_subfolder_idx]['dict_results']['val_loss_per_class'][best_model_epoch])
       dict_k_fold_logs[f'k-{i}_val-loss-subject-avg'] = np.mean(fold_results_kth[best_model_subfolder_idx]['dict_results']['val_loss_per_subject'][best_model_epoch]) 
+      dict_k_fold_logs[f'k-{i}_val_accuracy'] = fold_results_kth[best_model_subfolder_idx]['dict_results']['list_val_macro_accuracy'][best_model_epoch]
       
       list_test_results.append(dict_test)
       fold_results_total.append(fold_results_kth[best_model_subfolder_idx])
@@ -580,11 +603,14 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
       'avg_test_loss_best_models': np.mean([dict_test['test_loss'] for dict_test in list_test_results]),
       'avg_test_loss_per_class_best_models': np.mean([dict_test['test_loss_per_class'] for dict_test in list_test_results],axis=(0)),
       'avg_test_loss_per_subject_best_models': np.mean([dict_test['test_loss_per_subject'] for dict_test in list_test_results],axis=(0)),
+      'avg_accuracy_best_models': np.mean([dict_test['test_macro_precision'] for dict_test in list_test_results]),
     }
-    
+    # for i,dict_test in enumerate(list_test_results):
+    #   dict_k_fold_logs[f'k-{i}_test']
     dict_k_fold_logs['tot_test_loss-avg'] = dict_final_val_results['avg_test_loss_best_models']
     dict_k_fold_logs['tot_test_loss-class-avg'] = np.mean(dict_final_val_results['avg_test_loss_per_class_best_models'])
     dict_k_fold_logs['tot_test_loss-subject-avg'] = np.mean(dict_final_val_results['avg_test_loss_per_subject_best_models'])
+    dict_k_fold_logs['tot_test_accuracy'] = dict_final_val_results['avg_accuracy_best_models']
     
     final_best_model_folder_idx = np.argmin([dict_val['test_loss'] for dict_val in list_test_results])
     with open(os.path.join(train_folder_path,'final_results.txt'),'w') as f:
@@ -601,7 +627,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
       f.write("Final results considering the best models using test set:\n")
       for k,v in dict_final_val_results.items():
         f.write(f' {k} : {v}\n')
-      f.write(f'\nBest model for loss en evaluation is in folder k{final_best_model_folder_idx}_cross_val/k{final_best_model_folder_idx}_cross_val_sub_{dict_results_model_weights[f"{final_best_model_folder_idx}"]["sub"]}')
+      f.write(f'\nBest model for eval loss in the evaluation set is in folder k{final_best_model_folder_idx}_cross_val/k{final_best_model_folder_idx}_cross_val_sub_{dict_results_model_weights[f"{final_best_model_folder_idx}"]["sub"]}')
        
     plot_models_loss = {}
     plot_subject_loss = {}
@@ -629,19 +655,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                         saving_path=os.path.join(train_folder_path,'class_loss_per_k_fold.png'),
                         x_label='class_id',
                         y_label='loss')
-    for k,dict_best_result in dict_results_model_weights.items():
-      saving_path_kth_fold = os.path.join(train_folder_path,f'k{k}_cross_val')
-      k=int(k)
-      for j in range(k_fold-1):
-        # delete models except the best one
-        if k != final_best_model_folder_idx or j != dict_results_model_weights[f'{final_best_model_folder_idx}']['sub']:
-          path_folder_model_weights = os.path.join(saving_path_kth_fold,f'k{k}_cross_val_sub_{j}',)
-          # Get .pth file
-          for file in os.listdir(path_folder_model_weights):
-            if file.endswith(".pth"):
-              os.remove(os.path.join(path_folder_model_weights, file))
-        else:
-          print(f'Best model is in: k{k}_cross_val/k{k}_cross_val_sub_{j}')
+    
     
     dict_k_fold_logs['folder_path'] = train_folder_path
     
@@ -703,6 +717,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   for k,v in head_params.items():
     inputs_dict[f'GRU_{k}'] = v
   # Create the model
+  # wandb.init(project="PainRegressionBiovid",config=inputs_dict)
+  
   model_advanced = Model_Advanced(model_type=model_type,
                                   path_dataset=path_video_dataset,
                                   embedding_reduction=pooling_embedding_reduction,
@@ -776,7 +792,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     for _,csv_path in dict_cvs_path.items():
       if is_plot_dataset_distribution:
         plot_dataset_distribuition(csv_path=csv_path,run_folder_path=run_folder_path, total_classes=model_advanced.dataset.total_classes)
-    print("Training model")
+    print("Training model k=1")
     dict_train = train_model(is_validation=is_validation,
                              dict_csv_path=dict_cvs_path,
                              train_folder_saving_path=train_folder_path,
@@ -971,9 +987,17 @@ def plot_loss_details(dict_train, train_folder_path, total_epochs):
   
   # Plot and save confusion matrices for each epoch
   confusion_matrix_path = os.path.join(train_folder_path,'confusion_matricies')
+  
   if not os.path.exists(confusion_matrix_path):
     os.makedirs(confusion_matrix_path)
   _plot_confusion_matricies(total_epochs, dict_train, confusion_matrix_path,dict_train['dict_results']['best_model_idx'])
+  
+  tools.plot_macro_accuracy(list_train_accuracy=dict_train['dict_results']['list_train_macro_accuracy'],
+                            list_val_accurcay=dict_train['dict_results']['list_val_macro_accuracy'],
+                            title='Macro accuracy per epoch',
+                            x_label='epochs',
+                            y_label='accuracy',
+                            saving_path=os.path.join(train_folder_path,'losses','macro_accuracy_train_val.png'))
 
 
 def create_unique_video_per_prediction(train_folder_path, dict_cvs_path, sample_ids, list_frames, y_pred, y, dataset_name):
@@ -1004,6 +1028,7 @@ def _plot_confusion_matricies(epochs, dict_train, confusion_matrix_path,best_mod
     tools.plot_confusion_matrix(confusion_matrix=dict_train['dict_results']['val_confusion_matricies'][epoch],
                               title=f'Val_{epoch} confusion matrix',
                               saving_path=os.path.join(confusion_matrix_path,f'confusion_matrix_val_{epoch}.png'))
+    
   # Plot best model results
   tools.plot_confusion_matrix(confusion_matrix=dict_train['dict_results']['train_confusion_matricies'][best_model_idx],
                                 title=f'Train_{best_model_idx} confusion matrix',
@@ -1011,6 +1036,7 @@ def _plot_confusion_matricies(epochs, dict_train, confusion_matrix_path,best_mod
   tools.plot_confusion_matrix(confusion_matrix=dict_train['dict_results']['val_confusion_matricies'][best_model_idx],
                               title=f'Val_{best_model_idx} confusion matrix',
                               saving_path=os.path.join(confusion_matrix_path,f'best_confusion_matrix_val_{best_model_idx}.png'))
+  
   saving_path_precision_recall = os.path.join(confusion_matrix_path,'plot_over_epochs')
   if not os.path.exists(saving_path_precision_recall):
     os.makedirs(saving_path_precision_recall)
