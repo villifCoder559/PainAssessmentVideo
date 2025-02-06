@@ -10,7 +10,7 @@ from mediapipe.tasks.python import vision
 from custom.helper import GLOBAL_PATH
 
 def generate_path(path):
-  return os.path.join(GLOBAL_PATH.NAS_PATH,'PainAssessmentVideo',path)
+  return os.path.join(GLOBAL_PATH.NAS_PATH,path)
 
 def load_reference_landmarks(path):
   ref_landmarks = pickle.load(open(path, 'rb'))
