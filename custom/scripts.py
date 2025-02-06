@@ -690,7 +690,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'path_video_dataset': path_video_dataset,
     'head': head.name,
     'stride_window_in_video': stride_window_in_video,
-    # 'head_params': head_params,
+    'head_params': head_params,
     'train_size': train_size,
     'val_size': val_size,
     'test_size': test_size,
