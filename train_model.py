@@ -137,7 +137,7 @@ if __name__ == '__main__':
   parser.add_argument('--ep', type=int, default=500, help='Number of epochs')
   parser.add_argument('--csv', type=str, default=os.path.join('partA','starting_point','samples_exc_no_detection.csv'), help='Path to csv file')
   parser.add_argument('--ffsp', type=str, default=os.path.join('partA','video','features','samples_16_frontalized'), help='Path to feature folder saving path')
-  parser.add_argument('--global_folder_name', type=str, default=f'history_run_{int(time.time())}', help='Global folder name for logging')
+  parser.add_argument('--global_folder_name', type=str, default=f'history_run', help='Global folder name for logging')
   parser.add_argument('--path_video_dataset', type=str, default=os.path.join('partA','video','video_frontalized'), help='Path to dataset')
   parser.add_argument('--k_fold', type=int, default=3, help='Number of k fold cross validation')
   parser.add_argument('--opt', type=str, nargs='*',default='adam', help='Optimizer, can be adam, sgd')
@@ -150,6 +150,8 @@ if __name__ == '__main__':
   
   
   args = parser.parse_args()
+  ti = int(time.time())
+  args.global_folder_name = f'{args.global_folder_name}_{ti}'
   if args.gp:
     args.csv = generate_path(args.csv)
     args.ffsp = generate_path(args.ffsp)
