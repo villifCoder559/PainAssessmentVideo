@@ -698,7 +698,8 @@ class HeadGRU:
         # print(train_confusion_matricies[epoch].compute())
         
       train_confusion_matricies[epoch].compute()
-      accuracy_dict = tools.get_accuracy_from_confusion_matrix(train_confusion_matricies[epoch])
+      accuracy_dict = tools.get_accuracy_from_confusion_matrix(confusion_matrix=train_confusion_matricies[epoch],
+                                                               list_real_classes=unique_classes)
       list_train_macro_accuracy.append(accuracy_dict['macro_precision'])
       # Class and subject losses
       
@@ -835,7 +836,8 @@ class HeadGRU:
     # Class and subject losses
     avg_loss = avg_val_loss / len(val_loader)
     # test_confusion_matricies.compute()
-    dict_precision_recall = tools.get_accuracy_from_confusion_matrix(val_confusion_matricies)
+    dict_precision_recall = tools.get_accuracy_from_confusion_matrix(confusion_matrix=val_confusion_matricies,
+                                                                     list_real_classes=unique_classes)
     print(' Val')
     print(f'  Loss             : {avg_loss:.4f} ')
     print(f'  Accuracy         : {dict_precision_recall["macro_precision"]:.4f}')

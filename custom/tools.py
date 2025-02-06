@@ -115,7 +115,7 @@ def plot_mae_per_class(unique_classes, mae_per_class, title='', count_classes=No
     plt.show()
   plt.close()
 
-def get_accuracy_from_confusion_matrix(confusion_matrix):
+def get_accuracy_from_confusion_matrix(confusion_matrix,list_real_classes=None):
   """
   Calculate various accuracy metrics from a given confusion matrix in torch.tensor format.
   Args:
@@ -131,26 +131,38 @@ def get_accuracy_from_confusion_matrix(confusion_matrix):
   if isinstance(confusion_matrix, MulticlassConfusionMatrix):
     # print('COmpute conf matrix')
     confusion_matrix = confusion_matrix.compute()
-  
+  # Drop the last class (missclassification class)
+  if list_real_classes is not None:
+    sum_all = torch.sum(confusion_matrix)
+    sum_per_rows = torch.sum(confusion_matrix,1)[list_real_classes] # fn considering also the missclassification
+    confusion_matrix = confusion_matrix[list_real_classes,:][:,list_real_classes]
+  else:
+    sum_all = torch.sum(confusion_matrix)
+    sum_per_rows = torch.sum(confusion_matrix,1)
   tp = confusion_matrix.diag()
-  fn = torch.sum(confusion_matrix,1) - tp
+  fn = sum_per_rows - tp 
   fp = torch.sum(confusion_matrix,0) - tp
-
   precision_per_class = torch.stack([tp[i] / (tp[i]+fp[i]) if tp[i]+fp[i]!=0 else torch.tensor(0) for i in range(len(tp))]).float()
   recall_per_class = torch.stack([tp[i] / (tp[i] + fn[i]) if tp[i]+fn[i]!=0 else torch.tensor(0) for i in range(len(tp))]).float() 
   
+  tp_sum = torch.sum(tp)
+  fp_sum = torch.sum(fp)
+  fn_sum = torch.sum(fn)
+  
   # Treats all instances equally (larger classes have more weight)-> sensitive to imbalance
-  micro_precision = torch.sum(tp) / (torch.sum(tp) + torch.sum(fp)) if torch.sum(tp + fp) != 0 else torch.tensor(0.0)
-  micro_recall = torch.sum(tp) / (torch.sum(tp) + torch.sum(fn)) if torch.sum(tp + fn) != 0 else torch.tensor(0.0)
+  micro_precision = tp_sum / (tp_sum + fp_sum) if (tp_sum + fp_sum) != 0 else torch.tensor(0.0)
+  micro_recall = tp_sum / (tp_sum + fn_sum) if (tp_sum + fn_sum) != 0 else torch.tensor(0.0)
   
   # Weighted by the size of each class
-  weighted_precision = torch.sum(precision_per_class * torch.sum(confusion_matrix,1)) / torch.sum(confusion_matrix)
-  weighted_recall = torch.sum(recall_per_class * torch.sum(confusion_matrix,1)) / torch.sum(confusion_matrix)
+  weighted_precision = torch.sum(precision_per_class * sum_per_rows) / sum_all
+  weighted_recall = torch.sum(recall_per_class * sum_per_rows) / sum_all
   
   # Treats all classes equally
   macro_precision = torch.mean(precision_per_class)
-  # print('np macro',np.mean(precision_per_class.numpy()))
   macro_recall = torch.mean(recall_per_class)
+  # if list_real_classes is not None:
+  #   macro_precision = torch.mean(precision_per_class[list_real_classes])
+  #   macro_recall = torch.mean(recall_per_class[list_real_classes])
   
   return {
     'precision_per_class': precision_per_class.detach().numpy(),
@@ -163,7 +175,7 @@ def get_accuracy_from_confusion_matrix(confusion_matrix):
     'weighted_recall': weighted_recall.detach().numpy(),
   }
 
-def plot_accuracy_confusion_matrix(confusion_matricies, type_conf,title='', saving_path=None):
+def plot_accuracy_confusion_matrix(confusion_matricies, type_conf,title='', saving_path=None, list_real_classes=None):
   if isinstance(confusion_matricies[0], MulticlassConfusionMatrix):
     confusion_matricies = torch.stack([confusion_matricies[i].compute() for i in range(len(confusion_matricies))])
   # if isinstance(test_confusion_matricies[0], MulticlassConfusionMatrix):
@@ -172,7 +184,8 @@ def plot_accuracy_confusion_matrix(confusion_matricies, type_conf,title='', savi
   list_acc_confusion_matrix = []
   # list_test_acc_confusion_matrix = []
   for confusion_matrix in confusion_matricies:
-    list_acc_confusion_matrix.append(get_accuracy_from_confusion_matrix(confusion_matrix))
+    list_acc_confusion_matrix.append(get_accuracy_from_confusion_matrix(confusion_matrix=confusion_matrix,
+                                                                        list_real_classes=list_real_classes))
   # for test_confusion_matrix in test_confusion_matricies:
   #   list_test_acc_confusion_matrix.append(get_accuracy_from_confusion_matrix(test_confusion_matrix))
   keys = list_acc_confusion_matrix[0].keys()
