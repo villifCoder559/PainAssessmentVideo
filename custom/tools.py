@@ -160,16 +160,13 @@ def get_accuracy_from_confusion_matrix(confusion_matrix,list_real_classes=None):
   # Treats all classes equally
   macro_precision = torch.mean(precision_per_class)
   macro_recall = torch.mean(recall_per_class)
-  # if list_real_classes is not None:
-  #   macro_precision = torch.mean(precision_per_class[list_real_classes])
-  #   macro_recall = torch.mean(recall_per_class[list_real_classes])
   
   return {
     'precision_per_class': precision_per_class.detach().numpy(),
     'recall_per_class': recall_per_class.detach().numpy(),
     'macro_precision': macro_precision.detach().numpy(), 
     'macro_recall': macro_recall.detach().numpy(), 
-    'micro_precision': micro_precision.detach().numpy(), 
+    'micro_precision': micro_precision.detach().numpy(), # same as accuracy
     'micro_recall': micro_recall.detach().numpy(), 
     'weighted_precision': weighted_precision.detach().numpy(), 
     'weighted_recall': weighted_recall.detach().numpy(),
