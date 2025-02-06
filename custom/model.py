@@ -65,7 +65,7 @@ class Model_Advanced: # Scenario_Advanced
       self.head = HeadGRU(**head_params)
     self.path_to_extracted_features = features_folder_saving_path
 
-  def evaluate_from_model(self,path_model_weights, csv_path, log_file_path,criterion=nn.L1Loss(), round_output_loss=False,is_test=True):
+  def test_pretrained__model(self,path_model_weights, csv_path, log_file_path,criterion=nn.L1Loss(), round_output_loss=False,is_test=True):
     """
     Evaluate the model using the specified dataset.
     Parameters:

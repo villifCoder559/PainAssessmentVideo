@@ -566,7 +566,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
         with open(os.path.join(saving_path_kth_fold,'results_k_fold_train_test_mean.txt'),'w') as f:
           f.write(str(dict_all_results))
       
-      dict_test = model_advanced.evaluate_from_model(path_model_weights=path_model_weights,
+      dict_test = model_advanced.test_pretrained__model(path_model_weights=path_model_weights,
                                          csv_path=sub_path_csv_kth_fold['val'], # sub_path_csv_kth_fold['val'],
                                          log_file_path=os.path.join(saving_path_kth_fold,'test_results.txt'),
                                          is_test=True)
@@ -629,30 +629,30 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
         f.write(f' {k} : {v}\n')
       f.write(f'\nBest model for eval loss in the evaluation set is in folder k{final_best_model_folder_idx}_cross_val/k{final_best_model_folder_idx}_cross_val_sub_{dict_results_model_weights[f"{final_best_model_folder_idx}"]["sub"]}')
        
-    plot_models_loss = {}
-    plot_subject_loss = {}
-    plot_class_loss = {}
+    plot_models_test_loss = {}
+    plot_subject_test_loss = {}
+    plot_class_test_loss = {}
 
     for i,dict_test in enumerate(list_test_results):
-      plot_models_loss[f'k_{i}'] = dict_test['test_loss']
-      plot_subject_loss[f'k_{i}']=dict_test['test_loss_per_subject']
-      plot_class_loss[f'k_{i}'] = dict_test['test_loss_per_class']
+      plot_models_test_loss[f'k_{i}'] = dict_test['test_loss']
+      plot_subject_test_loss[f'k_{i}']=dict_test['test_loss_per_subject']
+      plot_class_test_loss[f'k_{i}'] = dict_test['test_loss_per_class']
       
-    tools.plot_bar(data=plot_models_loss,
+    tools.plot_bar(data=plot_models_test_loss,
                    x_label='k_fold nr.',
                    y_label='loss',
-                   title='Loss per k_fold Evaluation',
-                   saving_path=os.path.join(train_folder_path,'loss_per_k_fold.png'))
+                   title='Test Loss per k_fold',
+                   saving_path=os.path.join(train_folder_path,'test_loss_per_k_fold.png'))
     # TODO: FIX y_axis to be consistent in all plots
     # TODO: PUT the subject ID and not the array position of subject_id
-    tools.subplot_loss(dict_losses=plot_subject_loss,
-                       list_title=[f'Eval Subject loss {k_fold} model {list_best_model_idx[k_fold]}' for k_fold in range(k_fold)],
-                       saving_path=os.path.join(train_folder_path,'subject_loss_per_k_fold.png'),
+    tools.subplot_loss(dict_losses=plot_subject_test_loss,
+                       list_title=[f'Test Subject loss {k_fold} model {list_best_model_idx[k_fold]}' for k_fold in range(k_fold)],
+                       saving_path=os.path.join(train_folder_path,'subject_test_loss_per_k_fold.png'),
                        x_label='subject_id',
                        y_label='loss')
-    tools.subplot_loss(dict_losses=plot_class_loss,
-                        list_title=[f'Eval Class loss {k_fold} model {list_best_model_idx[k_fold]}' for k_fold in range(k_fold)],
-                        saving_path=os.path.join(train_folder_path,'class_loss_per_k_fold.png'),
+    tools.subplot_loss(dict_losses=plot_class_test_loss,
+                        list_title=[f'Test Class loss {k_fold} model {list_best_model_idx[k_fold]}' for k_fold in range(k_fold)],
+                        saving_path=os.path.join(train_folder_path,'class_test_loss_per_k_fold.png'),
                         x_label='class_id',
                         y_label='loss')
     
@@ -1041,10 +1041,14 @@ def _plot_confusion_matricies(epochs, dict_train, confusion_matrix_path,best_mod
   if not os.path.exists(saving_path_precision_recall):
     os.makedirs(saving_path_precision_recall)
   # TODO: REMOVE comments if want to plot precision and recall
+  # unique_classes_train = np.unique(dict_train['dict_results']['list_y_train'])
   # tools.plot_accuracy_confusion_matrix(confusion_matricies=dict_train['dict_results']['train_confusion_matricies'],
   #                                      type_conf='train',
-  #                                      saving_path=saving_path_precision_recall)
+  #                                      saving_path=saving_path_precision_recall,
+  #                                      list_real_classes=unique_classes_train)
+  
   # tools.plot_accuracy_confusion_matrix(confusion_matricies=dict_train['dict_results']['val_confusion_matricies'],
   #                                      type_conf='test',
-  #                                      saving_path=saving_path_precision_recall)
+  #                                      saving_path=saving_path_precision_recall,
+  #                                      list_real_classes=unique_classes_train)
     
