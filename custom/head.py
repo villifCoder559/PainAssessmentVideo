@@ -16,10 +16,13 @@ from torchmetrics.classification import ConfusionMatrix
 import math
 import os
 from datetime import datetime
+import time
 import torch.nn.init as init
 from sklearn.metrics import confusion_matrix
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from custom.dataset import customSampler
+# import wandb
+
 # class head:
 #   def __init__(self,head):
 #     if head == 'SVR':
@@ -558,7 +561,7 @@ class HeadGRU:
     val_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
     # Device and optimizer setup
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = 'cuda'
     self.model.to(device)
     # print('Device model start_train_test:', device)
     # tmp = next(self.model.gru.parameters()).device
@@ -579,9 +582,10 @@ class HeadGRU:
     val_loss_per_subject = np.zeros((num_epochs, unique_subjects.shape[0]))
     # train_accuracy_per_class = np.zeros((num_epochs, unique_classes.shape[0] + 1)) # +1 for the null class
     # test_accuracy_per_class = np.zeros((num_epochs, unique_classes.shape[0] + 1)) # +1 for the null class
-    train_confusion_matricies = [ConfusionMatrix(task="multiclass",num_classes=(nr_uniq_classes+1) + 1) for _ in range(num_epochs)]
-    val_confusion_matricies = [ConfusionMatrix(task="multiclass",num_classes=(nr_uniq_classes+1) + 1) for _ in range(num_epochs)]
-    
+    train_confusion_matricies = [ConfusionMatrix(task="multiclass",num_classes=(nr_uniq_classes+1)) for _ in range(num_epochs)]
+    val_confusion_matricies = [ConfusionMatrix(task="multiclass",num_classes=(nr_uniq_classes+1)) for _ in range(num_epochs)]
+    list_train_macro_accuracy = []
+    list_val_macro_accuracy = []
     best_test_loss = float('inf')
     best_model_state = None
     best_model_epoch = -1
@@ -590,7 +594,8 @@ class HeadGRU:
       os.makedirs(saving_path_logs)
     log_file_path = os.path.join(saving_path_logs, 'training_log.txt') 
     log_batch_path = os.path.join(saving_path_logs, 'batch_log.txt')
-
+    # nr_samples_per_class = np.zeros(nr_uniq_classes)
+    # nr_samples_per_subject = np.zeros(unique_subjects.shape[0])
     for epoch in range(num_epochs):
       self.model.train()
       epoch_loss = 0.0
@@ -601,7 +606,7 @@ class HeadGRU:
       total_batches = len(train_loader)
       count_batch = 0
       with open(log_batch_path, 'a') as log_file:
-        log_file.write(f'EPOCH {epoch+1}/{num_epochs}\n')
+        log_file.write(f'EPOCH {epoch}/{num_epochs}\n')
       for batch_X, batch_y, batch_subjects, batch_real_length_padded_feat in train_loader:
         # # print(f'device: {device}')
         if len(batch_X.shape) == 4:
@@ -645,6 +650,8 @@ class HeadGRU:
         # Compute per-class and per-subject losses
         for cls in unique_classes:
           mask = (batch_y == cls).reshape(-1)
+          # if epoch == 0:
+          #   nr_samples_per_class[cls] += mask.sum().item()
           # print(f'mask.shape: {mask.shape}')
           # print(f'outputs: {outputs}')
           # print(f'batch_y: {batch_y}')
@@ -655,6 +662,8 @@ class HeadGRU:
 
         for subj in unique_subjects:
           mask = (batch_subjects == subj).reshape(-1)
+          # if epoch == 0:
+          #   nr_samples_per_subject[subj] += mask.sum().item()
           if mask.any():
             subj_idx = np.where(unique_subjects == subj)[0][0]
             subject_loss[subj_idx] += criterion(outputs[mask], batch_y[mask]).item()
@@ -663,7 +672,7 @@ class HeadGRU:
         # output_postprocessed = torch.where((outputs >= 0) & (outputs < unique_classes.shape[0]), outputs, torch.tensor(unique_classes.shape[0], device=device)) #from 0 to unique_classes.shape[0] - 1
         mask = torch.isin(outputs, torch.tensor(unique_classes))
         output_postprocessed = outputs*mask
-        train_confusion_matricies[epoch].update(output_postprocessed,
+        train_confusion_matricies[epoch].update(output_postprocessed.detach().cpu(),
                                                 batch_y.detach().cpu())
         
         unique_batch_class, count_class = torch.unique(batch_y.detach().cpu(), return_counts=True)
@@ -687,26 +696,29 @@ class HeadGRU:
         # sk_conf_matrix = confusion_matrix(batch_y.detach().cpu(), output_postprocessed.detach().cpu())
         # train_confusion_matricies[epoch].compute()
         # print(train_confusion_matricies[epoch].compute())
-      # train_confusion_matricies[epoch].compute()
-      # train_accuracy_per_class[epoch] = conf_matrix.diag()/conf_matrix.sum(1) # inf if sum/0 or
+        
+      train_confusion_matricies[epoch].compute()
+      accuracy_dict = tools.get_accuracy_from_confusion_matrix(train_confusion_matricies[epoch])
+      list_train_macro_accuracy.append(accuracy_dict['macro_precision'])
       # Class and subject losses
       
       
-      train_loss_per_class[epoch] = class_loss
-      train_loss_per_subject[epoch] = subject_loss
+      train_loss_per_class[epoch] = class_loss      # / len(train_loader) # mean per nr samples in a class
+      train_loss_per_subject[epoch] = subject_loss  # / len(train_loader) # mean per subject in a batch
 
       # Track training loss
-      avg_train_loss = epoch_loss / len(train_loader)
-      train_losses.append(avg_train_loss)
+      train_loss = epoch_loss / len(train_loader)
+      train_losses.append(train_loss)
       # print(f'Compute conf matrix calc {epoch}')
       # dict_precision_recall = tools.get_accuracy_from_confusion_matrix(test_confusion_matricies[epoch])
       current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
       print(f'Epoch [{epoch}/{num_epochs}] | {current_time}')
       # test_accuracy_per_class[epoch] = dict_eval['test_accuracy_per_class']
       print(f' Train')
-      print(f'  Loss             : {avg_train_loss:.4f} ')
+      print(f'  Loss             : {train_loss:.4f} ')
+      print(f'  Accuracy         : {accuracy_dict["macro_precision"]:.4f}')
       print(f'  Loss per_class   : {train_loss_per_class[epoch]}')
-      # print(f'  Prec. per_class  : {dict_precision_recall["precision_per_class"]}')
+      print(f'  Prec. per_class  : {accuracy_dict["precision_per_class"]}')
       # print(f'  Prec. macro      : {dict_precision_recall["macro_precision"]}')
       # print(f'  Prec. micro      : {dict_precision_recall["micro_precision"]}')
       # print(f'  Prec. weigh.     : {dict_precision_recall["weighted_precision"]}')
@@ -714,9 +726,10 @@ class HeadGRU:
       with open(log_file_path, 'a') as log_file:
         log_file.write(f'Epoch [{epoch}/{num_epochs}] | {current_time}\n')
         log_file.write(f' Train\n')
-        log_file.write(f'  Loss             : {avg_train_loss:.4f}\n')
+        log_file.write(f'  Loss             : {train_loss:.4f}\n')
+        log_file.write(f'  Accuracy         : {accuracy_dict["macro_precision"]:.4f}\n')
         log_file.write(f'  Loss per_class   : {train_loss_per_class[epoch]}\n')
-        # log_file.write(f'  Prec. per_class  : {dict_precision_recall["precision_per_class"]}\n')
+        log_file.write(f'  Prec. per_class  : {accuracy_dict["precision_per_class"]}\n')
         # log_file.write(f'  Prec. macro      : {dict_precision_recall["macro_precision"]}\n')
         # log_file.write(f'  Prec. micro      : {dict_precision_recall["micro_precision"]}\n')
         # log_file.write(f'  Prec. weigh.     : {dict_precision_recall["weighted_precision"]}\n')
@@ -733,6 +746,17 @@ class HeadGRU:
       val_losses.append(dict_eval['val_loss'])
       val_loss_per_class[epoch] = dict_eval['val_loss_per_class']
       val_loss_per_subject[epoch] = dict_eval['val_loss_per_subject']
+      list_val_macro_accuracy.append(dict_eval['val_macro_precision'])
+      # wandb.log({
+      #   'train_loss': train_loss,
+      #   'val_loss': dict_eval['val_loss'],
+      #   'train_macro_accuracy': accuracy_dict["macro_precision"],
+      #   'val_macro_accuracy': dict_eval['val_macro_precision'],
+      #   'train_loss_per_class': train_loss_per_class[epoch],
+      #   'val_loss_per_class': val_loss_per_class[epoch],
+      #   'train_loss_per_subject': train_loss_per_subject[epoch],
+      #   'val_loss_per_subject': val_loss_per_subject[epoch],
+      # })
       # Save the best model
       if dict_eval['val_loss'] < best_test_loss or best_model_epoch == -1:
         best_test_loss = dict_eval['val_loss']
@@ -763,7 +787,9 @@ class HeadGRU:
       'train_confusion_matricies': train_confusion_matricies,
       'val_confusion_matricies': val_confusion_matricies,
       'best_model_idx': best_model_epoch,
-      'best_model_state': best_model_state
+      'best_model_state': best_model_state,
+      'list_train_macro_accuracy': list_train_macro_accuracy,
+      'list_val_macro_accuracy': list_val_macro_accuracy
     }
 
   def evaluate(self, val_loader, criterion, device,nr_uniq_classes, unique_classes, unique_subjects, val_confusion_matricies, round_output_loss=True,log_file_path=None,is_test=False):
@@ -802,15 +828,17 @@ class HeadGRU:
           if mask.any():
             subj_idx = np.where(unique_subjects == subj)[0][0]
             subject_loss[subj_idx] += criterion(outputs[mask], batch_y[mask]).item()
-        val_confusion_matricies.update(output_postprocessed.detach().cpu(),batch_y.detach().cpu())
+        val_confusion_matricies.update(output_postprocessed.detach().cpu(),
+                                       batch_y.detach().cpu())
         del batch_y, batch_X
         torch.cuda.empty_cache()
     # Class and subject losses
     avg_loss = avg_val_loss / len(val_loader)
     # test_confusion_matricies.compute()
-    # dict_precision_recall = tools.get_accuracy_from_confusion_matrix(test_confusion_matricies)
+    dict_precision_recall = tools.get_accuracy_from_confusion_matrix(val_confusion_matricies)
     print(' Val')
     print(f'  Loss             : {avg_loss:.4f} ')
+    print(f'  Accuracy         : {dict_precision_recall["macro_precision"]:.4f}')
     print(f'  Loss per_class   : {val_loss_per_class}')
     # print(f'  Prec. per_class  : {dict_precision_recall["precision_per_class"]}')
     # print(f'  Prec. macro      : {dict_precision_recall["macro_precision"]}')
@@ -820,6 +848,7 @@ class HeadGRU:
       with open(log_file_path, 'a') as log_file:
         log_file.write(f' Val\n')
         log_file.write(f'  Loss             : {avg_loss:.4f}\n')
+        log_file.write(f'  Accuracy         : {dict_precision_recall["macro_precision"]:.4f}\n')
         log_file.write(f'  Loss per_class   : {val_loss_per_class}\n')
         # log_file.write(f'  Prec. per_class  : {dict_precision_recall["precision_per_class"]}\n')
         # log_file.write(f'  Prec. macro      : {dict_precision_recall["macro_precision"]}\n')
@@ -830,13 +859,16 @@ class HeadGRU:
       return {
         'val_loss':avg_loss,
         'val_loss_per_class':  val_loss_per_class,
-        'val_loss_per_subject': subject_loss
+        'val_loss_per_subject': subject_loss,
+        'val_macro_precision': dict_precision_recall["macro_precision"]
         }
     else:
       return{
         'test_loss':avg_loss,
         'test_loss_per_class':  val_loss_per_class,
-        'test_loss_per_subject': subject_loss
+        'test_loss_per_subject': subject_loss,
+        'test_macro_precision': dict_precision_recall["macro_precision"],
+        'test_confusion_matrix': val_confusion_matricies
         }
       
 
@@ -845,13 +877,13 @@ class HeadGRU:
     Generate embeddings for the input tensor using the model's GRU layer.
     Args:
       X (torch.Tensor): The input tensor for which embeddings are to be generated.
-      device (str, optional): The device to run the model on. If None, it will default to 'cuda' if available, otherwise 'cpu'.
+      device (str, optional): The device to run the model on. If None, it will default to 'cuda' if available, .
 
     Returns:
       torch.Tensor: The generated embeddings from the model's GRU layer.
     """
     if device is None:
-      device = 'cuda' if torch.cuda.is_available() else 'cpu'
+      device = 'cuda'
     X_padded,_,subject_ids_per_sample_id,length_features = self._group_features_by_sample_id(X=X, sample_ids=sample_id, subject_ids=subject_id)
     X_padded = X_padded.to(device)
     packed_input = pack_padded_sequence(X_padded, length_features, batch_first=True, enforce_sorted=False)
@@ -870,7 +902,7 @@ class HeadGRU:
     X_padded,_,_,_ = self._group_features_by_sample_id(X=X, sample_ids=sample_id, subject_ids=subject_id)
     # packed_input = pack_padded_sequence(batch_X, batch_real_length_padded_feat, batch_first=True, enforce_sorted=False)
     if device is None:
-      device = 'cuda' if torch.cuda.is_available() else 'cpu'
+      device = 'cuda' 
     # self.model.to(device)
     self.model.eval()
     with torch.no_grad():
@@ -889,71 +921,71 @@ class CrossValidationGRU:
     self.output_size = head.output_size
   
   # deprecated
-  def k_fold_cross_validation(self, X, y, group_ids, k=5, num_epochs=10, batch_size=32,
-                               criterion=nn.L1Loss(), optimizer_fn=optim.Adam, lr=0.001,
-                               list_saving_paths_k_val=None,init_network='default',
-                               regularization_loss='L1',regularization_lambda=0.01):
-    """
-    Perform k-fold cross-validation using GroupShuffleSplit.
+  # def k_fold_cross_validation(self, X, y, group_ids, k=5, num_epochs=10, batch_size=32,
+  #                              criterion=nn.L1Loss(), optimizer_fn=optim.Adam, lr=0.001,
+  #                              list_saving_paths_k_val=None,init_network='default',
+  #                              regularization_loss='L1',regularization_lambda=0.01):
+  #   """
+  #   Perform k-fold cross-validation using GroupShuffleSplit.
 
-    Args:
-      X (numpy.ndarray): The input data.
-      y (numpy.ndarray): The target labels.
-      group_ids (numpy.ndarray): Group IDs for each sample.
-      k (int): Number of folds.
-      num_epochs (int): Number of epochs for each fold.
-      batch_size (int): Batch size for training.
-      criterion: Loss function.
-      optimizer_fn: Optimizer function.
-      lr (float): Learning rate.
-      save_model_path (str): Path to save the model weights.
+  #   Args:
+  #     X (numpy.ndarray): The input data.
+  #     y (numpy.ndarray): The target labels.
+  #     group_ids (numpy.ndarray): Group IDs for each sample.
+  #     k (int): Number of folds.
+  #     num_epochs (int): Number of epochs for each fold.
+  #     batch_size (int): Batch size for training.
+  #     criterion: Loss function.
+  #     optimizer_fn: Optimizer function.
+  #     lr (float): Learning rate.
+  #     save_model_path (str): Path to save the model weights.
 
-    Returns:
-      dict: Cross-validation results including per-fold losses.
-    """
-    gss = GroupShuffleSplit(n_splits=k, test_size=0.2, random_state=42)
-    fold_results = []
-    list_split_indices = []
-    for fold_idx, (train_idx, test_idx) in enumerate(gss.split(X, y, groups=group_ids)):
-      print(f"Starting Fold {fold_idx + 1}/{k}")
-      list_split_indices.append((train_idx,test_idx))
+  #   Returns:
+  #     dict: Cross-validation results including per-fold losses.
+  #   """
+  #   gss = GroupShuffleSplit(n_splits=k, test_size=0.2, random_state=42)
+  #   fold_results = []
+  #   list_split_indices = []
+  #   for fold_idx, (train_idx, test_idx) in enumerate(gss.split(X, y, groups=group_ids)):
+  #     print(f"Starting Fold {fold_idx + 1}/{k}")
+  #     list_split_indices.append((train_idx,test_idx))
 
-      # Split the data into training and testing sets
-      X_train, X_test = X[train_idx], X[test_idx]
-      y_train, y_test = y[train_idx], y[test_idx]
-      groups_train, groups_test = group_ids[train_idx], group_ids[test_idx]
+  #     # Split the data into training and testing sets
+  #     X_train, X_test = X[train_idx], X[test_idx]
+  #     y_train, y_test = y[train_idx], y[test_idx]
+  #     groups_train, groups_test = group_ids[train_idx], group_ids[test_idx]
 
-      # Initialize the model
-      model = HeadGRU(self.input_size, self.hidden_size, self.num_layers, self.dropout, self.output_size)
-      # print('X_train shape', X_train.shape)
-      # print('y_train shape', y_train.shape)
-      # print('groups_train shape', groups_train.shape)
-      # Train and test the model
-      fold_result = model.start_train(
-        X_train, y_train, groups_train, X_test, y_test, groups_test,
-        num_epochs=num_epochs, batch_size=batch_size, criterion=criterion,
-        optimizer_fn=optimizer_fn, lr=lr, init_network=init_network,
-        regularization_loss=regularization_loss, regularization_lambda=regularization_lambda
-      )
+  #     # Initialize the model
+  #     model = HeadGRU(self.input_size, self.hidden_size, self.num_layers, self.dropout, self.output_size)
+  #     # print('X_train shape', X_train.shape)
+  #     # print('y_train shape', y_train.shape)
+  #     # print('groups_train shape', groups_train.shape)
+  #     # Train and test the model
+  #     fold_result = model.start_train(
+  #       X_train, y_train, groups_train, X_test, y_test, groups_test,
+  #       num_epochs=num_epochs, batch_size=batch_size, criterion=criterion,
+  #       optimizer_fn=optimizer_fn, lr=lr, init_network=init_network,
+  #       regularization_loss=regularization_loss, regularization_lambda=regularization_lambda
+  #     )
 
-      fold_results.append(fold_result)
+  #     fold_results.append(fold_result)
 
-      # Save model weights
-      if list_saving_paths_k_val:
-        torch.save(model.model.state_dict(), os.path.join(list_saving_paths_k_val[fold_idx], 'model_weights.pth'))
-        print(f"Model weights for fold {fold_idx + 1} saved to {list_saving_paths_k_val[fold_idx]}")
+  #     # Save model weights
+  #     if list_saving_paths_k_val:
+  #       torch.save(model.model.state_dict(), os.path.join(list_saving_paths_k_val[fold_idx], 'model_weights.pth'))
+  #       print(f"Model weights for fold {fold_idx + 1} saved to {list_saving_paths_k_val[fold_idx]}")
 
-      # Print fold results
-      print(f"Fold {fold_idx + 1} Results:")
-      print(f"  Train Losses: {fold_result['train_losses'][-1]:.4f}")
-      print(f"  Test Losses: {fold_result['test_losses'][-1]:.4f}")
+  #     # Print fold results
+  #     print(f"Fold {fold_idx + 1} Results:")
+  #     print(f"  Train Losses: {fold_result['train_losses'][-1]:.4f}")
+  #     print(f"  Test Losses: {fold_result['test_losses'][-1]:.4f}")
 
-    # Aggregate results across folds
-    avg_train_loss = np.mean([result['train_losses'][-1] for result in fold_results])
-    avg_test_loss = np.mean([result['test_losses'][-1] for result in fold_results])
+  #   # Aggregate results across folds
+  #   avg_train_loss = np.mean([result['train_losses'][-1] for result in fold_results])
+  #   avg_test_loss = np.mean([result['test_losses'][-1] for result in fold_results])
 
-    print("Cross-Validation Results:")
-    print(f"  Average Train Loss: {avg_train_loss:.4f}")
-    print(f"  Average Test Loss: {avg_test_loss:.4f}")
+  #   print("Cross-Validation Results:")
+  #   print(f"  Average Train Loss: {avg_train_loss:.4f}")
+  #   print(f"  Average Test Loss: {avg_test_loss:.4f}")
 
-    return fold_results, list_split_indices
+  #   return fold_results, list_split_indices
