@@ -34,7 +34,7 @@ def main(model_type,saving_chunk_size=100,  preprocess_align = False,
       f.write(log_message+'\n')
 
   def _extract_features(dataset,path_csv_dataset,batch_size_feat_extraction,backbone):
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = 'cuda'
     print(f"extracting features using.... {device}")
     list_features = []
     list_labels = []
