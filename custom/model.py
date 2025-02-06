@@ -20,6 +20,7 @@ import json
 from sklearn.manifold import TSNE
 from torchmetrics.classification import ConfusionMatrix
 import time
+# import wandb
 # from tsnecuda import TSNE as cudaTSNE # available only on Linux
 
 class Model_Advanced: # Scenario_Advanced
@@ -94,12 +95,13 @@ class Model_Advanced: # Scenario_Advanced
                                             subject_ids=subject_ids,
                                             sample_ids=sample_ids,
                                             batch_size=self.batch_size_training)
+    
     dict_test = self.head.evaluate(val_loader=test_loader,
                                    val_confusion_matricies=test_confusion_matricies,
                                    is_test=is_test,
                                    nr_uniq_classes=nr_uniq_classes,
                                    criterion=criterion, 
-                                   device='cuda' if torch.cuda.is_available() else 'cpu',
+                                   device='cuda',
                                    round_output_loss=round_output_loss,
                                    log_file_path=log_file_path,
                                    unique_classes=unique_classes,
@@ -107,6 +109,7 @@ class Model_Advanced: # Scenario_Advanced
                                    )
                                       
     return dict_test
+  
   def train(self, train_csv_path, test_csv_path, num_epochs=10, criterion=nn.L1Loss(),
             optimizer_fn=optim.Adam, lr=0.0001,saving_path=None,init_weights=True,round_output_loss=False,
             shuffle_video_chunks=True,shuffle_training_batch=True,init_network='default',
@@ -245,7 +248,7 @@ class Model_Advanced: # Scenario_Advanced
 
     """
     
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = 'cuda' 
     print(f"extracting features using.... {device}")
     list_features = []
     list_labels = []
