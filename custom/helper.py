@@ -33,7 +33,7 @@ class HEAD(Enum):
   GRU = 'GRU'
 
 class GLOBAL_PATH:
-  NAS_PATH = os.path.join('/equilibrium','fvilli')
+  NAS_PATH = os.path.join('/equilibrium','fvilli','PainAssessmentVideo')
   
 class CSV:
   sort_cols = [
