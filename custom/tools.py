@@ -144,8 +144,6 @@ def get_accuracy_from_confusion_matrix(confusion_matrix):
   micro_recall = torch.sum(tp) / (torch.sum(tp) + torch.sum(fn)) if torch.sum(tp + fn) != 0 else torch.tensor(0.0)
   
   # Weighted by the size of each class
-  # print('factor 1',torch.sum(precision_per_class * torch.sum(confusion_matrix,1)))
-  # print('factor 2',torch.sum(confusion_matrix))
   weighted_precision = torch.sum(precision_per_class * torch.sum(confusion_matrix,1)) / torch.sum(confusion_matrix)
   weighted_recall = torch.sum(recall_per_class * torch.sum(confusion_matrix,1)) / torch.sum(confusion_matrix)
   
@@ -155,14 +153,14 @@ def get_accuracy_from_confusion_matrix(confusion_matrix):
   macro_recall = torch.mean(recall_per_class)
   
   return {
-    'precision_per_class': precision_per_class,
-    'recall_per_class': recall_per_class,
-    'macro_precision': macro_precision, 
-    'macro_recall': macro_recall, 
-    'micro_precision': micro_precision, 
-    'micro_recall': micro_recall, 
-    'weighted_precision': weighted_precision, 
-    'weighted_recall': weighted_recall,
+    'precision_per_class': precision_per_class.detach().numpy(),
+    'recall_per_class': recall_per_class.detach().numpy(),
+    'macro_precision': macro_precision.detach().numpy(), 
+    'macro_recall': macro_recall.detach().numpy(), 
+    'micro_precision': micro_precision.detach().numpy(), 
+    'micro_recall': micro_recall.detach().numpy(), 
+    'weighted_precision': weighted_precision.detach().numpy(), 
+    'weighted_recall': weighted_recall.detach().numpy(),
   }
 
 def plot_accuracy_confusion_matrix(confusion_matricies, type_conf,title='', saving_path=None):
@@ -1001,6 +999,24 @@ def get_list_frame_from_video_path(video_path):
     frame_list.append(frame)
   return frame_list
 
+def plot_macro_accuracy(list_train_accuracy,list_val_accurcay, title, x_label, y_label, saving_path=None):
+  if not os.path.exists(os.path.split(saving_path)[0]):
+    os.makedirs(os.path.split(saving_path)[0])
+  fig, ax = plt.subplots()
+  ax.plot(list(range(len(list_train_accuracy))), list_train_accuracy)
+  ax.plot(list(range(len(list_val_accurcay))), list_val_accurcay)
+  ax.set_xlabel(x_label)
+  ax.set_ylabel(y_label)
+  ax.set_title(title)
+  # plt.xticks(rotation=45)
+  plt.tight_layout()
+  plt.legend(['train_accuracy','val_accuracy'])
+  if saving_path is not None:
+    plt.savefig(saving_path)
+  else:
+    return fig
+  plt.close()
+  
 def plot_bar(data, title, x_label, y_label, saving_path=None):
   fig, ax = plt.subplots()
   ax.bar(data.keys(), data.values())
