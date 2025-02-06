@@ -8,8 +8,10 @@ import torch.nn as nn
 import torch.optim as optim
 import custom.scripts as scripts
 import argparse
-from custom.helper import GLOBAL_PATH
+from custom.helper import GLOBAL_PATH,CSV
 import pandas as pd
+
+# import wandb
 
 def train(model_type,epochs,lr,path_csv_dataset,feature_folder_saving_path,global_foder_name,path_dataset,k_fold,opt_list,batch_train,
           list_GRU_hidden_size,list_GRU_num_layers,lsit_GRU_dropout,GRU_concatenate_temp_dim,list_init_network):
@@ -53,7 +55,7 @@ def train(model_type,epochs,lr,path_csv_dataset,feature_folder_saving_path,globa
     'opt_list': opt_list,
     'lr_list': lr_list,
   }
-  
+
   for init_network in list_init_network:
     for GRU_hidden_size in list_GRU_hidden_size:
       for GRU_num_layers in list_GRU_num_layers:
@@ -111,106 +113,9 @@ def train(model_type,epochs,lr,path_csv_dataset,feature_folder_saving_path,globa
               log_dict['time_taken_min']=int((time.time()-start)/60)
               df = pd.DataFrame([log_dict])
               # check if file exists
-              cols_new = ['k_fold', 
-                          'model_type',
-                          'epochs',
-                          'optimizer_fn',
-                          'lr',
-                          'criterion',
-                          'init_network',
-                          'k-0_train-loss',
-                          'k-0_val-loss',
-                          'k-0_test-loss',
-                          'k-1_train-loss',
-                          'k-1_val-loss',
-                          'k-1_test-loss',
-                          'k-2_train-loss',
-                          'k-2_val-loss',
-                          'k-2_test-loss',
-                          'GRU_hidden_size',
-                          'GRU_num_layers',
-                          'GRU_dropout',
-                          'GRU_input_size',
-                          'regularization_lambda',
-                          'regularization_loss',
-                          'batch_size_training', 
-                          'pooling_embedding_reduction',
-                          'pooling_clips_reduction',
-                          'sample_frame_strategy',
-                          'path_csv_dataset',
-                          'path_video_dataset',
-                          'head',
-                          'stride_window_in_video',
-                          'train_size',
-                          'val_size', 
-                          'test_size',
-                          'random_state',
-                          'round_output_loss',
-                          'shuffle_video_chunks',
-                          'shuffle_training_batch',
-                          'k-0_s-0_val-loss',
-                          'k-0_s-0_train-loss',
-                          'k-0_s-0_val-loss-class-avg',
-                          'k-0_s-0_val-loss-subject-avg',
-                          'k-0_s-0_train-loss-class-avg',
-                          'k-0_s-0_train-loss-subject-avg',
-                          'k-0_s-1_val-loss',
-                          'k-0_s-1_train-loss',
-                          'k-0_s-1_val-loss-class-avg',
-                          'k-0_s-1_val-loss-subject-avg',
-                          'k-0_s-1_train-loss-class-avg',
-                          'k-0_s-1_train-loss-subject-avg',
-                          'k-0_test-loss-class-avg',
-                          'k-0_test-loss-subject-avg',
-                          'k-0_train-loss-class-avg',
-                          'k-0_train-loss-subject-avg',
-                          'k-0_val-loss-class-avg',
-                          'k-0_val-loss-subject-avg',
-                          'k-1_s-0_val-loss',
-                          'k-1_s-0_train-loss',
-                          'k-1_s-0_val-loss-class-avg',
-                          'k-1_s-0_val-loss-subject-avg',
-                          'k-1_s-0_train-loss-class-avg',
-                          'k-1_s-0_train-loss-subject-avg',
-                          'k-1_s-1_val-loss',
-                          'k-1_s-1_train-loss',
-                          'k-1_s-1_val-loss-class-avg',
-                          'k-1_s-1_val-loss-subject-avg',
-                          'k-1_s-1_train-loss-class-avg',
-                          'k-1_s-1_train-loss-subject-avg',
-                          'k-1_test-loss-class-avg',
-                          'k-1_test-loss-subject-avg',
-                          'k-1_train-loss-class-avg',
-                          'k-1_train-loss-subject-avg',
-                          'k-1_val-loss-class-avg',
-                          'k-1_val-loss-subject-avg',
-                          'k-2_s-0_val-loss',
-                          'k-2_s-0_train-loss',
-                          'k-2_s-0_val-loss-class-avg',
-                          'k-2_s-0_val-loss-subject-avg',
-                          'k-2_s-0_train-loss-class-avg',
-                          'k-2_s-0_train-loss-subject-avg',
-                          'k-2_s-1_val-loss', 
-                          'k-2_s-1_train-loss',
-                          'k-2_s-1_val-loss-class-avg',
-                          'k-2_s-1_val-loss-subject-avg',
-                          'k-2_s-1_train-loss-class-avg',
-                          'k-2_s-1_train-loss-subject-avg',
-                          'k-2_test-loss-class-avg',
-                          'k-2_test-loss-subject-avg',
-                          'k-2_train-loss-class-avg',
-                          'k-2_train-loss-subject-avg',
-                          'k-2_val-loss-class-avg',
-                          'k-2_val-loss-subject-avg',
-                          'tot_test_loss-avg',
-                          'tot_test_loss-class-avg',
-                          'tot_test_loss-subject-avg',
-                          'time_taken_min',
-                          'folder_path'
-                          ] 
               # df.reindex(columns=cols_new)
               # df=df[cols_new]
-              df = df[cols_new + [col for col in df.columns if col not in cols_new]]
+              df = df[CSV.sort_cols + [col for col in df.columns if col not in CSV.sort_cols]]
               print(f'cols df: {df.columns}')
               if not os.path.exists(os.path.join(global_foder_name,'summary_log.csv')):
                 df.to_csv(os.path.join(global_foder_name,'summary_log.csv'),index=False)
@@ -245,12 +150,13 @@ if __name__ == '__main__':
   
   
   args = parser.parse_args()
-  args.global_folder_name = f'{args.global_folder_name}_{int(time.time())}'
   if args.gp:
     args.csv = generate_path(args.csv)
     args.ffsp = generate_path(args.ffsp)
     args.path_video_dataset = generate_path(args.path_video_dataset)
     args.global_folder_name = generate_path(args.global_folder_name)
+  # else:
+  #   args.global_folder_name = f'{args.global_folder_name}_{int(time.time())}'
   # print all args
   print('\n \nFollowing are the arguments passed:')
   print(args)
