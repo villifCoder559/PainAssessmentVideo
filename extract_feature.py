@@ -1,5 +1,5 @@
 from custom.dataset import customDataset
-from custom.backbone import backbone
+from custom.backbone import video_backbone,vit_image_backbone
 from custom.helper import CLIPS_REDUCTION,EMBEDDING_REDUCTION,MODEL_TYPE,SAMPLE_FRAME_STRATEGY, HEAD, GLOBAL_PATH
 import torch
 from torch.utils.data import DataLoader
@@ -12,9 +12,9 @@ import pickle
 import gc
 import argparse
 
-def main(model_type,saving_chunk_size=100,  preprocess_align = False,
+def main(model_type,pooling_embedding_reduction=EMBEDDING_REDUCTION.NONE,saving_chunk_size=100,  preprocess_align = False,
          preprocess_crop_detection = False,preprocess_frontalize = True,path_dataset=None,path_labels=None,
-         log_file_path=None,root_saving_folder_path=None
+         log_file_path=None,root_saving_folder_path=None,backbone_type='video'
          ):
   if model_type == 'B':
     model_type = MODEL_TYPE.VIDEOMAE_v2_B
@@ -23,7 +23,9 @@ def main(model_type,saving_chunk_size=100,  preprocess_align = False,
   else:
     raise ValueError('Model type not recognized. Please use "B" or "S"')
     
-  pooling_embedding_reduction = EMBEDDING_REDUCTION.MEAN_SPATIAL
+  # pooling_embedding_reduction = EMBEDDING_REDUCTION.MEAN_SPATIAL
+  # print(f'Pooling_clips_reduction: {pooling_clips_reduction}')  
+  print(f'Pooling_embedding_reduction: {pooling_embedding_reduction.name}')
   pooling_clips_reduction = CLIPS_REDUCTION.NONE
   sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
   
@@ -57,7 +59,8 @@ def main(model_type,saving_chunk_size=100,  preprocess_align = False,
         data = data.to(device)
         with torch.no_grad():
           feature = backbone.forward_features(x=data) # [1,8,14,14,768]
-        feature = torch.mean(feature,dim=pooling_embedding_reduction.value,keepdim=True)
+        if isinstance(backbone,video_backbone):
+          feature = torch.mean(feature,dim=pooling_embedding_reduction.value,keepdim=True)
         print(f'feature shape {feature.shape}')
         list_frames.append(list_sampled_frames)
         list_features.append(feature.detach().cpu())
@@ -109,19 +112,29 @@ def main(model_type,saving_chunk_size=100,  preprocess_align = False,
       tools.save_dict_data(dict_data=dict_data,
                   saving_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)))
       _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(root_saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} \n')
+  
   print('Model type:',model_type)
+  if backbone_type == 'video':
+    backbone_model = video_backbone(model_type=model_type)
+    stride_window = 16
+    clip_length = 16
+  elif backbone_type == 'image':
+    backbone_model = vit_image_backbone()
+    stride_window = 1
+    clip_length = 1
+  else:
+    raise ValueError('Backbone type not recognized. Please use "video" or "image"')
   
   custom_ds = customDataset(path_dataset=path_dataset,
                 path_labels=path_labels,
                 sample_frame_strategy=sample_frame_strategy,
-                stride_window=16,
-                clip_length=16,
+                stride_window=stride_window,
+                clip_length=clip_length,
                 preprocess_align=preprocess_align,
                 preprocess_frontalize=preprocess_frontalize,
                 preprocess_crop_detection=preprocess_crop_detection,
                 saving_folder_path_extracted_video=None)
   
-  backbone_model = backbone(model_type=model_type)
   config_dict = {
     'path_dataset': path_dataset,
     'path_labels': path_labels,
@@ -129,12 +142,13 @@ def main(model_type,saving_chunk_size=100,  preprocess_align = False,
     'pooling_embedding_reduction': pooling_embedding_reduction,
     'pooling_clips_reduction': pooling_clips_reduction,
     'sample_frame_strategy': sample_frame_strategy,
-    'stride_window': 16,
-    'clip_length': 16,
+    'stride_window': stride_window,
+    'clip_length': clip_length,
     'preprocess_align': preprocess_align,
     'preprocess_frontalize': preprocess_frontalize,
     'preprocess_crop_detection': preprocess_crop_detection,
     'batch_size_feat_extraction': 1,
+    'backbone_type': backbone_type
   }
   if not os.path.exists(root_saving_folder_path):
     os.makedirs(root_saving_folder_path)
@@ -152,6 +166,18 @@ def main(model_type,saving_chunk_size=100,  preprocess_align = False,
   gc.collect()
   torch.cuda.empty_cache()
   
+def set_embedding_reduction_from_string(pooling_embedding_reduction):
+  if pooling_embedding_reduction.lower() == 'spatial':
+    return EMBEDDING_REDUCTION.MEAN_SPATIAL
+  elif pooling_embedding_reduction.lower() == 'temporal':
+    return EMBEDDING_REDUCTION.MEAN_TEMPORAL
+  elif pooling_embedding_reduction.lower() == 'all':
+    return EMBEDDING_REDUCTION.MEAN_TEMPORAL_SPATIAL
+  elif pooling_embedding_reduction.lower() == 'none':
+    return EMBEDDING_REDUCTION.NONE
+  else:
+    raise ValueError(f'Pooling embedding reduction not recognized: {pooling_embedding_reduction}. Can be spatial, temporal, all or none')
+  
 def generate_path(path):
   return os.path.join(GLOBAL_PATH.NAS_PATH,path)
 
@@ -160,6 +186,7 @@ if __name__ == "__main__":
   parser.add_argument('--gp', action='store_true', help='Global path')
   parser.add_argument('--model_type', type=str, required=False, default="B")
   parser.add_argument('--saving_after', type=int, required=False, default=100,help='Number of batch to save in one file')
+  parser.add_argument('--emb_red', type=str, default='spatial', help='Embedding reduction. Can be spatial, temporal, all,none')
   parser.add_argument('--prep_al', action='store_true', help='Preprocess align')
   parser.add_argument('--prep_crop', action='store_true', help='Preprocess crop')
   parser.add_argument('--prep_front', action='store_true', help='Preprocess frontalize')
@@ -167,8 +194,10 @@ if __name__ == "__main__":
   parser.add_argument('--path_labels', type=str, default=os.path.join('partA','starting_point','samples_exc_no_detection.csv'), help='Path to csv file')
   parser.add_argument('--saving_folder_path', type=str, default=os.path.join('partA','video','features','samples_16_cropped_aligned'), help='Path to saving folder')
   parser.add_argument('--log_file_path', type=str, default=os.path.join('partA','video','features','samples_16_cropped_aligned','log_file.txt'), help='Path to log file')
-  # prompt example complete: python3 extract_feature.py --csv_idx 1 --gp --model_type B --saving_after 100 --prep_al --prep_crop --prep_front --path_dataset partA/video/video --path_labels partA/starting_point/samples_exc_no_detection.csv --log_file_path partA/video/features/samples_16_cropped_aligned/log_file.txt --saving_folder_path partA/video/features/samples_16_cropped_aligned
+  parser.add_argument('--backbone_type', type=str, default='video', help='Type of backbone. Can be video or image')
+  # prompt example: python3 extract_feature.py --gp --model_type B --saving_after 5000  --emb_red temporal  --path_dataset partA/video/video_frontalized --path_labels partA/starting_point/samples_exc_no_detection.csv --saving_folder_path partA/video/features/samples_vit_img --log_file_path partA/video/features/samples_vit_img/log_file.txt --backbone_type image 
   args = parser.parse_args()
+  args.emb_red = set_embedding_reduction_from_string(args.emb_red)
   if args.gp:
     args.path_dataset = generate_path(args.path_dataset)
     args.path_labels = generate_path(args.path_labels)
@@ -187,7 +216,9 @@ if __name__ == "__main__":
        path_dataset=args.path_dataset,
        path_labels=args.path_labels,
        log_file_path=args.log_file_path,
+       pooling_embedding_reduction=args.emb_red,
        root_saving_folder_path=args.saving_folder_path,
+       backbone_type=args.backbone_type
        )
   
   
