@@ -20,7 +20,7 @@ def merge_dict(list_folder_path,save_result_path=None):
         elif isinstance(v,torch.Tensor):
           merged_dict[k] = torch.concat([merged_dict[k],v], dim=0)
         else:
-          raise ValueError(f'Unsupported type {type(v)}')
+          print(f'Error: {k} is not a numpy array or torch tensor')
   print('-'*200)
   print('Shape new elements:')
   for k,v in merged_dict.items():
@@ -33,6 +33,7 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser(description='Merge dict given a list of folder paths using --p. \nNew dict will be saved in the first folder path')
   parser.add_argument('--p',type=str, nargs='+', required=True, help='List of folder paths to merge')
   parser.add_argument('--s',type=str, help='Path to save the merged dict')
+  # python3 merge_dict.py --p /equilibrium/fvilli/PainAssessmentVideo/partA/video/features/sample_16_temporal_mean --s /equilibrium/fvilli/PainAssessmentVideo/video/features/samples_16_temporal_mean
   pars_arg = parser.parse_args()
   list_root_path = pars_arg.p
   list_dict_path = []
@@ -46,5 +47,3 @@ if __name__ == "__main__":
     print(f'List dict {el}\n')
   merge_dict(list_folder_path=list_dict_path,
              save_result_path=pars_arg.s)
-  
-  

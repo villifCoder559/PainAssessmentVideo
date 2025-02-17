@@ -14,11 +14,12 @@ def merge_summary_csvs(parent_folder, output_folder, output_file):
   for folder in list_folder:
     test_folder = os.path.join(parent_folder, folder)
     for _,_,files in os.walk(test_folder):
-      if "summary_log.csv" in files:
-        file_path = os.path.join(test_folder, "summary_log.csv")
+      if "summary_log.csv" in files: 
+        file_path = os.path.join(test_folder, "summary_log.csv") # in each history_run there is a csv called summary_log
+                                                                 # that summarize the results of all test in that history_run
         try:
           df = pd.read_csv(file_path)
-          df["source_folder"] = folder  # Add source folder column
+          df["history_source"] = folder  # Add history source folder column
           all_dfs.append(df)
         except Exception as e:
           print(f"Error reading {file_path}: {e}")

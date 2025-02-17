@@ -44,7 +44,7 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='Compute tsne plot')
   parser.add_argument('--sfd', type=str, help='Path to the folder containing the data extracted')
   parser.add_argument('--sptsne', type=str, help='Path to save the tsne plot')
-  # parser.add_argument('--y', type=str, help='Can be "list_subject_id", "list_sample_id", "list_labels", "list_sample_id"')
+  
   args = parser.parse_args()
   main(saving_folder_dict=args.sfd,
        saving_path_tsne=args.sptsne)
