@@ -4,22 +4,48 @@ from custom.model import Model_Advanced
 from transformers import AutoImageProcessor
 from custom.head import HeadSVR, HeadGRU
 import time
+from custom.head import earlyStoppingAccuracy, earlyStoppingLoss
+# import torch.optim.lr_scheduler as torch_scheduler
 import torch.nn as nn
 import torch.optim as optim
 import custom.scripts as scripts
 import argparse
 from custom.helper import GLOBAL_PATH,CSV
 import pandas as pd
-
 # import wandb
 
+def get_model_type(model_type):
+  if model_type == 'B':
+    return MODEL_TYPE.VIDEOMAE_v2_B
+  elif model_type == 'S':
+    return MODEL_TYPE.VIDEOMAE_v2_S
+  elif model_type == 'I':
+    return MODEL_TYPE.ViT_image
+  else:
+    raise ValueError('Model type not found')
+  
+def get_optimizer(opt):
+  if opt.lower() == 'adam':
+    return optim.Adam
+  elif opt.lower() == 'sgd':
+    return optim.SGD
+  elif opt.lower() == 'adamw':
+    return optim.AdamW
+  else:
+    raise ValueError('Optimizer not found')  
 def train(model_type,epochs,lr,path_csv_dataset,feature_folder_saving_path,global_foder_name,path_dataset,k_fold,opt_list,batch_train,
-          list_GRU_hidden_size,list_GRU_num_layers,lsit_GRU_dropout,GRU_concatenate_temp_dim,list_init_network):
-  emb_dim = 768 if 'B' in model_type else 384
-  model_type = MODEL_TYPE.VIDEOMAE_v2_B if model_type == 'B' else MODEL_TYPE.VIDEOMAE_v2_S
+          list_GRU_hidden_size,list_GRU_num_layers,lsit_GRU_dropout,GRU_concatenate_temp_dim,list_init_network,early_stopping,
+          regularization_loss,list_regularization_lambda,is_round_output_loss, GRU_output_size,key_for_early_stopping,seed_random_state,
+          is_shuffle_training_batch,is_shuffle_video_chunks,clip_length,target_metric_best_model,is_plot_dataset_distribution):
+  
+  emb_dim = 384 if 'S' in model_type else 768
+  
+  model_type = get_model_type(model_type)
+  
   pooling_embedding_reduction = EMBEDDING_REDUCTION.MEAN_SPATIAL
   pooling_clips_reduction = CLIPS_REDUCTION.NONE
   sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
+  
   # path_dict ={
   #   'all' : os.path.join('partA','starting_point','samples.csv'),
     # 'train' : os.path.join('partA','starting_point','train_21.csv'),
@@ -38,90 +64,82 @@ def train(model_type,epochs,lr,path_csv_dataset,feature_folder_saving_path,globa
   #   feature_folder_saving_path = os.path.join('partA','video','features','samples_16_aligned_cropped')
   #   global_foder_name= 'history_run'
   head = HEAD.GRU
-  stride_window_in_video = 16
+  stride_window_in_video = 16 # sliding window
   lr_list = lr
-  optim_list = [optim.Adam if opt == 'adam' else optim.SGD for opt in opt_list] 
+  optim_list = [get_optimizer(opt) for opt in opt_list] 
   
                                                                         # can be 384*8(small), 768*8(base), 1408*8(large) [temporal_dim considered feature in GRU] 
   # features_folder_saving_path = os.path.join('partA','video','features',f'{os.path.split(path_csv_dataset)[-1][:-4]}_{stride_window_in_video}') # get the name of the csv file
   print(f'\nlr_list: {lr_list}')
   print(f'optim_list: {optim_list}')
   
-  config_test_dict = {
-    'list_init_network': list_init_network,
-    'list_GRU_hidden_size': list_GRU_hidden_size,
-    'list_GRU_num_layers': list_GRU_num_layers,
-    'lsit_GRU_dropout': lsit_GRU_dropout,
-    'opt_list': opt_list,
-    'lr_list': lr_list,
-  }
-
+  # config_test_dict = {
+  #   'list_init_network': list_init_network,
+  #   'list_GRU_hidden_size': list_GRU_hidden_size,
+  #   'list_GRU_num_layers': list_GRU_num_layers,
+  #   'lsit_GRU_dropout': lsit_GRU_dropout,
+  #   'opt_list': opt_list,
+  #   'lr_list': lr_list,
+  # }
   for init_network in list_init_network:
     for GRU_hidden_size in list_GRU_hidden_size:
       for GRU_num_layers in list_GRU_num_layers:
         for GRU_dropout in lsit_GRU_dropout:
-          params = {
-            'hidden_size': GRU_hidden_size,
-            'num_layers': GRU_num_layers,
-            'dropout': GRU_dropout,
-            'input_size': emb_dim * 8 if GRU_concatenate_temp_dim  else emb_dim # can be 384  (small), 768  (base), 1408  (large) [temporal_dim considered as input sequence for GRU]
-          }
-          for lr in lr_list:
-            for optim_fn in optim_list:
-              start = time.time()
-              log_dict = scripts.run_train_test(model_type=model_type, 
-                                    pooling_embedding_reduction=pooling_embedding_reduction, 
-                                    pooling_clips_reduction=pooling_clips_reduction, 
-                                    sample_frame_strategy=sample_frame_strategy, 
-                                    path_csv_dataset=path_csv_dataset, 
-                                    path_video_dataset=path_dataset,
-                                    head=head,
-                                    stride_window_in_video=stride_window_in_video, 
-                                    head_params=params,
-                                    global_foder_name=global_foder_name,
-                                    k_fold = k_fold,
-                                    epochs = epochs,
-                                    train_size=0.8,
-                                    test_size=0.1,
-                                    val_size=0.1,
-                                    batch_size_training=batch_train,
-                                    batch_size_feat_extraction=100,
-                                    features_folder_saving_path=feature_folder_saving_path,
-                                    criterion = nn.L1Loss(),
-                                    optimizer_fn = optim_fn,
-                                    lr = lr,
-                                    regularization_loss='',
-                                    regularization_lambda=0.0,
-                                    init_network=init_network,
-                                    random_state_split_dataset=42,
-                                    only_train=True,
-                                    is_save_features_extracted=False, 
-                                    is_validation=True,
-                                    is_plot_dataset_distribution=True,
-                                    is_plot_loss=True,
-                                    is_plot_tsne_backbone_feats=True,
-                                    is_plot_tsne_head_pred=True,
-                                    is_plot_tsne_gru_feats=True,
-                                    is_create_video_prediction=True,
-                                    is_create_video_prediction_per_video=True,
-                                    is_round_output_loss=False,
-                                    is_shuffle_training_batch=True,
-                                    is_shuffle_video_chunks=False,
-                                    is_download_if_unavailable=False
-                                  )
-              # TODO generate csv file to summarize the results of k-cross validation
-              log_dict['time_taken_min']=int((time.time()-start)/60)
-              df = pd.DataFrame([log_dict])
-              # check if file exists
-              # df.reindex(columns=cols_new)
-              # df=df[cols_new]
-              df = df[CSV.sort_cols + [col for col in df.columns if col not in CSV.sort_cols]]
-              print(f'cols df: {df.columns}')
-              if not os.path.exists(os.path.join(global_foder_name,'summary_log.csv')):
-                df.to_csv(os.path.join(global_foder_name,'summary_log.csv'),index=False)
-              else:
-                df.to_csv(os.path.join(global_foder_name,'summary_log.csv'),index=False,mode='a', header=False)
-              print(f'Time taken for this run: {(time.time()-start)//60} min')
+          for regularization_lambda in list_regularization_lambda:
+            params = {
+              'output_size': GRU_output_size,
+              'hidden_size': GRU_hidden_size,
+              'num_layers': GRU_num_layers,
+              'dropout': GRU_dropout,
+              'input_size': emb_dim * 8 if GRU_concatenate_temp_dim  else emb_dim # can be 384  (small), 768  (base), 1408  (large) [temporal_dim considered as input sequence for GRU]
+            }
+            criterion = nn.L1Loss() if params['output_size'] == 1 else nn.CrossEntropyLoss()
+            for lr in lr_list:
+              for optim_fn in optim_list:
+                
+                start = time.time()
+                scripts.run_train_test(
+                  model_type=model_type, 
+                  pooling_embedding_reduction=pooling_clips_reduction,
+                  pooling_clips_reduction=pooling_clips_reduction,
+                  sample_frame_strategy=sample_frame_strategy, 
+                  path_csv_dataset=path_csv_dataset, 
+                  path_video_dataset=path_dataset,
+                  head=head,
+                  stride_window_in_video=stride_window_in_video,
+                  features_folder_saving_path=feature_folder_saving_path,
+                  head_params=params,
+                  k_fold=k_fold,
+                  global_foder_name=global_foder_name, 
+                  batch_size_training=batch_train, 
+                  epochs=epochs, 
+                  criterion=criterion, 
+                  optimizer_fn=optim_fn,
+                  lr=lr,
+                  seed_random_state=seed_random_state,
+                  is_plot_dataset_distribution=is_plot_dataset_distribution,
+                  is_round_output_loss=is_round_output_loss,
+                  is_shuffle_video_chunks=is_shuffle_video_chunks,
+                  is_shuffle_training_batch=is_shuffle_training_batch,
+                  init_network=init_network,
+                  key_for_early_stopping=key_for_early_stopping,
+                  regularization_lambda=regularization_lambda,
+                  regularization_loss=regularization_loss,
+                  clip_length=clip_length,
+                  target_metric_best_model=target_metric_best_model,
+                  early_stopping=early_stopping,
+                  # scheduler=scheduler,
+                  )
+                # TODO generate csv file to summarize the results of k-cross validation
+                # log_dict['time_taken_min']=int((time.time()-start)/60)
+                # df = pd.DataFrame([log_dict])
+                # df = df[CSV.sort_cols + [col for col in df.columns if col not in CSV.sort_cols]]
+                # print(f'cols df: {df.columns}')
+                # if not os.path.exists(os.path.join(global_foder_name,'summary_log.csv')):
+                #   df.to_csv(os.path.join(global_foder_name,'summary_log.csv'),index=False)
+                # else:
+                #   df.to_csv(os.path.join(global_foder_name,'summary_log.csv'),index=False,mode='a', header=False)
+                print(f'Time taken for this run: {(time.time()-start)//60} min')
   
   print('Training completed')
   print(f'Check the path {os.path.join(global_foder_name,"summary_log.csv")} file for the results of the training')              
@@ -129,9 +147,10 @@ def train(model_type,epochs,lr,path_csv_dataset,feature_folder_saving_path,globa
 def generate_path(path):
   return os.path.join(GLOBAL_PATH.NAS_PATH,path)
 
+
 if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='Train model')
-  parser.add_argument('--mt', type=str, default='B', help='Model type. Can be either B or S')
+  parser.add_argument('--mt', type=str, default='B', help='Model type. Can be either B or S or I')
   parser.add_argument('--gp', action='store_true', help='Global path')
   parser.add_argument('--lr', type=float, nargs='*',default=0.0001, help='Learning rate')
   parser.add_argument('--ep', type=int, default=500, help='Number of epochs')
@@ -146,9 +165,13 @@ if __name__ == '__main__':
   parser.add_argument('--GRU_num_layers', type=int, nargs='*',default=2, help='GRU number of layers')
   parser.add_argument('--GRU_dropout', type=float,nargs='*' ,default=0.0, help='GRU dropout')
   parser.add_argument('--GRU_concatenate_temp_dim', action='store_true', help='Concatenate temporal dimension')
+  parser.add_argument('--GRU_output_size', type=int, default=1, help='Output size of GRU. If 1 is regression, if >1 is classification')
   parser.add_argument('--init_network', type=str,nargs='*',default='default', help='Initialize network, can be xavier,default,uniform')
-  
-  
+  parser.add_argument('--reg_loss', type=str, default='', help='Regularization type, can be L1 or L2')
+  parser.add_argument('--reg_lambda', type=float,nargs='*', default=[0], help='Regularization lambda')
+  parser.add_argument('--is_round_output_loss', action='store_true', help='Round output loss')
+  parser.add_argument('--key_early_stopping', type=str, default='val_loss', help='Key for early stopping. Can be val_losses or ' )#TODO add the other key
+  # python3 train_model.py --mt I --gp -- lr 0.00001 0.0001 --ep 500 --csv partA/starting_point/samples_exc_no_detection.csv --ffsp partA/video/features/samples_vit_front --global_folder_name history_run --path_video_dataset partA/video/video_frontalized --k_fold 3 --opt adam --batch_train 8700 --GRU_hidden_size 1024 --GRU_num_layers 2 --GRU_dropout 0.3 0.5 --init_network default --reg_loss L2 --reg_lambda 0.000001 0.000005
   args = parser.parse_args()
   ti = int(time.time())
   args.global_folder_name = f'{args.global_folder_name}_{ti}'
@@ -162,6 +185,12 @@ if __name__ == '__main__':
   # print all args
   print('\n \nFollowing are the arguments passed:')
   print(args)
+  clip_length = 16
+  target_metric_best_model = 'val_loss'
+  seed_random_state = 42
+  early_stopping = (earlyStoppingLoss(patience=50,min_delta=0.0001,threshold_mode='abs') if args.key_early_stopping == 'val_loss' 
+                  else 
+                  earlyStoppingAccuracy(patience=50,min_delta=0.001,threshold_mode='abs'))
   train(model_type=args.mt,
         epochs=args.ep,
         lr=args.lr,
@@ -176,5 +205,17 @@ if __name__ == '__main__':
         list_GRU_hidden_size=args.GRU_hidden_size,
         list_GRU_num_layers=args.GRU_num_layers,
         lsit_GRU_dropout=args.GRU_dropout,
-        GRU_concatenate_temp_dim=args.GRU_concatenate_temp_dim
+        GRU_concatenate_temp_dim=args.GRU_concatenate_temp_dim,
+        list_regularization_lambda=args.reg_lambda,
+        regularization_loss=args.reg_loss,
+        GRU_output_size=args.GRU_output_size,
+        is_round_output_loss=args.is_round_output_loss,
+        key_for_early_stopping=args.key_early_stopping,
+        clip_length=clip_length,
+        target_metric_best_model=target_metric_best_model,
+        seed_random_state=seed_random_state,
+        early_stopping=early_stopping,
+        is_shuffle_video_chunks=False,
+        is_shuffle_training_batch=True,
+        is_plot_dataset_distribution=False
         )
