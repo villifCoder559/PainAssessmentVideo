@@ -149,7 +149,11 @@ partA/
 PartA/
 history_run/
 tsne_Results/
+Tests/
 
 .codegpt
 test_frontalization_imgs/
 tsne_Results_frontalized/
+~/Desktop/
+facialLandmarkFrontalization/
+history_run_*/
