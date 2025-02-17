@@ -106,6 +106,7 @@ if __name__ == '__main__':
   parser.add_argument('--from_', type=int, default=None, help='Frontalize video from index (included)')
   parser.add_argument('--to_', type=int, default=None, help='Frontalize video untill the index (excluded). Set None to get all video')
   parser.add_argument('--log_er_p', type=str, default=os.path.join('partA','video','video_frontalized'), help='Path to log error file')
+  # sripts example: python extract_video_frontalized.py --g_path --gv --stop 1 --csv partA/starting_point/samples.csv --pfo partA/video/video_frontalized --prl partA/video/mean_face_landmarks_per_subject/all_subjects_mean_landmarks.pkl --from_ 0 --to_ 1
   args = parser.parse_args()
   if args.ltv[0].endswith('.txt'):
     list_video = []
