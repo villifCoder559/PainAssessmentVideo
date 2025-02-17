@@ -11,7 +11,7 @@ class MODEL_TYPE(Enum):
   VIDEOMAE_v2_B = os.path.join('VideoMAEv2','pretrained',"vit_b_k710_dl_from_giant.pth")
   VIDEOMAE_v2_G_pt_1200e = os.path.join('VideoMAEv2','pretrained',"vit_g_hybrid_pt_1200e.pth")
   VIDEOMAE_v2_G_pt_1200e_K710_it_HMDB51_ft = os.path.join('VideoMAEv2','pretrained',"vit_g_hybrid_pt_1200e_k710_it_hmdb51_ft.pth")
-  
+  ViT_image = 'ViT_image'
 class EMBEDDING_REDUCTION(Enum):  
   # [B,t,p,p,emb] -> [B,1,p,p,emb] ex: [3,8,14,14,768] -> [3,1,14,14,768]
   MEAN_TEMPORAL = (1) 

@@ -583,8 +583,11 @@ class FaceExtractor:
     # ax[1].imshow(frontalized_img)
     # frontalized_img = cv2.inpaint(frontalized_img, bw_image, 3, cv2.INPAINT_TELEA)
     # frontalized_img = self.plot_landmarks_triangulation(frontalized_img,landmarks)
+    
+    #TODO: These operations can create jittering in the video
     frontalized_img = frontalized_img[top_left_corner[1]:bottom_right_corner[1],top_left_corner[0]:bottom_right_corner[0]]
-    frontalized_img=cv2.resize(frontalized_img,(256,256))
+    frontalized_img=cv2.resize(frontalized_img,(224,224))
+    # frontalized_img=cv2.resize(frontalized_img,(256,256))
 
     return frontalized_img
 
@@ -671,7 +674,6 @@ class FaceExtractor:
       normalized_frontalized_triangle = frontalized_triangle - [x_front, y_front] + [delta,delta]
       # print(f'normalized_frontalized_triangle: \n{normalized_frontalized_triangle}')
       normalized_original_triangle = original_triangle - [x_orig_rect, y_orig_rect] + [delta,delta]
-      # set delta smaller if it goes over the frame
 
       img_orig_cut = original_image[y_orig_rect-delta:y_orig_rect + h_orig_rect+delta, x_orig_rect-delta:x_orig_rect + w_orig_rect+delta]
       

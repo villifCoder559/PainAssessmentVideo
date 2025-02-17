@@ -15,7 +15,7 @@ from openTSNE import TSNE as openTSNE
 import time
 from custom.faceExtractor import FaceExtractor
 from tqdm import tqdm
-
+import pickle
 # if os.name == 'posix':
   # from tsnecuda import TSNE as cudaTSNE # available only on Linux
 # else:
@@ -29,6 +29,10 @@ class NpEncoder(json.JSONEncoder):
       return float(obj)
     if isinstance(obj, np.ndarray):
       return obj.tolist()
+    if isinstance(obj, torch.Tensor):
+      return obj.cpu().detach().numpy().tolist()
+    if isinstance(obj,MulticlassConfusionMatrix):
+      return obj.compute().cpu().detach().numpy().tolist()
     return super(NpEncoder, self).default(obj)
 
 
@@ -234,7 +238,7 @@ def plot_mae_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_sub
   plt.bar(uniqie_subject_ids, mae_per_subject,width=1.5, color='green')
   plt.xlabel('Participant')
   plt.ylabel('Mean Absolute Error')
-  plt.title(f'Mean Absolute Error per Participant {title}')
+  plt.title(f'Mean Absolute Error per Participant, {title}')
   plt.xticks(fontsize=11,rotation=45)
   filter_elements = np.array([True if mae > 0.0 else False for mae in mae_per_subject])
   plt.xticks(uniqie_subject_ids[filter_elements])  # Show each element in x-axis
@@ -253,10 +257,10 @@ def plot_losses(train_losses, test_losses, saving_path=None):
   plt.figure(figsize=(10, 5))
   plt.yticks(fontsize=12)
   plt.plot(train_losses, label='Training Loss')
-  plt.plot(test_losses, label='Test Loss')
+  plt.plot(test_losses, label='Val Loss')
   plt.xlabel('Epochs')
   plt.ylabel('Loss')
-  plt.title('Training and Test Losses over Epochs')
+  plt.title('Training and Val Losses over Epochs')
   plt.legend()
   plt.grid(True)
   if saving_path is not None:
@@ -415,7 +419,7 @@ def generate_plot_train_test_results(dict_results,best_model_idx, count_y_train,
                      mae_per_class=dict_results['train_loss_per_class'][best_model_idx], 
                      unique_classes=dict_results['y_unique'], count_classes=count_y_train,
                      saving_path=os.path.join(saving_path_losses,f'train_mae_per_class_{best_model_idx}.png'))
-  plot_mae_per_class(title='test',
+  plot_mae_per_class(title='val',
                      mae_per_class=dict_results['val_loss_per_class'][best_model_idx], 
                      unique_classes=dict_results['y_unique'], count_classes=count_y_test,
                      saving_path=os.path.join(saving_path_losses,f'val_mae_per_class_{best_model_idx}.png'))
@@ -425,7 +429,7 @@ def generate_plot_train_test_results(dict_results,best_model_idx, count_y_train,
                        uniqie_subject_ids=dict_results['subject_ids_unique'],
                        count_subjects=count_subject_ids_train,
                        saving_path=os.path.join(saving_path_losses,f'train_mae_per_subject_{best_model_idx}.png'))
-  plot_mae_per_subject(title='test',
+  plot_mae_per_subject(title='val',
                        mae_per_subject=dict_results['val_loss_per_subject'][best_model_idx], 
                        uniqie_subject_ids=dict_results['subject_ids_unique'],
                        count_subjects=count_subject_ids_test,
@@ -436,6 +440,7 @@ def generate_plot_train_test_results(dict_results,best_model_idx, count_y_train,
 def plot_confusion_matrix(confusion_matrix, title, saving_path):
   # confusion_matrix must be from torchmetrics
   # assert not isinstance(confusion_matrix, ConfusionMatrix), 'confusion_matrix must be from torchmetrics.classification'
+  # if not os.path.exists(os.path):
   fig, _ = confusion_matrix.plot() 
   fig.suptitle(title)
   fig.savefig(saving_path)
@@ -461,7 +466,7 @@ def get_unique_subjects_and_classes(csv_path):
   
   return subject_counts, class_counts
 
-def plot_dataset_distribution(csv_path, total_classes=None,per_class=False, per_partecipant=False, saving_path=None): 
+def _plot_dataset_distribution(csv_path, total_classes=None,per_class=False, per_partecipant=False, saving_path=None): 
     def plot_distribution(unique,count,title):  
       plt.figure(figsize=(10, 5))
       plt.bar(unique.astype(str), count, color='blue')
@@ -721,6 +726,7 @@ def plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', t
       if clip_length is not None and legend_label == 'clip':
         label = f'{legend_label} [{stride_windows * val}, {clip_length + stride_windows * (val) - 1}]'
       ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[val], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
+      # ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[0 if stride_windows*val < 48 else max(color_dict.keys())], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
     if plot_trajectory:
       ax.plot(X_tsne[:, 0], X_tsne[:, 1], linestyle='--', color=color_dict[0], label='Trajectory', alpha=0.7)
     if list_axis_name is not None:
@@ -911,6 +917,8 @@ def generate_video_from_list_video_path(list_video_path, list_frames, list_subje
   print('Generating video...')
   current_video_path = None
   fourcc = cv2.VideoWriter_fourcc(*'avc1')
+  if list_video_path[0].split('/') != 'partA':
+    list_video_path = [video_path.split('PainAssessmentVideo')[1][1:] for video_path in list_video_path]
   for video_path, frames, sample_id, clip, y_gt, image, subject_id in (zip(list_video_path, list_frames, list_sample_id, idx_list_frames,
                                                                     list_y_gt, list_rgb_image_plot or [None]*len(list_video_path),
                                                                     list_subject_id)):
@@ -1056,3 +1064,306 @@ def subplot_loss(dict_losses,x_label,y_label,list_title, saving_path=None):
   else:
     return fig
   plt.close()
+  
+
+def save_dict_k_fold_results(dict_k_fold_results, folder_path):
+  """
+  Save the dict of k-fold results to the specified folder.
+  Args:
+      list_k_fold_results (list): List of k-fold results to be saved.
+      folder_path (str): Path to the folder where the results will be saved.
+  """
+  if not os.path.exists(folder_path):
+    os.makedirs(folder_path)
+  
+  results_path = os.path.join(folder_path, 'k_fold_results.pkl')
+  start = time.time()
+  print(f'Saving k-fold results to {results_path}...')
+  with open(results_path, 'wb') as f:
+    pickle.dump(dict_k_fold_results, f)
+  print(f'k-fold results saved to {results_path} in {int(time.time()-start)} secs')
+  
+def convert_split_indices_to_video_path(path_split_indices_folder,
+                                       path_to_extracted_feature,
+                                       split_key='val'):
+  dict_sample_indices = read_split_indices(path_split_indices_folder) # [[list_sample_id],[indices]]
+  dict_all_features = load_dict_data(path_to_extracted_feature)
+  unique_sample_ids = dict_sample_indices[split_key][0]
+  list_path = []
+  for sample_id in unique_sample_ids:
+    mask = (sample_id == dict_all_features['list_sample_id'])
+    unique_path = np.unique(dict_all_features['list_path'][mask])
+    list_path.append(unique_path[0])
+  return list_path
+  
+# TODO: select the right stride window for each video when read data from SSD
+def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subject_id_list,clip_list,class_list,sliding_windows,legend_label,create_video=True,
+                            plot_only_sample_id_list=None,tsne_n_component=2,plot_third_dim_time=False,apply_pca_before_tsne=False,cmap='copper',
+                            sort_elements=True,axis_dict=None):
+
+  # if sliding_windows != 16 and sliding_windows!=4:
+  #   dict_all_features = get_dict_all_features_from_model(sliding_windows=sliding_windows,
+  #                                                        classes=class_list,
+  #                                                        subject_id_list=subject_id_list,
+  #                                                        folder_path_tsne_results=folder_path_tsne_results)
+  # else:
+  dict_all_features = load_dict_data(folder_path_features)
+  # print(dict_all_features.keys())
+  print(f'dict_all_features["list_subject_id"] shape {dict_all_features["list_subject_id"].shape}')
+  time_start = time.time()
+  idx_subjects = np.any([dict_all_features['list_subject_id'] == id for id in subject_id_list],axis=0)
+  idx_class = np.any([dict_all_features['list_labels'] == id for id in class_list],axis=0)
+  filter_idx = np.logical_and(idx_subjects,idx_class)
+  if plot_only_sample_id_list is not None:
+    print(f'Warning: Using sample id will ignore subject_id_list and class_list')
+    filter_idx = np.any([dict_all_features['list_sample_id'] == id for id in plot_only_sample_id_list],axis=0)
+  # Filter for clip_list
+  _, list_count_clips = np.unique(dict_all_features['list_sample_id'],return_counts=True)
+  arange_clip = range(max(list_count_clips)) # suppose clip_list is ordered
+  clip_list_array = np.array([True if i in clip_list else False for i in arange_clip]) 
+  filter_clip = np.concatenate([clip_list_array[:end] for end in list_count_clips])
+  filter_idx = np.logical_and(filter_idx, filter_clip)
+  
+  list_frames = []
+  list_sample_id = []
+  list_subject_id = []
+  list_video_path = []
+  list_feature = []
+  list_idx_list_frames = []
+  list_y_gt = []
+
+  list_frames=dict_all_features['list_frames'][filter_idx]
+  list_sample_id=dict_all_features['list_sample_id'][filter_idx]
+  list_video_path=dict_all_features['list_path'][filter_idx]
+  list_feature=dict_all_features['features'][filter_idx]
+  # print(f'length list_feature {len(list_feature)}')
+  list_y_gt=dict_all_features['list_labels'][filter_idx]
+  list_subject_id=dict_all_features['list_subject_id'][filter_idx]
+  # print(f'list_sample_id {list_sample_id}')
+  list_idx_list_frames=np.concatenate([np.arange(end) for end in list_count_clips])[filter_idx]
+  
+  if sort_elements:
+    class_bool_idxs = [list_y_gt == i for i in class_list]
+    list_frames = torch.cat([list_frames[bool_idx] for bool_idx in class_bool_idxs])
+    list_sample_id = torch.cat([list_sample_id[bool_idx] for bool_idx in class_bool_idxs])
+    list_video_path = np.concatenate([list_video_path[bool_idx] for bool_idx in class_bool_idxs])
+    list_feature = torch.cat([list_feature[bool_idx] for bool_idx in class_bool_idxs])
+    list_y_gt = torch.cat([list_y_gt[bool_idx] for bool_idx in class_bool_idxs])
+    list_subject_id = torch.cat([list_subject_id[bool_idx] for bool_idx in class_bool_idxs])
+    list_idx_list_frames = np.concatenate([list_idx_list_frames[bool_idx] for bool_idx in class_bool_idxs])
+  
+  print('Elasped time to get all features: ',time.time()-time_start)
+  print(f'list_frames {list_frames.shape}')
+  print(f'list_sample_id {list_sample_id.shape}')
+  print(f'list_video_path {list_video_path.shape}')
+  print(f'list_feature {list_feature.shape}')
+  print(f'list_idx_list_frames {list_idx_list_frames.shape}')
+  print(f'list_y_gt {list_y_gt.shape}')
+  
+  tsne_plot_path = os.path.join(folder_path_tsne_results,f'tsne_plot_{sliding_windows}_{legend_label}')
+  
+  X_tsne = compute_tsne(X=list_feature,
+                           plot=False,
+                           saving_path=os.path.join(folder_path_tsne_results,'dummy'),
+                           tsne_n_component=tsne_n_component,
+                           apply_pca_before_tsne=apply_pca_before_tsne)
+  # add 3th dimension to X_tsne
+  list_axis_name = None
+  if tsne_n_component == 2 and plot_third_dim_time:
+    X_tsne = np.concatenate([X_tsne,np.expand_dims(list_idx_list_frames,axis=1)],axis=1)
+    X_tsne = X_tsne[:,[2,0,1]] 
+    list_axis_name = ['nr_clip','t-SNE_x','t-SNE_y']
+  if axis_dict is None:
+    if X_tsne.shape[1] == 2:
+      min_x,min_y = X_tsne.min(axis=0)
+      max_x,max_y = X_tsne.max(axis=0)
+      axis_dict = {'min_x':min_x-3,'min_y':min_y-3,'max_x':max_x+3,'max_y':max_y+3}
+    else:
+      min_x,min_y,min_z = X_tsne.min(axis=0)
+      max_x,max_y,max_z = X_tsne.max(axis=0)
+      axis_dict = {'min_x':min_x-3,'min_y':min_y-3,'min_z':min_z-3,'max_x':max_x+3,'max_y':max_y+3,'max_z':max_z+3}
+  
+  print(f'axis_dict {axis_dict}')
+  if legend_label == 'clip':
+    labels_to_plot = list_idx_list_frames
+  elif legend_label == 'subject':
+    labels_to_plot = list_subject_id
+  elif legend_label == 'class':
+    labels_to_plot = list_y_gt
+  else:
+    raise ValueError('legend_label must be one of the following: "clip", "subject", "class"') 
+  
+  # labels_to_plot = list_idx_list_frames
+  # print(f'clip_length {dict_all_features["list_frames"][filter_idx].shape[1]}')
+  if not os.path.exists(tsne_plot_path):
+    os.makedirs(tsne_plot_path)
+  if plot_only_sample_id_list is None:
+    if len(subject_id_list) > 1:
+      title_plot = f'{os.path.split(folder_path_features)[-1]}_sliding_{sliding_windows}_tot-subjects_{len(subject_id_list)}__clips_{clip_list}__classes_{(class_list)}'
+    else:
+      title_plot = f'{os.path.split(folder_path_features)[-1]}_sliding_{sliding_windows}__clips_{clip_list}__classes_{(np.unique(list_y_gt))}__subjectID_{np.unique(list_subject_id)}'
+  else:
+    title_plot = f'{os.path.split(folder_path_features)[-1]}_sliding_{sliding_windows}_sample_id_{plot_only_sample_id_list}__clips_{len(clip_list)}__classes_{(np.unique(list_y_gt))}__subjectID_{np.unique(list_subject_id)}'
+  print('START PLOT TSNE')
+  plot_tsne(X_tsne=X_tsne,
+                       labels=labels_to_plot,
+                       saving_path=tsne_plot_path,
+                       title=title_plot,
+                       legend_label=legend_label,
+                       plot_trajectory = True if plot_only_sample_id_list is not None else False,
+                       clip_length=dict_all_features['list_frames'][filter_idx].shape[1],
+                       stride_windows=sliding_windows,
+                       axis_scale=axis_dict,
+                       list_axis_name=list_axis_name,
+                       cmap=cmap)  
+  print('END ONLY PLOT TSNE')
+  with open(os.path.join(folder_path_tsne_results,'config.txt'),'w') as f:
+    f.write(f'subject_id_list: {subject_id_list}\n')
+    f.write(f'clips: {clip_list}\n')
+    f.write(f'classes: {class_list}\n')
+    f.write(f'sliding_windows: {sliding_windows}\n')
+    
+  if create_video:
+    video_saving_path = os.path.join(folder_path_tsne_results,'video')
+    if not os.path.exists(video_saving_path):
+      os.makedirs(video_saving_path)
+    list_rgb_image_plot = []  
+    start = time.time()
+    print(f'X_tsne.shape {X_tsne.shape}')
+    for i in range(1,X_tsne.shape[0]+1):
+      list_rgb_image_plot.append(
+                    plot_tsne(X_tsne=X_tsne[:i],
+                          labels=labels_to_plot[:i],
+                          legend_label=legend_label,
+                          title=f'{title_plot}_{i}',
+                          # saving_path=video_saving_path,
+                          axis_scale=axis_dict,
+                          clip_length=dict_all_features['list_frames'][filter_idx].shape[1],
+                          stride_windows=sliding_windows,
+                          tot_labels=len(np.unique(labels_to_plot)),
+                          plot_trajectory=True if plot_only_sample_id_list is not None else False,
+                          last_point_bigger=True,
+                          list_axis_name=list_axis_name))
+      print(f'Elapsed time to get plot {i}: {time.time()-start} s')
+    print(f'Elapsed time to get all plots: {time.time()-start} s')
+    start = time.time()
+    generate_video_from_list_video_path(list_video_path=list_video_path,
+                                              list_frames=list_frames,
+                                              list_sample_id=list_sample_id,
+                                              list_y_gt=list_y_gt,
+                                              output_fps=10,
+                                              list_subject_id=list_subject_id,
+                                              idx_list_frames=list_idx_list_frames,
+                                              saving_path=video_saving_path,
+                                              list_rgb_image_plot=list_rgb_image_plot)
+    print(f'Elapsed time to generate video: {time.time()-start} s')
+    # for i in range(len(list_image_path)):
+    #   remove_plot(list_image_path[i])
+    
+def plot_loss_and_precision_details(dict_train, train_folder_path, total_epochs):
+  """
+  Generate and save plots of the training and test results, and confusion matrices for each epoch.
+  Parameters:
+  dict_train (dict): Dictionary containing training results and other relevant data.
+  train_folder_path (str): Path to the folder where the plots and confusion matrices will be saved.
+  epochs (int): Number of epochs for which the confusion matrices will be plotted.
+  """
+    # Generate and save plots of the training and test results
+  # tools.plot_losses(train_losses=dict_train['dict_results']['train_losses'], 
+  #                   test_losses=dict_train['dict_results']['test_losses'], 
+  #                   saving_path=os.path.join(train_folder_path,'train_test_losses'))
+  
+
+  generate_plot_train_test_results(dict_results=dict_train['dict_results'], 
+                                count_subject_ids_train=dict_train['count_subject_ids_train'],
+                                count_subject_ids_test=dict_train['count_subject_ids_test'],
+                                count_y_test=dict_train['count_y_test'], 
+                                count_y_train=dict_train['count_y_train'],
+                                saving_path=train_folder_path,
+                                best_model_idx=dict_train['dict_results']['best_model_idx'])
+  
+  # Plot and save confusion matrices for each epoch
+  confusion_matrix_path = os.path.join(train_folder_path,'confusion_matricies')
+  
+  if not os.path.exists(confusion_matrix_path):
+    os.makedirs(confusion_matrix_path)
+  _plot_confusion_matricies(total_epochs, dict_train, confusion_matrix_path,dict_train['dict_results']['best_model_idx'])
+  
+  plot_macro_accuracy(list_train_accuracy=dict_train['dict_results']['list_train_macro_accuracy'],
+                            list_val_accurcay=dict_train['dict_results']['list_val_macro_accuracy'],
+                            title='Macro accuracy per epoch',
+                            x_label='epochs',
+                            y_label='accuracy',
+                            saving_path=os.path.join(train_folder_path,'losses','macro_accuracy_train_val.png'))
+
+
+def create_unique_video_per_prediction(train_folder_path, dict_cvs_path, sample_ids, list_frames, y_pred, y, dataset_name):
+  # Create video with predictions
+  print(f"Creating video with predictions for {dataset_name}")
+  video_folder_path = os.path.join(train_folder_path,f'video')
+  if not os.path.exists(video_folder_path):
+    os.makedirs(video_folder_path)
+  
+  list_input_video_path = get_list_video_path_from_csv(dict_cvs_path[dataset_name])
+  output_video_path = os.path.join(video_folder_path,f'video_all_{dataset_name}.mp4')
+
+  save_frames_as_video(list_input_video_path=list_input_video_path, # [n_video=33]
+                                              list_frame_indices=list_frames, # [33,2,16]
+                                              output_video_path=output_video_path, # string
+                                              all_predictions=y_pred,#  [33,2]
+                                              list_ground_truth=y,
+                                              sample_ids=sample_ids, # -> [33,2] 
+                                              output_fps=4)
+
+
+def _plot_confusion_matricies(epochs, dict_train, confusion_matrix_path,best_model_idx):
+  for epoch in range(0,epochs,50): 
+    plot_confusion_matrix(confusion_matrix=dict_train['dict_results']['train_confusion_matricies'][epoch],
+                                title=f'Train_{epoch} confusion matrix',
+                                saving_path=os.path.join(confusion_matrix_path,f'confusion_matrix_train_{epoch}.png'))
+    
+    plot_confusion_matrix(confusion_matrix=dict_train['dict_results']['val_confusion_matricies'][epoch],
+                              title=f'Val_{epoch} confusion matrix',
+                              saving_path=os.path.join(confusion_matrix_path,f'confusion_matrix_val_{epoch}.png'))
+    
+  # Plot best model results
+  plot_confusion_matrix(confusion_matrix=dict_train['dict_results']['train_confusion_matricies'][best_model_idx],
+                                title=f'Train_{best_model_idx} confusion matrix',
+                                saving_path=os.path.join(confusion_matrix_path,f'best_confusion_matrix_train_{best_model_idx}.png'))
+  plot_confusion_matrix(confusion_matrix=dict_train['dict_results']['val_confusion_matricies'][best_model_idx],
+                              title=f'Val_{best_model_idx} confusion matrix',
+                              saving_path=os.path.join(confusion_matrix_path,f'best_confusion_matrix_val_{best_model_idx}.png'))
+  
+  saving_path_precision_recall = os.path.join(confusion_matrix_path,'plot_over_epochs')
+  if not os.path.exists(saving_path_precision_recall):
+    os.makedirs(saving_path_precision_recall)
+  # TODO: REMOVE comments if want to plot precision and recall
+  # unique_classes_train = np.unique(dict_train['dict_results']['list_y_train'])
+  # tools.plot_accuracy_confusion_matrix(confusion_matricies=dict_train['dict_results']['train_confusion_matricies'],
+  #                                      type_conf='train',
+  #                                      saving_path=saving_path_precision_recall,
+  #                                      list_real_classes=unique_classes_train)
+  
+  # tools.plot_accuracy_confusion_matrix(confusion_matricies=dict_train['dict_results']['val_confusion_matricies'],
+  #                                      type_conf='test',
+  #                                      saving_path=saving_path_precision_recall,
+  #                                      list_real_classes=unique_classes_train)
+    
+def plot_dataset_distribuition(csv_path,run_folder_path,per_class=True,per_partecipant=True,total_classes=None):
+  #  Create folder to save the dataset distribution 
+  dataset_folder_path = os.path.join(run_folder_path,'dataset') #  history_run/VIDEOMAE_v2_B_MEAN_SPATIAL_NONE_SLIDING_WINDOW_GRU_{timestamp}/dataset
+  if not os.path.exists(dataset_folder_path):
+    os.makedirs(os.path.join(run_folder_path,'dataset'))
+
+  # Plot all the dataset distribution 
+  _plot_dataset_distribution(csv_path=csv_path,
+                                  per_class=per_class, 
+                                  per_partecipant=per_partecipant,
+                                  saving_path=dataset_folder_path,
+                                  total_classes=total_classes) # 1  plot
+  # TODO: Remove comments to plot the mean and std of the dataset
+  # tools.plot_dataset_distribution_mean_std_duration(csv_path=csv_path,
+  #                                                   video_path=path_video_dataset,
+  #                                                   per_class=per_class, 
+  #                                                   per_partecipant=per_partecipant, 
+  #                                                   saving_path=dataset_folder_path) # 2 plots

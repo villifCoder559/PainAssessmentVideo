@@ -5,13 +5,20 @@ import os
 import torch
 import requests
 from custom.helper import MODEL_TYPE
+from transformers import ViTFeatureExtractor, ViTModel
+from PIL import Image
+import requests
 
 class backbone:
-  def __init__(self,model_type, download_if_unavailable=False):
+  def __init__(self):
+    pass
+  def forward_features(self, x):
+    pass
+  
+class video_backbone(backbone):
+  def __init__(self,model_type):
     assert model_type in MODEL_TYPE, f"Model type must be one of {MODEL_TYPE}."
-    if not os.path.exists(model_type.value) and download_if_unavailable:
-      self.download_model(model_type.value)
-    else:
+    if not os.path.exists(model_type.value):
       assert os.path.exists(model_type.value), f"Model not found at {model_type.value}. Please set download_if_unavailable=True to download the model."
       
     if MODEL_TYPE.VIDEOMAE_v2_G_pt_1200e == model_type:
@@ -108,5 +115,30 @@ class backbone:
     S = int(feat.shape[1] / (self.out_spatial_size * (num_frames / self.tubelet_size))) # 1568 / (14*8) = 14
     emb = feat.reshape(B, T, S, S, self.embed_dim)
     return emb # [1,1568,768] -> [1,8,14,14,768]
+
+class vit_image_backbone(backbone):
+  def __init__(self,model_name="google/vit-base-patch16-224-in21k"):
+    self.model = ViTModel.from_pretrained(model_name)
+    self.feature_extractor = ViTFeatureExtractor.from_pretrained(model_name)
+    self.model_type = MODEL_TYPE.ViT_image
+    
+  def forward_features(self, x):
+    """
+    Forward pass to extract features from the input tensor.
+
+    Args:
+      x (torch.Tensor): Input tensor of shape [nr_clips, channels, nr_frames, H, W] ([B, C, 1, H, W])
+
+    Returns:
+      emb (torch.Tensor): tensor of shape [batch_size, temporal_dim, patch_h, patch_w, emb_dim]
+    """
+    # x.shape = [B, C, T=1, H, W]
+    x = x.squeeze(2) # [B, C, 1, H, W] -> [B, C, H, W]
+    feat = self.model(x) # x must be [B, C, H, W]
+    emb = feat.last_hidden_state[:, 0, :] # [138, 1 + 14*14, 768] 1 is the CLS token
+    #TODO: Check the iutput shape, should be [B,T,H,W,768]
+    # emb = emb.unsquezee(1,2) # [B, T=1,14,14,768]
+    # return embeddings as [B, 1, 14, 14, 768]
+    return emb
 
 

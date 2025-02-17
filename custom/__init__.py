@@ -1,4 +1,4 @@
-from .backbone import backbone
+from .backbone import video_backbone
 # from .build import dataset_builder
 from .dataset import customDataset
 from .helper import *

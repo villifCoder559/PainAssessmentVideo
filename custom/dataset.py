@@ -20,7 +20,7 @@ import custom.faceExtractor as extractor
 import pickle
 
 class customDataset(torch.utils.data.Dataset):
-  def __init__(self,path_dataset, path_labels, sample_frame_strategy, stride_window=2, clip_length=16,stride_inside_window=1,
+  def __init__(self,path_dataset, path_labels, sample_frame_strategy, stride_window=1, clip_length=16,stride_inside_window=1,
                preprocess_align=False,preprocess_frontalize=False,preprocess_crop_detection=False,saving_folder_path_extracted_video=None):
     assert os.path.exists(path_dataset), f"Dataset path {path_dataset} does not exist."
     # assert os.path.exists(path_labels), f"Labels path {path_labels} does not exist."
@@ -110,7 +110,7 @@ class customDataset(torch.utils.data.Dataset):
       T.Resize(shortest_edge),  # Resize the shortest edge to 224, preserving aspect ratio
       T.CenterCrop(crop_size),  # Center crop
       T.Lambda(lambda x: x * rescale_factor),  # Rescale (1/255)
-      T.Normalize(mean=image_mean, std=image_std)  # Normalize
+      T.Normalize(mean=image_mean, std=image_std)  # Normalize,
     ])
     
     preprocessed_tensors = torch.stack([transform(t) for t in tensors])
@@ -182,22 +182,13 @@ class customDataset(torch.utils.data.Dataset):
     # print(f'list_indices shape: {list_indices.shape}')
     # start_time_load_video = time.time()
     frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames)
-    # Generate video from frames_list and save to partA/video
+
     # generate video with 1% probability
-    if np.random.rand() < 0.01 and self.saving_folder_path_extracted_video is not None:
-    # saving_folder_path = os.path.join('partA','video','features','samples_16_cropped_aligned_fixed','video')
-      tools.generate_video_from_list_frame(list_frame = frames_list.reshape(-1,height_frames,width_frames,3),
-                                          path_video_output=os.path.join(self.saving_folder_path_extracted_video,f'{csv_array[5]}.mp4'))
-    # self.preprocess_crop_detection = True
-    # self.preprocess_align = False
-    # self.preprocess_frontalize = False
-    # frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames)
-    # print('frame_list_detect',len(frames_list))
-    # tools.generate_video_from_list_frame(list_frame = frames_list.reshape(-1,height_frames,width_frames,3),
-    #                                      path_video_output=os.path.join('partA','video','video_from_feat_extr_crop',f'{csv_array[5]}.mp4'))
-    # frames_list = self._read_video_pyav(container,list_indices= list_indices,width_frames=width_frames,height_frames=height_frames)
-    # frames_list = [self._read_video_pyav(container, indices) for indices in list_indices]
-    # print(f'Frames list shape: {frames_list.shape}') # shape torch.Size([11, 16, 1038, 1388, 3])
+    # if np.random.rand() < 0.01 and self.saving_folder_path_extracted_video is not None:
+    # # saving_folder_path = os.path.join('partA','video','features','samples_16_cropped_aligned_fixed','video')
+    #   tools.generate_video_from_list_frame(list_frame = frames_list.reshape(-1,height_frames,width_frames,3),
+    #                                       path_video_output=os.path.join(self.saving_folder_path_extracted_video,f'{csv_array[5]}.mp4'))
+
     nr_clips = frames_list.shape[0]
     nr_frames = frames_list.shape[1]
     frames_list = frames_list.reshape(-1,*frames_list.shape[2:])
@@ -231,6 +222,7 @@ class customDataset(torch.utils.data.Dataset):
         'path': path,
         'frame_list': list_indices
     }
+  
   def _read_video_cv2_and_process(self,container,list_indices,width_frames,height_frames):
     # Assume list_indices is sorted
     start_frame_idx = list_indices[:, 0]
