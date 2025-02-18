@@ -170,7 +170,7 @@ if __name__ == '__main__':
   parser.add_argument('--reg_loss', type=str, default='', help='Regularization type, can be L1 or L2')
   parser.add_argument('--reg_lambda', type=float,nargs='*', default=[0], help='Regularization lambda')
   parser.add_argument('--is_round_output_loss', action='store_true', help='Round output loss')
-  parser.add_argument('--key_early_stopping', type=str, default='val_loss', help='Key for early stopping. Can be val_losses or ' )#TODO add the other key
+  parser.add_argument('--key_early_stopping', type=str, default='val_loss', help='Key for early stopping. Can be val_loss or val_macro_precision' )# must be in dict_eval keys
   # python3 train_model.py --mt I --gp -- lr 0.00001 0.0001 --ep 500 --csv partA/starting_point/samples_exc_no_detection.csv --ffsp partA/video/features/samples_vit_front --global_folder_name history_run --path_video_dataset partA/video/video_frontalized --k_fold 3 --opt adam --batch_train 8700 --GRU_hidden_size 1024 --GRU_num_layers 2 --GRU_dropout 0.3 0.5 --init_network default --reg_loss L2 --reg_lambda 0.000001 0.000005
   args = parser.parse_args()
   ti = int(time.time())
