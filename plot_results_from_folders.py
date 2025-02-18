@@ -8,9 +8,14 @@ import shutil
 
 def find_results_files(parent_folder):
   results_files = []
-  for root, dirs, files in os.walk(parent_folder):
-    if 'k_fold_results.pkl' in files:
-      results_files.append(os.path.join(root, 'k_fold_results.pkl'))
+  list_history_folder = os.listdir(parent_folder)
+  for folder in list_history_folder:
+    list_runs = os.listdir(os.path.join(parent_folder,folder))
+    for run in list_runs:
+      pkl_files = [f for f in os.listdir(os.path.join(parent_folder,folder,run)) if f.endswith('.pkl')]
+      if len(pkl_files) == 1:
+        results_files.append(os.path.join(parent_folder,folder,run,pkl_files[0]))
+      
   return results_files
 
 def load_results(file_path):
@@ -33,6 +38,8 @@ def plot_losses(data, run_output_folder,test_id):
         plt.plot(val_losses, label='Val Loss')
         data['config']['test_id'] = test_id
         dict_to_string = convert_dict_to_string(filter_dict(data['config']))
+        # substitute head.params with GRU
+        dict_to_string = dict_to_string.replace('head_params','GRU')
         plt.figtext(0.95,0.5,dict_to_string,ha='left', va='center',fontsize=12, color='black')
         plt.xlabel('Epochs')
         plt.ylabel('Loss')
@@ -100,7 +107,8 @@ def plot_test_metrics(data, run_output_folder):
     plt.close()
 
 def convert_dict_to_string(d):
-  return '\n'.join([get_value_from_dict({k: v}) for k, v in d.items()])
+  new_d = flatten_dict(d)
+  return '\n'.join([f'{k}: {v}' for k, v in new_d.items()])
 
 def filter_dict(d):
   keys_to_exclude = ['model_type','epochs','pooling_embedding_reduction','pooling_clips_reduction','shuffle_video_chunks',
@@ -108,16 +116,16 @@ def filter_dict(d):
   new_d = {k: v for k, v in d.items() if k not in keys_to_exclude}
   return new_d
 
-def get_value_from_dict(d, root_name=''):
-  result = []
-  for k, v in d.items():
-    if isinstance(v, dict):
-      # If the value is a dictionary, recurse with the updated root_name
-      result.append(get_value_from_dict(v, f'{root_name}.{k}' if root_name else k))
-    else:
-      # If it's not a dictionary, just append the key-value pair
-      result.append(f'{root_name}.{k}: {v}' if root_name else f'{k}: {v}')
-  return '\n'.join(result)
+# def get_value_from_dict(d, root_name=''):
+#   result = []
+#   for k, v in d.items():
+#     if isinstance(v, dict):
+#       # If the value is a dictionary, recurse with the updated root_name
+#       result.append(get_value_from_dict(v, f'{root_name}.{k}' if root_name else k))
+#     else:
+#       # If it's not a dictionary, just append the key-value pair
+#       result.append(f'{root_name}.{k}: {v}' if root_name else f'{k}: {v}')
+#   return '\n'.join(result)
 
 def flatten_dict(d, root_name=''):
   result = {}
@@ -127,7 +135,10 @@ def flatten_dict(d, root_name=''):
       result.update(flatten_dict(v, f'{root_name}.{k}' if root_name else k))
     else:
       # If it's not a dictionary, just append the key-value pair
-      result[f'{root_name}.{k}'] = v
+      if root_name:
+        result[f'{root_name}.{k}'] = v
+      else:
+        result[k] = v
   return result
 
 def generate_csv_row(data, test_id):
@@ -186,7 +197,7 @@ def generate_csv_row(data, test_id):
     return row_dict
 
 
-def main(parent_folder, output_root):
+def plot_run_details(parent_folder, output_root):
   results_files = find_results_files(parent_folder)
   results_data = {file: load_results(file) for file in results_files}
   print(f'Loaded {len(results_data)} results files')
@@ -238,7 +249,7 @@ if __name__ == '__main__':
   output_root = '/home/villi/Desktop/test_17-24_Feb/summary'  # Change this to where you want the plots
   if not os.path.exists(output_root):
     os.makedirs(output_root)
-  main(parent_folder, os.path.join(output_root,'plot_per_run'))
+  plot_run_details(parent_folder, os.path.join(output_root,'plot_per_run'))
   losses_folder = os.path.join(output_root,'all_loss_plots')
   summary_folder = os.path.join(output_root,'plot_per_run')
   collect_loss_plots(summary_folder, losses_folder)
