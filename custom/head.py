@@ -65,7 +65,7 @@ class head:
 
     elif isinstance(self.head, HeadGRU):
       dict_results = self.head.start_train(X_train, y_train, sample_ids_train, subject_ids_train,
-                             X_test, y_test, subject_ids_test,key_for_early_stopping=
+                             X_test, y_test, subject_ids_test,key_for_early_stopping,
                              num_epochs, init_network=init_network, criterion=criterion, optimizer=optimizer,
                              regularization_loss=regularization_loss, regularization_lambda=regularization_lambda)
       # self.plot_loss(dict_results['train_losses'], dict_results['test_losses'])
@@ -535,6 +535,7 @@ class HeadGRU:
 
     # X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], -1)
     # X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], -1)
+    print('Loading data...')
     padded_X_train, packed_y_train, packed_subject_ids_train, length_seq_train = self._group_features_by_sample_id(X=X_train,
                                                                                                                    y=y_train,
                                                                                                                    sample_ids=sample_ids_train,
@@ -546,6 +547,7 @@ class HeadGRU:
 
     extension_for_length_seq = X_embed_temp_size/(self.input_size/X_emb_dim) # is 1 if temp_size=8 is considered in input_dim, otherwise I have to considere the extension in the padding for computing the real length of the video
     self.reconstruction_factor = extension_for_length_seq * len_seq_val
+    print('Creating datasets...')
     train_dataset = TensorDataset(padded_X_train, 
                                   packed_y_train,           # [nr_videos]
                                   packed_subject_ids_train, # [nr_videos]
@@ -573,7 +575,10 @@ class HeadGRU:
     
     # Device and optimizer setup
     device = 'cuda'
+    print('Moving model to', device)
     self.model.to(device)
+    print('Device model start_train_test:', device)
+
     # print('Device model start_train_test:', device)
     # tmp = next(self.model.gru.parameters()).device
     # print(f"The model is on: {tmp}")
@@ -625,7 +630,7 @@ class HeadGRU:
     ##########################
     ##### START TRAINING #####
     # key_for_early_stopping = 'val_loss' if self.model.output_size == 1 else 'val_macro_precision'
-
+    early_stopping.reset() 
     count_epoch = 0
     for epoch in range(num_epochs):
       count_epoch += 1
@@ -801,6 +806,10 @@ class HeadGRU:
       # })
       # Save the best model
 
+      if dict_eval[key_for_early_stopping] < best_test_loss:
+        best_test_loss = dict_eval[key_for_early_stopping]
+        best_model_state = copy.deepcopy(self.model.state_dict())
+        best_model_epoch = epoch
       
       # Update learning rate
       if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -808,10 +817,6 @@ class HeadGRU:
         
       if early_stopping(dict_eval[key_for_early_stopping]):
         break
-      if dict_eval[key_for_early_stopping] < best_test_loss:
-        best_test_loss = dict_eval[key_for_early_stopping]
-        best_model_state = copy.deepcopy(self.model.state_dict())
-        best_model_epoch = epoch
 
     # Save model weights
     if saving_path:
@@ -1005,7 +1010,8 @@ class EarlyStopping:
 
   def __call__(self, val_loss):
     pass
-  def get_class_name(self):
+
+  def __str__(self):
     pass
 
 class earlyStoppingAccuracy(EarlyStopping):
@@ -1039,12 +1045,18 @@ class earlyStoppingAccuracy(EarlyStopping):
       'best': self.best,
       'threshold_mode': self.threshold
     }
-  def get_class_name(self):
-    return self.__class__.__name__
-  
+  def reset(self):
+    self.best = 0
+    self.counter = 0
+  def __str__(self):
+    return f'{self.__class__.__name__}\n (patience={self.patience},\n min_delta={self.min_delta},\n best={self.best},\n threshold_mode={self.threshold_mode})'  
+
 class earlyStoppingLoss(EarlyStopping):
   def __init__(self, patience=5, min_delta=0,best=float('inf'),threshold_mode='rel'):
     super().__init__(best, patience, min_delta,threshold_mode)
+  def reset(self):
+    self.best = float('inf')
+    self.counter = 0
     
   def __call__(self, val_loss):
     if self.threshold_mode == 'rel':
@@ -1075,3 +1087,5 @@ class earlyStoppingLoss(EarlyStopping):
     }
   def get_class_name(self):
     return self.__class__.__name__
+  def __str__(self):
+    return f'{self.__class__.__name__}\n (patience={self.patience},\n min_delta={self.min_delta},\n best={self.best},\n threshold_mode={self.threshold_mode})'
