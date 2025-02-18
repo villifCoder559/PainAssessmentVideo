@@ -175,7 +175,7 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
       for key,v in dict_train['dict_results'].items():
         if key not in 'best_model_state':
           if key in list_to_reduce_for_logs:
-            reduced_dict_train[key] = {f'{epoch}':v[epoch] for epoch in range(0,count_epochs+1,50)} # to get the results every 50 epochs
+            reduced_dict_train[key] = {f'{epoch}':v[epoch] for epoch in range(0,count_epochs,50)} # to get the results every 50 epochs
             # reduced_dict_train[key] = v[::50]
             if dict_train['dict_results']['best_model_idx'] % 50 != 0:
               if isinstance(v,list):
@@ -377,7 +377,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'features_folder_saving_path': features_folder_saving_path,
     'clip_length': clip_length,
     'target_metric_best_model': target_metric_best_model,
-    'early_stopping': early_stopping.get_class_name(),
+    'early_stopping': early_stopping,
       
     }
   def get_json_config():
@@ -409,7 +409,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'features_folder_saving_path': features_folder_saving_path,
     'clip_length': clip_length,
     'target_metric_best_model': target_metric_best_model,
-    'early_stopping': type(early_stopping).__name__,
+    'early_stopping': str(early_stopping),
     }
   ###############################
   # START of the main function  #
@@ -438,8 +438,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   
   # Create folder to save the run
   # print(f"Creating run folder at {global_foder_name}")
-  timestamp = int(time.time())
-  run_folder_name = (f'{timestamp}'+
+  timestamp = int(time.time()*1000) # get the current time in milliseconds
+  run_folder_name = (f'{timestamp}_'+
                      f'{model_type.name}_'+
                      f'{pooling_embedding_reduction.name}_'+
                      f'{pooling_clips_reduction.name}_'+
