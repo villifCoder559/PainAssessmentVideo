@@ -363,8 +363,9 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'pooling_embedding_reduction': pooling_embedding_reduction,
     'pooling_clips_reduction': pooling_clips_reduction,
     'sample_frame_strategy': sample_frame_strategy,
-    'path_csv_dataset': path_csv_dataset,
-    'path_video_dataset': path_video_dataset,
+    'path_csv_dataset': path_csv_dataset.split('/')[-3:], # get the last 3 folders
+    'path_video_dataset': path_video_dataset.split('/')[-3:], # get the last 3 folders
+    'features_folder_saving_path': features_folder_saving_path.split('/')[-3:], # get the last 3 folders
     'head': head,
     'key_for_early_stopping': key_for_early_stopping,
     'stride_window_in_video': stride_window_in_video,
@@ -374,7 +375,6 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'round_output_loss': is_round_output_loss,
     'shuffle_video_chunks': is_shuffle_video_chunks,
     'shuffle_training_batch':is_shuffle_training_batch,
-    'features_folder_saving_path': features_folder_saving_path,
     'clip_length': clip_length,
     'target_metric_best_model': target_metric_best_model,
     'early_stopping': early_stopping,
@@ -395,8 +395,9 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'pooling_embedding_reduction': pooling_embedding_reduction.name,
     'pooling_clips_reduction': pooling_clips_reduction.name,
     'sample_frame_strategy': sample_frame_strategy.name,
-    'path_csv_dataset': path_csv_dataset,
-    'path_video_dataset': path_video_dataset,
+    'path_csv_dataset': path_csv_dataset.split('/')[-3:], # get the last 3 folders
+    'path_video_dataset': path_video_dataset.split('/')[-3:], # get the last 3 folders
+    'features_folder_saving_path': features_folder_saving_path.split('/')[-3:], # get the last 3 folders
     'head': head.name,
     'key_for_early_stopping': key_for_early_stopping,
     'stride_window_in_video': stride_window_in_video,
@@ -406,7 +407,6 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'round_output_loss': is_round_output_loss,
     'shuffle_video_chunks': is_shuffle_video_chunks,
     'shuffle_training_batch':is_shuffle_training_batch,
-    'features_folder_saving_path': features_folder_saving_path,
     'clip_length': clip_length,
     'target_metric_best_model': target_metric_best_model,
     'early_stopping': str(early_stopping),
