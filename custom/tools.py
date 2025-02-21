@@ -678,7 +678,9 @@ def compute_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=Fals
   # print(f' labels shape: {labels.shape}')
 
 
-def plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', title='', saving_path=None, axis_scale=None, last_point_bigger=False, plot_trajectory=False, stride_windows=None,clip_length=None,list_axis_name=None):
+def plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', title='', 
+              saving_path=None, axis_scale=None, last_point_bigger=False, plot_trajectory=False, 
+              stride_windows=None,clip_length=None,list_axis_name=None,ax=False,return_ax=False):
   unique_labels = np.unique(labels)
   if tot_labels is None:
     color_map = plt.cm.get_cmap(cmap, len(unique_labels))
@@ -686,7 +688,8 @@ def plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', t
     color_map = plt.cm.get_cmap(cmap, tot_labels)
   color_dict = {val: color_map(i) for i, val in enumerate(unique_labels)}
   sizes = None
-  fig = plt.figure(figsize=(10, 8))
+  if not return_ax:
+    fig = plt.figure(figsize=(10, 8))
   
   # Check if data is 3D or 2D
   if X_tsne.shape[1] == 3:  # 3D case
@@ -713,7 +716,8 @@ def plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', t
       ax.set_zlabel('t-SNE Component 3')
   
   else:  # 2D case
-    ax = fig.add_subplot(111)
+    if not return_ax:
+      ax = fig.add_subplot(111)
     if axis_scale is not None:
       ax.set_xlim(axis_scale['min_x'], axis_scale['max_x'])
       ax.set_ylim(axis_scale['min_y'], axis_scale['max_y'])
@@ -725,8 +729,9 @@ def plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', t
       label = f'{legend_label} {val}'
       if clip_length is not None and legend_label == 'clip':
         label = f'{legend_label} [{stride_windows * val}, {clip_length + stride_windows * (val) - 1}]'
-      ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[val], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
-      # ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[0 if stride_windows*val < 48 else max(color_dict.keys())], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
+        ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[0 if stride_windows*val < 48 else max(color_dict.keys())], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
+      else:
+        ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[val], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
     if plot_trajectory:
       ax.plot(X_tsne[:, 0], X_tsne[:, 1], linestyle='--', color=color_dict[0], label='Trajectory', alpha=0.7)
     if list_axis_name is not None:
@@ -736,12 +741,16 @@ def plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', t
       ax.set_xlabel('t-SNE Component 1')
       ax.set_ylabel('t-SNE Component 2')
   
-  plt.legend()
-  plt.title(f'{title} (Colored by {legend_label})')
-
-  plt.close(fig)
+  ax.legend()
+  ax.set_title(f'{title} (Colored by {legend_label})')
+  
+  if not return_ax:
+    plt.close(fig)
+  
   if saving_path is None:
     # plt.show()
+    if return_ax:
+      return None
     fig.canvas.draw()
     rgb_array = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
     width, height = fig.canvas.get_width_height()
@@ -1101,12 +1110,6 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
                             plot_only_sample_id_list=None,tsne_n_component=2,plot_third_dim_time=False,apply_pca_before_tsne=False,cmap='copper',
                             sort_elements=True,axis_dict=None):
 
-  # if sliding_windows != 16 and sliding_windows!=4:
-  #   dict_all_features = get_dict_all_features_from_model(sliding_windows=sliding_windows,
-  #                                                        classes=class_list,
-  #                                                        subject_id_list=subject_id_list,
-  #                                                        folder_path_tsne_results=folder_path_tsne_results)
-  # else:
   dict_all_features = load_dict_data(folder_path_features)
   # print(dict_all_features.keys())
   print(f'dict_all_features["list_subject_id"] shape {dict_all_features["list_subject_id"].shape}')
@@ -1204,19 +1207,32 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
       title_plot = f'{os.path.split(folder_path_features)[-1]}_sliding_{sliding_windows}__clips_{clip_list}__classes_{(np.unique(list_y_gt))}__subjectID_{np.unique(list_subject_id)}'
   else:
     title_plot = f'{os.path.split(folder_path_features)[-1]}_sliding_{sliding_windows}_sample_id_{plot_only_sample_id_list}__clips_{len(clip_list)}__classes_{(np.unique(list_y_gt))}__subjectID_{np.unique(list_subject_id)}'
-  print('START PLOT TSNE')
+  # print('START PLOT TSNE')
+  return {
+    'X_tsne':X_tsne,
+    'labels':labels_to_plot,
+    'saving_path':tsne_plot_path,
+    'title':title_plot,
+    'legend_label':legend_label,
+    'plot_trajectory':True if plot_only_sample_id_list is not None else False,
+    'clip_length':dict_all_features['list_frames'][filter_idx].shape[1],
+    'stride_windows':sliding_windows,
+    'axis_scale':axis_dict,
+    'list_axis_name':list_axis_name,
+    'cmap':cmap
+  }
   plot_tsne(X_tsne=X_tsne,
-                       labels=labels_to_plot,
-                       saving_path=tsne_plot_path,
-                       title=title_plot,
-                       legend_label=legend_label,
-                       plot_trajectory = True if plot_only_sample_id_list is not None else False,
-                       clip_length=dict_all_features['list_frames'][filter_idx].shape[1],
-                       stride_windows=sliding_windows,
-                       axis_scale=axis_dict,
-                       list_axis_name=list_axis_name,
-                       cmap=cmap)  
-  print('END ONLY PLOT TSNE')
+            labels=labels_to_plot,
+            saving_path=tsne_plot_path,
+            title=title_plot,
+            legend_label=legend_label,
+            plot_trajectory = True if plot_only_sample_id_list is not None else False,
+            clip_length=dict_all_features['list_frames'][filter_idx].shape[1],
+            stride_windows=sliding_windows,
+            axis_scale=axis_dict,
+            list_axis_name=list_axis_name,
+            cmap=cmap)  
+  # print('END ONLY PLOT TSNE')
   with open(os.path.join(folder_path_tsne_results,'config.txt'),'w') as f:
     f.write(f'subject_id_list: {subject_id_list}\n')
     f.write(f'clips: {clip_list}\n')
@@ -1268,7 +1284,7 @@ def plot_loss_and_precision_details(dict_train, train_folder_path, total_epochs)
   train_folder_path (str): Path to the folder where the plots and confusion matrices will be saved.
   epochs (int): Number of epochs for which the confusion matrices will be plotted.
   """
-    # Generate and save plots of the training and test results
+  # Generate and save plots of the training and test results
   # tools.plot_losses(train_losses=dict_train['dict_results']['train_losses'], 
   #                   test_losses=dict_train['dict_results']['test_losses'], 
   #                   saving_path=os.path.join(train_folder_path,'train_test_losses'))
