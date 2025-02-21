@@ -74,9 +74,9 @@ def create_filtered_symlinks(csv_output, filter_dict, output_folder,all_images_f
           for _, value2 in value.items():
             for cnf_mat_path in value2:
               path_split = Path(cnf_mat_path).parts
-              if real_folder_path is None:
-                real_folder_path = os.path.join(test_root_folder,*path_split[:-5])
-                os.symlink(real_folder_path, os.path.join(output_folder,"_orig_folder"))
+              # if real_folder_path is None:
+              #   real_folder_path = os.path.join(test_root_folder,*path_split[:-5])
+              #   os.symlink(real_folder_path, os.path.join(output_folder,"_orig_folder"))
               timestamp = path_split[-6].split('_')[-1]
               type_confusion_matrix = 'train' if 'train' in path_split[-1] else 'val'
               link_name = os.path.join(output_folder, f'{type_confusion_matrix}_{path_split[-3]}_{Path(cnf_mat_path).name}_{timestamp}.png')
@@ -229,8 +229,8 @@ def process_test_images(test_root_folder, output_folder,csv_output):
 # Example usage
 generate = False
 
-test_root_folder = "/home/villi/Desktop/test_10_14_Feb/test_loss_class_and_reg/Tests/all_tst" # Use absolute path
-output_folder = '/home/villi/Desktop/test_10_14_Feb/test_loss_class_and_reg/summary/all_images' # Use absolute path
+test_root_folder = "/home/villi/Desktop/Tests_3-9_Feb/Tests" # Use absolute path
+output_folder = '/home/villi/Desktop/Tests_3-9_Feb/all_tests_summary/all_images' # Use absolute path
 if not os.path.exists(output_folder):
   os.makedirs(output_folder)
 csv_output = os.path.join(output_folder,"_all_configs.csv")
@@ -253,10 +253,10 @@ else:
     # 'head_params.hidden_size': 128,
     # 'head_params.num_layers': 2,
     # 'head_params.dropout': 0.5,
-    # 'test_folder': 0, # 0 is dummy value, used just to filter the images per test_folder in the following if statement
-    # 'features_folder_saving_path': 'samples_16',
-    'criterion':'L1Loss',# can be 'CrossEntropyLoss','L1Loss'
-    'optimizer_fn': 'Adam', # can be 'Adam','SGD'
+    'test_folder': 0, # 0 is dummy value, used just to filter the images per test_folder in the following if statement
+    # 'features_folder_saving_path': 'samples_16_aligned_cropped',
+    # 'criterion':'L1Loss',# can be 'CrossEntropyLoss','L1Loss'
+    # 'optimizer_fn': 'Adam', # can be 'Adam','SGD'
   }
   
   if 'test_folder' in filter_dict:
