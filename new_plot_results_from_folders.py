@@ -5,16 +5,20 @@ import numpy as np
 import pandas as pd
 import os
 import shutil
-
+import custom.tools as tools
+from torchmetrics.classification import MulticlassConfusionMatrix
+import tqdm
 def find_results_files(parent_folder):
   results_files = []
   list_history_folder = os.listdir(parent_folder)
   for folder in list_history_folder:
     list_runs = os.listdir(os.path.join(parent_folder,folder))
     for run in list_runs:
-      pkl_files = [f for f in os.listdir(os.path.join(parent_folder,folder,run)) if f.endswith('.pkl')]
-      if len(pkl_files) == 1:
-        results_files.append(os.path.join(parent_folder,folder,run,pkl_files[0]))
+      # check if os.path.join(parent_folder,folder,run) is a dir
+      if os.path.isdir(os.path.join(parent_folder,folder,run)):
+        pkl_files = [f for f in os.listdir(os.path.join(parent_folder,folder,run)) if f.endswith('.pkl')]
+        if len(pkl_files) == 1:
+          results_files.append(os.path.join(parent_folder,folder,run,pkl_files[0]))
       
   return results_files
 
@@ -152,6 +156,12 @@ def generate_csv_row(data, test_id):
     # Retrieve test statistics
     test_losses = {f'test_loss_k{i}': data[f'k{i}_test']['dict_test']['test_loss'] for i in range(k_fold)}
     test_accuracies = {f'test_accuracy_k{i}': data[f'k{i}_test']['dict_test']['test_macro_precision'].item() for i in range(k_fold)}
+    val_accuracies = {}
+    train_accuracies = {}
+    for i in range(k_fold):
+      best_model_subfolder_idx = data[f'k{i}_test']['best_model_subfolder_idx']
+      val_accuracies[f'val_accuracy_k{i}'] = data[f'k{i}_cross_val_sub_{best_model_subfolder_idx}_train_val']['list_val_macro_accuracy'][data[f'k{i}_cross_val_sub_{best_model_subfolder_idx}_train_val']['best_model_idx']]
+      train_accuracies[f'train_accuracy_k{i}'] = data[f'k{i}_cross_val_sub_{best_model_subfolder_idx}_train_val']['list_train_macro_accuracy'][data[f'k{i}_cross_val_sub_{best_model_subfolder_idx}_train_val']['best_model_idx']]
     best_sub_folders = [data[f'k{i}_test']['best_model_subfolder_idx'] for i in range(k_fold)]
     
     # Retrieve best epoch indices for each fold
@@ -183,37 +193,72 @@ def generate_csv_row(data, test_id):
         'init_network': config['init_network'],
         'reg_lambda': config['regularization_lambda'],
         'reg_loss': config['regularization_loss'],
-        'feature_type': config['features_folder_saving_path'].split('/')[-1],
-        'early_stopping_key': config['key_for_early_stopping'],
+        'feature_type': config['features_folder_saving_path'][-1], # is a path saved as a list
+        'early_stopping_key': config['key_for_early_stopping']+f'(pat={config["early_stopping"].patience},eps={config["early_stopping"].min_delta},t_mod={config["early_stopping"].threshold_mode})',
         'target_metric': config['target_metric_best_model'],
+        'round_output_loss': config['round_output_loss'],
+        'batch_size_training': config['batch_size_training'],
         **head_params,
         **test_losses,
         **test_accuracies,
+        'max_epochs': config['epochs'],
         **best_epochs,
         **train_losses,
-        **val_losses
+        **val_losses,
+        'mean_train_loss':np.mean(list(train_losses.values())),
+        'mean_val_loss':np.mean(list(val_losses.values())),
+        'mean_test_loss':np.mean(list(test_losses.values())),
+        'mean_train_accuracy':np.mean(list(train_accuracies.values())),
+        'mean_val_accuracy':np.mean(list(val_accuracies.values())),
+        'mean_test_accuracy':np.mean(list(test_accuracies.values())),
+        **train_accuracies,
+        **val_accuracies,
     }
     
     return row_dict
 
-
+def plot_confusion_matrices(data, root_output_folder):
+  def plot_matrices(matrices,output_folder,stage):
+    os.makedirs(output_folder, exist_ok=True)
+    if isinstance(matrices, dict):
+      for epoch,cnf in matrices.items():
+        tools.plot_confusion_matrix(confusion_matrix=cnf,
+                                    title=f'{stage}_epoch_{epoch}',
+                                    saving_path=os.path.join(output_folder,f'{stage}_epoch_{epoch}.png'))
+    elif isinstance(matrices,MulticlassConfusionMatrix):
+      tools.plot_confusion_matrix(confusion_matrix=matrices,
+                                  title='Confusion Matrix',
+                                  saving_path=os.path.join(output_folder,f'{stage}.png'))
+  
+  for k,v in data.items():
+    if 'cross_val' in k:
+      dict_conf_matricies = v.get('train_confusion_matricies')
+      plot_matrices(matrices=dict_conf_matricies,output_folder=os.path.join(root_output_folder,k),stage='train')
+      dict_conf_matricies = v.get('val_confusion_matricies')
+      plot_matrices(matrices=dict_conf_matricies,output_folder=os.path.join(root_output_folder,k),stage='val')
+    elif 'test' in k:
+      dict_conf_matricies = v['dict_test']['test_confusion_matrix']
+      plot_matrices(matrices=dict_conf_matricies,output_folder=os.path.join(root_output_folder,k),stage=f'test_using_subfolder_{v["best_model_subfolder_idx"]}')
+      
 def plot_run_details(parent_folder, output_root):
   results_files = find_results_files(parent_folder)
   results_data = {file: load_results(file) for file in results_files}
   print(f'Loaded {len(results_data)} results files')
 
   list_row_csv = []
-  for file, data in results_data.items():
+  for file,data in tqdm.tqdm(results_data.items()):
     test_folder = os.path.basename(os.path.dirname(file))
     test_id = test_folder.split('_')[0]       
     run_output_folder = os.path.join(output_root, test_folder)
     list_row_csv.append(generate_csv_row(data,test_id))
-    plot_losses(data, os.path.join(run_output_folder, 'loss_plots'),test_id)
-    plot_accuracies(data, os.path.join(run_output_folder, 'accuracy_plots'))
-    plot_test_metrics(data, os.path.join(run_output_folder, 'test_plots'))
-    print(f'Plots saved to {output_root}/{test_folder}')
+    # plot_losses(data, os.path.join(run_output_folder, 'loss_plots'),test_id)
+    # plot_accuracies(data, os.path.join(run_output_folder, 'accuracy_plots'))
+    # plot_test_metrics(data, os.path.join(run_output_folder, 'test_plots'))
+    # plot_confusion_matrices(data, os.path.join(run_output_folder, 'confusion_matrices'))
+    # print(f'Plots saved to {output_root}/{test_folder}')
   df = pd.DataFrame(list_row_csv)
-  df.to_csv(os.path.join(output_root,'summary.csv'),index=False)
+  df = df.fillna('ND')
+  df.to_csv(os.path.join(output_root,'summary.csv'),index=False,)
 
 def collect_loss_plots(summary_folder, output_folder):
   """
@@ -245,8 +290,8 @@ def collect_loss_plots(summary_folder, output_folder):
   print(f"All loss plots collected in {output_folder}")
 
 if __name__ == '__main__':
-  parent_folder = '/home/villi/Desktop/test_17-24_Feb/Runs'  # Change this to the actual path
-  output_root = '/home/villi/Desktop/test_17-24_Feb/summary'  # Change this to where you want the plots
+  parent_folder = '/media/villi/TOSHIBA EXT/test_24_02_18'  # Change this to the actual path
+  output_root = '/media/villi/TOSHIBA EXT/test_24_02_18/new_summary'  # Change this to where you want the plots
   if not os.path.exists(output_root):
     os.makedirs(output_root)
   plot_run_details(parent_folder, os.path.join(output_root,'plot_per_run'))
