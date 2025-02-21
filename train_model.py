@@ -36,7 +36,7 @@ def get_optimizer(opt):
 def train(model_type,epochs,lr,path_csv_dataset,feature_folder_saving_path,global_foder_name,path_dataset,k_fold,opt_list,batch_train,
           list_GRU_hidden_size,list_GRU_num_layers,lsit_GRU_dropout,GRU_concatenate_temp_dim,list_init_network,early_stopping,
           regularization_loss,list_regularization_lambda,is_round_output_loss, GRU_output_size,key_for_early_stopping,seed_random_state,
-          is_shuffle_training_batch,is_shuffle_video_chunks,clip_length,target_metric_best_model,is_plot_dataset_distribution):
+          is_shuffle_training_batch,is_shuffle_video_chunks,clip_length,target_metric_best_model,is_plot_dataset_distribution,layer_norm):
   
   emb_dim = 384 if 'S' in model_type else 768
   
@@ -91,6 +91,7 @@ def train(model_type,epochs,lr,path_csv_dataset,feature_folder_saving_path,globa
               'hidden_size': GRU_hidden_size,
               'num_layers': GRU_num_layers,
               'dropout': GRU_dropout,
+              'layer_norm': layer_norm,
               'input_size': emb_dim * 8 if GRU_concatenate_temp_dim  else emb_dim # can be 384  (small), 768  (base), 1408  (large) [temporal_dim considered as input sequence for GRU]
             }
             criterion = nn.L1Loss() if params['output_size'] == 1 else nn.CrossEntropyLoss()
@@ -169,8 +170,9 @@ if __name__ == '__main__':
   parser.add_argument('--init_network', type=str,nargs='*',default='default', help='Initialize network, can be xavier,default,uniform')
   parser.add_argument('--reg_loss', type=str, default='', help='Regularization type, can be L1 or L2')
   parser.add_argument('--reg_lambda', type=float,nargs='*', default=[0], help='Regularization lambda')
-  parser.add_argument('--is_round_output_loss', action='store_true', help='Round output loss')
+  parser.add_argument('--is_round_output_loss', action='store_true', help='Round output from regression before compute the loss')
   parser.add_argument('--key_early_stopping', type=str, default='val_loss', help='Key for early stopping. Can be val_loss or val_macro_precision' )# must be in dict_eval keys
+  parser.add_argument('--layer_norm', action='store_true', help='Put Layer normalization before linear layer')
   # python3 train_model.py --mt I --gp -- lr 0.00001 0.0001 --ep 500 --csv partA/starting_point/samples_exc_no_detection.csv --ffsp partA/video/features/samples_vit_front --global_folder_name history_run --path_video_dataset partA/video/video_frontalized --k_fold 3 --opt adam --batch_train 8700 --GRU_hidden_size 1024 --GRU_num_layers 2 --GRU_dropout 0.3 0.5 --init_network default --reg_loss L2 --reg_lambda 0.000001 0.000005
   args = parser.parse_args()
   ti = int(time.time())
@@ -191,6 +193,36 @@ if __name__ == '__main__':
   early_stopping = (earlyStoppingLoss(patience=50,min_delta=0.0001,threshold_mode='abs') if args.key_early_stopping == 'val_loss' 
                   else 
                   earlyStoppingAccuracy(patience=50,min_delta=0.001,threshold_mode='abs'))
+  config_prompt = {
+    'model_type': args.mt,
+    'epochs': args.ep,
+    'lr': args.lr,
+    'path_csv_dataset': args.csv,
+    'feature_folder_saving_path': args.ffsp,
+    'global_foder_name': args.global_folder_name,
+    'path_dataset': args.path_video_dataset,
+    'k_fold': args.k_fold,
+    'opt_list': args.opt,
+    'batch_train': args.batch_train,
+    'list_init_network': args.init_network,
+    'list_GRU_hidden_size': args.GRU_hidden_size,
+    'list_GRU_num_layers': args.GRU_num_layers,
+    'lsit_GRU_dropout': args.GRU_dropout,
+    'GRU_concatenate_temp_dim': args.GRU_concatenate_temp_dim,
+    'list_regularization_lambda': args.reg_lambda,
+    'regularization_loss': args.reg_loss,
+    'GRU_output_size': args.GRU_output_size,
+    'is_round_output_loss': args.is_round_output_loss,
+    'key_for_early_stopping': args.key_early_stopping,
+    'clip_length': clip_length,
+    'target_metric_best_model': target_metric_best_model,
+    'seed_random_state': seed_random_state,
+    'early_stopping': early_stopping,
+    'layer_norm': args.layer_norm,
+  }
+  with open(os.path.join(args.global_folder_name,'_config_prompt.txt'),'w') as f:
+    for key, value in config_prompt.items():
+      f.write(f'{key}: {value}\n')
   train(model_type=args.mt,
         epochs=args.ep,
         lr=args.lr,
@@ -215,6 +247,7 @@ if __name__ == '__main__':
         target_metric_best_model=target_metric_best_model,
         seed_random_state=seed_random_state,
         early_stopping=early_stopping,
+        layer_norm=args.layer_norm,
         is_shuffle_video_chunks=False,
         is_shuffle_training_batch=True,
         is_plot_dataset_distribution=False
