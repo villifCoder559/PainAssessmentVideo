@@ -18,7 +18,14 @@ from sklearn.model_selection import StratifiedGroupKFold
 import os
 import random
 # import wandb
-
+def set_seed(seed):
+  random.seed(seed)  # Python random module
+  np.random.seed(seed)  # NumPy
+  torch.manual_seed(seed)  # PyTorch (CPU)
+  torch.cuda.manual_seed(seed)  # PyTorch (GPU)
+  torch.cuda.manual_seed_all(seed)  # Multi-GPU
+  torch.backends.cudnn.deterministic = True  # Ensure deterministic behavior
+  torch.backends.cudnn.benchmark = False  # May slow down training but ensures reproducibility
 def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced, k_fold, seed_random_state,lr,epochs,optimizer_fn,
                             round_output_loss, shuffle_video_chunks, shuffle_training_batch,  criterion,early_stopping,
                             # scheduler,
@@ -106,6 +113,7 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
       #             config = config,
       #             name=f'k-{i}_s-{sub_idx}',
       #             reinit=True)
+      set_seed(seed=seed_random_state)
       dict_train = model_advanced.train(lr=lr,
                                         num_epochs=epochs,
                                         optimizer_fn=optimizer_fn,
@@ -340,14 +348,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    ):
  
 
-  def set_seed(seed):
-    random.seed(seed)  # Python random module
-    np.random.seed(seed)  # NumPy
-    torch.manual_seed(seed)  # PyTorch (CPU)
-    torch.cuda.manual_seed(seed)  # PyTorch (GPU)
-    torch.cuda.manual_seed_all(seed)  # Multi-GPU
-    torch.backends.cudnn.deterministic = True  # Ensure deterministic behavior
-    torch.backends.cudnn.benchmark = False  # May slow down training but ensures reproducibility
+
   def get_obj_config():
     return{
     'k_fold': k_fold,
@@ -414,7 +415,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   ###############################
   # START of the main function  #
   ###############################
-  set_seed(seed_random_state)
+  # set_seed(seed_random_state)
 
   # Create the model
   model_advanced = Model_Advanced(model_type=model_type,
