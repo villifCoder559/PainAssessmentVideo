@@ -334,7 +334,7 @@ class HeadSVR:
     return grid_search, list_split_indices
 
 class GRUModel(nn.Module):
-  def __init__(self, input_size, hidden_size, num_layers, dropout=0.0, output_size=1):
+  def __init__(self, input_size, hidden_size, num_layers, dropout, output_size,layer_norm):
     super(GRUModel, self).__init__()
     self.input_size = input_size
     self.hidden_size = hidden_size
@@ -342,6 +342,7 @@ class GRUModel(nn.Module):
     self.dropout = dropout
     self.output_size = output_size
     self.gru = nn.GRU(input_size, hidden_size, num_layers, dropout=dropout, batch_first=True)
+    self.norm = nn.LayerNorm(hidden_size) if layer_norm else nn.Identity()
     self.fc = nn.Linear(hidden_size, output_size)
     
   def get_configuration(self):
@@ -373,10 +374,12 @@ class GRUModel(nn.Module):
 
     if pred_only_last_time_step:
       # print('last_hidden_layer shape',last_hidden_layer.shape)
+      last_hidden_layer = self.norm(last_hidden_layer)
       out = self.fc(last_hidden_layer) # [batch, output_size=1]
       # print('FORWARD out_shape',out.shape)
       out = out.squeeze(dim=1) 
     else:
+      out_padded = self.norm(out_padded)
       out = self.fc(out_padded).squeeze(dim=2) # [batch, seq_len, output_size=1]
     # if self.classification:
     #   out = self.softmax(out)
@@ -397,7 +400,6 @@ class GRUModel(nn.Module):
       init.xavier_uniform_(self.fc.weight)  # Xavier uniform initialization
       if self.fc.bias is not None:
           init.zeros_(self.fc.bias)
-          
     elif init_type == 'uniform':
       for name, param in self.gru.named_parameters():
         if 'weight_ih' in name:
@@ -415,10 +417,10 @@ class GRUModel(nn.Module):
       self.fc.reset_parameters()
     else:
       raise ValueError(f"Unknown initialization type: {init_type}")
-      
+    print('  GRU Network initialized')
 
 class HeadGRU:
-  def __init__(self, input_size, hidden_size, num_layers, dropout=0.0, output_size=1):
+  def __init__(self, input_size, hidden_size, num_layers, dropout, output_size,layer_norm):
     self.input_size = input_size
     self.hidden_size = hidden_size
     self.num_layers = num_layers
@@ -433,7 +435,7 @@ class HeadGRU:
       'output_size': int(output_size)
     }
     print(f'\n\nself.params: {self.params}\n\n')
-    self.model = GRUModel(input_size, hidden_size, num_layers, dropout, output_size)
+    self.model = GRUModel(input_size, hidden_size, num_layers, dropout, output_size,layer_norm)
 
   def get_params_configuration(self):
     return self.params
@@ -516,8 +518,11 @@ class HeadGRU:
                        round_output_loss,key_for_early_stopping,
                       #  scheduler,
                        early_stopping,
-                       init_network,regularization_loss,regularization_lambda):
+                       init_network,regularization_loss,regularization_lambda,write_logs=False):
 
+    device = 'cuda'
+    self.model.to(device)
+    print('Model to', device)
     # Init model weights
     if init_weights:
       self.model._initialize_weights(init_type=init_network)
@@ -572,16 +577,6 @@ class HeadGRU:
 
     # catch
     val_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-    
-    # Device and optimizer setup
-    device = 'cuda'
-    print('Moving model to', device)
-    self.model.to(device)
-    print('Device model start_train_test:', device)
-
-    # print('Device model start_train_test:', device)
-    # tmp = next(self.model.gru.parameters()).device
-    # print(f"The model is on: {tmp}")
     
     optimizer = optimizer_fn(self.model.parameters(), 
                              lr=lr,
@@ -728,13 +723,14 @@ class HeadGRU:
         total_gpu_mem = total_gpu_mem / 1024 ** 3
         free_gpu_mem = free_gpu_mem / 1024 ** 3
         count_batch += 1
-        with open(log_batch_path, 'a') as log_file:
-          log_file.write(f' Batch {count_batch}/{total_batches} \n')
-          log_file.write(f'  nr_sample_per_class : {count_array.tolist()}\n')
-          log_file.write(f'  unique_subject      : {unique_batch_subject.tolist()}\n')
-          log_file.write(f'  count_subject       : {count_subject.tolist()}\n')
-          log_file.write(f'  GPU free/total (GB) : {free_gpu_mem:.2f}/{total_gpu_mem:.2f}\n')
-          log_file.write("\n")
+        if write_logs:
+          with open(log_batch_path, 'a') as log_file:
+            log_file.write(f' Batch {count_batch}/{total_batches} \n')
+            log_file.write(f'  nr_sample_per_class : {count_array.tolist()}\n')
+            log_file.write(f'  unique_subject      : {unique_batch_subject.tolist()}\n')
+            log_file.write(f'  count_subject       : {count_subject.tolist()}\n')
+            log_file.write(f'  GPU free/total (GB) : {free_gpu_mem:.2f}/{total_gpu_mem:.2f}\n')
+            log_file.write("\n")
         print(f'\nBatch: {count_batch}/{len(train_loader)}  \nGPU free/total (GB) : {free_gpu_mem:.2f}/{total_gpu_mem:.2f}\n')
         del batch_X, batch_y
         torch.cuda.empty_cache()
@@ -769,24 +765,25 @@ class HeadGRU:
       # print(f'  Prec. micro      : {dict_precision_recall["micro_precision"]}')
       # print(f'  Prec. weigh.     : {dict_precision_recall["weighted_precision"]}')
       # Save training log to an external file
-      with open(log_file_path, 'a') as log_file:
-        log_file.write(f'Epoch [{epoch}/{num_epochs}] | {current_time}\n')
-        log_file.write(f' Train\n')
-        log_file.write(f'  Loss             : {train_loss:.4f}\n')
-        log_file.write(f'  Accuracy         : {train_accuracy_dict["macro_precision"]:.4f}\n')
-        log_file.write(f'  Loss per_class   : {train_loss_per_class[epoch]}\n')
-        log_file.write(f'  Prec. per_class  : {train_accuracy_dict["precision_per_class"]}\n')
-        # log_file.write(f'  Prec. macro      : {dict_precision_recall["macro_precision"]}\n')
-        # log_file.write(f'  Prec. micro      : {dict_precision_recall["micro_precision"]}\n')
-        # log_file.write(f'  Prec. weigh.     : {dict_precision_recall["weighted_precision"]}\n')
-      # print(f'\tTrain Loss Per Subject: {train_loss_per_subject[epoch]}')
-      # print(f'\tTest Loss Per Subject: {test_loss_per_subject[epoch]}')
+      if write_logs:
+        with open(log_file_path, 'a') as log_file:
+          log_file.write(f'Epoch [{epoch}/{num_epochs}] | {current_time}\n')
+          log_file.write(f' Train\n')
+          log_file.write(f'  Loss             : {train_loss:.4f}\n')
+          log_file.write(f'  Accuracy         : {train_accuracy_dict["macro_precision"]:.4f}\n')
+          log_file.write(f'  Loss per_class   : {train_loss_per_class[epoch]}\n')
+          log_file.write(f'  Prec. per_class  : {train_accuracy_dict["precision_per_class"]}\n')
+          # log_file.write(f'  Prec. macro      : {dict_precision_recall["macro_precision"]}\n')
+          # log_file.write(f'  Prec. micro      : {dict_precision_recall["micro_precision"]}\n')
+          # log_file.write(f'  Prec. weigh.     : {dict_precision_recall["weighted_precision"]}\n')
+        # print(f'\tTrain Loss Per Subject: {train_loss_per_subject[epoch]}')
+        # print(f'\tTest Loss Per Subject: {test_loss_per_subject[epoch]}')
 
       # Evaluate
       dict_eval = self.evaluate(
         val_loader=val_loader, criterion=criterion, device=device, unique_classes=unique_classes,nr_uniq_classes=nr_uniq_classes,
         unique_subjects= unique_subjects, val_confusion_matricies= val_confusion_matricies[-1],
-        round_output_loss=round_output_loss, log_file_path=log_file_path)
+        round_output_loss=round_output_loss, log_file_path=log_file_path if write_logs else None)
       # test_accuracy_per_class[epoch] = dict_eval['test_accuracy_per_class']
       # Save test loss
       val_losses.append(dict_eval['val_loss'])
@@ -945,7 +942,7 @@ class HeadGRU:
         'dict_precision_recall': dict_precision_recall
         }
       
-  def get_embeddings(self, X,sample_id,subject_id, device=None):
+  def get_embeddings(self, X,sample_id,subject_id):
     """
     Generate embeddings for the input tensor using the model's GRU layer.
     Args:
@@ -955,8 +952,7 @@ class HeadGRU:
     Returns:
       torch.Tensor: The generated embeddings from the model's GRU layer.
     """
-    if device is None:
-      device = 'cuda'
+    device = 'cuda'
     X_padded,_,subject_ids_per_sample_id,length_features = self._group_features_by_sample_id(X=X, sample_ids=sample_id, subject_ids=subject_id)
     X_padded = X_padded.to(device)
     packed_input = pack_padded_sequence(X_padded, length_features, batch_first=True, enforce_sorted=False)
