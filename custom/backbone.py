@@ -16,7 +16,7 @@ class backbone:
     pass
   
 class video_backbone(backbone):
-  def __init__(self,model_type):
+  def __init__(self,model_type,remove_head=True):
     assert model_type in MODEL_TYPE, f"Model type must be one of {MODEL_TYPE}."
     if not os.path.exists(model_type.value):
       assert os.path.exists(model_type.value), f"Model not found at {model_type.value}. Please set download_if_unavailable=True to download the model."
@@ -25,7 +25,7 @@ class video_backbone(backbone):
       raise NotImplementedError("This version of the model doesn't have forward_features function.")
       # self.model = self._load_model_pretrained(model_type) # FIX: use load_model_finetune, this version doesn't have forward_features function
     else:
-      self.model = self._load_model_finetune(model_type)
+      self.model = self._load_model_finetune(model_type,remove_head=remove_head)
       self.tubelet_size = self.model.patch_embed.tubelet_size
       self.img_size = self.model.patch_embed.img_size[0] # [224, 224]
       self.frame_size = 16
@@ -67,7 +67,7 @@ class video_backbone(backbone):
       model.load_state_dict(new_weights)
     return model
   
-  def _load_model_finetune(self,model_type):
+  def _load_model_finetune(self,model_type,remove_head=True):
     
     if model_type == MODEL_TYPE.VIDEOMAE_v2_S:
       kwargs = {'num_classes': 710}
@@ -83,8 +83,8 @@ class video_backbone(backbone):
       kwargs = {'num_classes': 51}
       model = vit_giant_patch14_224(pretrained=False, **kwargs)
       model.load_state_dict(torch.load(MODEL_TYPE.VIDEOMAE_v2_G_pt_1200e_K710_it_HMDB51_ft.value)['module'])
-    
-    self.remove_unwanted_layers(model)
+    if remove_head:
+      self.remove_unwanted_layers(model)
     return model
   
   def remove_unwanted_layers(self,model):
@@ -96,7 +96,7 @@ class video_backbone(backbone):
     if hasattr(model, "fc_norm"):
       model.fc_norm = None
       
-  def forward_features(self, x):
+  def forward_features(self, x,return_embedding=True):
     """
     Forward pass to extract features from the input tensor.
 
@@ -108,13 +108,21 @@ class video_backbone(backbone):
     """
     # x.shape = [B, C, T, H, W]
     num_frames = x.shape[2]
+    device = 'cuda'
+    self.model.to(device)
+    x = x.to(device)
     # added return_embedding in the original code to catch the embedding
-    feat = self.model.forward_features(x, return_embedding=True) # torch.Size([1, 1568, 768]) (VIDEOMAE_v2_B model)
-    B = feat.shape[0]
-    T = int(feat.shape[1] / (self.out_spatial_size ** 2))
-    S = int(feat.shape[1] / (self.out_spatial_size * (num_frames / self.tubelet_size))) # 1568 / (14*8) = 14
-    emb = feat.reshape(B, T, S, S, self.embed_dim)
-    return emb # [1,1568,768] -> [1,8,14,14,768]
+    self.model.eval()
+    with torch.no_grad():
+      feat = self.model.forward_features(x, return_embedding=return_embedding) # torch.Size([1, 1568, 768]) (VIDEOMAE_v2_B model)
+    if return_embedding:
+      B = feat.shape[0]
+      T = int(feat.shape[1] / (self.out_spatial_size ** 2))
+      S = int(feat.shape[1] / (self.out_spatial_size * (num_frames / self.tubelet_size))) # 1568 / (14*8) = 14
+      emb = feat.reshape(B, T, S, S, self.embed_dim)
+      return emb # [1,1568,768] -> [1,8,14,14,768]
+    else:
+      return feat
 
 class vit_image_backbone(backbone):
   def __init__(self,model_name="google/vit-base-patch16-224-in21k"):
