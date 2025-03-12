@@ -8,6 +8,7 @@ import torch
 import time
 from concurrent.futures import ThreadPoolExecutor
 import cv2
+import torch.utils
 from custom.helper import SAMPLE_FRAME_STRATEGY
 from sklearn.model_selection import GroupShuffleSplit
 import matplotlib.pyplot as plt
@@ -21,7 +22,11 @@ import pickle
 
 class customDataset(torch.utils.data.Dataset):
   def __init__(self,path_dataset, path_labels, sample_frame_strategy, stride_window=1, clip_length=16,stride_inside_window=1,
-               preprocess_align=False,preprocess_frontalize=False,preprocess_crop_detection=False,saving_folder_path_extracted_video=None):
+               preprocess_align=False,preprocess_frontalize=False,preprocess_crop_detection=False,saving_folder_path_extracted_video=None,
+               video_labels=None):
+    # video labels must be a pandas dataframe
+    if video_labels is not None:
+      assert isinstance(video_labels, pd.DataFrame), f"video_labels must be a pandas DataFrame."
     assert os.path.exists(path_dataset), f"Dataset path {path_dataset} does not exist."
     # assert os.path.exists(path_labels), f"Labels path {path_labels} does not exist."
     assert clip_length > 0, f"Clip length must be greater than 0."
@@ -56,7 +61,10 @@ class customDataset(torch.utils.data.Dataset):
     self.clip_length = clip_length
     # self.set_path_labels('all')
     self.saving_folder_path_extracted_video = saving_folder_path_extracted_video
-    self.set_path_labels(path_labels)
+    if video_labels is None:
+      self.set_path_labels(path_labels)
+    else:
+      self.video_labels = video_labels
     tmp = tools.get_unique_subjects_and_classes(self.path_labels)
     self.total_subjects, self.total_classes = len(tmp[0]), len(tmp[1])
     self.face_extractor = extractor.FaceExtractor()
@@ -156,14 +164,7 @@ class customDataset(torch.utils.data.Dataset):
     # Extract metadata from CSV
     csv_array = self.video_labels.iloc[idx, 0].split('\t')
     video_path = os.path.join(self.path_dataset, csv_array[1], csv_array[5] + '.mp4')
-    # print(f'video_path: {video_path}')
-    # Open video container and get total frames
-    # container = av.open(video_path,options={'hwaccel': 'cuda', 'hwaccel_device': '0'})
-    # tot_frames = container.streams.video[0].frames
-    # width_frames = container.streams.video[0].width
-    # height_frames = container.streams.video[0].height
-    # Sample frame indices using the provided strategy
-    # if os.path.exists(video_path):
+
     container = cv2.VideoCapture(video_path)
     tot_frames = int(container.get(cv2.CAP_PROP_FRAME_COUNT))
     if self.preprocess_align or self.preprocess_frontalize or self.preprocess_crop_detection:
@@ -178,33 +179,15 @@ class customDataset(torch.utils.data.Dataset):
     # print(f'Height frames: {height_frames}')
     list_indices = self.sample_frame_strategy(tot_frames)
 
-    # Load and preprocess frames
-    # print(f'list_indices shape: {list_indices.shape}')
-    # start_time_load_video = time.time()
     frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames)
-
-    # generate video with 1% probability
-    # if np.random.rand() < 0.01 and self.saving_folder_path_extracted_video is not None:
-    # # saving_folder_path = os.path.join('partA','video','features','samples_16_cropped_aligned_fixed','video')
-    #   tools.generate_video_from_list_frame(list_frame = frames_list.reshape(-1,height_frames,width_frames,3),
-    #                                       path_video_output=os.path.join(self.saving_folder_path_extracted_video,f'{csv_array[5]}.mp4'))
+    container.release()
 
     nr_clips = frames_list.shape[0]
     nr_frames = frames_list.shape[1]
     frames_list = frames_list.reshape(-1,*frames_list.shape[2:])
-    # end_time_load_video = time.time()
-    # print(f'Elapsed time load video: {end_time_load_video-start_time_load_video}')
-    
-    # Preprocess frames and stack into a tensor
-    # start_time_preprocess = time.time()
-    # print(f'Frames list shape: {frames_list.shape}') 
+
     preprocessed_tensors = self.preprocess_images(frames_list.permute(0,3,1,2))
-    # end_time_preprocess = time.time()
-    # print(f'Elapsed time preprocess: {end_time_preprocess-start_time_preprocess}')
-    preprocessed_tensors = preprocessed_tensors.reshape(nr_clips, nr_frames, *preprocessed_tensors.shape[1:]) 
-    # print(f'Preprocessed tensors shape: {preprocessed_tensors.shape}')
-    # Create metadata tensors
-    
+    preprocessed_tensors = preprocessed_tensors.reshape(nr_clips, nr_frames, *preprocessed_tensors.shape[1:])     
     path = np.repeat(video_path, nr_clips)
     
     unit_vector = torch.ones(nr_clips, dtype=torch.int16)
@@ -260,44 +243,8 @@ class customDataset(torch.utils.data.Dataset):
         # idx_frame_saved[mask, pos[mask].long()] = i
         pos[mask] += 1
       i += 1
-    # container.seek(0)
-    # max_end_frame = end_frame_idx.max().item()
-    # for i, frame in enumerate(container.decode(video=0)):
-    #   if i > max_end_frame:
-    #     break  
-      
-    #   mask = (start_frame_idx <= i) & (end_frame_idx >= i)  
-    #   if mask.any():
-    #     frame_rgb = torch.tensor(frame.to_ndarray(format="rgb24"), dtype=torch.uint8)
-    #     extracted_frames[mask, pos[mask].long()] = frame_rgb
-    #     # idx_frame_saved[mask, pos[mask].long()] = i
-    #     pos[mask] += 1
     
-    return extracted_frames #,idx_frame_saved
-  
-  # too slow
-  def _read_video_pyav(self, container, list_indices,width_frames,height_frames):
-    # ATTENTION: Assume that list_indices is sorted, can be fix using max and min 
-    start_frame_idx = list_indices[:, 0]
-    end_frame_idx = list_indices[:, -1]
-    num_clips, clip_length = list_indices.shape
-    # idx_frame_saved = torch.zeros(num_clips,clip_length, dtype=torch.int32)
-    extracted_frames = torch.zeros(num_clips, clip_length, height_frames, width_frames, self.image_channels, dtype=torch.uint8)
-    pos = torch.zeros(num_clips, dtype=torch.int32)
-    container.seek(0)
-    max_end_frame = end_frame_idx.max().item()
-    for i, frame in enumerate(container.decode(video=0)):
-      if i > max_end_frame:
-        break  
-      
-      mask = (start_frame_idx <= i) & (end_frame_idx >= i)  
-      if mask.any():
-        frame_rgb = torch.tensor(frame.to_ndarray(format="rgb24"), dtype=torch.uint8)
-        extracted_frames[mask, pos[mask].long()] = frame_rgb
-        # idx_frame_saved[mask, pos[mask].long()] = i
-        pos[mask] += 1
-    
-    return extracted_frames #,idx_frame_saved
+    return extracted_frames 
 
   def _custom_collate_fn(self, batch):
     """
@@ -406,6 +353,59 @@ class customDataset(torch.utils.data.Dataset):
     list_indices = torch.stack([torch.arange(start_idx, start_idx + self.clip_length * stride_inside_window, stride_inside_window) for start_idx in indices])
     # print('Sliding shape', list_indices.shape)
     return list_indices
+
+class customDatasetCSV(torch.utils.data.Dataset):
+  def __init__(self,csv_path,root_folder_features=os.path.join('partA','video','features','samples_16_whole')):
+    self.csv_path = csv_path
+    self.root_folder_features = root_folder_features
+    self.df = pd.read_csv(csv_path,sep='\t') # subject_id, subject_name, class_id, class_name, sample_id, sample_name
+  
+  def __len__(self):
+    return len(self.df)
+  
+  def __getitem__(self,idx):
+    csv_row = self.df.iloc[idx]
+    folder_path = os.path.join(self.root_folder_features,csv_row['subject_name'],csv_row['sample_name'])
+    features = tools.load_dict_data(folder_path)
+    return {
+        'features': features['features'],
+        'labels': features['list_labels'],
+        'subject_id': features['list_subject_id'],
+        # 'sample_id': torch.tensor(csv_row['sample_id'],dtype=torch.int16)
+    }
+  def _custom_collate(self,batch):
+    # batch[0]['features'] = batch[0]['features'][:4] # batch[idx].shape -> [seq_len,Temporal,Space,Space,Emb]
+    emb_dim = batch[0]['features'].shape[-1]
+    len_batch = len(batch)
+    range_batch = range(len_batch)
+    max_len_sequence = max([math.prod(batch[index]['features'].shape[:-1]) for index in range_batch]) # [seq_len*Temporal]
+    key_padding_mask = torch.zeros(len_batch,max_len_sequence).to(bool) # True ignore, False keep
+    data = torch.zeros(len_batch, max_len_sequence, emb_dim) # output batch shape -> [B,seq_len,Emb]
+    labels = torch.zeros(len_batch).to(int)
+    subject_id = torch.zeros(len_batch).to(int)
+    for index in range_batch:
+      len_sequence = math.prod(batch[index]['features'].shape[:-1])
+      key_padding_mask[index,len_sequence:] = 1
+      if len_sequence < max_len_sequence:
+        batch[index]['features'] = batch[index]['features'].reshape(len_sequence,emb_dim)
+        padding = torch.zeros(max_len_sequence-len_sequence,emb_dim)
+        new_features = torch.cat([batch[index]['features'],padding],dim=0).reshape(1,max_len_sequence,emb_dim) # [1,seq_len,Emb]
+        data[index] = new_features
+      else:
+        data[index] = batch[index]['features'].reshape(1,max_len_sequence,emb_dim)
+      labels[index] = batch[index]['labels'][0] # label is at video level
+      subject_id[index] = batch[index]['subject_id'][0] # subject_id is at video level
+    
+    return data, labels, subject_id, key_padding_mask  
+  
+  def get_unique_subjects(self):
+    return np.sort(self.df['subject_id'].unique().tolist())
+  def get_count_subjects(self):
+    return np.unique(self.df['subject_id'],return_counts=True)[1]
+  def get_count_classes(self):
+    return np.unique(self.df['class_id'],return_counts=True)[1]
+  def get_unique_classes(self):
+    return np.sort(self.df['class_id'].unique().tolist())
 
 class customSampler(Sampler):
   def __init__(self,path_cvs_dataset, batch_size, shuffle, random_state=0):
