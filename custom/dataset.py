@@ -354,49 +354,52 @@ class customDataset(torch.utils.data.Dataset):
     # print('Sliding shape', list_indices.shape)
     return list_indices
 
-class customDatasetCSV(torch.utils.data.Dataset):
-  def __init__(self,csv_path,root_folder_features=os.path.join('partA','video','features','samples_16_whole')):
-    self.csv_path = csv_path
-    self.root_folder_features = root_folder_features
-    self.df = pd.read_csv(csv_path,sep='\t') # subject_id, subject_name, class_id, class_name, sample_id, sample_name
+
+class customDatasetAggregated(torch.utils.data.Dataset):
+  def __init__(self,root_folder_features,csv_path,concatenate_temporal,model):
+    self.root_folder_feature = root_folder_features
+    self.df = pd.read_csv(csv_path,sep='\t')
+    self.concatenate_temporal = concatenate_temporal
+    self.dict_data = self._feature_extraction()
+    self.model = model
+    self.instance_model_name = model.__class__.__name__
+  
+  def _feature_extraction(self):
+    dict_data = tools.load_dict_data(self.root_folder_feature)
+    sample_id_list = torch.tensor(self.df['sample_id'].tolist())
+    is_in = torch.isin(dict_data['list_sample_id'],sample_id_list)
+    for k,v in dict_data.items():
+      dict_data[k] = v[is_in]
+    return dict_data
   
   def __len__(self):
     return len(self.df)
   
   def __getitem__(self,idx):
-    csv_row = self.df.iloc[idx]
-    folder_path = os.path.join(self.root_folder_features,csv_row['subject_name'],csv_row['sample_name'])
-    features = tools.load_dict_data(folder_path)
-    return {
-        'features': features['features'],
-        'labels': features['list_labels'],
-        'subject_id': features['list_subject_id'],
-        # 'sample_id': torch.tensor(csv_row['sample_id'],dtype=torch.int16)
-    }
+    def _get_element(idx):
+      csv_row = self.df.iloc[idx]
+      sample_id = csv_row['sample_id']
+      mask = self.dict_data['list_sample_id'] == sample_id
+      features = self.dict_data['features'][mask]
+      labels = self.dict_data['list_labels'][mask]
+      subject_id = self.dict_data['list_subject_id'][mask]
+      return {
+          'features': features,     # [8,8,1,1,768]-> [seq_len,Temporal,Space,Space,Emb]
+          'labels': labels,         # [8]
+          'subject_id': subject_id  # [8]
+      }
+    if isinstance(idx,int):
+      return _get_element(idx)
+    else:
+      batch = [_get_element(idx) for idx in idx]
+      batch = self._custom_collate(batch)
+      return batch
+  
+  def fake_collate(self,batch): # to avoid strange error when use customSampler
+    return batch[0]  
+  
   def _custom_collate(self,batch):
-    # batch[0]['features'] = batch[0]['features'][:4] # batch[idx].shape -> [seq_len,Temporal,Space,Space,Emb]
-    emb_dim = batch[0]['features'].shape[-1]
-    len_batch = len(batch)
-    range_batch = range(len_batch)
-    max_len_sequence = max([math.prod(batch[index]['features'].shape[:-1]) for index in range_batch]) # [seq_len*Temporal]
-    key_padding_mask = torch.zeros(len_batch,max_len_sequence).to(bool) # True ignore, False keep
-    data = torch.zeros(len_batch, max_len_sequence, emb_dim) # output batch shape -> [B,seq_len,Emb]
-    labels = torch.zeros(len_batch).to(int)
-    subject_id = torch.zeros(len_batch).to(int)
-    for index in range_batch:
-      len_sequence = math.prod(batch[index]['features'].shape[:-1])
-      key_padding_mask[index,len_sequence:] = 1
-      if len_sequence < max_len_sequence:
-        batch[index]['features'] = batch[index]['features'].reshape(len_sequence,emb_dim)
-        padding = torch.zeros(max_len_sequence-len_sequence,emb_dim)
-        new_features = torch.cat([batch[index]['features'],padding],dim=0).reshape(1,max_len_sequence,emb_dim) # [1,seq_len,Emb]
-        data[index] = new_features
-      else:
-        data[index] = batch[index]['features'].reshape(1,max_len_sequence,emb_dim)
-      labels[index] = batch[index]['labels'][0] # label is at video level
-      subject_id[index] = batch[index]['subject_id'][0] # subject_id is at video level
-    
-    return data, labels, subject_id, key_padding_mask  
+    return _custom_collate(batch,self.instance_model_name,self.concatenate_temporal,self.model)
   
   def get_unique_subjects(self):
     return np.sort(self.df['subject_id'].unique().tolist())
@@ -407,6 +410,90 @@ class customDatasetCSV(torch.utils.data.Dataset):
   def get_unique_classes(self):
     return np.sort(self.df['class_id'].unique().tolist())
 
+class customDatasetWhole(torch.utils.data.Dataset):
+  def __init__(self,csv_path,root_folder_features,concatenate_temporal,model):
+    self.csv_path = csv_path
+    self.root_folder_features = root_folder_features
+    self.df = pd.read_csv(csv_path,sep='\t') # subject_id, subject_name, class_id, class_name, sample_id, sample_name
+    self.concatenate_temporal = concatenate_temporal
+    self.model = model
+    self.instance_model_name = model.__class__.__name__
+    
+  def __len__(self):
+    return len(self.df)
+  
+  def __getitem__(self,idx):
+    def _get_element(idx=idx):
+      csv_row = self.df.iloc[idx]
+      folder_path = os.path.join(self.root_folder_features,csv_row['subject_name'],csv_row['sample_name'])
+      features = tools.load_dict_data(folder_path)
+      return {
+          'features': features['features'],
+          'labels': features['list_labels'],
+          'subject_id': features['list_subject_id'],
+          # 'sample_id': torch.tensor(csv_row['sample_id'],dtype=torch.int16)
+      }
+    
+    if isinstance(idx,int):
+      return _get_element(idx=idx)
+    else:
+      batch = [_get_element(idx=idx) for idx in idx]
+      batch = self._custom_collate(batch)
+      return batch
+  
+  def fake_collate(self,batch): # to avoid strange error when use customSampler
+    return batch[0]
+  
+  def _custom_collate(self,batch):
+    return _custom_collate(batch,self.instance_model_name,self.concatenate_temporal,self.model)  
+      
+  
+  def get_unique_subjects(self):
+    return np.sort(self.df['subject_id'].unique().tolist())
+  def get_count_subjects(self):
+    return np.unique(self.df['subject_id'],return_counts=True)[1]
+  def get_count_classes(self):
+    return np.unique(self.df['class_id'],return_counts=True)[1]
+  def get_unique_classes(self):
+    return np.sort(self.df['class_id'].unique().tolist())
+
+def _custom_collate(batch,instance_model_name,concatenate_temporal,model):
+  # Pre-flatten features: reshape each sample to (sequence_length, emb_dim)
+  if instance_model_name != 'LinearProbe':
+    if not concatenate_temporal:
+      features = [sample['features'].reshape(-1,sample['features'].shape[-1]) for sample in batch]
+    else:
+      features = [sample['features'].reshape(-1,sample['features'].shape[-1]*sample['features'].shape[-4]) for sample in batch]
+    # features -> [seq_len,emb_dim]
+    lengths = [feat.size(0) for feat in features]
+    padded_features = torch.nn.utils.rnn.pad_sequence(features,batch_first=True) # [batch_size,seq_len,emb_dim]
+    lengths_tensor = torch.tensor(lengths)  
+    labels = torch.tensor([sample['labels'][0] for sample in batch],dtype=torch.long)
+    subject_id = torch.tensor([sample['subject_id'][0] for sample in batch])
+    
+    if instance_model_name == 'AttentiveProbe':
+      max_len = max(lengths)
+      key_padding_mask = torch.arange(max_len, device=padded_features.device).expand(len(batch), max_len) >= lengths_tensor.unsqueeze(1)
+      return {'x':padded_features,
+              'key_padding_mask': key_padding_mask},\
+              labels,\
+              subject_id
+    elif instance_model_name == 'GRUProbe':
+      packed_input = torch.nn.utils.rnn.pack_padded_sequence(padded_features,lengths_tensor,batch_first=True,enforce_sorted=False)
+      if model.output_size == 1:
+        labels = labels.float()
+      return {'x':packed_input},\
+              labels,\
+              subject_id
+  else:
+    features = torch.cat([torch.mean(sample['features'],dim=0,keepdim=True) for sample in batch],dim=0) # mean over the sequence
+    labels = torch.tensor([sample['labels'][0] for sample in batch],dtype=torch.long)
+    subject_id = torch.tensor([sample['subject_id'][0] for sample in batch])
+    return {'x':features},\
+            labels,\
+            subject_id
+
+
 class customSampler(Sampler):
   def __init__(self,path_cvs_dataset, batch_size, shuffle, random_state=0):
     csv_array,_ = tools.get_array_from_csv(path_cvs_dataset)
@@ -414,21 +501,21 @@ class customSampler(Sampler):
     nr_samples = len(self.y_labels)
     self.n_batch_size = batch_size
     # -(-a//b) is the same as math.ceil(a/b)
-    self.skf = StratifiedKFold(n_splits = int(-(-nr_samples//batch_size)) , shuffle=shuffle, random_state=random_state)
+    self.skf = StratifiedKFold(n_splits = math.ceil(nr_samples/batch_size) , shuffle=shuffle, random_state=random_state)
     self.n_batches = self.skf.get_n_splits()
-    self.initialize()
     
   def initialize(self):
     _, count = np.unique(self.y_labels, return_counts=True)
-    max_member = np.max(count)
-    print(f'Max count member: {max_member}')
+    min_member = np.min(count)
+    print(f'Min count member: {min_member}')
     print(f'Number of splits: {self.skf.get_n_splits()}')
-    if max_member < self.skf.get_n_splits():
-      raise ValueError(f"n_splits = {len(self.y_labels)//self.n_batch_size +1} cannot be greater than max_count_member ({max_member}) ")
+    if min_member < self.skf.get_n_splits():
+      raise ValueError(f"Impossible to split the dataset in {self.skf.get_n_splits()} splits. The minimum number of samples per class is {min_member}")
   
   def __iter__(self):
     for _,test in self.skf.split(np.zeros(self.y_labels.shape[0]), self.y_labels):
       yield test
+      
       
   def __len__(self):
     return self.n_batches
