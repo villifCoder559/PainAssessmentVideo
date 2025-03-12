@@ -36,7 +36,9 @@ class HEAD(Enum):
 
 class GLOBAL_PATH:
   NAS_PATH = os.path.join('/equilibrium','fvilli','PainAssessmentVideo')
-  
+class CUSTOM_DATASET_TYPE(Enum):
+  AGGREGATED = 'aggregated' # features reduced (spatial reduction) and saved in one folder 
+  WHOLE = 'whole' # features not reduced and saved in more folders (like Biovid video)
 class CSV:
   sort_cols = [
                 'k_fold', 
