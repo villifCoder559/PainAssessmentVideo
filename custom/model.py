@@ -2,7 +2,7 @@ from matplotlib.ticker import MaxNLocator
 import torch
 from custom.backbone import video_backbone, vit_image_backbone
 from custom.neck import neck
-from custom.dataset import customDataset
+from custom.dataset import customDataset, customDatasetCSV
 from sklearn.svm import SVR
 from sklearn.model_selection import GroupShuffleSplit, cross_val_score, KFold
 from sklearn.model_selection import train_test_split
@@ -14,7 +14,7 @@ import matplotlib.cm as cm
 import custom.tools as tools
 import torch.nn as nn
 import torch.optim as optim
-from custom.head import HeadSVR, HeadGRU, CrossValidationGRU
+from custom.head import HeadSVR, HeadGRU, AttentiveHead
 import os
 import json
 from sklearn.manifold import TSNE
@@ -67,9 +67,11 @@ class Model_Advanced: # Scenario_Advanced
       if model_type != MODEL_TYPE.ViT_image:
         assert self.backbone.frame_size % self.backbone.tubelet_size == 0, "Frame size must be divisible by tubelet size."
       self.head = HeadGRU(**head_params)
+    elif head == 'ATTENTIVE':
+      self.head = AttentiveHead(**head_params)
     self.path_to_extracted_features = features_folder_saving_path
-
-  def test_pretrained_model(self,path_model_weights, csv_path, log_file_path,criterion=nn.L1Loss(), round_output_loss=False,is_test=True):
+    
+  def test_pretrained_model(self,path_model_weights, csv_path, log_file_path,criterion=nn.L1Loss(), round_output_loss=False,is_test=True,pooled_features=True):
     """
     Evaluate the model using the specified dataset.
     Parameters:
@@ -84,41 +86,68 @@ class Model_Advanced: # Scenario_Advanced
       - 'subject_ids_unique': Unique subject IDs.
       - 'y_unique': Unique classes.
     """
-    dict_feature_extraction = self.extract_features_from_SSD(csv_path)
-    X = dict_feature_extraction['features']
-    y = dict_feature_extraction['list_labels']
-    subject_ids = dict_feature_extraction['list_subject_id']
-    sample_ids = dict_feature_extraction['list_sample_id']
-    unique_classes = np.unique(y)
-    nr_uniq_classes =list(range((max(unique_classes)+2)))[-1] 
-    test_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=unique_classes.shape[0] + 1)
-    # load weights
-    self.head.load_state_weights(path=path_model_weights)
-    test_loader = self.head.get_data_loader(X=X, 
-                                            y=y, 
-                                            subject_ids=subject_ids,
-                                            sample_ids=sample_ids,
-                                            batch_size=self.batch_size_training)
-    
-    dict_test = self.head.evaluate(val_loader=test_loader,
-                                   val_confusion_matricies=test_confusion_matricies,
-                                   is_test=is_test,
-                                   nr_uniq_classes=nr_uniq_classes,
-                                   criterion=criterion, 
-                                   device='cuda',
-                                   round_output_loss=round_output_loss,
-                                   log_file_path=log_file_path,
-                                   unique_classes=unique_classes,
-                                   unique_subjects=np.unique(subject_ids),
-                                   )
-                                      
+    if not is_test:
+      raise Exception('Set is_test to True. Currently this function is only for testing.')
+    if isinstance(self.head, HeadGRU):
+      dict_feature_extraction = self.extract_features_from_SSD(csv_path)
+      X = dict_feature_extraction['features']
+      y = dict_feature_extraction['list_labels']
+      subject_ids = dict_feature_extraction['list_subject_id']
+      sample_ids = dict_feature_extraction['list_sample_id']
+      unique_classes = np.unique(y)
+      nr_uniq_classes =list(range((max(unique_classes)+2)))[-1] 
+      test_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=unique_classes.shape[0] + 1)
+      # load weights
+      self.head.load_state_weights(path=path_model_weights)
+      test_loader = self.head.get_data_loader(X=X, 
+                                              y=y, 
+                                              subject_ids=subject_ids,
+                                              sample_ids=sample_ids,
+                                              batch_size=self.batch_size_training)
+      
+      dict_test = self.head.evaluate(val_loader=test_loader,
+                                    val_confusion_matricies=test_confusion_matricies,
+                                    is_test=is_test,
+                                    nr_uniq_classes=nr_uniq_classes,
+                                    criterion=criterion, 
+                                    device='cuda',
+                                    round_output_loss=round_output_loss,
+                                    log_file_path=log_file_path,
+                                    unique_train_val_classes=unique_classes,
+                                    unique_train_val_subjects=np.unique(subject_ids),
+                                    )
+      test_unique_subject_ids,test_count_subject_ids = np.unique(subject_ids,return_counts=True)
+      test_unique_classes,test_count_classes = np.unique(y,return_counts=True)
+      dict_test['test_unique_subject_ids'] = test_unique_subject_ids
+      dict_test['test_count_subject_ids'] = test_count_subject_ids
+      dict_test['test_unique_y'] = test_unique_classes
+      dict_test['test_count_y'] = test_count_classes
+    elif isinstance(self.head, AttentiveHead):
+      root_folder_features="/media/villi/TOSHIBA EXT/samples_16_whole"
+      test_dataset = customDatasetCSV(csv_path,root_folder_features=root_folder_features)
+      test_loader = DataLoader(test_dataset,collate_fn=test_dataset._custom_collate,batch_size=self.batch_size_training)
+      unique_test_subjects = test_dataset.get_unique_subjects()
+      unique_classes = np.array(list(range(self.head.model.num_classes)))
+      dict_test = self.head.evaluate(val_loader=test_loader, criterion=criterion, unique_val_subjects=unique_test_subjects,
+                                      unique_val_classes=unique_classes, is_test=is_test)
+      dict_test['test_unique_subject_ids'] = unique_test_subjects
+      dict_test['test_count_subject_ids'] = test_dataset.get_count_subjects()
+      dict_test['test_unique_y'] = unique_classes
+      dict_test['test_count_y'] = test_dataset.get_count_classes()
+    else:
+      raise Exception('Head not supported.')
     return dict_test
   
+  
+  def free_gpu_memory(self):
+    self.head.model.to('cpu')
+    torch.cuda.empty_cache()
+    
   def train(self, train_csv_path, val_csv_path, num_epochs, criterion,
             optimizer_fn, lr,saving_path,init_weights,round_output_loss,
             shuffle_video_chunks,shuffle_training_batch,init_network,
             regularization_loss,regularization_lambda,key_for_early_stopping,early_stopping,
-            # scheduler
+            enable_scheduler,pooled_features=True
             ):
     """
     Train the model using the specified training and testing datasets.
@@ -160,55 +189,70 @@ class Model_Advanced: # Scenario_Advanced
         
         
     # else:
-    print('Extracting features...')
-    dict_feature_extraction_train = self.extract_features_from_SSD(train_csv_path)
-    dict_feature_extraction_test = self.extract_features_from_SSD(val_csv_path)
-    
     count_subject_ids_train, count_y_train = tools.get_unique_subjects_and_classes(train_csv_path)
-    X_train = dict_feature_extraction_train['features']
-    y_train = dict_feature_extraction_train['list_labels']
-    subject_ids_train = dict_feature_extraction_train['list_subject_id']
-    sample_ids_train = dict_feature_extraction_train['list_sample_id'] 
-    
-    count_subject_ids_test, count_y_test = tools.get_unique_subjects_and_classes(val_csv_path) 
-    X_test = dict_feature_extraction_test['features']
-    y_test = dict_feature_extraction_test['list_labels']
-    subject_ids_test = dict_feature_extraction_test['list_subject_id']
-    sample_ids_test = dict_feature_extraction_test['list_sample_id']  
+    count_subject_ids_val, count_y_val = tools.get_unique_subjects_and_classes(val_csv_path) 
+    if pooled_features:
+      print('Extracting pooled features...')
+      dict_feature_extraction_train = self.extract_features_from_SSD(train_csv_path, pooled_features)
+      dict_feature_extraction_test = self.extract_features_from_SSD(val_csv_path, pooled_features)
+      
+      X_train = dict_feature_extraction_train['features']
+      y_train = dict_feature_extraction_train['list_labels']
+      subject_ids_train = dict_feature_extraction_train['list_subject_id']
+      sample_ids_train = dict_feature_extraction_train['list_sample_id'] 
+      
+      X_test = dict_feature_extraction_test['features']
+      y_test = dict_feature_extraction_test['list_labels']
+      subject_ids_test = dict_feature_extraction_test['list_subject_id']
+      sample_ids_test = dict_feature_extraction_test['list_sample_id']  
 
-    if isinstance(self.head, HeadGRU):
-      print('Training using GRU.....')
-      print(train_csv_path)
-      dict_results = self.head.start_train(X_train=X_train, y_train=y_train, subject_ids_train=subject_ids_train,
-                                                sample_ids_val=sample_ids_test, 
-                                                sample_ids_train=sample_ids_train,
-                                                X_val=X_test, 
-                                                y_val=y_test, 
-                                                subject_ids_val=subject_ids_test, 
-                                                num_epochs=num_epochs, 
-                                                batch_size=self.batch_size_training,
-                                                criterion=criterion, 
-                                                optimizer_fn=optimizer_fn, 
-                                                lr=lr,
-                                                saving_path=saving_path,
-                                                init_weights=init_weights,
-                                                round_output_loss=round_output_loss,
-                                                shuffle_video_chunks=shuffle_video_chunks,
-                                                shuffle_training_batch=shuffle_training_batch,
-                                                train_csv_path=train_csv_path,
-                                                init_network=init_network,
-                                                regularization_loss=regularization_loss,
-                                                regularization_lambda=regularization_lambda,
-                                                key_for_early_stopping=key_for_early_stopping,
-                                                early_stopping=early_stopping,
-                                                # scheduler=scheduler
-                                                )
-    
+      memory_allocated_before = torch.cuda.memory_allocated()/1024/1024/1024
+      memory_reserved_before = torch.cuda.memory_reserved()/1024/1024/1024
+      print(f"Memory allocated before training: {memory_allocated_before} GB")
+      print(f"Memory reserved before training: {memory_reserved_before} GB")
+      if isinstance(self.head, HeadGRU):
+        print('Training using GRU.....')
+        print(train_csv_path)
+        dict_results = self.head.start_train(X_train=X_train, y_train=y_train, subject_ids_train=subject_ids_train,
+                                                  sample_ids_val=sample_ids_test, 
+                                                  sample_ids_train=sample_ids_train,
+                                                  X_val=X_test, 
+                                                  y_val=y_test, 
+                                                  subject_ids_val=subject_ids_test, 
+                                                  num_epochs=num_epochs, 
+                                                  batch_size=self.batch_size_training,
+                                                  criterion=criterion, 
+                                                  optimizer_fn=optimizer_fn, 
+                                                  lr=lr,
+                                                  saving_path=saving_path,
+                                                  init_weights=init_weights,
+                                                  round_output_loss=round_output_loss,
+                                                  shuffle_video_chunks=shuffle_video_chunks,
+                                                  shuffle_training_batch=shuffle_training_batch,
+                                                  train_csv_path=train_csv_path,
+                                                  init_network=init_network,
+                                                  regularization_loss=regularization_loss,
+                                                  regularization_lambda=regularization_lambda,
+                                                  key_for_early_stopping=key_for_early_stopping,
+                                                  early_stopping=early_stopping,
+                                                  enable_scheduler=enable_scheduler
+                                                  )
+    else:
+      if isinstance(self.head, AttentiveHead):
+        print('Training using Attentive head..')
+        dict_results = self.head.start_train(num_epochs=num_epochs,criterion=criterion,optimizer=optimizer_fn,lr=lr,
+                                            saving_path=saving_path,train_csv_path=train_csv_path,val_csv_path=val_csv_path,
+                                            batch_size=self.batch_size_training,regularization_loss=regularization_loss,
+                                            regularization_lambda=regularization_lambda,early_stopping=early_stopping,
+                                            key_for_early_stopping=key_for_early_stopping,enable_scheduler=enable_scheduler)
     return {'dict_results':dict_results, 
-            'count_y_train':count_y_train, 
-            'count_y_test':count_y_test,
-            'count_subject_ids_train':count_subject_ids_train,
-            'count_subject_ids_test':count_subject_ids_test}
+              'count_y_train':count_y_train, 
+              'count_y_test':count_y_val,
+              'count_subject_ids_train':count_subject_ids_train,
+              'count_subject_ids_test':count_subject_ids_val
+              }
+      
+        
     
   def extract_features_from_SSD(self,csv_path):
     dict_feature_extraction = {}
@@ -231,7 +275,4 @@ class Model_Advanced: # Scenario_Advanced
       
       for k,v in dict_all_features.items():
         dict_feature_extraction[k] = v[all_idxs_train]
-      return dict_feature_extraction
-    else:
-      raise Exception(f'Features not found at {self.path_to_extracted_features}. Please extract features first.')
-      
+      return dict_feature_extraction     
