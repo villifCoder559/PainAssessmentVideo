@@ -84,12 +84,12 @@ def old_analysis_csv(file_path,output_folder_plot):
 def new_analysis_csv(file_path,output_folder_plot):
   # === USER SETTINGS ===
   FILTERS = {
-    # "batch_size_training": 32,  # Example: Uncomment to filter by batch size
+    # "batch_size_training": 32,  
   }
 
   # Define columns to analyze
-  X_COLUMN = "learning_rate"       # X-axis (numeric, e.g., learning_rate)
-  Y_COLUMN = "mean_test_accuracy"      # Y-axis (numeric, e.g., test loss or accuracy)
+  X_COLUMN = "learning_rate"            # X-axis (numeric, e.g., learning_rate)
+  Y_COLUMN = "mean_test_accuracy"       # Y-axis (numeric, e.g., test loss or accuracy)
   HUE_COLUMN = "GRU.layer_norm"         # Categorical variable (color-coded, e.g., optimizer)
 
   # === LOAD DATA ===
