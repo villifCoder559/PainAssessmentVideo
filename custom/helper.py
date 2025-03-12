@@ -31,6 +31,8 @@ class CLIPS_REDUCTION(Enum):
 class HEAD(Enum):
   SVR = 'SVR'
   GRU = 'GRU'
+  ATTENTIVE = 'ATTENTIVE'
+  LINEAR = 'LINEAR'
 
 class GLOBAL_PATH:
   NAS_PATH = os.path.join('/equilibrium','fvilli','PainAssessmentVideo')
