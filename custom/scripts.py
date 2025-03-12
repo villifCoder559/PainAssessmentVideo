@@ -18,6 +18,15 @@ from sklearn.model_selection import StratifiedGroupKFold
 import os
 import random
 # import wandb
+def check_intersection_splits(k_fold,subject_ids,list_splits_idxs):
+  for i in range(k_fold):
+    for j in range(i+1,k_fold):
+      subject_ids_i = set(subject_ids[list_splits_idxs[i]])
+      subject_ids_j = set(subject_ids[list_splits_idxs[j]])
+      print(f'sibject_ids_i {subject_ids_i}')
+      print(f'sibject_ids_j {subject_ids_j}')
+      if len(subject_ids_i.intersection(subject_ids_j)) > 0:
+        raise ValueError('The splits must be disjoint')
 def set_seed(seed):
   random.seed(seed)  # Python random module
   np.random.seed(seed)  # NumPy
@@ -28,7 +37,7 @@ def set_seed(seed):
   torch.backends.cudnn.benchmark = False  # May slow down training but ensures reproducibility
 def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced, k_fold, seed_random_state,lr,epochs,optimizer_fn,
                             round_output_loss, shuffle_video_chunks, shuffle_training_batch,  criterion,early_stopping,
-                            # scheduler,
+                            enable_scheduler,pooled_features,
                             init_network,regularization_lambda,regularization_loss,key_for_early_stopping,target_metric_best_model):
   """
   Perform k-fold cross-validation on the dataset and train the model.
@@ -52,7 +61,7 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
   list_splits_idxs = [] # contains indices for all k splits
   for _, test_index in sgkf.split(X=torch.zeros(y_labels.shape), y=y_labels, groups=subject_ids): 
     list_splits_idxs.append(test_index)
-
+  # check_intersection_splits(k_fold,subject_ids,list_splits_idxs)
   list_test_results = []
   list_best_model_idx = []
   dict_results_model_weights = {}
@@ -130,31 +139,18 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
                                         regularization_lambda=regularization_lambda,
                                         key_for_early_stopping=key_for_early_stopping,
                                         early_stopping=early_stopping,
-                                        # scheduler=scheduler
+                                        enable_scheduler=enable_scheduler,
+                                        pooled_features=pooled_features
                                         )
       
       count_epochs = dict_train['dict_results']['epochs'] # get the number of epochs that the model was trained, since it can be stopped before the total number of epochs
       best_model_epoch = dict_train['dict_results']['best_model_idx']
-      # dict_k_fold_logs[f'k-{i}_s-{sub_idx}_val-loss'] = dict_train['dict_results']['val_losses'][best_model_epoch]
-      # dict_k_fold_logs[f'k-{i}_s-{sub_idx}_train-loss'] = dict_train['dict_results']['train_losses'][best_model_epoch]
-      # dict_k_fold_logs[f'k-{i}_s-{sub_idx}_train_macro_accuracy'] = dict_train['dict_results']['list_train_macro_accuracy'][best_model_epoch]
-      # dict_k_fold_logs[f'k-{i}_s-{sub_idx}_val_macro_accuracy'] = dict_train['dict_results']['list_val_macro_accuracy'][best_model_epoch]
-      
-      # dict_k_fold_logs[f'k-{i}_s-{sub_idx}_val-loss-class-avg'] = np.mean(dict_train['dict_results']['val_loss_per_class'][best_model_epoch])
-      # dict_k_fold_logs[f'k-{i}_s-{sub_idx}_val-loss-subject-avg'] = np.mean(dict_train['dict_results']['val_loss_per_subject'][best_model_epoch])
-      
-      # dict_k_fold_logs[f'k-{i}_s-{sub_idx}_train-loss-class-avg'] = np.mean(dict_train['dict_results']['train_loss_per_class'][best_model_epoch])
-      # dict_k_fold_logs[f'k-{i}_s-{sub_idx}_train-loss-subject-avg'] = np.mean(dict_train['dict_results']['train_loss_per_subject'][best_model_epoch])
-      
-      tools.plot_loss_and_precision_details(dict_train=dict_train,train_folder_path=saving_path_kth_sub_fold,total_epochs=count_epochs)
-      # ADD ACCURACY IN CSV FOR TRAIN VAL and TEST
-      # tools.generate_plot_train_test_results(dict_results=dict_train['dict_results'], 
-      #                               count_subject_ids_train=dict_train['count_subject_ids_train'],
-      #                               count_subject_ids_test=dict_train['count_subject_ids_test'],
-      #                               count_y_test=dict_train['count_y_test'], 
-      #                               count_y_train=dict_train['count_y_train'],
-      #                               saving_path=saving_path_kth_sub_fold)
-      # tools.plot_confusion_matrix
+      tools.plot_loss_and_precision_details(dict_train=dict_train,
+                                            train_folder_path=saving_path_kth_sub_fold,
+                                            total_epochs=count_epochs,
+                                            criterion=str(criterion).split('(')[0])
+
+
       #####################################################################
       ######################dict_train['dict_results']#####################
         # 'train_losses': train_losses,
@@ -194,8 +190,6 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
                 # reduced_dict_train[key] = np.append(reduced_dict_train[key],v[dict_train['dict_results']['best_model_idx']])
               else:
                 raise ValueError('Error in reducing the list')            
-              # np.append(reduced_dict_train[k],v[dict_train['dict_results']['best_model_idx']])
-              # reduced_dict_train[k].append(v[dict_train['dict_results']['best_model_idx']])
           else:
             reduced_dict_train[key] = v
       dict_k_fold_results[f'k{i}_cross_val_sub_{sub_idx}_train_val'] = reduced_dict_train
@@ -209,15 +203,14 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
     list_validation_best_result = [dict_train['dict_results'][target_metric_best_model_kth] for dict_train in fold_results_kth]
     if target_metric_best_model_kth == 'val_losses':
       best_model_subfolder_idx = np.argmin([metric[best_results_idx[i]] for i,metric in enumerate(list_validation_best_result)])
-    elif target_metric_best_model_kth == 'val_macro_accuracy':
+    elif target_metric_best_model_kth == 'list_val_macro_accuracy':
       best_model_subfolder_idx = np.argmax([metric[best_results_idx[i]] for i,metric in enumerate(list_validation_best_result)])
     else:
-      raise ValueError('target_metric_best_model must be val_losses or val_macro_accuracy')
+      raise ValueError('target_metric_best_model must be val_losses or list_val_macro_accuracy')
     
     best_model_epoch = fold_results_kth[best_model_subfolder_idx]['dict_results']['best_model_idx']
     list_best_model_idx.append(best_model_epoch)
     path_model_weights_best_model = os.path.join(saving_path_kth_fold,f'k{i}_cross_val_sub_{best_model_subfolder_idx}',f'best_model_ep_{best_model_epoch}.pth')
-    # list_path_model_weights.append(path_model_weights)
     dict_results_model_weights[f'{i}'] = {'sub':best_model_subfolder_idx,'epoch':best_model_epoch}
     
     # keep only the best model removing the others
@@ -236,70 +229,31 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
     dict_test = model_advanced.test_pretrained_model(path_model_weights=path_model_weights_best_model,
                                                       csv_path=path_csv_kth_fold['test'], 
                                                       log_file_path=os.path.join(saving_path_kth_fold,'test_results.txt'),
-                                                      is_test=True,
+                                                      is_test=True, 
                                                       criterion=criterion,
                                                       round_output_loss=round_output_loss)
     
     dict_k_fold_results[f'k{i}_test'] = { 'dict_test':dict_test,
                                           'best_model_subfolder_idx':best_model_subfolder_idx
                                         }
-    # dict_k_fold_results.append({f'k{i}_cross_val_test':{'dict_test':dict_test,
-    #                                                     'best_model_subfolder_idx':best_model_subfolder_idx}})
-    
     tools.plot_confusion_matrix(confusion_matrix=dict_test['test_confusion_matrix'],
                                 title=f'Confusion matrix Test folder k-{i} considering best model',
                                 saving_path=os.path.join(saving_path_kth_fold,f'confusion_matrix_test_submodel_{best_model_subfolder_idx}.png'))
     
-    # Log test results conisdering the best model selected according to the target_metric_best_model
-    # dict_k_fold_logs[f'k-{i}_test-loss'] = dict_test['test_loss']
-    # dict_k_fold_logs[f'k-{i}_test-loss-class'] = dict_test['test_loss_per_class']
-    # dict_k_fold_logs[f'k-{i}_test-loss-subject'] = dict_test['test_loss_per_subject']
-    # dict_k_fold_logs[f'k-{i}_test-accurracy'] = dict_test['test_macro_precision']
-    
-    # # Log train for the best model in the kth fold
-    # dict_k_fold_logs[f'k-{i}_train-loss'] = fold_results_kth[best_model_subfolder_idx]['dict_results']['train_losses'][best_model_epoch]
-    # dict_k_fold_logs[f'k-{i}_train-loss-class'] = fold_results_kth[best_model_subfolder_idx]['dict_results']['train_loss_per_class'][best_model_epoch]
-    # dict_k_fold_logs[f'k-{i}_train-loss-subject'] = fold_results_kth[best_model_subfolder_idx]['dict_results']['train_loss_per_subject'][best_model_epoch]
-    # dict_k_fold_logs[f'k-{i}_train_accuracy'] = fold_results_kth[best_model_subfolder_idx]['dict_results']['list_train_macro_accuracy'][best_model_epoch]
-    
-    # # Log val for the best model in the kth fold
-    # dict_k_fold_logs[f'k-{i}_val-loss'] = fold_results_kth[best_model_subfolder_idx]['dict_results']['val_losses'][best_model_epoch]
-    # dict_k_fold_logs[f'k-{i}_val-loss-class'] = fold_results_kth[best_model_subfolder_idx]['dict_results']['val_loss_per_class'][best_model_epoch]
-    # dict_k_fold_logs[f'k-{i}_val-loss-subject'] =fold_results_kth[best_model_subfolder_idx]['dict_results']['val_loss_per_subject'][best_model_epoch] 
-    # dict_k_fold_logs[f'k-{i}_val_accuracy'] = fold_results_kth[best_model_subfolder_idx]['dict_results']['list_val_macro_accuracy'][best_model_epoch]
-    
+
     list_test_results.append(dict_test) # contains the results for each kth fold
     fold_results_total.append(fold_results_kth[best_model_subfolder_idx])
     
-  
-  # dict_final_test_results = {
-  #   'avg_test_loss_best_models': np.mean([dict_test['test_loss'] for dict_test in list_test_results]),
-  #   'avg_test_loss_per_class_best_models': np.mean([dict_test['test_loss_per_class'] for dict_test in list_test_results],axis=(0)),
-  #   'avg_test_loss_per_subject_best_models': np.mean([dict_test['test_loss_per_subject'] for dict_test in list_test_results],axis=(0)),
-  #   'avg_accuracy_best_models': np.mean([dict_test['test_macro_precision'] for dict_test in list_test_results]),
-  # }
-
-  # dict_k_fold_logs['avg_test_loss-avg'] = dict_final_test_results['avg_test_loss_best_models']
-  # dict_k_fold_logs['avg_test_loss-class-avg'] = dict_final_test_results['avg_test_loss_per_class_best_models']
-  # dict_k_fold_logs['avg_test_loss-subject-avg'] = dict_final_test_results['avg_test_loss_per_subject_best_models']
-  # dict_k_fold_logs['avg_test_accuracy'] = dict_final_test_results['avg_accuracy_best_models']
-  
-  if target_metric_best_model == 'val_loss':
-    final_best_model_folder_idx = np.argmin([dict_val['test_loss' ] for dict_val in list_test_results])
-  elif target_metric_best_model == 'val_macro_accuracy':
-    final_best_model_folder_idx = np.argmax([dict_val['test_macro_precision'] for dict_val in list_test_results])
-  
-  # dict_k_fold_logs['final_best_model_folder_idx'] = {'folder':final_best_model_folder_idx,
-  #                                                     'sub':dict_results_model_weights[f"{final_best_model_folder_idx}"]["sub"]}
-
   plot_models_test_loss = {}
   plot_subject_test_loss = {}
   plot_class_test_loss = {}
 
   for i,dict_test in enumerate(list_test_results):
     plot_models_test_loss[f'k_{i}'] = dict_test['test_loss']
-    plot_subject_test_loss[f'k_{i}']=dict_test['test_loss_per_subject']
-    plot_class_test_loss[f'k_{i}'] = dict_test['test_loss_per_class']
+    plot_subject_test_loss[f'k_{i}']={'loss':dict_test['test_loss_per_subject'],
+                                      'elements':dict_test['test_unique_subject_ids']}
+    plot_class_test_loss[f'k_{i}'] = {'loss':dict_test['test_loss_per_class'],
+                                      'elements':dict_test['test_unique_y']}
     
   tools.plot_bar(data=plot_models_test_loss,
                   x_label='k_fold nr.',
@@ -308,6 +262,7 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
                   saving_path=os.path.join(train_folder_path,'test_loss_per_k_fold.png'))
   # TODO: FIX y_axis to be consistent in all plots
   # TODO: PUT the subject ID and not the array position of subject_id
+  
   tools.subplot_loss(dict_losses=plot_subject_test_loss,
                       list_title=[f'Test Subject loss {k_fold} model {list_best_model_idx[k_fold]}' for k_fold in range(k_fold)],
                       saving_path=os.path.join(train_folder_path,'subject_test_loss_per_k_fold.png'),
@@ -318,8 +273,6 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
                       saving_path=os.path.join(train_folder_path,'class_test_loss_per_k_fold.png'),
                       x_label='class_id',
                       y_label='loss')
-  
-  # dict_k_fold_logs['folder_path'] = train_folder_path
   # wandb.finish()
   return {
           'list_test_results':list_test_results,
@@ -343,9 +296,10 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    regularization_lambda,regularization_loss,
                    clip_length,
                    target_metric_best_model,
+                   enable_scheduler,
                    early_stopping,
-                  #  scheduler
-                   ):
+                   pooled_features
+                  ):
  
 
 
@@ -379,7 +333,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'clip_length': clip_length,
     'target_metric_best_model': target_metric_best_model,
     'early_stopping': early_stopping,
-      
+    'enable_scheduler': enable_scheduler,
     }
   def get_json_config():
     return {
@@ -430,6 +384,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   head_params=head_params,
                                   features_folder_saving_path= features_folder_saving_path,
                                   clip_length=clip_length,
+                                  
                                   )
   
   # Check if the global folder exists 
@@ -446,6 +401,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                      f'{pooling_clips_reduction.name}_'+
                      f'{sample_frame_strategy.name}_{head.name}')
   run_folder_path = os.path.join(global_foder_name,run_folder_name) # history_run/VIDEOMAE_v2_B_MEAN_SPATIAL_NONE_SLIDING_WINDOW_GRU_timestamp
+  
   if not os.path.exists(run_folder_path):
     os.makedirs(os.path.join(global_foder_name,run_folder_name))
   # print(f"Run folder created at {run_folder_path}")
@@ -454,7 +410,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   # print(f"Saving model configuration at {run_folder_path}")
   inputs_dict = get_json_config()
   with open(os.path.join(run_folder_path,'global_config.json'), 'w') as config_file:
-      json.dump(inputs_dict, config_file, indent=4,cls=NpEncoder)
+    json.dump(inputs_dict, config_file, indent=4,cls=NpEncoder)
       
   # Plot dataset distribution of whole dataset
   # print(f"Plotting dataset distribution at {run_folder_path}")
@@ -487,14 +443,19 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                            criterion=criterion,
                                            early_stopping=early_stopping,
                                           #  scheduler=scheduler,
+                                           pooled_features=pooled_features,
                                            init_network=init_network,
                                            regularization_lambda=regularization_lambda,
                                            regularization_loss=regularization_loss,
                                            key_for_early_stopping=key_for_early_stopping,
+                                           enable_scheduler=enable_scheduler,
                                            target_metric_best_model=target_metric_best_model)
+    
     fold_results['dict_k_fold_results']['config'] = get_obj_config()                                     
     tools.save_dict_k_fold_results(dict_k_fold_results=fold_results['dict_k_fold_results'],
                                    folder_path=run_folder_path)
+    model_advanced.free_gpu_memory()
+    del model_advanced
     # return fold_results
     # log_dict = {}
     # for k,v in inputs_dict.items():
