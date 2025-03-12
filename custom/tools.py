@@ -80,6 +80,24 @@ def save_dict_data(dict_data, saving_folder_path):
       print(f"Unsupported data type for key {key}: {type(value)}")
       # raise ValueError(f"Unsupported data type for key {key}: {type(value)}")
   print(f'Dictionary data saved to {saving_folder_path}')
+def is_dict_data(folder_path):
+  """
+  Check if the specified folder contains dictionary data.
+
+  Args:
+    folder_path (str): Path to check for dictionary data.
+
+  Returns:
+    bool: True if the folder contains dictionary data, False otherwise.
+  """
+  list_target_files = ['features.pt','list_frames.pt','list_labels.pt','list_path.npy','list_subject_id.pt','list_sample_id.pt']
+  list_files = os.listdir(folder_path)
+  if len(list_files) != len(list_target_files):
+    return False
+  for file in list_files:
+    if file not in list_target_files:
+      return False
+  return True
 
 def load_dict_data(saving_folder_path):
   """
