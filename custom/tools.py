@@ -16,6 +16,8 @@ import time
 from custom.faceExtractor import FaceExtractor
 from tqdm import tqdm
 import pickle
+from sklearn.metrics import silhouette_score, davies_bouldin_score
+from scipy.spatial.distance import pdist, squareform
 # if os.name == 'posix':
   # from tsnecuda import TSNE as cudaTSNE # available only on Linux
 # else:
@@ -99,15 +101,16 @@ def load_dict_data(saving_folder_path):
       print(f"Unsupported file format: {file}")
   return dict_data
 
-def plot_mae_per_class(unique_classes, mae_per_class, title='', count_classes=None, saving_path=None):
+def plot_error_per_class(unique_classes, mae_per_class, criterion,title='', count_classes=None, saving_path=None,y_lim=None):
   """ Plot Mean Absolute Error per class. """
-  print(f'MAE_PER_CLASS {title}: {mae_per_class}')
   plt.figure(figsize=(10, 5))
-  plt.bar(unique_classes, mae_per_class, color='blue', width=0.4, label='MAE per Class')
+  if y_lim:
+    plt.ylim(0,y_lim)
+  plt.bar(unique_classes, mae_per_class, color='blue', width=0.8, label='MAE per Class',edgecolor='black')
   plt.xlabel('Class')
-  plt.ylabel('Mean Absolute Error')
+  plt.ylabel(f'{criterion}')
   plt.xticks(unique_classes)  # Show each element in x-axis
-  plt.title(f'Mean Absolute Error per Class {title}')
+  plt.title(f'{criterion} per Class {title}')
   
   if count_classes is not None:
     for cls,count in count_classes.items():
@@ -232,32 +235,34 @@ def plot_accuracy_confusion_matrix(confusion_matricies, type_conf,title='', savi
     # else:
     #   plt.show()
 
-def plot_mae_per_subject(uniqie_subject_ids, mae_per_subject,title='', count_subjects=None, saving_path=None):
+def plot_error_per_subject(uniqie_subject_ids, criterion,mae_per_subject,title='', count_subjects=None, saving_path=None,y_lim=None):
   """ Plot Mean Absolute Error per participant. """
   plt.figure(figsize=(15, 5))
-  plt.bar(uniqie_subject_ids, mae_per_subject,width=1.5, color='green')
+  if y_lim:
+    plt.ylim(0,y_lim)
+  str_uniqie_subject_ids = [str(id) for id in uniqie_subject_ids]
+  plt.bar(str_uniqie_subject_ids, mae_per_subject,width=0.8, color='green', edgecolor='black')
   plt.xlabel('Participant')
-  plt.ylabel('Mean Absolute Error')
-  plt.title(f'Mean Absolute Error per Participant, {title}')
+  plt.ylabel(f'{criterion}')
+  plt.title(f'{criterion} per Participant -- {title}')
   plt.xticks(fontsize=11,rotation=45)
-  filter_elements = np.array([True if mae > 0.0 else False for mae in mae_per_subject])
-  plt.xticks(uniqie_subject_ids[filter_elements])  # Show each element in x-axis
+  # filter_elements = np.array([True if mae >= 0.0 else False for mae in mae_per_subject])
+  # plt.xticks(uniqie_subject_ids[filter_elements])  # Show each element in x-axis
   if count_subjects is not None:
     for id,count in count_subjects.items():
       idx = np.where(id == uniqie_subject_ids)[0]
-      plt.text(uniqie_subject_ids[idx], mae_per_subject[idx], str(count), ha='center', va='bottom')
+      plt.text(str(uniqie_subject_ids[idx]), mae_per_subject[idx], str(count), ha='center', va='bottom')
   if saving_path is not None:
     plt.savefig(saving_path)
-    print(f'Plot MAE per subject saved to {saving_path}.png')
   else:
     plt.show()
   plt.close()
 
-def plot_losses(train_losses, test_losses, saving_path=None):
+def plot_losses(train_losses, val_losses, saving_path=None):
   plt.figure(figsize=(10, 5))
   plt.yticks(fontsize=12)
   plt.plot(train_losses, label='Training Loss')
-  plt.plot(test_losses, label='Val Loss')
+  plt.plot(val_losses, label='Val Loss')
   plt.xlabel('Epochs')
   plt.ylabel('Loss')
   plt.title('Training and Val Losses over Epochs')
@@ -410,29 +415,38 @@ def read_split_indices(folder_path):
     split_indices = json.load(f)
   return split_indices
 
-def generate_plot_train_test_results(dict_results,best_model_idx, count_y_train, count_y_test, count_subject_ids_train, count_subject_ids_test, saving_path):  
+def generate_plot_train_val_results(dict_results,best_model_idx, count_y_train, count_y_test, count_subject_ids_train, count_subject_ids_test, saving_path,criterion):  
   saving_path_losses = os.path.join(saving_path, 'losses')
   if not os.path.exists(saving_path_losses):
     os.makedirs(saving_path_losses)
   print(f'saving_path_losses: {saving_path_losses}')
-  plot_mae_per_class(title='training', 
+  plot_error_per_class(title='training', 
                      mae_per_class=dict_results['train_loss_per_class'][best_model_idx], 
                      unique_classes=dict_results['y_unique'], count_classes=count_y_train,
+                     criterion=criterion,
                      saving_path=os.path.join(saving_path_losses,f'train_mae_per_class_{best_model_idx}.png'))
-  plot_mae_per_class(title='val',
+  plot_error_per_class(title='val',
                      mae_per_class=dict_results['val_loss_per_class'][best_model_idx], 
                      unique_classes=dict_results['y_unique'], count_classes=count_y_test,
+                     criterion=criterion,
                      saving_path=os.path.join(saving_path_losses,f'val_mae_per_class_{best_model_idx}.png'))
-  
-  plot_mae_per_subject(title='training', 
+  if dict_results['train_loss_per_subject'][best_model_idx].shape != dict_results['train_unique_subject_ids'].shape:
+    uniqie_subject_ids_train = dict_results['subject_ids_unique']
+    uniqie_subject_ids_val = dict_results['subject_ids_unique']
+  else:
+    uniqie_subject_ids_train = dict_results['train_unique_subject_ids']
+    uniqie_subject_ids_val = dict_results['val_unique_subject_ids']    
+  plot_error_per_subject(title='training', 
                        mae_per_subject=dict_results['train_loss_per_subject'][best_model_idx], 
-                       uniqie_subject_ids=dict_results['subject_ids_unique'],
+                       uniqie_subject_ids=uniqie_subject_ids_train,
                        count_subjects=count_subject_ids_train,
+                       criterion=criterion,
                        saving_path=os.path.join(saving_path_losses,f'train_mae_per_subject_{best_model_idx}.png'))
-  plot_mae_per_subject(title='val',
+  plot_error_per_subject(title='val',
                        mae_per_subject=dict_results['val_loss_per_subject'][best_model_idx], 
-                       uniqie_subject_ids=dict_results['subject_ids_unique'],
+                       uniqie_subject_ids=uniqie_subject_ids_val,
                        count_subjects=count_subject_ids_test,
+                       criterion=criterion,
                        saving_path=os.path.join(saving_path_losses,f'val_mae_per_subject_{best_model_idx}.png'))
   
   plot_losses(dict_results['train_losses'], dict_results['val_losses'], saving_path=os.path.join(saving_path_losses,'train_val_loss.png'))
@@ -629,8 +643,8 @@ def compute_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=Fals
   perplexity = min(20, X.shape[0]-1)
   print('Using CPU')
   tsne = openTSNE(n_components=tsne_n_component, perplexity=perplexity, random_state=42, n_jobs = 1)
-
-  X_cpu = X.detach().cpu().squeeze()
+  if isinstance(X, torch.Tensor):
+    X_cpu = X.detach().cpu().squeeze()
   X_cpu = X_cpu.reshape(X_cpu.shape[0], -1)
   # apply PCA from scikit-learn to reduce the dimensionality of the data
   if apply_pca_before_tsne:
@@ -678,7 +692,7 @@ def compute_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=Fals
   # print(f' labels shape: {labels.shape}')
 
 
-def plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', title='', 
+def plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', title='', cluster_measure='', 
               saving_path=None, axis_scale=None, last_point_bigger=False, plot_trajectory=False, 
               stride_windows=None,clip_length=None,list_axis_name=None,ax=False,return_ax=False):
   unique_labels = np.unique(labels)
@@ -690,58 +704,38 @@ def plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', t
   sizes = None
   if not return_ax:
     fig = plt.figure(figsize=(10, 8))
+
   
-  # Check if data is 3D or 2D
-  if X_tsne.shape[1] == 3:  # 3D case
-    ax = fig.add_subplot(111, projection='3d')
-    if axis_scale is not None:
-      ax.set_xlim(axis_scale['min_x'], axis_scale['max_x'])
-      ax.set_ylim(axis_scale['min_y'], axis_scale['max_y'])
-      ax.set_zlim(axis_scale['min_z'], axis_scale['max_z'])
-    for val in unique_labels:
-      idx = np.array(labels == val)
-      label = f'{legend_label} {val}'
-      if clip_length is not None and stride_windows is not None and legend_label == 'clip':
-        label = f'{legend_label} [{stride_windows * val}, {clip_length + stride_windows * (val) - 1}]'
-      ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], X_tsne[idx, 2], color=color_dict[val], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
-    if plot_trajectory:
-      ax.plot(X_tsne[:, 0], X_tsne[:, 1], X_tsne[:, 2], linestyle='--', color=color_dict[0], label='Trajectory', alpha=0.7)
-    if list_axis_name is not None:
-      ax.set_xlabel(list_axis_name[0])
-      ax.set_ylabel(list_axis_name[1])
-      ax.set_zlabel(list_axis_name[2])
+  if not return_ax:
+    ax = fig.add_subplot(111)
+  if axis_scale is not None:
+    ax.set_xlim(axis_scale['min_x'], axis_scale['max_x'])
+    ax.set_ylim(axis_scale['min_y'], axis_scale['max_y'])
+  if last_point_bigger:
+    sizes = [50] * (X_tsne.shape[0] - 1) + [200]
+    sizes = np.array(sizes)
+  for val in unique_labels:
+    idx = np.array(labels == val)
+    if clip_length is not None and legend_label == 'clip':
+      
+      idx_color = 0 if stride_windows*val < 48 else max(color_dict.keys())
+      label = f'{legend_label} [{stride_windows * val}, {clip_length + stride_windows * (val) - 1}] ({cluster_measure[idx_color]:.2f})' if cluster_measure != '' and idx_color < len(cluster_measure) else f'{legend_label} [{stride_windows * val}, {clip_length + stride_windows * (val) - 1}]'
+      ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[idx_color], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
     else:
-      ax.set_xlabel('t-SNE Component 1')
-      ax.set_ylabel('t-SNE Component 2')
-      ax.set_zlabel('t-SNE Component 3')
-  
-  else:  # 2D case
-    if not return_ax:
-      ax = fig.add_subplot(111)
-    if axis_scale is not None:
-      ax.set_xlim(axis_scale['min_x'], axis_scale['max_x'])
-      ax.set_ylim(axis_scale['min_y'], axis_scale['max_y'])
-    if last_point_bigger:
-      sizes = [50] * (X_tsne.shape[0] - 1) + [200]
-      sizes = np.array(sizes)
-    for val in unique_labels:
-      idx = np.array(labels == val)
-      label = f'{legend_label} {val}'
-      if clip_length is not None and legend_label == 'clip':
-        label = f'{legend_label} [{stride_windows * val}, {clip_length + stride_windows * (val) - 1}]'
-        ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[0 if stride_windows*val < 48 else max(color_dict.keys())], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
-      else:
-        ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[val], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
-    if plot_trajectory:
-      ax.plot(X_tsne[:, 0], X_tsne[:, 1], linestyle='--', color=color_dict[0], label='Trajectory', alpha=0.7)
-    if list_axis_name is not None:
-      ax.set_xlabel(list_axis_name[0])
-      ax.set_ylabel(list_axis_name[1])
-    else:
-      ax.set_xlabel('t-SNE Component 1')
-      ax.set_ylabel('t-SNE Component 2')
+      label = f'{legend_label} {val} ({cluster_measure[val]:.2f})' if cluster_measure != '' else f'{legend_label} {val}'
+      ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[val], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
+  if plot_trajectory:
+    ax.plot(X_tsne[:, 0], X_tsne[:, 1], linestyle='--', color=color_dict[0], label='Trajectory', alpha=0.7)
+  if list_axis_name is not None:
+    ax.set_xlabel(list_axis_name[0])
+    ax.set_ylabel(list_axis_name[1])
+  else:
+    ax.set_xlabel('t-SNE Component 1')
+    ax.set_ylabel('t-SNE Component 2')
   
   ax.legend()
+  # add another legend
+  
   ax.set_title(f'{title} (Colored by {legend_label})')
   
   if not return_ax:
@@ -759,6 +753,7 @@ def plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', t
   else:
     print(f'Saving plot to {saving_path}')
     if saving_path[-4:] != '.png':
+      os.makedirs(saving_path, exist_ok=True)
       pth = os.path.join(saving_path, f'{title}_{legend_label}.png')
     else:
       pth = saving_path
@@ -766,9 +761,10 @@ def plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', t
     print(f'Plot saved to {pth}')
     return pth
 
-def get_list_video_path_from_csv(csv_path, cols_csv_idx=[1,5], union_segment='_'):
+def get_list_video_path_from_csv(csv_path, cols_csv_idx=[1,5], video_folder_path=None):
   list_samples,_ = get_array_from_csv(csv_path) # subject_id, subject_name, class_id, class_name, sample_id, sample_name
-  video_folder_path = os.path.join('partA','video','video')
+  if video_folder_path is None:
+    video_folder_path = os.path.join('partA','video','video')
   list_video_path = []
   for sample in list_samples:
     # sample_video = union_segment.join(sample[cols_csv_idx])
@@ -1046,7 +1042,7 @@ def plot_macro_accuracy(list_train_accuracy,list_val_accurcay, title, x_label, y
   
 def plot_bar(data, title, x_label, y_label, saving_path=None):
   fig, ax = plt.subplots()
-  ax.bar(data.keys(), data.values())
+  ax.bar(data.keys(), data.values(), color='blue', width=0.8, label='Error per Class',edgecolor='black',align='center')
   ax.set_xlabel(x_label)
   ax.set_ylabel(y_label)
   ax.set_title(title)
@@ -1062,7 +1058,10 @@ def subplot_loss(dict_losses,x_label,y_label,list_title, saving_path=None):
   fig, ax = plt.subplots(len(dict_losses),1, figsize=(20, 20))
   i = 0
   for k,v in dict_losses.items():
-    ax[i].bar(range(len(v)), v)
+    # if v['loss'].shape != v['elements'].shape:
+    #   v['loss'] = v['loss'][:v['elements'].shape[0]]
+    elements = [str(i) for i in v['elements']]
+    ax[i].bar(elements,v['loss'], color='blue', width=0.8, label='Error per Class',edgecolor='black',align='center')
     ax[i].set_xlabel(x_label)
     ax[i].set_ylabel(y_label)
     ax[i].set_title(list_title[i])
@@ -1104,11 +1103,50 @@ def convert_split_indices_to_video_path(path_split_indices_folder,
     unique_path = np.unique(dict_all_features['list_path'][mask])
     list_path.append(unique_path[0])
   return list_path
-  
+def calculate_wcss(embeddings, labels):
+  """Within-Cluster Sum of Squares implementation"""
+  clusters = np.unique(labels)
+  wcss = 0
+  for cluster in clusters:
+    cluster_points = embeddings[labels == cluster]
+    centroid = np.mean(cluster_points, axis=0)
+    wcss += np.sum((cluster_points - centroid)**2)
+  return wcss
+
+def pairwise_distance(embeddings, labels):
+  """Mean intra-cluster distance calculation"""
+  clusters = np.unique(labels)
+  avg_distances = {}
+  for cluster in clusters:
+    cluster_points = embeddings[labels == cluster]
+    if len(cluster_points) > 1:
+        distances = pdist(cluster_points)
+        avg_distances[cluster] = np.mean(distances)
+  return avg_distances
+
+def cluster_radius(embeddings, labels):
+  """Maximum distance from centroid implementation"""
+  clusters = np.unique(labels)
+  radii = {}
+  for cluster in clusters:
+    cluster_points = embeddings[labels == cluster]
+    centroid = np.mean(cluster_points, axis=0)
+    distances = np.linalg.norm(cluster_points - centroid, axis=1)
+    radii[cluster] = np.max(distances)
+    
+  return radii
+
+# Built-in metrics from scikit-learn
+def get_silhouette_score(embeddings, labels):
+    return silhouette_score(embeddings, labels)
+
+def get_davies_bouldin_index(embeddings, labels):
+    return davies_bouldin_score(embeddings, labels)
+    
 # TODO: select the right stride window for each video when read data from SSD
 def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subject_id_list,clip_list,class_list,sliding_windows,legend_label,create_video=True,
                             plot_only_sample_id_list=None,tsne_n_component=2,plot_third_dim_time=False,apply_pca_before_tsne=False,cmap='copper',
-                            sort_elements=True,axis_dict=None):
+                            sort_elements=True,axis_dict=None,feat_mean=False,csv_path=None):
 
   dict_all_features = load_dict_data(folder_path_features)
   # print(dict_all_features.keys())
@@ -1134,11 +1172,21 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
   list_feature = []
   list_idx_list_frames = []
   list_y_gt = []
-
+  csv_array,_ = get_array_from_csv(csv_path)
+  if csv_path:
+    sample_id_csv = csv_array[:,4].astype(int)
+    filter_sample_csv = np.any([dict_all_features['list_sample_id'] == id for id in sample_id_csv],axis=0)
+    print(f'kept {np.sum(filter_sample_csv)} over {len(filter_sample_csv)} samples')
+    print(f'Missing video: {np.unique(dict_all_features["list_sample_id"][~filter_sample_csv]).shape[0]}')
+    filter_idx = np.logical_and(filter_idx, filter_sample_csv)
+    
   list_frames=dict_all_features['list_frames'][filter_idx]
   list_sample_id=dict_all_features['list_sample_id'][filter_idx]
   list_video_path=dict_all_features['list_path'][filter_idx]
-  list_feature=dict_all_features['features'][filter_idx]
+  if feat_mean:
+    list_feature=torch.mean(dict_all_features['features'][filter_idx],dim=1,keepdim=True)
+  else:
+    list_feature=dict_all_features['features'][filter_idx]
   # print(f'length list_feature {len(list_feature)}')
   list_y_gt=dict_all_features['list_labels'][filter_idx]
   list_subject_id=dict_all_features['list_subject_id'][filter_idx]
@@ -1276,7 +1324,7 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
     # for i in range(len(list_image_path)):
     #   remove_plot(list_image_path[i])
     
-def plot_loss_and_precision_details(dict_train, train_folder_path, total_epochs):
+def plot_loss_and_precision_details(dict_train, train_folder_path, total_epochs,criterion):
   """
   Generate and save plots of the training and test results, and confusion matrices for each epoch.
   Parameters:
@@ -1290,12 +1338,13 @@ def plot_loss_and_precision_details(dict_train, train_folder_path, total_epochs)
   #                   saving_path=os.path.join(train_folder_path,'train_test_losses'))
   
 
-  generate_plot_train_test_results(dict_results=dict_train['dict_results'], 
+  generate_plot_train_val_results(dict_results=dict_train['dict_results'], 
                                 count_subject_ids_train=dict_train['count_subject_ids_train'],
                                 count_subject_ids_test=dict_train['count_subject_ids_test'],
                                 count_y_test=dict_train['count_y_test'], 
                                 count_y_train=dict_train['count_y_train'],
                                 saving_path=train_folder_path,
+                                criterion=criterion,
                                 best_model_idx=dict_train['dict_results']['best_model_idx'])
   
   # Plot and save confusion matrices for each epoch
@@ -1383,3 +1432,22 @@ def plot_dataset_distribuition(csv_path,run_folder_path,per_class=True,per_parte
   #                                                   per_class=per_class, 
   #                                                   per_partecipant=per_partecipant, 
   #                                                   saving_path=dataset_folder_path) # 2 plots
+
+
+def compute_loss_per_class(criterion,unique_train_val_classes,batch_y,class_loss,outputs):
+  for cls in unique_train_val_classes:
+    mask = (batch_y == cls).reshape(-1)
+    if mask.any():
+      class_idx = np.where(unique_train_val_classes == cls)[0][0]
+      loss = criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
+      class_loss[class_idx] += loss
+      
+def compute_loss_per_subject(criterion,unique_train_val_subjects,batch_subjects,batch_y,subject_loss,outputs):
+  for subj in unique_train_val_subjects:
+    mask = (batch_subjects == subj).reshape(-1)
+    # if epoch == 0:
+    #   nr_samples_per_subject[subj] += mask.sum().item()
+    if mask.any():
+      subj_idx = np.where(unique_train_val_subjects == subj)[0][0]
+      subject_loss[subj_idx] += criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
+
