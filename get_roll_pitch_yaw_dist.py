@@ -157,8 +157,9 @@ def get_array_from_csv(csv_path):
 
 if __name__ == '__main__':
   # video_path = 'partA/video/video/112016_m_25/112016_m_25-BL1-081.mp4'
-  csv_path = os.path.join('partA','starting_point','samples.csv')
-  root_video_path = os.path.join('partA','video','video')
+  csv_path = os.path.join('partA','starting_point','samples_exc_no_detection.csv')
+  # root_video_path = os.path.join('partA','video','video')
+  root_video_path = "/media/villi/TOSHIBA EXT/orig_video/video/video"
   csv,_ = get_array_from_csv(csv_path)
   dict_results = {}
   mp_face_mesh = mp.solutions.face_mesh
@@ -180,24 +181,29 @@ if __name__ == '__main__':
                                                   mp_face_mesh=mp_face_mesh,
                                                   face_mesh=face_mesh,
                                                   show_video=False)
-      for k,v in dict_angles.items():
-        for angle in v.keys():
-          if k == 'roll':
-            dict_roll[angle] = dict_roll.get(angle,0) + v[angle]
-          elif k == 'pitch':
-            dict_pitch[angle] = dict_pitch.get(angle,0) + v[angle]
-          else:
-            dict_yaw[angle] = dict_yaw.get(angle,0) + v[angle]
+      dict_results[sample_name] = copy.deepcopy(dict_angles)
+      # for k,v in dict_angles.items():
+      #   for angle in v.keys():
+      #     if k == 'roll':
+      #       dict_roll[angle] = dict_roll.get(angle,0) + v[angle]
+      #     elif k == 'pitch':
+      #       dict_pitch[angle] = dict_pitch.get(angle,0) + v[angle]
+      #     else:
+      #       dict_yaw[angle] = dict_yaw.get(angle,0) + v[angle]
       if count % 10 == 0:
         print(f'{sbj_name} done {count} samples')
     end = time.time()
     
     print(f'{sbj_name} done in {end-start} seconds')
-    print(f'dict roll: {dict_roll}')
-    print(f'dict pitch: {dict_pitch}')
-    print(f'dict yaw: {dict_yaw}')
-    dict_results[sbj_name] = {'roll':copy.deepcopy(dict_roll),'pitch':copy.deepcopy(dict_pitch),'yaw':copy.deepcopy(dict_yaw)}
+    # print(f'dict roll: {dict_roll}')
+    # print(f'dict pitch: {dict_pitch}')
+    # print(f'dict yaw: {dict_yaw}')
+    # dict_results[sbj_name] = {'roll':copy.deepcopy(dict_roll),'pitch':copy.deepcopy(dict_pitch),'yaw':copy.deepcopy(dict_yaw)}
 
   print(f'current working directory: {os.getcwd()}')
-  save_results(dict_results,os.path.join('partA','video','roll_pitch_yaw_per_subject'))
+  with open(os.path.join('partA','video','roll_pitch_yaw_per_subject_all'),'wb') as f:
+    pickle.dump(dict_results,f)
+  print(f'All results saved in partA/video/roll_pitch_yaw_per_subject_all')
+  face_mesh.close()
+  # save_results(dict_results,os.path.join('partA','video','roll_pitch_yaw_per_subject_all'))
   
