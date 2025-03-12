@@ -8,32 +8,45 @@ import shutil
 import custom.tools as tools
 from torchmetrics.classification import MulticlassConfusionMatrix
 import tqdm
+from pathlib import Path
+
 def find_results_files(parent_folder):
   results_files = []
   list_history_folder = os.listdir(parent_folder)
   for folder in list_history_folder:
-    list_runs = os.listdir(os.path.join(parent_folder,folder))
-    for run in list_runs:
-      # check if os.path.join(parent_folder,folder,run) is a dir
-      if os.path.isdir(os.path.join(parent_folder,folder,run)):
-        pkl_files = [f for f in os.listdir(os.path.join(parent_folder,folder,run)) if f.endswith('.pkl')]
-        if len(pkl_files) == 1:
-          results_files.append(os.path.join(parent_folder,folder,run,pkl_files[0]))
+    # check if folder is a folder
+    if os.path.isdir(os.path.join(parent_folder,folder)):
+      list_runs = os.listdir(os.path.join(parent_folder,folder))
+      for run in list_runs:
+        # check if os.path.join(parent_folder,folder,run) is a dir
+        if os.path.isdir(os.path.join(parent_folder,folder,run)):
+          pkl_files = [f for f in os.listdir(os.path.join(parent_folder,folder,run)) if f.endswith('.pkl')]
+          if len(pkl_files) == 1:
+            results_files.append(os.path.join(parent_folder,folder,run,pkl_files[0]))
       
   return results_files
 
 def load_results(file_path):
   with open(file_path, 'rb') as f:
     return pickle.load(f)
+def retrieve_subject_ids(data,key,best_epoch):
+    # For retrocompatibility
+  if data[key]['train_loss_per_subject'][best_epoch].shape != data[key]['train_unique_subject_ids'].shape:
+    uniqie_subject_ids_train = data[key]['subject_ids_unique']
+    uniqie_subject_ids_val = data[key]['subject_ids_unique']
+  else:
+    uniqie_subject_ids_train = data[key]['train_unique_subject_ids']
+    uniqie_subject_ids_val = data[key]['val_unique_subject_ids'] 
+  return uniqie_subject_ids_train,uniqie_subject_ids_val
+    
 
-def plot_losses(data, run_output_folder,test_id):
+def plot_losses(data, run_output_folder,test_id,additional_info='',plot_mae_per_subject=False,plot_mae_per_class=False):
   os.makedirs(run_output_folder, exist_ok=True)
-
+  y_lim = 3
   for key in data.keys():
     if 'cross_val' in key and 'train_val' in key:
       train_losses = data[key].get('train_losses', [])
       val_losses = data[key].get('val_losses', [])
-
       if train_losses and val_losses:
         plt.figure()
         plt.ylim([0,5])
@@ -50,10 +63,62 @@ def plot_losses(data, run_output_folder,test_id):
         plt.title(f'Losses - {key}')
         plt.grid(True)
         plt.legend()
-        plt.savefig(os.path.join(run_output_folder, f'losses_{key}.png'),bbox_inches='tight')
+        plt.savefig(os.path.join(run_output_folder, f'{test_id}{additional_info}_losses_{key}.png'),bbox_inches='tight')
         plt.close()
+      if plot_mae_per_subject:
+        best_epoch = f"{data[key]['best_model_idx']}"
+        # For retrocompatibility
+        uniqie_subject_ids_train, uniqie_subject_ids_val = retrieve_subject_ids(data,key,best_epoch)
+        
+        tools.plot_error_per_subject(mae_per_subject=data[key]['train_loss_per_subject'][best_epoch],
+                                   uniqie_subject_ids=uniqie_subject_ids_train,                         
+                                   saving_path=os.path.join(run_output_folder, f'{test_id}{additional_info}_train_mae_per_subject_{key}.png'),
+                                   title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}  ',
+                                   criterion=data['config']['criterion'],
+                                   y_lim=y_lim)
+        tools.plot_error_per_subject(mae_per_subject=data[key]['val_loss_per_subject'][best_epoch],
+                                   uniqie_subject_ids=uniqie_subject_ids_val,                         
+                                   saving_path=os.path.join(run_output_folder, f'{test_id}{additional_info}_val_mae_per_subject_{key}.png'),
+                                   title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
+                                   criterion=data['config']['criterion'],
+                                   y_lim=y_lim)
+      if plot_mae_per_class:
+        best_epoch = f"{data[key]['best_model_idx']}"
+        tools.plot_error_per_class(unique_classes=data[key]['y_unique'],
+                                 mae_per_class=data[key]['train_loss_per_class'][best_epoch],
+                                 saving_path=os.path.join(run_output_folder, f'{test_id}{additional_info}_train_mae_per_class_{key}.png'),
+                                 title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
+                                 criterion=data['config']['criterion'],
+                                 y_lim=y_lim)
+        tools.plot_error_per_class(unique_classes=data[key]['y_unique'],
+                                 mae_per_class=data[key]['val_loss_per_class'][best_epoch],
+                                 saving_path=os.path.join(run_output_folder, f'{test_id}{additional_info}_val_mae_per_class_{key}.png'),
+                                 title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
+                                 criterion=data['config']['criterion'],
+                                 y_lim=y_lim)
+    
+    if (plot_mae_per_class or plot_mae_per_subject) and 'test' in key:
+      tools.plot_error_per_class(mae_per_class=data[key]['dict_test']['test_loss_per_class'],
+                              #  unique_classes=data[key]['y_unique'],
+                              #  unique_classes=np.arange(data[key]['dict_test']['test_loss_per_class'].shape[0]),
+                               unique_classes=data[key]['dict_test']['test_unique_y'],
+                               saving_path=os.path.join(run_output_folder, f'{test_id}{additional_info}_test_mae_per_class_{key}.png'),
+                               title=f'TEST {key} - {test_id}',
+                               criterion=data['config']['criterion'],
+                               y_lim=y_lim)
+      tools.plot_error_per_subject(mae_per_subject=data[key]['dict_test']['test_loss_per_subject'],
+                                  #  uniqie_subject_ids=np.arange(data[key]['dict_test']['test_loss_per_subject'].shape[0]),
+                                  uniqie_subject_ids=data[key]['dict_test']['test_unique_subject_ids'],                        
+                                   saving_path=os.path.join(run_output_folder, f'{test_id}{additional_info}_test_mae_per_subject_{key}.png'),
+                                   title=f'TEST {key} - {test_id}',
+                                   criterion=data['config']['criterion'],
+                                   y_lim=y_lim)
+        
+                                   
+      
+  
 
-def plot_accuracies(data, run_output_folder):
+def plot_accuracies(data, run_output_folder, test_id,additional_info=''):
   os.makedirs(run_output_folder, exist_ok=True)
 
   for key in data.keys():
@@ -69,13 +134,13 @@ def plot_accuracies(data, run_output_folder):
         plt.plot(val_acc, label='Val Macro Accuracy')
         plt.xlabel('Epochs')
         plt.ylabel('Macro Accuracy')
-        plt.title(f'Accuracy - {key}')
+        plt.title(f'Accuracy id:{test_id} key:{key}')
         plt.legend()
         plt.grid(True)
-        plt.savefig(os.path.join(run_output_folder, f'accuracy_{key}.png'))
+        plt.savefig(os.path.join(run_output_folder, f'{test_id}{additional_info}_accuracy_{key}.png'))
         plt.close()
 
-def plot_test_metrics(data, run_output_folder):
+def plot_test_metrics(data, run_output_folder, test_id,additional_info=''):
     # test_folder = os.path.basename(os.path.dirname(file))
   os.makedirs(run_output_folder, exist_ok=True)
 
@@ -99,7 +164,7 @@ def plot_test_metrics(data, run_output_folder):
 
     plt.figure()
     plt.bar(x - width/2, test_losses, width, label='Test Loss')
-    plt.bar(x + width/2, macro_precisions, width, label='Macro Precision')
+    plt.bar(x + width/2, macro_precisions, width, label='Test Macro Precision')
     plt.ylim([0,2])
     plt.yticks(np.arange(0, 2, 0.2))
     plt.xticks(x, labels, rotation=45, ha='right')
@@ -107,7 +172,7 @@ def plot_test_metrics(data, run_output_folder):
     plt.title('Test Loss and Macro Precision')
     plt.legend()
     plt.grid(True)
-    plt.savefig(os.path.join(run_output_folder, 'test_metrics_histogram.png'))
+    plt.savefig(os.path.join(run_output_folder, f'{test_id}{additional_info}_test_metrics_histogram.png'))
     plt.close()
 
 def convert_dict_to_string(d):
@@ -119,17 +184,6 @@ def filter_dict(d):
                      'sample_frame_strategy','head','stride_window_in_video','plot_dataset_distribution','clip_length','early_stopping']
   new_d = {k: v for k, v in d.items() if k not in keys_to_exclude}
   return new_d
-
-# def get_value_from_dict(d, root_name=''):
-#   result = []
-#   for k, v in d.items():
-#     if isinstance(v, dict):
-#       # If the value is a dictionary, recurse with the updated root_name
-#       result.append(get_value_from_dict(v, f'{root_name}.{k}' if root_name else k))
-#     else:
-#       # If it's not a dictionary, just append the key-value pair
-#       result.append(f'{root_name}.{k}: {v}' if root_name else f'{k}: {v}')
-#   return '\n'.join(result)
 
 def flatten_dict(d, root_name=''):
   result = {}
@@ -183,11 +237,14 @@ def generate_csv_row(data, test_id):
     
     # Extract model configuration parameters
     config = data['config']
-    head_params = flatten_dict({'GRU':config['head_params']})
+    head_type = config['head'].name
+    head_params = flatten_dict({f'{head_type}':config['head_params']})
     row_dict = {
         'test_id': test_id,
         'model': config['model_type'].name,
+        'head': head_type,
         'optimizer': config['optimizer_fn'],
+        'enable_scheduler': config['enable_scheduler'] if 'enable_scheduler' in config else 'ND',
         'learning_rate': config['lr'],
         'criterion': type(config['criterion']).__name__,
         'init_network': config['init_network'],
@@ -217,48 +274,50 @@ def generate_csv_row(data, test_id):
     
     return row_dict
 
-def plot_confusion_matrices(data, root_output_folder):
-  def plot_matrices(matrices,output_folder,stage):
+def plot_confusion_matrices(data, root_output_folder,test_id,additional_info=''):
+  def plot_matrices(matrices,output_folder,stage,folder_name,test_id):
     os.makedirs(output_folder, exist_ok=True)
     if isinstance(matrices, dict):
       for epoch,cnf in matrices.items():
         tools.plot_confusion_matrix(confusion_matrix=cnf,
                                     title=f'{stage}_epoch_{epoch}',
-                                    saving_path=os.path.join(output_folder,f'{stage}_epoch_{epoch}.png'))
+                                    saving_path=os.path.join(output_folder,f'{test_id}{additional_info}_{folder_name}_{stage}_epoch_{epoch}.png'))
     elif isinstance(matrices,MulticlassConfusionMatrix):
       tools.plot_confusion_matrix(confusion_matrix=matrices,
-                                  title='Confusion Matrix',
-                                  saving_path=os.path.join(output_folder,f'{stage}.png'))
+                                  title=f'Confusion Matrix {stage} - id:{test_id} - {additional_info}',
+                                  saving_path=os.path.join(output_folder,f'{test_id}{additional_info}_{folder_name}_{stage}.png'))
   
-  for k,v in data.items():
+  for k,v in data.items(): # k = 'k0_cross_val_sub_0_train_val', v = dict
     if 'cross_val' in k:
       dict_conf_matricies = v.get('train_confusion_matricies')
-      plot_matrices(matrices=dict_conf_matricies,output_folder=os.path.join(root_output_folder,k),stage='train')
+      plot_matrices(matrices=dict_conf_matricies,output_folder=root_output_folder,folder_name=k,test_id=test_id,stage='train')
       dict_conf_matricies = v.get('val_confusion_matricies')
-      plot_matrices(matrices=dict_conf_matricies,output_folder=os.path.join(root_output_folder,k),stage='val')
+      plot_matrices(matrices=dict_conf_matricies, output_folder=root_output_folder, folder_name=k,test_id=test_id, stage='val')
     elif 'test' in k:
       dict_conf_matricies = v['dict_test']['test_confusion_matrix']
-      plot_matrices(matrices=dict_conf_matricies,output_folder=os.path.join(root_output_folder,k),stage=f'test_using_subfolder_{v["best_model_subfolder_idx"]}')
-      
-def plot_run_details(parent_folder, output_root):
-  results_files = find_results_files(parent_folder)
-  results_data = {file: load_results(file) for file in results_files}
-  print(f'Loaded {len(results_data)} results files')
+      plot_matrices(matrices=dict_conf_matricies,output_folder=root_output_folder,folder_name=k,test_id=test_id,stage=f'test_using_subfolder_{v["best_model_subfolder_idx"]}')
 
-  list_row_csv = []
-  for file,data in tqdm.tqdm(results_data.items()):
-    test_folder = os.path.basename(os.path.dirname(file))
-    test_id = test_folder.split('_')[0]       
-    run_output_folder = os.path.join(output_root, test_folder)
-    list_row_csv.append(generate_csv_row(data,test_id))
-    # plot_losses(data, os.path.join(run_output_folder, 'loss_plots'),test_id)
-    # plot_accuracies(data, os.path.join(run_output_folder, 'accuracy_plots'))
-    # plot_test_metrics(data, os.path.join(run_output_folder, 'test_plots'))
-    # plot_confusion_matrices(data, os.path.join(run_output_folder, 'confusion_matrices'))
-    # print(f'Plots saved to {output_root}/{test_folder}')
-  df = pd.DataFrame(list_row_csv)
-  df = df.fillna('ND')
-  df.to_csv(os.path.join(output_root,'summary.csv'),index=False,)
+def get_best_result(data):
+  config = data['config']
+  target_metric_best_model = config['target_metric_best_model']
+  k_fold = config['k_fold']
+  best_fold = 0
+  for k in range(1,k_fold):
+    if target_metric_best_model=='val_loss':
+      if data[f'k{k}_test']['dict_test']['test_loss'] < data[f'k{best_fold}_test']['dict_test']['test_loss']:
+        best_fold = k
+    elif target_metric_best_model == 'val_macro_precision':
+      if data[f'k{k}_test']['dict_test']['test_macro_precision'] > data[f'k{best_fold}_test']['dict_test']['test_macro_precision']:
+        best_fold = k
+    else:
+      raise ValueError(f'Not implemented target metric {target_metric_best_model}')
+  best_sub_folder = data[f'k{best_fold}_test']['best_model_subfolder_idx']
+  dict_best_result = {f'k{best_fold}_cross_val_sub_{best_sub_folder}_train_val':data[f'k{best_fold}_cross_val_sub_{best_sub_folder}_train_val'],
+                      f'k{best_fold}_test':data[f'k{best_fold}_test'],
+                      'best_sub_folder':best_sub_folder,
+                      'best_fold':best_fold,
+                      'config':config}
+  return dict_best_result
 
 def collect_loss_plots(summary_folder, output_folder):
   """
@@ -289,12 +348,50 @@ def collect_loss_plots(summary_folder, output_folder):
 
   print(f"All loss plots collected in {output_folder}")
 
+  
+def plot_run_details(parent_folder, output_root):
+  results_files = find_results_files(parent_folder)
+  results_data = {file: load_results(file) for file in results_files}
+  print(f'Loaded {len(results_data)} results files')
+
+  list_row_csv = []
+  for file,data in tqdm.tqdm(results_data.items()):
+    test_folder = os.path.basename(os.path.dirname(file))
+    grid_search_folder = Path(file).parts[-3]
+    test_id = test_folder.split('_')[0]       
+    run_output_folder = os.path.join(output_root)
+    list_row_csv.append(generate_csv_row(data,test_id))
+    data_best = get_best_result(data)
+    data_wo_best = {k:v for k,v in data.items() if k != f'k{data_best["best_fold"]}_cross_val_sub_{data_best["best_sub_folder"]}_train_val' and k != f'k{data_best["best_fold"]}_test'}
+    
+    # Plot all {results - best}
+    plot_losses(data_wo_best, os.path.join(run_output_folder, grid_search_folder, 'loss_plots'),test_id)
+    plot_accuracies(data_wo_best, os.path.join(run_output_folder,grid_search_folder ,'accuracy_plots'),test_id)
+    plot_confusion_matrices(data_wo_best, os.path.join(run_output_folder,grid_search_folder,'confusion_matrices'),test_id)
+    
+    # Merged plots
+    plot_test_metrics(data, os.path.join(run_output_folder,grid_search_folder,'test_plots'),test_id)
+    
+    # Plot best (maybe it's better to plot the best in the grid_folder)
+    plot_losses(data_best, os.path.join(run_output_folder, grid_search_folder, 'loss_plots'),test_id,'_best',plot_mae_per_subject=True,plot_mae_per_class=True)
+    plot_accuracies(data_best, os.path.join(run_output_folder,grid_search_folder ,'accuracy_plots'),test_id,'_best')
+    plot_confusion_matrices(data_best, os.path.join(run_output_folder,grid_search_folder,'confusion_matrices'),test_id,'_best')
+    
+    # print(f'Plots saved to {output_root}/{test_folder}')
+  df = pd.DataFrame(list_row_csv)
+  df = df.fillna('ND')
+  if not os.path.exists(output_root):
+    os.makedirs(output_root, exist_ok=True)
+  df.to_csv(os.path.join(output_root,'summary.csv'),index=False,)
+  print(f'Summary CSV saved to {output_root}/summary.csv')
+  
+
 if __name__ == '__main__':
-  parent_folder = '/media/villi/TOSHIBA EXT/test_24_02_18'  # Change this to the actual path
-  output_root = '/media/villi/TOSHIBA EXT/test_24_02_18/new_summary'  # Change this to where you want the plots
+  parent_folder = '_test_attentive'  # Change this to the actual path
+  output_root = '_summary'  # Change this to where you want the plots
   if not os.path.exists(output_root):
     os.makedirs(output_root)
   plot_run_details(parent_folder, os.path.join(output_root,'plot_per_run'))
   losses_folder = os.path.join(output_root,'all_loss_plots')
   summary_folder = os.path.join(output_root,'plot_per_run')
-  collect_loss_plots(summary_folder, losses_folder)
+  # collect_loss_plots(summary_folder, losses_folder)
