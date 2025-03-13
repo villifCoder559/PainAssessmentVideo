@@ -52,7 +52,7 @@ def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_wor
                 batch_size=batch_size_feat_extraction,
                 shuffle=False,
                 num_workers=n_workers,
-                collate_fn=dataset._custom_collate_fn)
+                collate_fn=dataset._custom_collate_fn_extraction)
     backbone.model.to(device)
     backbone.model.eval()
     count = 0
@@ -96,8 +96,7 @@ def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_wor
               'list_frames': torch.cat(list_frames,dim=0)
             }
             dict_data_size = dict_data["features"].element_size()*dict_data["features"].nelement()/1024/1024
-            tools.save_dict_data(dict_data=dict_data,
-                      savinsaving_chunk_sizeg_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)))
+            tools.save_dict_data(dict_data=dict_data,saving_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)))
             _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(root_saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} with size {dict_data_size:.2f} MB \n time elapsed: {((end - start)//60//60):.0f} h {(((end - start)//60%60)):.0f} m {(((end - start)%60)):.0f} s\n')
           else:
             
