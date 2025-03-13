@@ -236,6 +236,8 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
                       init_network, regularization_loss, regularization_lambda,
                       key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state):
   """Train models on sub-folds"""
+  if not isinstance(model_advanced, Model_Advanced):
+    raise ValueError('model_advanced must be an instance of Model_Advanced')
   fold_results_kth = []
   
   for sub_idx in range(k_fold - 1):
@@ -255,7 +257,7 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
       lr=lr,
       num_epochs=epochs,
       optimizer_fn=optimizer_fn,
-      concatenate_temp_dim=concatenate_temp_dim,
+      concatenate_temporal=concatenate_temp_dim,
       criterion=criterion,
       saving_path=saving_path_kth_sub_fold,
       train_csv_path=sub_path_csv_kth_fold['train'],
@@ -538,7 +540,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   head=head.value,
                                   head_params=head_params,
                                   features_folder_saving_path= features_folder_saving_path,
-                                  clip_length=clip_length
+                                  clip_length=clip_length,
+                                  concatenate_temporal=concatenate_temp_dim,
                                   )
   
   # Check if the global folder exists 
