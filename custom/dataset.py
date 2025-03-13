@@ -13,6 +13,7 @@ from custom.helper import CUSTOM_DATASET_TYPE, SAMPLE_FRAME_STRATEGY
 import custom.tools as tools
 from sklearn.model_selection import StratifiedKFold
 from torch.utils.data import  Sampler
+
 import torchvision.transforms as T
 import custom.faceExtractor as extractor
 import pickle
@@ -262,6 +263,7 @@ class customDataset(torch.utils.data.Dataset):
       else:
         batch_preprocess = [self.__standard_getitem__(i) for i in idx]
         # batch_features = torch.cat([item['preprocess'] for item in batch_preprocess], dim=0) # For batch processing in backbone
+        # batch_features = self.backbone_dict['backbone'].forward_features(batch_features) # as above
         batch_features = torch.cat([self.backbone_dict['backbone'].forward_features(item['preprocess']) for item in batch_preprocess], dim=0)
         batch = []
         for i, item in enumerate(batch_preprocess):
@@ -270,8 +272,7 @@ class customDataset(torch.utils.data.Dataset):
             'labels': item['labels'],
             'subject_id': item['subject_id']
           })
-        self._custom_collate(batch, self.backbone_dict['instance_model_name'], 
-                                      self.backbone_dict['concatenate_temporal'], self.backbone_dict['model'])
+        return self._custom_collate(batch)
       
   
   def _read_video_cv2_and_process(self, container, list_indices, width_frames, height_frames):

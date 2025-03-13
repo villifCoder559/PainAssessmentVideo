@@ -9,6 +9,7 @@ import os
 from custom.helper import CUSTOM_DATASET_TYPE
 import torch.nn.init as init
 from custom.dataset import customSampler
+from torch.nn.utils.rnn import pack_padded_sequence,pack_padded_sequence
 from custom.dataset import get_dataset_and_loader
 import tqdm
 import copy
@@ -311,7 +312,7 @@ class GRUProbe(nn.Module):
       out_padded = packed_out
       list_length = torch.tensor([x.shape[1]]*x.shape[0])
     else:
-      out_padded,list_length = pad_packed_sequence(packed_out, batch_first=True)
+      out_padded,list_length = torch.nn.utils.rnn.pad_packed_sequence(packed_out, batch_first=True)
 
     last_hidden_layer = out_padded[torch.arange(out_padded.shape[0]), list_length-1] # [1, hidden_size]
     if self.pred_only_last_time_step:
