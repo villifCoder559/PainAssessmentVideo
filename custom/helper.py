@@ -23,6 +23,11 @@ class EMBEDDING_REDUCTION(Enum):
   MEAN_TEMPORAL_SPATIAL = (1,2,3)
   NONE = None
   
+class INSTANCE_MODEL_NAME(Enum): # model.__class__.__name__
+  LINEARPROBE = 'LinearProbe'
+  GRUPROBE = 'GRUProbe'
+  ATTENTIVEPROBE = 'AttentiveProbe'
+  
 class CLIPS_REDUCTION(Enum): 
   # [B,t,p,p,emb] -> [1,t,p,p,emb] ex: [3,8,14,14,768] -> [1,8,14,14,768]
   MEAN = (0)
@@ -39,6 +44,7 @@ class GLOBAL_PATH:
 class CUSTOM_DATASET_TYPE(Enum):
   AGGREGATED = 'aggregated' # features reduced (spatial reduction) and saved in one folder 
   WHOLE = 'whole' # features not reduced and saved in more folders (like Biovid video)
+  BASE = 'base' # video->frames->backbone->features
 class CSV:
   sort_cols = [
                 'k_fold', 
