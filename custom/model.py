@@ -1,34 +1,18 @@
-from matplotlib.ticker import MaxNLocator
 import torch
-from custom.backbone import video_backbone, vit_image_backbone
-# from custom.neck import neck
-from custom.dataset import customDataset, customDatasetWhole
-from sklearn.svm import SVR
-from sklearn.model_selection import GroupShuffleSplit, cross_val_score, KFold
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score, mean_absolute_error as mea
+from custom.backbone import VideoBackbone, VitImageBackbone
+from custom.dataset import customDataset
 import numpy as np
-from torch.utils.data import DataLoader
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
 import custom.tools as tools
-import torch.nn as nn
-import torch.optim as optim
+from custom.dataset import get_dataset_and_loader
 from custom.head import LinearHead, GRUHead, AttentiveHead
-import os
-import json
-from sklearn.manifold import TSNE
-from torchmetrics.classification import ConfusionMatrix
-import time
 from custom.helper import CUSTOM_DATASET_TYPE, MODEL_TYPE
 # import wandb
-# from tsnecuda import TSNE as cudaTSNE # available only on Linux
 
 class Model_Advanced: # Scenario_Advanced
   def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,
               path_labels, sample_frame_strategy, head, head_params,
               batch_size_training,stride_window,clip_length,
-              features_folder_saving_path):
+              features_folder_saving_path,concatenate_temporal):
     """
     Initialize the custom model. 
     Parameters:
@@ -46,9 +30,9 @@ class Model_Advanced: # Scenario_Advanced
 
     """
     if model_type != MODEL_TYPE.ViT_image:
-      self.backbone = video_backbone(model_type)
+      self.backbone = VideoBackbone(model_type)
     else:
-      self.backbone = vit_image_backbone()
+      self.backbone = VitImageBackbone()
     
     self.dataset = customDataset(path_dataset=path_dataset, 
                                  path_labels=path_labels, 
@@ -65,9 +49,20 @@ class Model_Advanced: # Scenario_Advanced
       self.head = AttentiveHead(**head_params)
     elif head == 'LINEAR':
       self.head = LinearHead(**head_params)
+      
+    self.concatenate_temporal = concatenate_temporal
     self.path_to_extracted_features = features_folder_saving_path
-    self.dataset_type = CUSTOM_DATASET_TYPE.AGGREGATED if tools.is_dict_data(self.path_to_extracted_features) else CUSTOM_DATASET_TYPE.WHOLE
-    
+    self.dataset_type = tools.get_dataset_type(self.path_to_extracted_features)
+    if self.dataset_type == CUSTOM_DATASET_TYPE.BASE:
+      self.backbone_dict = {
+        'backbone': self.backbone,
+        'instance_model_name': tools.get_instace_model_name(self.head.model),
+        'model': self.head.model,
+        'concatenate_temporal': self.concatenate_temporal
+      }
+    else:
+      self.backbone_dict = None
+      
   def test_pretrained_model(self,path_model_weights, csv_path, criterion, concatenate_temporal,is_test):
     """
     Evaluate the model using the specified dataset.
@@ -86,13 +81,15 @@ class Model_Advanced: # Scenario_Advanced
     if not is_test:
       raise Exception('Set is_test to True. Currently this function is only for testing.')
     self.head.load_state_weights(path=path_model_weights)
-    test_dataset, test_loader = self.head.get_dataset_and_loader(csv_path=csv_path,
-                                                                 batch_size=self.batch_size_training,
-                                                                 concatenate_temporal=concatenate_temporal,
-                                                                 dataset_type=self.dataset_type,
-                                                                 is_training=False,
-                                                                 root_folder_features=self.path_to_extracted_features,
-                                                                 shuffle_training_batch=False,
+    test_dataset, test_loader = get_dataset_and_loader(csv_path=csv_path,
+                                                        batch_size=self.batch_size_training,
+                                                        concatenate_temporal=concatenate_temporal,
+                                                        dataset_type=self.dataset_type,
+                                                        is_training=False,
+                                                        root_folder_features=self.path_to_extracted_features,
+                                                        shuffle_training_batch=False,
+                                                        backbone_dict=self.backbone_dict,
+                                                        model=self.head.model
                                                                  )
     unique_test_subjects = test_dataset.get_unique_subjects()
     unique_classes = np.array(list(range(self.head.model.num_classes)))
@@ -107,13 +104,14 @@ class Model_Advanced: # Scenario_Advanced
   
   def free_gpu_memory(self):
     self.head.model.to('cpu')
+    self.backbone.model.to('cpu')
     torch.cuda.empty_cache()
     
   def train(self, train_csv_path, val_csv_path, num_epochs, criterion,
             optimizer_fn, lr,saving_path,round_output_loss,
             shuffle_training_batch,init_network,
             regularization_loss,regularization_lambda,key_for_early_stopping,early_stopping,
-            enable_scheduler,concatenate_temp_dim
+            enable_scheduler,concatenate_temporal
             ):
     """
     Train the model using the specified training and testing datasets.
@@ -151,7 +149,7 @@ class Model_Advanced: # Scenario_Advanced
                                           criterion=criterion,
                                           optimizer=optimizer_fn,
                                           lr=lr,
-                                          concatenate_temp_dim=concatenate_temp_dim,
+                                          concatenate_temp_dim=concatenate_temporal,
                                           early_stopping=early_stopping,
                                           key_for_early_stopping=key_for_early_stopping,
                                           enable_scheduler=enable_scheduler,
@@ -165,7 +163,8 @@ class Model_Advanced: # Scenario_Advanced
                                           root_folder_features=self.path_to_extracted_features,
                                           round_output_loss=round_output_loss,
                                           shuffle_training_batch=shuffle_training_batch,
-                                          val_csv_path=val_csv_path)
+                                          val_csv_path=val_csv_path,
+                                          backbone_dict=self.backbone_dict)
     return {'dict_results':dict_results, 
               'count_y_train':count_y_train, 
               'count_y_test':count_y_val,
