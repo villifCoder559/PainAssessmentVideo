@@ -3,8 +3,7 @@ import numpy as np
 from sklearn.model_selection import GroupShuffleSplit
 import os
 import pandas as pd
-from torchmetrics.classification import ConfusionMatrix, MulticlassConfusionMatrix
-from sklearn.manifold import TSNE
+from torchmetrics.classification import  MulticlassConfusionMatrix
 from sklearn.decomposition import PCA
 from matplotlib.ticker import MaxNLocator
 import cv2
@@ -13,15 +12,12 @@ import torch
 import json
 from openTSNE import TSNE as openTSNE
 import time
-from custom.faceExtractor import FaceExtractor
 from tqdm import tqdm
 import pickle
 from sklearn.metrics import silhouette_score, davies_bouldin_score
-from scipy.spatial.distance import pdist, squareform
-# if os.name == 'posix':
-  # from tsnecuda import TSNE as cudaTSNE # available only on Linux
-# else:
-  # print('tsnecuda available only on Linux')
+from scipy.spatial.distance import pdist
+from custom.helper import CUSTOM_DATASET_TYPE,INSTANCE_MODEL_NAME
+
 
 class NpEncoder(json.JSONEncoder):
   def default(self, obj):
@@ -80,6 +76,30 @@ def save_dict_data(dict_data, saving_folder_path):
       print(f"Unsupported data type for key {key}: {type(value)}")
       # raise ValueError(f"Unsupported data type for key {key}: {type(value)}")
   print(f'Dictionary data saved to {saving_folder_path}')
+
+def get_dataset_type(folder_path):
+  if is_dict_data(folder_path=folder_path):
+    return CUSTOM_DATASET_TYPE.AGGREGATED
+  elif is_whole_data(folder_path=folder_path):
+    return CUSTOM_DATASET_TYPE.WHOLE
+  else:
+    return CUSTOM_DATASET_TYPE.BASE
+
+def is_whole_data(folder_path):
+  list_subjects = os.listdir(folder_path)
+  for subject in list_subjects:
+    if os.path.isdir(os.path.join(folder_path, subject)):
+      list_video_features = os.listdir(os.path.join(folder_path, subject))
+      for folder_feature in list_video_features:
+        folder_path = os.path.join(folder_path, subject, folder_feature)
+        if not os.path.isdir(folder_path) and folder_feature.endswith('.mp4'):
+          return False
+        folder_files = os.listdir(folder_path)
+        for video_feature in folder_files:
+          if video_feature.endswith('.pt') or video_feature.endswith('.npy'):
+            return True
+          else:
+            raise ValueError(f"Unsupported file format: {video_feature}")
 def is_dict_data(folder_path):
   """
   Check if the specified folder contains dictionary data.
@@ -98,6 +118,13 @@ def is_dict_data(folder_path):
     if file not in list_target_files:
       return False
   return True
+
+def get_instace_model_name(model):
+  model_name = model.__class__.__name__
+  for key in INSTANCE_MODEL_NAME:
+    if model_name == key.value:
+      return key
+  raise ValueError(f'Instance model name not found for {model_name}')
 
 def load_dict_data(saving_folder_path):
   """
@@ -239,19 +266,6 @@ def plot_accuracy_confusion_matrix(confusion_matricies, type_conf,title='', savi
     else:
       plt.show()
     plt.close()
-    #Plot test results  
-    # plt.figure(figsize=(10, 5))
-    # plt.plot(test_list_key_values, label=labels_test)
-    # plt.xlabel('Epochs')
-    # plt.ylabel(key)
-    # plt.title(f'test_{key} over Epochs {title}')
-    # plt.legend()
-    # if saving_path is not None:
-    #   path=os.path.join(saving_path,f'test_{key}.png')
-    #   plt.savefig(path)
-    #   print(f'Plot {key} over Epochs {title} saved to {path}.png')
-    # else:
-    #   plt.show()
 
 def plot_error_per_subject(uniqie_subject_ids, criterion,mae_per_subject,title='', count_subjects=None, saving_path=None,y_lim=None):
   """ Plot Mean Absolute Error per participant. """
@@ -264,8 +278,6 @@ def plot_error_per_subject(uniqie_subject_ids, criterion,mae_per_subject,title='
   plt.ylabel(f'{criterion}')
   plt.title(f'{criterion} per Participant -- {title}')
   plt.xticks(fontsize=11,rotation=45)
-  # filter_elements = np.array([True if mae >= 0.0 else False for mae in mae_per_subject])
-  # plt.xticks(uniqie_subject_ids[filter_elements])  # Show each element in x-axis
   if count_subjects is not None:
     for id,count in count_subjects.items():
       idx = np.where(id == uniqie_subject_ids)[0]
@@ -1287,61 +1299,7 @@ def plot_and_generate_video(folder_path_features,folder_path_tsne_results,subjec
     'list_axis_name':list_axis_name,
     'cmap':cmap
   }
-  plot_tsne(X_tsne=X_tsne,
-            labels=labels_to_plot,
-            saving_path=tsne_plot_path,
-            title=title_plot,
-            legend_label=legend_label,
-            plot_trajectory = True if plot_only_sample_id_list is not None else False,
-            clip_length=dict_all_features['list_frames'][filter_idx].shape[1],
-            stride_windows=sliding_windows,
-            axis_scale=axis_dict,
-            list_axis_name=list_axis_name,
-            cmap=cmap)  
-  # print('END ONLY PLOT TSNE')
-  with open(os.path.join(folder_path_tsne_results,'config.txt'),'w') as f:
-    f.write(f'subject_id_list: {subject_id_list}\n')
-    f.write(f'clips: {clip_list}\n')
-    f.write(f'classes: {class_list}\n')
-    f.write(f'sliding_windows: {sliding_windows}\n')
-    
-  if create_video:
-    video_saving_path = os.path.join(folder_path_tsne_results,'video')
-    if not os.path.exists(video_saving_path):
-      os.makedirs(video_saving_path)
-    list_rgb_image_plot = []  
-    start = time.time()
-    print(f'X_tsne.shape {X_tsne.shape}')
-    for i in range(1,X_tsne.shape[0]+1):
-      list_rgb_image_plot.append(
-                    plot_tsne(X_tsne=X_tsne[:i],
-                          labels=labels_to_plot[:i],
-                          legend_label=legend_label,
-                          title=f'{title_plot}_{i}',
-                          # saving_path=video_saving_path,
-                          axis_scale=axis_dict,
-                          clip_length=dict_all_features['list_frames'][filter_idx].shape[1],
-                          stride_windows=sliding_windows,
-                          tot_labels=len(np.unique(labels_to_plot)),
-                          plot_trajectory=True if plot_only_sample_id_list is not None else False,
-                          last_point_bigger=True,
-                          list_axis_name=list_axis_name))
-      print(f'Elapsed time to get plot {i}: {time.time()-start} s')
-    print(f'Elapsed time to get all plots: {time.time()-start} s')
-    start = time.time()
-    generate_video_from_list_video_path(list_video_path=list_video_path,
-                                              list_frames=list_frames,
-                                              list_sample_id=list_sample_id,
-                                              list_y_gt=list_y_gt,
-                                              output_fps=10,
-                                              list_subject_id=list_subject_id,
-                                              idx_list_frames=list_idx_list_frames,
-                                              saving_path=video_saving_path,
-                                              list_rgb_image_plot=list_rgb_image_plot)
-    print(f'Elapsed time to generate video: {time.time()-start} s')
-    # for i in range(len(list_image_path)):
-    #   remove_plot(list_image_path[i])
-    
+  
 def plot_loss_and_precision_details(dict_train, train_folder_path, total_epochs,criterion):
   """
   Generate and save plots of the training and test results, and confusion matrices for each epoch.
