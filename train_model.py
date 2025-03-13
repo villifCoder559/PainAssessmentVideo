@@ -5,8 +5,6 @@ import math
 import argparse
 import torch.nn as nn
 import torch.optim as optim
-from custom.model import Model_Advanced
-from custom.head import AttentiveHead, GRUProbe
 from custom.head import earlyStoppingAccuracy, earlyStoppingLoss
 import custom.scripts as scripts
 
@@ -146,7 +144,7 @@ def train_with_attentive_head(
   seed_random_state, is_plot_dataset_distribution, is_round_output_loss, 
   is_shuffle_video_chunks, is_shuffle_training_batch, key_for_early_stopping,
   regularization_loss, target_metric_best_model, early_stopping, enable_scheduler, 
-  clip_length, stop_after_kth_fold
+  clip_length, stop_after_kth_fold,emb_dim,num_heads
 ):
   """Run training with Attentive head configuration."""
   stride_window_in_video = 16  # sliding window
@@ -157,9 +155,9 @@ def train_with_attentive_head(
     for regularization_lambda in list_regularization_lambda:
       # Configure Attentive head parameters
       params = {
-        'input_dim': 768*8 if GRU_concatenate_temp_dim else 768,
+        'input_dim': emb_dim*8 if GRU_concatenate_temp_dim else emb_dim,
         'num_classes': 5,
-        'num_heads': 8,
+        'num_heads': num_heads,
       }
       
       for lr in lr_list:
@@ -211,7 +209,7 @@ def train_with_linear_head(
   seed_random_state, is_plot_dataset_distribution, is_round_output_loss, 
   is_shuffle_video_chunks, is_shuffle_training_batch, key_for_early_stopping,
   regularization_loss, target_metric_best_model, early_stopping, enable_scheduler, 
-  clip_length, stop_after_kth_fold
+  clip_length, stop_after_kth_fold,emb_dim
 ):
   """Run training with Linear head configuration."""
   stride_window_in_video = 16
@@ -221,7 +219,7 @@ def train_with_linear_head(
   for batch_train in list_batch_train:
     for regularization_lambda in list_regularization_lambda:
       # Configure feature shape and dimension reduction
-      feature_shape = [1, 8, 14, 14, 768]  # 8 temporal dimension, 14x14 spatial dimension, 768 feature dimension
+      feature_shape = [1, 8, 14, 14, emb_dim]  # 8 temporal dimension, 14x14 spatial dimension, 768 feature dimension
       dim_reduction = EMBEDDING_REDUCTION.MEAN_SPATIAL
       if dim_reduction.value:
         for dim in dim_reduction.value:
@@ -281,7 +279,7 @@ def train(
   GRU_concatenate_temp_dim, list_init_network, early_stopping, regularization_loss, list_regularization_lambda,
   is_round_output_loss, GRU_output_size, key_for_early_stopping, seed_random_state, is_shuffle_training_batch,
   is_shuffle_video_chunks, clip_length, target_metric_best_model, is_plot_dataset_distribution, layer_norm,
-  enable_scheduler, loss_reg, head, stop_after_kth_fold
+  enable_scheduler, loss_reg, head, stop_after_kth_fold,num_heads
 ):
   """Main training function that dispatches to specific head training functions."""
   # Initialize common parameters
@@ -323,7 +321,7 @@ def train(
     )
   elif head_type.name == 'ATTENTIVE':
     train_with_attentive_head(
-      model_type=model_type, pooling_clips_reduction=pooling_clips_reduction,
+      model_type=model_type, pooling_clips_reduction=pooling_clips_reduction,emb_dim=emb_dim,
       sample_frame_strategy=sample_frame_strategy, GRU_concatenate_temp_dim=GRU_concatenate_temp_dim,
       path_csv_dataset=path_csv_dataset, path_dataset=path_dataset,
       feature_folder_saving_path=feature_folder_saving_path, global_foder_name=global_foder_name,
@@ -334,11 +332,11 @@ def train(
       is_shuffle_training_batch=is_shuffle_training_batch, key_for_early_stopping=key_for_early_stopping,
       regularization_loss=regularization_loss, target_metric_best_model=target_metric_best_model,
       early_stopping=early_stopping, enable_scheduler=enable_scheduler, clip_length=clip_length,
-      stop_after_kth_fold=stop_after_kth_fold
+      stop_after_kth_fold=stop_after_kth_fold,num_heads=num_heads
     )
   elif head_type.name == 'LINEAR':
     train_with_linear_head(
-      model_type=model_type, pooling_clips_reduction=pooling_clips_reduction,
+      model_type=model_type, pooling_clips_reduction=pooling_clips_reduction,emb_dim=emb_dim,
       sample_frame_strategy=sample_frame_strategy, GRU_concatenate_temp_dim=GRU_concatenate_temp_dim,
       path_csv_dataset=path_csv_dataset, path_dataset=path_dataset,
       feature_folder_saving_path=feature_folder_saving_path, global_foder_name=global_foder_name,
@@ -386,6 +384,9 @@ if __name__ == '__main__':
                     help='Round output from regression before computing loss')
   parser.add_argument('--enable_scheduler', action='store_true', help='Enable learning rate scheduler')
   parser.add_argument('--stop', type=int, default=None, help='Stop after kth fold')
+  
+  # Attention parameters
+  parser.add_argument('--num_heads', type=int, default=8, help='Number of heads for Attentive head')
   
   # GRU parameters
   parser.add_argument('--GRU_hidden_size', type=int, nargs='*', default=1024, help='GRU hidden layer size(s)')
@@ -490,7 +491,8 @@ if __name__ == '__main__':
     'loss_regression': args.loss_regression,
     'enable_scheduler': args.enable_scheduler,
     'head': args.head,
-    'stop_after_kth_fold': args.stop
+    'stop_after_kth_fold': args.stop,
+    'num_heads': args.num_heads
   }
   
   # Create output directory and save configuration
@@ -532,6 +534,7 @@ if __name__ == '__main__':
     enable_scheduler=args.enable_scheduler,
     head=args.head,
     stop_after_kth_fold=args.stop,
+    num_heads=args.num_heads,
     is_shuffle_video_chunks=False,
     is_shuffle_training_batch=True,
     is_plot_dataset_distribution=False
