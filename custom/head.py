@@ -1,267 +1,21 @@
-import pickle
-from sklearn.svm import SVR
-from sklearn.model_selection import cross_val_score, KFold, StratifiedKFold, cross_validate
-from sklearn.model_selection import train_test_split
-from sklearn.model_selection import GridSearchCV, GroupKFold,GroupShuffleSplit
-from sklearn.metrics import mean_absolute_error
-# from IPython.display import clear_output
 import numpy as np
-import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
+from torch.utils.data import DataLoader
 import custom.tools as tools
 from torchmetrics.classification import ConfusionMatrix
 import math
 import os
-from datetime import datetime
-import time
 from custom.helper import CUSTOM_DATASET_TYPE
 import torch.nn.init as init
-from sklearn.metrics import confusion_matrix
-from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from custom.dataset import customSampler
-from custom.dataset import customDatasetWhole,customDatasetAggregated
+from custom.dataset import get_dataset_and_loader
+import tqdm
 import copy
+import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 # import wandb
-
-class HeadSVR:
-  def __init__(self, svr_params):
-    self.params = svr_params
-    self.svr = SVR(**svr_params)
-
-  def fit(self, X_train, y_train, subject_ids_train, X_test, y_test, subject_ids_test, saving_path=None):
-    """
-    Evaluation training of SVR model.
-    Parameters:
-    X_train (array-like): Shape (n_samples, n_features).
-    y_train (array-like): Shape (n_samples,).
-    subject_ids_train (array-like): Subject IDs for the training data.
-    X_test (array-like): Test data features.
-    y_test (array-like): Test data labels.
-    subject_ids_test (array-like): Subject IDs for the test data.
-    Returns:
-    dict: A dictionary containing:
-      - 'train_losses': List of training losses.
-      - 'train_loss_per_class': Training loss per class, reshaped to (1, -1).
-      - 'train_loss_per_subject': Training loss per subject, reshaped to (1, -1).
-      - 'test_losses': List of test losses.
-      - 'test_loss_per_class': Test loss per class, reshaped to (1, -1).
-      - 'test_loss_per_subject': Test loss per subject, reshaped to (1, -1).
-      - 'y_unique': Unique classes in the combined training and test labels.
-      - 'subject_ids_unique': Unique subject IDs in the combined training and test subject IDs.
-      - 'best_model_idx': best_model_epoch
-
-    """
-
-    regressor = self.svr.fit(X_train, y_train)
-    # Save the regressor
-    if saving_path:
-      with open(saving_path, 'wb') as f:
-        pickle.dump(regressor, f)
-      print(f"Regressor saved to {saving_path}")
-
-    pred_train = regressor.predict(X_train)
-    pred_test = regressor.predict(X_test)
-
-    train_loss = mean_absolute_error(y_train, pred_train)
-    test_loss = mean_absolute_error(y_test, pred_test)
-
-    # Compute loss per class
-    # print(f'y_train-shape {y_train.shape}')
-    # print(f'y_train-shape {y_test.shape}')
-    y_unique = np.unique(np.concatenate((np.unique(y_train), np.unique(y_test))))
-    train_loss_per_class = np.zeros(y_unique.shape[0])
-    test_loss_per_class = np.zeros(y_unique.shape[0])
-    for cls in y_unique:
-      idx_train = np.where(y_train == cls)
-      idx_test = np.where(y_test == cls)
-      idx_y_gloabl = np.where(y_unique == cls)
-      if idx_train[0].shape[0]:
-        class_loss = mean_absolute_error(y_train[idx_train], pred_train[idx_train])
-        train_loss_per_class[idx_y_gloabl] = class_loss
-      if idx_test[0].shape[0]:
-        test_los = mean_absolute_error(y_test[idx_test], pred_test[idx_test])
-        test_loss_per_class[idx_y_gloabl] = test_los
-
-    # Compute loss per subject
-    subject_ids_unique = np.unique(np.concatenate((np.unique(subject_ids_train), np.unique(subject_ids_test))))
-    # print(f'subject_ids_unique shape {subject_ids_unique.shape}')
-    # print(f'subject_ids_train_unique shape {np.unique(subject_ids_train).shape}')
-    # print(f'subject_ids_test_unique shape {np.unique(subject_ids_test).shape}')
-    train_loss_per_subject = np.zeros(subject_ids_unique.shape[0])
-    test_loss_per_subject = np.zeros(subject_ids_unique.shape[0])
-
-    for id in subject_ids_unique:
-      idx_train = np.where(subject_ids_train == id)
-      idx_test = np.where(subject_ids_test == id)
-      idx_subject_ids_unique_global = np.where(subject_ids_unique == id)
-      if idx_train[0].shape[0]:
-        subject_loss = mean_absolute_error(y_train[idx_train], pred_train[idx_train])
-        train_loss_per_subject[idx_subject_ids_unique_global] = subject_loss
-      if idx_test[0].shape[0]:
-        test_loss = mean_absolute_error(y_test[idx_test], pred_test[idx_test])
-        test_loss_per_subject[idx_subject_ids_unique_global] = test_loss
-
-    train_confusion_matricies = []
-    test_confusion_matricies = []
-    train_confusion_matricies.append(self.compute_confusion_matrix(X_train, y_train, regressor))
-    test_confusion_matricies.append(self.compute_confusion_matrix(X_test, y_test, regressor))
-
-    return {'train_losses': [train_loss], 'train_loss_per_class': train_loss_per_class.reshape(1, -1),
-            'train_loss_per_subject': train_loss_per_subject.reshape(1, -1),
-            'test_losses': [test_loss], 'test_loss_per_class': test_loss_per_class.reshape(1, -1),
-            'test_loss_per_subject': test_loss_per_subject.reshape(1, -1),
-            'y_unique': y_unique, 'subject_ids_unique': subject_ids_unique,
-            'test_confusion_matricies': test_confusion_matricies,
-            'train_confusion_matricies': train_confusion_matricies,
-            'best_model_idx': 0}
-
-
-
-  # def predict(self, X):
-  #   """
-  #   Predicts the target values for the given input data using the trained SVR model.
-
-  #   Parameters:
-  #   X (array-like): The input data with shape (n_samples, n_features).
-
-  #   Returns:
-  #   array: The predicted target values.
-  #   """
-  #   assert len(X.shape) == 2, f"Input shape should be (n_samples, n_features), got {X.shape}"
-  #   predictions = self.svr.predict(X)
-  #   return predictions
-
-  def k_fold_cross_validation(self, X, y, groups, k=3, list_saving_paths_k_val=None):
-    """ k-fold cross-validation training of SVR model. """
-    # Use dictionary so you cann add w/o changing code
-    # print('X.shape', X.shape)
-    # print('y.shapey', y.shape)
-    gss = GroupShuffleSplit(n_splits = k)
-    results = cross_validate(self.svr, X, y, cv=gss,scoring='neg_mean_absolute_error', groups=groups, return_train_score=True, return_estimator=True)
-    # scores = - scores
-    # Print the scores for each fold and the mean score
-    # print("Keys:", results.keys())
-    print("Train accuracy:", results['train_score'])
-    print("Test accuracy:", results['test_score'])
-    # print("Mean test accuracy:", results['test_accuracy'].mean())
-    list_split_indices=[]
-      # Save each model fitted during cross-validation
-    for fold_idx, estimator in enumerate(results['estimator']):
-      model_path = os.path.join(list_saving_paths_k_val[fold_idx],f'SVR_{fold_idx}.pkl')
-      with open(model_path, 'wb') as f:
-        pickle.dump(estimator, f)
-      print(f"Model for fold {fold_idx + 1} saved to {model_path}")
-
-    for fold, (train_idx, test_idx) in enumerate(gss.split(X, y, groups=groups), 1):
-      list_split_indices.append((train_idx,test_idx))
-
-    # Save the model for each fold
-    model_path = os.path.join(list_saving_paths_k_val[fold_idx], f'SVR_{fold_idx}.pkl')
-    with open(model_path, 'wb') as f:
-      pickle.dump(estimator, f)
-    print(f"Model for fold {fold_idx + 1} saved to {model_path}")
-
-    # Initialize confusion matrices for each fold
-    confusion_matrix_test = []
-    confusion_matrix_train = []
-
-    for fold_idx, estimator in enumerate(results['estimator']):
-      X_train, y_train = X[results['train_score'][fold_idx]], y[results['train_score'][fold_idx]]
-      X_test, y_test = X[results['test_score'][fold_idx]], y[results['test_score'][fold_idx]]
-      cm_train = self.compute_confusion_matrix(X_train, y_train, estimator)
-      cm_test = self.compute_confusion_matrix(X_test, y_test, estimator)
-      confusion_matrix_train.append(cm_train)
-      confusion_matrix_test.append(cm_test)
-
-    dict_result = {'df_results': results,
-                   'test_confusion_matricies': confusion_matrix_test,
-                   'train_confusion_matricies': confusion_matrix_train}
-
-    return list_split_indices, dict_result
-
-  def compute_confusion_matrix(self,X, y, estimator):
-    y_pred_train = estimator.predict(X)
-    # y_pred_test = estimator.predict(X_test)
-    cm = ConfusionMatrix(task="multiclass",num_classes=len(np.unique(y)))
-    cm.update(torch.tensor(y_pred_train), torch.tensor(y))
-    cm.compute()
-    return cm
-
-
-  def run_grid_search(self,param_grid, X, y, groups ,k_cross_validation):
-
-    def _plot_cv_indices(cv, X, y, group, ax, n_splits, lw=20):
-      """Create a sample plot for indices of a cross-validation object."""
-      use_groups = "Group" in type(cv).__name__
-      groups = group if use_groups else None
-      cmap_data = plt.cm.Paired
-      cmap_cv = plt.cm.coolwarm
-      # Generate the training/testing visualizations for each CV split
-      for ii, (tr, tt) in enumerate(cv.split(X=X, y=y, groups=groups)):
-          # Fill in indices with the training/test groups
-          indices = np.array([np.nan] * len(X))
-          indices[tt] = 1
-          indices[tr] = 0
-
-          # Visualize the results
-          ax.scatter(
-              range(len(indices)),
-              [ii + 0.5] * len(indices),
-              c=indices,
-              marker="_",
-              lw=lw,
-              cmap=cmap_cv,
-              vmin=-0.2,
-              vmax=1.2,
-          )
-
-      # Plot the data classes and groups at the end
-      ax.scatter(
-          range(len(X)), [ii + 1.5] * len(X), c=y, marker="_", lw=lw, cmap=cmap_data
-      )
-
-      ax.scatter(
-          range(len(X)), [ii + 2.5] * len(X), c=group, marker="_", lw=lw, cmap=cmap_data
-      )
-
-      # Formatting
-      yticklabels = list(range(n_splits)) + ["class", "group"]
-      # bar_spacing = 2.5
-      ax.set(
-          yticks=np.arange(n_splits + 2) + 0.5,
-          yticklabels=yticklabels,
-          xlabel="Sample index",
-          ylabel="CV iteration",
-          ylim=[(n_splits + 2.2), -0.2],
-          xlim=[0, 30],
-      )
-      ax.set_title("{}".format(type(cv).__name__), fontsize=15)
-      return ax
-    # Initialize GridSearchCV
-    gss = GroupShuffleSplit(n_splits=k_cross_validation)
-    fig, ax = plt.subplots()
-    _plot_cv_indices(gss, X, y, groups, ax, k_cross_validation)
-    plt.tight_layout()
-    plt.show()
-    grid_search = GridSearchCV(estimator=self.svr, param_grid=param_grid, cv=gss,scoring='neg_mean_absolute_error',return_train_score=True)
-
-    # Fit the grid search to your data
-    grid_search.fit(X, y, groups=groups)
-
-    # Best parameters and score
-    best_params = grid_search.best_params_
-    best_score = grid_search.best_score_
-
-    print(f"Best Parameters: {best_params}")
-    print(f"Best Score: {best_score}")
-    list_split_indices=[]
-
-    for fold, (train_idx, test_idx) in enumerate(gss.split(X, y, groups=groups), 1):
-      list_split_indices.append((train_idx,test_idx))
-    return grid_search, list_split_indices
 
 class BaseHead(nn.Module):
   def __init__(self, model,is_classification):
@@ -270,18 +24,18 @@ class BaseHead(nn.Module):
     self.is_classification = is_classification
   def log_performance(self,epoch, stage,num_epochs, loss, precision):
       if epoch>-1:
-        print(f'Epoch [{epoch}/{num_epochs}]')
-      print(f' {stage}')
-      print(f'  Loss             : {loss:.4f}')
-      print(f'  Accuracy         : {precision:.4f}')
+        logger.info(f'Epoch [{epoch}/{num_epochs}]')
+      logger.info(f' {stage}')
+      logger.info(f'  Loss             : {loss:.4f}')
+      logger.info(f'  Accuracy         : {precision:.4f}')  
       free_gpu_mem,total_gpu_mem = torch.cuda.mem_get_info()
       total_gpu_mem = total_gpu_mem / 1024 ** 3
       free_gpu_mem = free_gpu_mem / 1024 ** 3
-      print(f'GPU free/total (GB) : {free_gpu_mem:.2f}/{total_gpu_mem:.2f}\n')
+      logger.info(f'  GPU memory free  : {free_gpu_mem:.2f} GB')
       
   def start_train(self, num_epochs, criterion, optimizer,lr, saving_path, train_csv_path, val_csv_path ,batch_size,dataset_type,
                   round_output_loss, shuffle_training_batch, regularization_loss,regularization_lambda,concatenate_temp_dim,
-                  early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,):
+                  early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,backbone_dict):
     device = 'cuda'
     self.model.to(device)
     if init_network:
@@ -302,20 +56,24 @@ class BaseHead(nn.Module):
     list_train_losses_per_class = []
     list_train_losses_per_subject = []
     list_train_confusion_matricies = []
-    train_dataset, train_loader = self.get_dataset_and_loader(batch_size=batch_size,
+    train_dataset, train_loader = get_dataset_and_loader(batch_size=batch_size,
                                                               csv_path=train_csv_path,
                                                               root_folder_features=root_folder_features,
                                                               shuffle_training_batch=shuffle_training_batch,
                                                               is_training=True,
                                                               concatenate_temporal=concatenate_temp_dim,
-                                                              dataset_type=dataset_type)
-    val_dataset, val_loader = self.get_dataset_and_loader(batch_size=batch_size,
+                                                              dataset_type=dataset_type,
+                                                              backbone_dict=backbone_dict,
+                                                              model=self.model)
+    val_dataset, val_loader = get_dataset_and_loader(batch_size=batch_size,
                                                           csv_path=val_csv_path,
                                                           root_folder_features=root_folder_features,
                                                           shuffle_training_batch=False,
                                                           is_training=False,
                                                           concatenate_temporal=concatenate_temp_dim,
-                                                          dataset_type=dataset_type)
+                                                          dataset_type=dataset_type,
+                                                          backbone_dict=backbone_dict,
+                                                          model=self.model)
     
     train_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
     train_unique_subjects = train_dataset.get_unique_subjects()
@@ -334,8 +92,8 @@ class BaseHead(nn.Module):
       train_confusion_matrix = ConfusionMatrix(task='multiclass',num_classes=train_unique_classes.shape[0]+1)
       train_loss = 0.0
       subject_count_batch = np.zeros(train_unique_subjects.shape[0])
-      count = 0
-      for dict_batch_X, batch_y, batch_subjects in train_loader:
+      
+      for dict_batch_X, batch_y, batch_subjects in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
         tmp = np.isin(train_unique_subjects,batch_subjects)
         subject_count_batch[tmp] += 1
         batch_y = batch_y.to(device)
@@ -349,10 +107,6 @@ class BaseHead(nn.Module):
         optimizer.step()
         # outputs = torch.argmax(outputs, dim=1)
         train_loss += loss.item()
-        count+=1
-        free_gpu_mem,total_gpu_mem = torch.cuda.mem_get_info()
-        total_gpu_mem = total_gpu_mem / 1024 ** 3
-        free_gpu_mem = free_gpu_mem / 1024 ** 3
         # Compute loss per class and subject
         tools.compute_loss_per_class(batch_y=batch_y,
                                      class_loss=class_loss,
@@ -448,7 +202,7 @@ class BaseHead(nn.Module):
       subject_loss = np.zeros(unique_val_subjects.shape[0])
       val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=self.model.num_classes+1) # last class is for bad_classified in regression
       subject_batch_count = np.zeros(unique_val_subjects.shape[0])
-      for dict_batch_X, batch_y, batch_subjects in val_loader:
+      for dict_batch_X, batch_y, batch_subjects in tqdm.tqdm(val_loader,total=len(val_loader),desc='Validation' if not is_test else 'Test'):
         tmp = np.isin(unique_val_subjects,batch_subjects)
         dict_batch_X = {key: value.to(device) for key, value in dict_batch_X.items()}
         batch_y = batch_y.to(device).long()
@@ -496,34 +250,7 @@ class BaseHead(nn.Module):
           'val_confusion_matrix': val_confusion_matricies,
           'dict_precision_recall': dict_precision_recall
         }      
-  
-  def get_dataset_and_loader(self,csv_path,root_folder_features,batch_size,shuffle_training_batch,is_training,dataset_type,concatenate_temporal,output_type):
-    if dataset_type.value == CUSTOM_DATASET_TYPE.WHOLE.value:
-      dataset_ = customDatasetWhole(csv_path,root_folder_features=root_folder_features,concatenate_temporal=concatenate_temporal,
-                                    model=self.model)
-    elif dataset_type.value == CUSTOM_DATASET_TYPE.AGGREGATED.value:
-      dataset_ = customDatasetAggregated(csv_path=csv_path,
-                                         root_folder_features=root_folder_features,
-                                         concatenate_temporal=concatenate_temporal,
-                                         model=self.model)
-    else:
-      raise ValueError(f'Unknown dataset type: {dataset_type}. Can be either "original" or "unique"')
-    if is_training:
-      try:
-        print('Try to use custom DataLoader...')
-        customSampler_train = customSampler(path_cvs_dataset=csv_path, 
-                                            batch_size=batch_size,
-                                            shuffle=shuffle_training_batch)
-        customSampler_train.initialize()
-        loader_ = DataLoader(dataset=dataset_, sampler=customSampler_train,collate_fn=dataset_.fake_collate,batch_size=1)
-        print('Custom DataLoader instantiated')
-      except Exception as e:
-        print(f'Err: {e}')
-        print(f'Use standard DataLoader')
-        loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate)
-    else:
-      loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=False,collate_fn=dataset_._custom_collate)
-    return dataset_,loader_
+
   
   def load_state_weights(self, path):
     self.model.load_state_dict(torch.load(path))
@@ -534,24 +261,24 @@ class LinearHead(BaseHead):
     model = LinearProbe(input_dim=input_dim, num_classes=num_classes,dim_reduction=dim_reduction)
     is_classification = True if num_classes > 1 else False
     super().__init__(model,is_classification)
-  def get_dataset_and_loader(self, csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal):
-    return super().get_dataset_and_loader(csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal, False)
+  # def get_dataset_and_loader(self, csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal):
+  #   return super().get_dataset_and_loader(csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal, False)
     
 class AttentiveHead(BaseHead):
   def __init__(self,input_dim,num_classes,num_heads):
     model = AttentiveProbe(input_dim=input_dim,num_classes=num_classes,num_heads=num_heads)
     is_classification = True if num_classes > 1 else False
     super().__init__(model,is_classification)
-  def get_dataset_and_loader(self, csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal):
-    return super().get_dataset_and_loader(csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal, True)
+  # def get_dataset_and_loader(self, csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal):
+  #   return super().get_dataset_and_loader(csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal, True)
 
 class GRUHead(BaseHead):
   def __init__(self, input_size, hidden_size, num_layers, dropout, output_size,layer_norm):
     model = GRUProbe(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, dropout=dropout, output_size=output_size,layer_norm=layer_norm)
     is_classification = True if output_size > 1 else False
     super().__init__(model,is_classification)
-  def get_dataset_and_loader(self, csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal):
-    return super().get_dataset_and_loader(csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal, False)
+  # def get_dataset_and_loader(self, csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal):
+  #   return super().get_dataset_and_loader(csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal, False)
     
 class GRUProbe(nn.Module):
   def __init__(self, input_size, hidden_size, num_layers, dropout, output_size,layer_norm,pred_only_last_time_step=True):
