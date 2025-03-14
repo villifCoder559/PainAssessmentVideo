@@ -13,9 +13,7 @@ from torch.nn.utils.rnn import pack_padded_sequence,pack_padded_sequence
 from custom.dataset import get_dataset_and_loader
 import tqdm
 import copy
-import logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+
 # import wandb
 
 class BaseHead(nn.Module):
@@ -25,14 +23,14 @@ class BaseHead(nn.Module):
     self.is_classification = is_classification
   def log_performance(self,epoch, stage,num_epochs, loss, precision):
       if epoch>-1:
-        logger.info(f'Epoch [{epoch}/{num_epochs}]')
-      logger.info(f' {stage}')
-      logger.info(f'  Loss             : {loss:.4f}')
-      logger.info(f'  Accuracy         : {precision:.4f}')  
+        print(f'Epoch [{epoch}/{num_epochs}]')
+      print(f' {stage}')
+      print(f'  Loss             : {loss:.4f}')
+      print(f'  Accuracy         : {precision:.4f}')  
       free_gpu_mem,total_gpu_mem = torch.cuda.mem_get_info()
       total_gpu_mem = total_gpu_mem / 1024 ** 3
       free_gpu_mem = free_gpu_mem / 1024 ** 3
-      logger.info(f'  GPU memory free  : {free_gpu_mem:.2f} GB')
+      print(f'  GPU memory free  : {free_gpu_mem:.2f} GB')
       
   def start_train(self, num_epochs, criterion, optimizer,lr, saving_path, train_csv_path, val_csv_path ,batch_size,dataset_type,
                   round_output_loss, shuffle_training_batch, regularization_loss,regularization_lambda,concatenate_temp_dim,
