@@ -5,7 +5,6 @@ import requests
 from enum import Enum
 from pathlib import Path
 from tqdm import tqdm
-import logging
 
 from VideoMAEv2.models.modeling_finetune import (
   vit_small_patch16_224,
@@ -15,10 +14,6 @@ from VideoMAEv2.models.modeling_finetune import (
 from VideoMAEv2.models.modeling_pretrain import pretrain_videomae_giant_patch14_224
 from transformers import ViTFeatureExtractor, ViTModel
 from custom.helper import MODEL_TYPE
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 class BackboneBase:
   """Base class for feature extraction backbones."""
@@ -69,7 +64,7 @@ class VideoBackbone(BackboneBase):
     model_path = Path(model_type.value)
     if not model_path.exists():
       if download_if_unavailable:
-        logger.info(f"Model not found at {model_path}. Downloading...")
+        print(f"Model not found at {model_path}. Downloading...")
         self._download_model(model_type)
       else:
         raise FileNotFoundError(
@@ -110,7 +105,7 @@ class VideoBackbone(BackboneBase):
     else:
       url += f"mae-g/{model_name}"
         
-    logger.info(f"Downloading model from: {url}")
+    print(f"Downloading model from: {url}")
     
     # Create directory if it doesn't exist
     weights_dir = Path('VideoMAEv2/pretrained')
@@ -131,7 +126,7 @@ class VideoBackbone(BackboneBase):
             f.write(chunk)
             pbar.update(len(chunk))
     
-    logger.info(f"Model downloaded successfully to {weights_path}")
+    print(f"Model downloaded successfully to {weights_path}")
   
   def _load_model_pretrained(self, model_type: Enum):
     """Load a pretrained model.
@@ -208,7 +203,7 @@ class VideoBackbone(BackboneBase):
     for layer_name in ["head", "norm", "fc_norm"]:
       if hasattr(model, layer_name):
         setattr(model, layer_name, None)
-        logger.debug(f"Removed {layer_name} layer from model")
+        # print(f"Removed {layer_name} layer from model")
   
   @torch.no_grad()
   def forward_features(self, x: torch.Tensor, return_embedding: bool = True) -> torch.Tensor:
@@ -244,7 +239,7 @@ class VideoBackbone(BackboneBase):
       
       feat = feat.reshape(B, T, S, S, self.embed_dim)# [B, T, S, S, embed_dim], e.g. [1, 8, 14, 14, 768]
     feat = feat.to('cpu')
-    # self.model.to('cpu') Only for local testing
+    # self.model.to('cpu') # Only for local testing
     return feat  # Return raw features
 
 
@@ -260,7 +255,7 @@ class VitImageBackbone(BackboneBase):
     super().__init__()
     
     # Load model and feature extractor
-    logger.info(f"Loading ViT model: {model_name}")
+    print(f"Loading ViT model: {model_name}")
     self.model = ViTModel.from_pretrained(model_name)
     self.feature_extractor = ViTFeatureExtractor.from_pretrained(model_name)
     self.model_type = MODEL_TYPE.ViT_image

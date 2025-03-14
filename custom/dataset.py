@@ -17,12 +17,9 @@ from torch.utils.data import  Sampler
 import torchvision.transforms as T
 import custom.faceExtractor as extractor
 import pickle
-import logging
 from torch.utils.data import DataLoader
 from custom.helper import INSTANCE_MODEL_NAME
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 class customDataset(torch.utils.data.Dataset):
   """
