@@ -228,12 +228,11 @@ def train_with_linear_head(
   stride_window_in_video = 16
   print(f'\nLearning rates: {lr_list}')
   print(f'Optimizers: {optim_list}')
-  
+  dim_reduction = get_embedding_reduction(dim_reduction)
   for batch_train in list_batch_train:
     for regularization_lambda in list_regularization_lambda:
       # Configure feature shape and dimension reduction
       feature_shape = [1, 8, 14, 14, emb_dim]  # 8 temporal dimension, 14x14 spatial dimension, 768 feature dimension
-      dim_reduction = get_embedding_reduction(dim_reduction)
       if dim_reduction.value:
         for dim in dim_reduction.value:
           feature_shape[dim] = 1
