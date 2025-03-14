@@ -9,6 +9,7 @@ import custom.tools as tools
 from torchmetrics.classification import MulticlassConfusionMatrix
 import tqdm
 from pathlib import Path
+import argparse
 
 def find_results_files(parent_folder):
   results_files = []
@@ -199,6 +200,13 @@ def flatten_dict(d, root_name=''):
         result[k] = v
   return result
 
+def get_range_k_fold(data):
+  count = 0
+  for k in data.keys():
+    if '_test' in k:
+      count += 1
+  return count
+
 def generate_csv_row(data, test_id):
     """
     Generates a dictionary containing test and training statistics from cross-validation experiments.
@@ -357,6 +365,7 @@ def plot_run_details(parent_folder, output_root):
   list_row_csv = []
   for file,data in tqdm.tqdm(results_data.items()):
     test_folder = os.path.basename(os.path.dirname(file))
+    data['config']['k_fold'] = get_range_k_fold(data) # set the real numebr of k_fold done
     grid_search_folder = Path(file).parts[-3]
     test_id = test_folder.split('_')[0]       
     run_output_folder = os.path.join(output_root)
@@ -387,8 +396,12 @@ def plot_run_details(parent_folder, output_root):
   
 
 if __name__ == '__main__':
-  parent_folder = '_test_attentive'  # Change this to the actual path
-  output_root = '_summary'  # Change this to where you want the plots
+  parser = argparse.ArgumentParser(description='Plot results from a folder')
+  parser.add_argument('--parent_folder', type=str,default='/media/villi/TOSHIBA EXT/video_Test/test_Mar_14/', help='Path to folder containing all the results')
+  args = parser.parse_args()
+  parent_folder = args.parent_folder  # Change this to the actual path
+  print(f'Parent folder: {parent_folder}')
+  output_root = os.path.join(parent_folder,'_summary')  # Change this to where you want the plots
   if not os.path.exists(output_root):
     os.makedirs(output_root)
   plot_run_details(parent_folder, os.path.join(output_root,'plot_per_run'))
