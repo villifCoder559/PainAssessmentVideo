@@ -5,7 +5,6 @@ import custom.tools as tools
 import custom.faceExtractor as extractor
 from pathlib import Path
 import time
-import logging
 import dlib
 
 def print_log_error_details(list_path_video,list_no_det_frame,path_save_log_annotation=None):
