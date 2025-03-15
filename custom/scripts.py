@@ -582,6 +582,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     os.makedirs(train_folder_path)
   
   # Train the model
+  start = time.time()
   fold_results = k_fold_cross_validation(path_csv_dataset=path_csv_dataset,
                                           train_folder_path=train_folder_path,
                                           model_advanced=model_advanced,
@@ -602,7 +603,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                           enable_scheduler=enable_scheduler,
                                           target_metric_best_model=target_metric_best_model,
                                           stop_after_kth_fold=stop_after_kth_fold)
-    
+  fold_results['dict_k_fold_results']['time'] = time.time() - start  
   fold_results['dict_k_fold_results']['config'] = get_obj_config()                                     
   tools.save_dict_k_fold_results(dict_k_fold_results=fold_results['dict_k_fold_results'],
                                   folder_path=run_folder_path)
