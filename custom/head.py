@@ -264,8 +264,8 @@ class LinearHead(BaseHead):
   #   return super().get_dataset_and_loader(csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal, False)
     
 class AttentiveHead(BaseHead):
-  def __init__(self,input_dim,num_classes,num_heads):
-    model = AttentiveProbe(input_dim=input_dim,num_classes=num_classes,num_heads=num_heads)
+  def __init__(self,input_dim,num_classes,num_heads,dropout):
+    model = AttentiveProbe(input_dim=input_dim,num_classes=num_classes,num_heads=num_heads,dropout=dropout)
     is_classification = True if num_classes > 1 else False
     super().__init__(model,is_classification)
   # def get_dataset_and_loader(self, csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal):
@@ -357,7 +357,7 @@ class GRUProbe(nn.Module):
     print('  GRU Network initialized')
 
 class AttentiveProbe(nn.Module):
-  def __init__(self,input_dim,num_classes,num_heads):
+  def __init__(self,input_dim,num_classes,num_heads,dropout):
     super().__init__()
     self.query = nn.Parameter(torch.randn(1, input_dim)) # [1, emb_dim]
     self.input_dim = input_dim
@@ -365,7 +365,7 @@ class AttentiveProbe(nn.Module):
     self.num_heads = num_heads
     self.attn = nn.MultiheadAttention(embed_dim=input_dim,
                                       num_heads=num_heads,
-                                      dropout=0.0,
+                                      dropout=dropout,
                                       batch_first=True # [batch_size, seq_len, emb_dim]
                                       )
     self.linear = nn.Linear(input_dim, num_classes)
@@ -387,6 +387,7 @@ class LinearProbe(nn.Module):
   def __init__(self,dim_reduction,input_dim, num_classes):
     super().__init__()
     self.linear = nn.Linear(input_dim, num_classes)
+    # self.dropout = nn.Dropout(dropout)
     self.dim_reduction = dim_reduction
     self.num_classes = num_classes
     
