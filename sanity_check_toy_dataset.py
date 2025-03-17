@@ -1,9 +1,9 @@
 import torch
 import torchvision.transforms as T
 import cv2
-from custom.backbone import video_backbone
+from custom.backbone import VideoBackbone
 from custom.helper import MODEL_TYPE
-from custom.dataset import customDataset
+
 import os 
 import numpy as np
 import torch.nn.functional as F
@@ -126,7 +126,7 @@ if __name__ == "__main__":
   arg_parser.add_argument("--stride", type=int, default=2, help="Stride to use when sampling clips")
   args = arg_parser.parse_args()
   model_type = MODEL_TYPE.VIDEOMAE_v2_S if args.model_type == "S" else MODEL_TYPE.VIDEOMAE_v2_B
-  model = video_backbone(model_type = model_type,remove_head=False)
+  model = VideoBackbone(model_type = model_type,remove_head=False)
   dataset_path = os.path.join("toy_dataset", "Weizmann_dataset")
   classes = os.listdir(dataset_path)
   # print(classes)
