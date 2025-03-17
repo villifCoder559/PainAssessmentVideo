@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.optim as optim
 from custom.head import earlyStoppingAccuracy, earlyStoppingLoss
 import custom.scripts as scripts
-
+import platform
 # ------------ Helper Functions ------------
 
 def get_model_type(model_type):
@@ -72,7 +72,6 @@ def get_embedding_reduction(reduction):
   if reduction not in reductions:
     raise ValueError(f'Embedding reduction not found: {reduction}. Valid options: {list(reductions.keys())}')
   return reductions[reduction]
-
 # ------------ Training Functions ------------
 
 def train_with_gru_head(
@@ -435,7 +434,8 @@ if __name__ == '__main__':
   
   # Generate timestamp for unique folder name
   timestamp = int(time.time())
-  args.global_folder_name = f'{args.global_folder_name}_{timestamp}'
+  server_name = platform.node()
+  args.global_folder_name = f'{args.global_folder_name}_{args.head}_{server_name}_{timestamp}'
   
   # Apply global path prefixes if requested
   if args.gp:
@@ -490,7 +490,7 @@ if __name__ == '__main__':
     'list_init_network': args.init_network,
     'list_GRU_hidden_size': args.GRU_hidden_size,
     'list_GRU_num_layers': args.GRU_num_layers,
-    'lsit_model_dropout': args.model_dropout,
+    'list_model_dropout': args.model_dropout,
     'concatenate_temp_dim': args.concatenate_temp_dim,
     'list_regularization_lambda': args.reg_lambda,
     'regularization_loss': args.reg_loss,
