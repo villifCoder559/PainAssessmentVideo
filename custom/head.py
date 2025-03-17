@@ -84,6 +84,7 @@ class BaseHead(nn.Module):
     list_val_confusion_matricies = []
     list_train_macro_accuracy = []
     list_val_macro_accuracy = []
+    early_stopping.reset()
     for epoch in range(num_epochs):
       self.model.train()
       class_loss = np.zeros(train_unique_classes.shape[0])
