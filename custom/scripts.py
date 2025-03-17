@@ -56,9 +56,6 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
   if not isinstance(model_advanced, Model_Advanced):
     raise ValueError('model_advanced must be an instance of Model_Advanced')
   
-  # Set up reproducibility
-  set_seed(seed=seed_random_state)
-  
   # Load dataset
   csv_array, cols = tools.get_array_from_csv(path_csv_dataset)
   y_labels = csv_array[:, 2].astype(int)
@@ -526,9 +523,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   ###############################
   # START of the main function  #
   ###############################
-  # set_seed(seed_random_state)
-
   # Create the model
+  set_seed(seed_random_state)  
   model_advanced = Model_Advanced(model_type=model_type,
                                   path_dataset=path_video_dataset,
                                   embedding_reduction=pooling_embedding_reduction,
