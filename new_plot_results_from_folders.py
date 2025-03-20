@@ -37,8 +37,68 @@ def retrieve_subject_ids(data, key, best_epoch):
     uniqie_subject_ids_train = data[key]['train_unique_subject_ids']
     uniqie_subject_ids_val = data[key]['val_unique_subject_ids']
   return uniqie_subject_ids_train, uniqie_subject_ids_val
+def plot_train_val_loss(train_losses, val_losses, dict_to_string, output_path,key):
+  plt.figure()
+  plt.ylim([0, 5])
+  plt.yticks(np.arange(0, 5, 0.25))
+  plt.plot(train_losses, label='Train Loss',color='tab:red')
+  plt.plot(val_losses, label='Val Loss',color='tab:orange')
+  plt.figtext(0.95, 0.5, dict_to_string, ha='left', va='center', fontsize=12, color='black')
+  plt.xlabel('Epochs')
+  plt.ylabel('Loss')
+  plt.title(f'Losses - {key}')
+  plt.grid(True)
+  plt.legend()
+  plt.savefig(output_path, bbox_inches='tight')
+  plt.close()
 
-def plot_losses(data, run_output_folder, test_id, additional_info='', plot_mae_per_subject=False, plot_mae_per_class=False):
+import matplotlib.pyplot as plt
+import numpy as np
+
+def plot_train_loss_val_accuracy(train_losses, val_accuracies, dict_to_string, output_path, key):
+  """
+  Plots training loss and validation accuracy on the same graph using two y-axes.
+
+  Parameters:
+  - train_losses (list): List of training loss values.
+  - val_accuracies (list): List of validation accuracy values.
+  - dict_to_string (str): String representation of some dictionary metadata to display.
+  - output_path (str): Path to save the output plot.
+  - key (str): Key identifier for the title.
+  """
+  # plt.figure()
+  fig, ax1 = plt.subplots()
+
+  # Plot training loss (primary y-axis)
+  ax1.set_xlabel('Epochs')
+  ax1.set_ylabel('Training Loss', color='tab:red')
+  ax1.plot(train_losses, label='Train Loss', color='tab:red')
+  ax1.set_ylim([0, 5])  # Scale y-axis
+  ax1.set_yticks(np.arange(0, 5, 0.25))
+  ax1.tick_params(axis='y', labelcolor='tab:red')
+
+  # Create second y-axis for validation accuracy
+  ax2 = ax1.twinx()
+  ax2.set_ylabel('Validation Accuracy', color='tab:blue')
+  ax2.plot(val_accuracies, label='Val Accuracy', color='tab:blue')
+  ax2.set_ylim([0, 1])  # Accuracy in percentage
+  ax2.set_yticks(np.arange(0, 1, 0.2))
+  ax2.tick_params(axis='y', labelcolor='tab:blue')
+
+  # Add additional text on the figure
+  plt.figtext(1.1, 0.5, dict_to_string, ha='left', va='center', fontsize=12, color='black')
+
+  # Titles, grid, and legend
+  plt.title(f'Train Loss & Val Accuracy - {key}')
+  ax1.grid(True)
+  fig.legend(loc='upper right')
+
+  # Save plot and close
+  plt.savefig(output_path, bbox_inches='tight')
+  plt.close(fig)
+
+
+def plot_losses(data, run_output_folder, test_id, additional_info='', plot_mae_per_subject=False, plot_mae_per_class=False,plot_train_loss_val_acc=True):
   # Adjust run_output_folder to store plots
   run_output_folder = Path(run_output_folder).parts[:-3]
   run_output_folder = os.path.join(*run_output_folder, 'plot_loss_per_k')
@@ -50,26 +110,23 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_mae_p
     class_subject_loss_folder = os.path.join(run_output_folder, f'class_subject_loss_{key.split("_")[0]}')
     os.makedirs(class_subject_loss_folder, exist_ok=True)
     if 'cross_val' in key and 'train_val' in key:
-      train_losses = data[key].get('train_losses', [])
-      val_losses = data[key].get('val_losses', [])
-      if train_losses and val_losses:
-        plt.figure()
-        plt.ylim([0, 5])
-        plt.yticks(np.arange(0, 5, 0.25))
-        plt.plot(train_losses, label='Train Loss')
-        plt.plot(val_losses, label='Val Loss')
-        data['config']['test_id'] = test_id
-        dict_to_string = convert_dict_to_string(filter_dict(data['config']))
-        # Substitute head.params with data['config']['head'].value
-        dict_to_string = dict_to_string.replace('head_params', data['config']['head'].value)
-        plt.figtext(0.95, 0.5, dict_to_string, ha='left', va='center', fontsize=12, color='black')
-        plt.xlabel('Epochs')
-        plt.ylabel('Loss')
-        plt.title(f'Losses - {key}')
-        plt.grid(True)
-        plt.legend()
-        plt.savefig(os.path.join(only_losses_folder, f'{test_id}{additional_info}_losses_{key}.png'), bbox_inches='tight')
-        plt.close()
+      if plot_train_loss_val_acc:
+        train_losses = data[key].get('train_losses', [])
+        val_accuracy = data[key].get('list_val_macro_accuracy', [])
+        if train_losses and val_accuracy:
+          dict_to_string = convert_dict_to_string(filter_dict(data['config']))
+          dict_to_string = dict_to_string.replace('head_params', data['config']['head'].value)
+          output_path = os.path.join(only_losses_folder, f'{test_id}{additional_info}_losses_{key}.png')
+          plot_train_loss_val_accuracy(train_losses, val_accuracy, dict_to_string, output_path, key)
+      else:
+        train_losses = data[key].get('train_losses', [])
+        val_losses = data[key].get('val_losses', [])
+        if train_losses and val_losses:
+          data['config']['test_id'] = test_id
+          dict_to_string = convert_dict_to_string(filter_dict(data['config']))
+          dict_to_string = dict_to_string.replace('head_params', data['config']['head'].value)
+          output_path = os.path.join(only_losses_folder, f'{test_id}{additional_info}_losses_{key}.png')
+          plot_train_loss_val_acc(train_losses, val_losses, dict_to_string, output_path, key)
       if plot_mae_per_subject:
         best_epoch = f"{data[key]['best_model_idx']}"
         uniqie_subject_ids_train, uniqie_subject_ids_val = retrieve_subject_ids(data, key, best_epoch)
@@ -193,20 +250,30 @@ def get_range_k_fold(data):
   return count
 
 def generate_csv_row(data, test_id):
+  real_k_fold = data['config']['real_k_fold']
   k_fold = data['config']['k_fold']
-  test_losses = {f'test_loss_k{i}': data[f'k{i}_test']['dict_test']['test_loss'] for i in range(k_fold)}
-  test_accuracies = {f'test_accuracy_k{i}': data[f'k{i}_test']['dict_test']['test_macro_precision'].item() for i in range(k_fold)}
+  test_losses = {f'test_loss_k{i}': data[f'k{i}_test']['dict_test']['test_loss'] for i in range(real_k_fold)}
+  test_accuracies = {f'test_accuracy_k{i}': data[f'k{i}_test']['dict_test']['test_macro_precision'].item() for i in range(real_k_fold)}
   val_accuracies = {}
   train_accuracies = {}
-  for i in range(k_fold):
+  for i in range(real_k_fold):
     best_model_subfolder_idx = data[f'k{i}_test']['best_model_subfolder_idx']
     val_accuracies[f'val_accuracy_k{i}'] = data[f'k{i}_cross_val_sub_{best_model_subfolder_idx}_train_val']['list_val_macro_accuracy'][data[f'k{i}_cross_val_sub_{best_model_subfolder_idx}_train_val']['best_model_idx']]
     train_accuracies[f'train_accuracy_k{i}'] = data[f'k{i}_cross_val_sub_{best_model_subfolder_idx}_train_val']['list_train_macro_accuracy'][data[f'k{i}_cross_val_sub_{best_model_subfolder_idx}_train_val']['best_model_idx']]
-  best_sub_folders = [data[f'k{i}_test']['best_model_subfolder_idx'] for i in range(k_fold)]
-  best_epochs = {f'best_epoch_k{i}': data[f'k{i}_cross_val_sub_{sub}_train_val']['best_model_idx'] for i, sub in zip(range(k_fold), best_sub_folders)}
-  train_losses = {f'train_loss_k{i}': data[f'k{i}_cross_val_sub_{sub}_train_val']['train_losses'][epoch] for i, sub, epoch in zip(range(k_fold), best_sub_folders, best_epochs.values())}
-  val_losses = {f'val_loss_k{i}': data[f'k{i}_cross_val_sub_{sub}_train_val']['val_losses'][epoch] for i, sub, epoch in zip(range(k_fold), best_sub_folders, best_epochs.values())}
-  train_losses_last = {f'train_loss_last_ep_k{i}': data[f'k{i}_cross_val_sub_{sub}_train_val']['train_losses'][-1] for i, sub in zip(range(k_fold), best_sub_folders)}
+  
+  mean_val_accuracies_last_epoch = {}
+  mean_train_losses_last_epoch = {}
+  mean_train_accuracies_last_epoch = {}
+  mean_train_losses_last_epoch = {f'mean_train_loss_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}_train_val']['train_losses'][-1] for j in range(k_fold-1)]) for i in range(real_k_fold)}
+  mean_val_accuracies_last_epoch = {f'mean_val_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}_train_val']['list_val_macro_accuracy'][-1] for j in range(k_fold-1)]) for i in range(real_k_fold)}
+  mean_train_accuracies_last_epoch = {f'mean_train_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}_train_val']['list_train_macro_accuracy'][-1] for j in range(k_fold-1)]) for i in range(real_k_fold)}
+  
+  best_sub_folders = [data[f'k{i}_test']['best_model_subfolder_idx'] for i in range(real_k_fold)]
+  best_epochs = {f'best_epoch_k{i}': data[f'k{i}_cross_val_sub_{sub}_train_val']['best_model_idx'] for i, sub in zip(range(real_k_fold), best_sub_folders)}
+  train_losses = {f'train_loss_k{i}': data[f'k{i}_cross_val_sub_{sub}_train_val']['train_losses'][epoch] for i, sub, epoch in zip(range(real_k_fold), best_sub_folders, best_epochs.values())}
+  val_losses = {f'val_loss_k{i}': data[f'k{i}_cross_val_sub_{sub}_train_val']['val_losses'][epoch] for i, sub, epoch in zip(range(real_k_fold), best_sub_folders, best_epochs.values())}
+  train_losses_last = {f'train_loss_last_ep_k{i}': data[f'k{i}_cross_val_sub_{sub}_train_val']['train_losses'][-1] for i, sub in zip(range(real_k_fold), best_sub_folders)}
+  
   config = data['config']
   time_ = (int(data['time']/60)) if 'time' in data else 'ND'
   head_type = config['head'].name
@@ -227,11 +294,14 @@ def generate_csv_row(data, test_id):
     'target_metric': config['target_metric_best_model'],
     'round_output_loss': config['round_output_loss'],
     'batch_size_training': config['batch_size_training'],
+    'max_epochs': config['epochs'],
     **head_params,
+    **mean_val_accuracies_last_epoch,
+    **mean_train_accuracies_last_epoch,
+    **mean_train_losses_last_epoch,
+    **train_losses_last,
     **test_losses,
     **test_accuracies,
-    'max_epochs': config['epochs'],
-    **train_losses_last,
     **best_epochs,
     **train_losses,
     **val_losses,
@@ -272,7 +342,7 @@ def plot_confusion_matrices(data, root_output_folder, test_id, additional_info='
 def get_best_result(data):
   config = data['config']
   target_metric_best_model = config['target_metric_best_model']
-  k_fold = config['k_fold']
+  k_fold = config['real_k_fold']
   best_fold = 0
   for k in range(1, k_fold):
     if target_metric_best_model == 'val_loss':
@@ -317,8 +387,8 @@ def plot_run_details(parent_folder, output_root):
   list_row_csv = []
   for file, data in tqdm.tqdm(results_data.items()):
     test_folder = os.path.basename(os.path.dirname(file))
-    data['config']['k_fold'] = get_range_k_fold(data)
-    if data['config']['k_fold'] == 0:
+    data['config']['real_k_fold'] = get_range_k_fold(data)
+    if data['config']['real_k_fold'] == 0:
       print(f'No TEST file found in {file}')
       continue
     grid_search_folder = Path(file).parts[-3]
@@ -380,8 +450,8 @@ def plot_filtered_run_details(parent_folder, output_root, filter_dict):
   # Process filtered data
   for file, data in tqdm.tqdm(filtered_data.items()):
     test_folder = os.path.basename(os.path.dirname(file))
-    data['config']['k_fold'] = get_range_k_fold(data)
-    if data['config']['k_fold'] == 0:
+    data['config']['real_k_fold'] = get_range_k_fold(data)
+    if data['config']['real_k_fold'] == 0:
       print(f'No TEST file found in {file}')
       continue
     grid_search_folder = Path(file).parts[-3]
