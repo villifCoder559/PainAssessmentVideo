@@ -4,9 +4,10 @@ import pandas as pd
 import torch
 import os
 import tqdm
-if __name__ == '__main__':
-  root_folder_path = Path('/media/villi/TOSHIBA EXT/samples_16_whole')
-  csv_path = Path('partA/starting_point/samples_exc_no_detection.csv')
+import argparse
+from custom.helper import GLOBAL_PATH
+
+def main(csv_path,root_folder_path,log_folder_path=None):
   list_files = ["features.pt","list_frames.pt","list_labels.pt","list_path.npy","list_sample_id.pt","list_subject_id.pt"]
   df = pd.read_csv(csv_path,sep='\t')
   list_subject = np.unique(df['subject_name'],return_counts=False)
@@ -27,5 +28,30 @@ if __name__ == '__main__':
     print(f'List missing files in {root_folder_path}')
     for missing_file in list_missing_files:
       print(missing_file)
+    if log_folder_path:
+      os.makedirs(log_folder_path,exist_ok=True)
+      log_folder_path = Path(log_folder_path) / f'log_video_{csv_path.stem}.txt'
+      with open(log_folder_path,'w') as f:
+        for missing_file in list_missing_files:
+          f.write(f'{missing_file}\n')
   else:
     print(f'All files are present in {root_folder_path} according to {csv_path}')
+  
+if __name__ == '__main__':
+  parser = argparse.ArgumentParser()
+  parser.description = 'Check if the whole extracted features are in the csv'
+  parser.add_argument('--csv_path', type=str, required=True,help='Path to csv file')
+  parser.add_argument('--f_video_path', type=str, required=True,help='Path to features extracted')
+  parser.add_argument('--gp',action='store_true', help='Add /equilibrium/fvilli/PainAssessmentVideo to all paths')
+  parser.add_argument('--log_folder_path', type=str, default=None, help='Path to log folder')
+  args = parser.parse_args()
+  root_folder_path = Path(args.f_video_path)
+  csv_path = Path(args.csv_path)
+  log_folder_path = args.log_folder_path
+  if args.gp:
+    root_folder_path = GLOBAL_PATH.get_global_path(root_folder_path)
+    csv_path = GLOBAL_PATH.get_global_path(csv_path)
+    log_folder_path = GLOBAL_PATH.get_global_path(log_folder_path)
+  print(f'csv path: {csv_path}\n')
+  print(f'video path: {root_folder_path}')
+  main(csv_path,root_folder_path,log_folder_path)

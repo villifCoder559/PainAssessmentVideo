@@ -4,6 +4,8 @@ import argparse
 
 
 def generate_path(path):
+  if path[0] == '/':
+    return path
   return os.path.join('/equilibrium','fvilli','PainAssessmentVideo',path)
 
 def main(csv_path,video_path,log_folder_path):
