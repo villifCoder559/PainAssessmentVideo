@@ -31,7 +31,7 @@ def get_hyper_cols(cols, head):
 # Load the grid search results from the CSV file
 parser = argparse.ArgumentParser()
 parser.add_argument('--csv_path', type=str, default='summary.csv', help='Path to the CSV file containing the grid search results.')
-parser.add_argument('--target_col', type=str, default='mean_test_accuracy', help='Name of the column that holds the target performance metric.')
+parser.add_argument('--target_col', type=str, default='mean_test_accuracy', help='Name of the column that holds the target performance metric. Default is mean_test_accuracy.')
 args = parser.parse_args()
 csv_path = args.csv_path
 target_col = args.target_col
