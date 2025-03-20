@@ -571,7 +571,7 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model):
     labels = torch.tensor([sample['labels'][0] for sample in batch],dtype=torch.long)
     subject_id = torch.tensor([sample['subject_id'][0] for sample in batch])
     
-    if instance_model_name.value == 'AttentiveProbe':
+    if instance_model_name.value == 'AttentiveProbe' or instance_model_name.value == 'AttentiveClassifier':
       max_len = max(lengths)
       key_padding_mask = torch.arange(max_len, device=padded_features.device).expand(len(batch), max_len) >= lengths_tensor.unsqueeze(1)
       return {'x':padded_features,
@@ -624,13 +624,14 @@ class customSampler(Sampler):
     for _,test in self.skf.split(np.zeros(self.y_labels.shape[0]), self.y_labels):
       yield test
       
-      
+
   def __len__(self):
     return self.n_batches
   
   
   
-def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_training_batch,is_training,dataset_type,concatenate_temporal,model,backbone_dict=None):
+def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_training_batch,is_training,dataset_type,concatenate_temporal,model,
+                           n_workers=None,backbone_dict=None):
   if dataset_type.value == CUSTOM_DATASET_TYPE.WHOLE.value:
     dataset_ = customDatasetWhole(csv_path,root_folder_features=root_folder_features,concatenate_temporal=concatenate_temporal,
                                   model=model)
@@ -664,8 +665,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                           batch_size=batch_size,
                                           shuffle=shuffle_training_batch)
       customSampler_train.initialize()
-      loader_ = DataLoader(dataset=dataset_, sampler=customSampler_train,collate_fn=fake_collate,batch_size=1)
-      print('Custom DataLoader instantiated')
+      loader_ = DataLoader(dataset=dataset_, sampler=customSampler_train,collate_fn=fake_collate,batch_size=1) 
     except Exception as e:
       print(f'Err: {e}')
       print(f'Use standard DataLoader')

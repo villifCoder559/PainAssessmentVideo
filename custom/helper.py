@@ -1,5 +1,7 @@
 from enum import Enum
 import os
+from pathlib import Path
+
 class SAMPLE_FRAME_STRATEGY(Enum):
   UNIFORM = 'uniform'
   SLIDING_WINDOW = 'sliding_window'
@@ -14,7 +16,7 @@ class MODEL_TYPE(Enum):
   ViT_image = 'ViT_image'
 class EMBEDDING_REDUCTION(Enum):  
   # [B,t,p,p,emb] -> [B,1,p,p,emb] ex: [3,8,14,14,768] -> [3,1,14,14,768]
-  MEAN_TEMPORAL = (1) 
+  MEAN_TEMPORAL = (1,) 
   
   # [B,t,p,p,emb] -> [B,t,1,1,emb] ex: [3,8,14,14,768] -> [3,8,1,1,768]
   MEAN_SPATIAL = (2,3) 
@@ -27,6 +29,7 @@ class INSTANCE_MODEL_NAME(Enum): # model.__class__.__name__
   LINEARPROBE = 'LinearProbe'
   GRUPROBE = 'GRUProbe'
   ATTENTIVEPROBE = 'AttentiveProbe'
+  AttentiveClassifier = 'AttentiveClassifier' # JEPA implementation
   
 class CLIPS_REDUCTION(Enum): 
   # [B,t,p,p,emb] -> [1,t,p,p,emb] ex: [3,8,14,14,768] -> [1,8,14,14,768]
@@ -34,13 +37,25 @@ class CLIPS_REDUCTION(Enum):
   NONE = None
 
 class HEAD(Enum):
-  SVR = 'SVR'
   GRU = 'GRU'
   ATTENTIVE = 'ATTENTIVE'
+  ATTENTIVE_JEPA = 'ATTENTIVE_JEPA'
   LINEAR = 'LINEAR'
 
 class GLOBAL_PATH:
   NAS_PATH = os.path.join('/equilibrium','fvilli','PainAssessmentVideo')
+  def get_global_path(path):
+    if path is not  None:
+      tmp_path = path
+      if isinstance(path,Path):
+        tmp_path = str(path)
+      if tmp_path[0] == '/':
+        return path
+      else:
+        if isinstance(path,Path):
+          return Path(GLOBAL_PATH.NAS_PATH) / path
+        else:
+          return os.path.join(GLOBAL_PATH.NAS_PATH,path)
 class CUSTOM_DATASET_TYPE(Enum):
   AGGREGATED = 'aggregated' # features reduced (spatial reduction) and saved in one folder 
   WHOLE = 'whole' # features not reduced and saved in more folders (like Biovid video)

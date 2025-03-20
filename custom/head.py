@@ -13,6 +13,7 @@ from torch.nn.utils.rnn import pack_padded_sequence,pack_padded_sequence
 from custom.dataset import get_dataset_and_loader
 import tqdm
 import copy
+from jepa.src.models.attentive_pooler import AttentiveClassifier as AttentiveClassifierJEPA
 
 # import wandb
 
@@ -34,7 +35,7 @@ class BaseHead(nn.Module):
       
   def start_train(self, num_epochs, criterion, optimizer,lr, saving_path, train_csv_path, val_csv_path ,batch_size,dataset_type,
                   round_output_loss, shuffle_training_batch, regularization_loss,regularization_lambda,concatenate_temp_dim,
-                  early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,backbone_dict):
+                  early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,backbone_dict,n_workers):
     device = 'cuda'
     self.model.to(device)
     if init_network:
@@ -63,7 +64,8 @@ class BaseHead(nn.Module):
                                                               concatenate_temporal=concatenate_temp_dim,
                                                               dataset_type=dataset_type,
                                                               backbone_dict=backbone_dict,
-                                                              model=self.model)
+                                                              model=self.model,
+                                                              n_workers=n_workers)
     val_dataset, val_loader = get_dataset_and_loader(batch_size=batch_size,
                                                           csv_path=val_csv_path,
                                                           root_folder_features=root_folder_features,
@@ -72,7 +74,8 @@ class BaseHead(nn.Module):
                                                           concatenate_temporal=concatenate_temp_dim,
                                                           dataset_type=dataset_type,
                                                           backbone_dict=backbone_dict,
-                                                          model=self.model)
+                                                          model=self.model,
+                                                          n_workers=n_workers)
     
     train_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
     train_unique_subjects = train_dataset.get_unique_subjects()
@@ -263,7 +266,30 @@ class LinearHead(BaseHead):
     super().__init__(model,is_classification)
   # def get_dataset_and_loader(self, csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal):
   #   return super().get_dataset_and_loader(csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal, False)
-    
+ 
+class AttentiveHeadJEPA(BaseHead):
+  def __init__(self,
+      embed_dim=768,
+      num_heads=12,
+      mlp_ratio=4.0,
+      depth=1,
+      norm_layer=nn.LayerNorm,
+      init_std=0.02,
+      qkv_bias=True,
+      num_classes=5,
+      complete_block=True):
+    model = AttentiveClassifierJEPA(embed_dim=embed_dim,
+                                              num_heads=num_heads,
+                                              mlp_ratio=mlp_ratio,
+                                              depth=depth,
+                                              norm_layer=norm_layer,
+                                              init_std=init_std,
+                                              qkv_bias=qkv_bias,
+                                              num_classes=num_classes,
+                                              complete_block=complete_block)
+    super().__init__(model,is_classification=True)
+
+      
 class AttentiveHead(BaseHead):
   def __init__(self,input_dim,num_classes,num_heads,dropout):
     model = AttentiveProbe(input_dim=input_dim,num_classes=num_classes,num_heads=num_heads,dropout=dropout)
@@ -357,10 +383,11 @@ class GRUProbe(nn.Module):
       raise ValueError(f"Unknown initialization type: {init_type}")
     print('  GRU Network initialized')
 
+
 class AttentiveProbe(nn.Module):
   def __init__(self,input_dim,num_classes,num_heads,dropout):
     super().__init__()
-    self.query = nn.Parameter(torch.randn(1, input_dim)) # [1, emb_dim]
+    self.query = nn.Parameter(torch.ones(1, input_dim)) # [1, emb_dim]
     self.input_dim = input_dim
     self.num_classes = num_classes
     self.num_heads = num_heads
@@ -370,6 +397,7 @@ class AttentiveProbe(nn.Module):
                                       batch_first=True # [batch_size, seq_len, emb_dim]
                                       )
     self.linear = nn.Linear(input_dim, num_classes)
+    self._initialize_weights()
     
   def forward(self, x, key_padding_mask=None):
     # x: [batch_size, seq_len, emb_dim]
@@ -381,9 +409,14 @@ class AttentiveProbe(nn.Module):
     logits = self.linear(pooled)
     return logits
   
-  def _initialize_weights():
-    pass
-  
+  def _initialize_weights(self,init_type='default'):
+    if init_type == 'default':
+      nn.init.trunc_normal_(self.linear.weight, std=0.02)
+      self.linear.reset_parameters()
+      self.attn._reset_parameters() # Xavier uniform initialization
+    else:
+      raise NotImplementedError(f"Unknown initialization type: {init_type}. Can be 'default'")
+    
 class LinearProbe(nn.Module):
   def __init__(self,dim_reduction,input_dim, num_classes):
     super().__init__()
@@ -393,14 +426,19 @@ class LinearProbe(nn.Module):
     self.num_classes = num_classes
     
   def forward(self, x):
-    x = x.data # [batch, ....]
+    # The mean over the sequence is applied in dataset class
+    x = x.data # [batch,T,S,S,emb_dim]
     if self.dim_reduction is not None:
       x = x.mean(dim=self.dim_reduction)
     x=x.reshape(x.shape[0], -1)
     logits = self.linear(x)
     return logits
-  def _initialize_weights():
-    pass
+  
+  def _initialize_weights(self,init_type='default'):
+    if init_type == 'default':
+      self.linear.reset_parameters()
+    else:
+      raise ValueError(f"Unknown initialization type: {init_type}. Can be 'default'")
   
 class EarlyStopping:
   def __init__(self, best, patience=5, min_delta=0,threshold_mode='rel'):

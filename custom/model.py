@@ -2,9 +2,10 @@ import torch
 from custom.backbone import VideoBackbone, VitImageBackbone
 from custom.dataset import customDataset
 import numpy as np
+import sys
 import custom.tools as tools
 from custom.dataset import get_dataset_and_loader
-from custom.head import LinearHead, GRUHead, AttentiveHead
+from custom.head import LinearHead, GRUHead, AttentiveHead, AttentiveHeadJEPA
 from custom.helper import CUSTOM_DATASET_TYPE, MODEL_TYPE
 # import wandb
 
@@ -12,7 +13,7 @@ class Model_Advanced: # Scenario_Advanced
   def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,
               path_labels, sample_frame_strategy, head, head_params,
               batch_size_training,stride_window,clip_length,
-              features_folder_saving_path,concatenate_temporal):
+              features_folder_saving_path,concatenate_temporal,n_workers=1):
     """
     Initialize the custom model. 
     Parameters:
@@ -47,6 +48,13 @@ class Model_Advanced: # Scenario_Advanced
       self.head = GRUHead(**head_params)
     elif head == 'ATTENTIVE':
       self.head = AttentiveHead(**head_params)
+    elif head == 'ATTENTIVE_JEPA':
+      self.head = AttentiveHeadJEPA(embed_dim=head_params['input_dim'],
+                                          num_classes=head_params['num_classes'],
+                                          num_heads=head_params['num_heads'],
+                                          )
+      print(f'sys path: {sys.path}')
+      print('Warning: Dropout is not implemented for the AttentiveClassifierJEPA model.')
     elif head == 'LINEAR':
       self.head = LinearHead(**head_params)
       
@@ -62,6 +70,8 @@ class Model_Advanced: # Scenario_Advanced
       }
     else:
       self.backbone_dict = None
+    self.n_workers = n_workers
+    
       
   def test_pretrained_model(self,path_model_weights, csv_path, criterion, concatenate_temporal,is_test):
     """
@@ -89,7 +99,8 @@ class Model_Advanced: # Scenario_Advanced
                                                         root_folder_features=self.path_to_extracted_features,
                                                         shuffle_training_batch=False,
                                                         backbone_dict=self.backbone_dict,
-                                                        model=self.head.model
+                                                        model=self.head.model,
+                                                        n_workers=self.n_workers
                                                                  )
     unique_test_subjects = test_dataset.get_unique_subjects()
     unique_classes = np.array(list(range(self.head.model.num_classes)))
@@ -164,6 +175,7 @@ class Model_Advanced: # Scenario_Advanced
                                           round_output_loss=round_output_loss,
                                           shuffle_training_batch=shuffle_training_batch,
                                           val_csv_path=val_csv_path,
+                                          n_workers=self.n_workers,
                                           backbone_dict=self.backbone_dict)
     return {'dict_results':dict_results, 
               'count_y_train':count_y_train, 
