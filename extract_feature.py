@@ -1,5 +1,5 @@
 from custom.dataset import customDataset
-from custom.backbone import video_backbone,vit_image_backbone
+from custom.backbone import VideoBackbone,VitImageBackbone
 from custom.helper import CLIPS_REDUCTION,EMBEDDING_REDUCTION,MODEL_TYPE,SAMPLE_FRAME_STRATEGY, HEAD, GLOBAL_PATH
 import torch
 from torch.utils.data import DataLoader
@@ -63,7 +63,7 @@ def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_wor
         print(f'extracting features from {path[0]}')
         with torch.no_grad():
           feature = backbone.forward_features(x=data) # [1,8,14,14,768]
-        if isinstance(backbone,video_backbone) and pooling_embedding_reduction != EMBEDDING_REDUCTION.NONE:
+        if isinstance(backbone,VideoBackbone) and pooling_embedding_reduction != EMBEDDING_REDUCTION.NONE:
           feature = torch.mean(feature,dim=pooling_embedding_reduction.value,keepdim=True)
         print(f'feature shape {feature.shape}')
         list_frames.append(list_sampled_frames)
@@ -139,18 +139,18 @@ def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_wor
   
   print('Model type:',model_type)
   if backbone_type == 'video':
-    backbone_model = video_backbone(model_type=model_type)
+    backbone_model = VideoBackbone(model_type=model_type)
     stride_window = 16
     clip_length = 16
   elif backbone_type == 'image':
-    backbone_model = vit_image_backbone()
+    backbone_model = VitImageBackbone()
     stride_window = 1
     clip_length = 1
   else:
     raise ValueError('Backbone type not recognized. Please use "video" or "image"')
   video_labels = None
   if from_ is not None or to_ is not None:
-    video_labels = pd.read_csv(path_labels)
+    video_labels = pd.read_csv(path_labels,sep='\t')
     video_labels = video_labels.iloc[from_:(to_)]
     video_labels = pd.DataFrame(video_labels)
     print(f'video_labels: {video_labels}')
@@ -185,7 +185,9 @@ def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_wor
     'preprocess_frontalize': preprocess_frontalize,
     'preprocess_crop_detection': preprocess_crop_detection,
     'batch_size_feat_extraction': 1,
-    'backbone_type': backbone_type
+    'backbone_type': backbone_type,
+    'n_workers': n_workers,
+    'save_big_feature': save_big_feature,
   }
   if not os.path.exists(root_saving_folder_path):
     os.makedirs(root_saving_folder_path)
@@ -216,7 +218,10 @@ def set_embedding_reduction_from_string(pooling_embedding_reduction):
     raise ValueError(f'Pooling embedding reduction not recognized: {pooling_embedding_reduction}. Can be spatial, temporal, all or none')
   
 def generate_path(path):
-  return os.path.join(GLOBAL_PATH.NAS_PATH,path)
+  if path[0] == '/':
+    return path
+  else:
+    return os.path.join(GLOBAL_PATH.NAS_PATH,path)
 
 if __name__ == "__main__":
   print('Setting sharing strategy')
@@ -245,9 +250,9 @@ if __name__ == "__main__":
   # prompt example: python3 extract_feature.py --gp --model_type B --saving_after 5000  --emb_red temporal  --path_dataset partA/video/video_frontalized --path_labels partA/starting_point/samples_exc_no_detection.csv --saving_folder_path partA/video/features/samples_vit_img --log_file_path partA/video/features/samples_vit_img/log_file.txt --backbone_type image 
   args = parser.parse_args()
   args.emb_red = set_embedding_reduction_from_string(args.emb_red)
-  if args.from_ is not None or args.to_ is not None:
-    args.saving_folder_path = f'{args.saving_folder_path}_{args.from_}_{args.to_}'
-    print(f'Saving folder path: {args.saving_folder_path}')
+  # if args.from_ is not None or args.to_ is not None:
+  #   args.saving_folder_path = f'{args.saving_folder_path}_{args.from_}_{args.to_}'
+  #   print(f'Saving folder path: {args.saving_folder_path}')
   if args.gp:
     args.path_dataset = generate_path(args.path_dataset)
     args.path_labels = generate_path(args.path_labels)
