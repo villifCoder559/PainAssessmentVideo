@@ -452,7 +452,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    enable_scheduler,
                    early_stopping,
                    concatenate_temp_dim,
-                   stop_after_kth_fold
+                   stop_after_kth_fold,
+                   n_workers,
                   ):
  
 
@@ -538,6 +539,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   features_folder_saving_path= features_folder_saving_path,
                                   clip_length=clip_length,
                                   concatenate_temporal=concatenate_temp_dim,
+                                  n_workers=n_workers
                                   )
   
   # Check if the global folder exists 

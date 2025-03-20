@@ -144,13 +144,12 @@ cython_debug/
 
 # others
 work_dir/
-VideoMAEv2
 partA/
 PartA/
 history_run/
 tsne_Results/
 Tests/
-
+plot_per_run/
 .codegpt
 test_frontalization_imgs/
 tsne_Results_frontalized/
@@ -811,3 +810,7 @@ video_comparisons/comparison_112909_w_20-BL1-094_112909_w_20-BL1-094.mp4
 video_comparisons/comparison_112914_w_51-BL1-081_112914_w_51-BL1-081.mp4
 video_comparisons/comparison_120514_w_56-BL1-081_120514_w_56-BL1-081.mp4
 video_comparisons/comparison_120614_w_61-BL1-081_120614_w_61-BL1-081.mp4
+k_fold_resulst_output.txt
+VideoMAEv2/pretrained/vit_b_k710_dl_from_giant.pth
+.gitignore
+VideoMAEv2/pretrained/vit_s_k710_dl_from_giant.pth
