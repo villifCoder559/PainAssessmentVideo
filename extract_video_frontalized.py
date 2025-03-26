@@ -9,15 +9,12 @@ from pathlib import Path
 from custom.helper import GLOBAL_PATH
 import numpy as np
 
-def generate_global_path(path):
-  return os.path.join(GLOBAL_PATH.NAS_PATH,path)
-
 def load_reference_landmarks(path):
   ref_landmarks = pickle.load(open(path, 'rb'))
   ref_landmarks = ref_landmarks['mean_facial_landmarks']
   return ref_landmarks
 
-def main(generate_video,csv_path,path_folder_output,list_target_video,path_ref_landmarks,global_path,from_,to_,video_folder_path,log_error_path=None):
+def main(generate_video,csv_path,path_folder_output,list_target_video,path_ref_landmarks,global_path,from_,to_,video_folder_path,log_error_path=None,only_oval=False):
   
   face_extractor = extractor.FaceExtractor(visionRunningMode='video')
   csv_list_video_path = np.array(tools.get_list_video_path_from_csv(csv_path=csv_path,
@@ -46,11 +43,12 @@ def main(generate_video,csv_path,path_folder_output,list_target_video,path_ref_l
   for video_path in list_video_path:
     print('Frontalizing video: ',video_path)
     if global_path:
-      video_path = generate_global_path(video_path)
+      video_path = GLOBAL_PATH.get_global_path(video_path)
     try:
       # extra_landmark_smoothing = extractor.LandmarkSmoother(method='moving_average', window_size=5)
       dict_result_frontalization = face_extractor.frontalized_video(video_path=video_path,
                                                                     ref_landmarks=ref_landmarks,
+                                                                    only_landmarks_crop=only_oval,
                                                                     extra_landmark_smoothing=None)
     except extractor.DetectionError as e:
       print(f'Error in {video_path}: {e}')
@@ -63,9 +61,8 @@ def main(generate_video,csv_path,path_folder_output,list_target_video,path_ref_l
       sample_id = os.path.split(video_path)[-1] # got sampleid.mp4
       folder_id = Path(video_path).parts[-2]
       out_path = os.path.join(path_folder_output,folder_id,sample_id)
-      out_path = os.path.join('debug',sample_id)
       if global_path:
-        out_path = generate_global_path(out_path)
+        out_path = GLOBAL_PATH.get_global_path(out_path)
         
       tools.generate_video_from_list_frame(list_frame=dict_result_frontalization['list_frontalized_frame'],
                                           path_video_output=out_path)
@@ -88,10 +85,10 @@ if __name__ == '__main__':
   
   def set_global_args(args):
     os.chdir(GLOBAL_PATH.NAS_PATH)
-    args.csv = generate_global_path(args.csv)
-    args.pfo = generate_global_path(args.pfo)
-    args.prl = generate_global_path(args.prl)
-    args.log_er_p = generate_global_path(args.log_er_p)
+    args.csv = GLOBAL_PATH.get_global_path(args.csv)
+    args.pfo = GLOBAL_PATH.get_global_path(args.pfo)
+    args.prl = GLOBAL_PATH.get_global_path(args.prl)
+    # args.log_er_p = GLOBAL_PATH.get_global_path(args.log_er_p)
     print(f'csv path: {args.csv}')
     print(f'path folder output: {args.pfo}')
     print(f'path ref landmarks: {args.prl}')
@@ -105,8 +102,10 @@ if __name__ == '__main__':
   parser.add_argument('--prl', type=str, default=os.path.join('partA','video','mean_face_landmarks_per_subject','all_subjects_mean_landmarks.pkl'), help='Path to reference landmarks')
   parser.add_argument('--from_', type=int, default=None, help='Frontalize video from index (included)')
   parser.add_argument('--to_', type=int, default=None, help='Frontalize video untill the index (excluded). Set None to get all video')
-  parser.add_argument('--log_er_p', type=str, default=os.path.join('partA','video','video_frontalized'), help='Path to log error file')
+  # parser.add_argument('--log_er_p', type=str, default=os.path.join('partA','video','video_frontalized'), help='Path to log error file')
   parser.add_argument('--vfp', type=str, default=os.path.join('partA','video','video'), help='Path to video folder. Default to partA/video/video')
+  parser.add_argument('--only_oval', action='store_true', help='Extract only face oval from the video')
+  parser
   # sripts example: python3 extract_video_frontalized.py --g_path --gv --csv partA/starting_point/samples_exc_no_detection.csv --pfo partA/video/video_frontalized_new --prl partA/video/mean_face_landmarks_per_subject/all_subjects_mean_landmarks.pkl --from_ 0 --to_ 10
   args = parser.parse_args()
   if args.ltv and args.ltv[0].endswith('.txt'):
@@ -123,7 +122,8 @@ if __name__ == '__main__':
        global_path=args.g_path,
        from_=args.from_,
        to_=args.to_,
-       log_error_path=args.log_er_p,
+       log_error_path=args.pfo,
+       only_oval=args.only_oval,
        video_folder_path=args.vfp)
   
   

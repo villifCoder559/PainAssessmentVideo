@@ -13,6 +13,7 @@ from scipy.spatial.distance import pdist, squareform
 import tqdm
 import pickle
 from collections import defaultdict
+from custom import helper
 
 def calculate_wcss(embeddings, labels):
   """Within-Cluster Sum of Squares implementation"""
@@ -79,7 +80,7 @@ list_folder_path_features = [os.path.join('partA','video','features','samples_16
 if not os.path.exists(folder_tsne_results):
     os.makedirs(folder_tsne_results)
 
-stoic_subjects = [27,28,32,33,34,35,36,39,40,41,42,44,51,53,55,56,61,64,74,87]
+stoic_subjects = helper.stoic_subjects
 all_subjects = list(range(1,88))
 # if stoic:
 #   subject_id_list = stoic_subjects

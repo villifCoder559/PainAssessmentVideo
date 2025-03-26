@@ -10,6 +10,8 @@ from torchmetrics.classification import MulticlassConfusionMatrix
 import tqdm
 from pathlib import Path
 import argparse
+import logging
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
 
 def find_results_files(parent_folder):
   results_files = []
@@ -267,6 +269,15 @@ def generate_csv_row(data, test_id):
   mean_train_losses_last_epoch = {f'mean_train_loss_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}_train_val']['train_losses'][-1] for j in range(k_fold-1)]) for i in range(real_k_fold)}
   mean_val_accuracies_last_epoch = {f'mean_val_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}_train_val']['list_val_macro_accuracy'][-1] for j in range(k_fold-1)]) for i in range(real_k_fold)}
   mean_train_accuracies_last_epoch = {f'mean_train_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}_train_val']['list_train_macro_accuracy'][-1] for j in range(k_fold-1)]) for i in range(real_k_fold)}
+  # try:
+  #   mean_val_accuracies_200_epoch = {}
+  #   mean_train_losses_200_epoch = {}
+  #   mean_train_accuracies_200_epoch = {}
+  #   mean_train_losses_200_epoch = {f'mean_train_loss_200_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}_train_val']['train_losses'][199] for j in range(k_fold-1)]) for i in range(real_k_fold)}
+  #   mean_val_accuracies_200_epoch = {f'mean_val_accuracy_200_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}_train_val']['list_val_macro_accuracy'][199] for j in range(k_fold-1)]) for i in range(real_k_fold)}
+  #   mean_train_accuracies_200_epoch = {f'mean_train_accuracy_200_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}_train_val']['list_train_macro_accuracy'][199] for j in range(k_fold-1)]) for i in range(real_k_fold)}
+  # except Exception as e:
+  #   print(f'Error in {test_id} - {e}')
   
   best_sub_folders = [data[f'k{i}_test']['best_model_subfolder_idx'] for i in range(real_k_fold)]
   best_epochs = {f'best_epoch_k{i}': data[f'k{i}_cross_val_sub_{sub}_train_val']['best_model_idx'] for i, sub in zip(range(real_k_fold), best_sub_folders)}
@@ -277,6 +288,7 @@ def generate_csv_row(data, test_id):
   config = data['config']
   time_ = (int(data['time']/60)) if 'time' in data else 'ND'
   head_type = config['head'].name
+  clip_grad_norm = config['clip_grad_norm'] if 'clip_grad_norm' in config else 'ND'
   head_params = flatten_dict({f'{head_type}': config['head_params']})
   row_dict = {
     'test_id': test_id,
@@ -289,7 +301,7 @@ def generate_csv_row(data, test_id):
     'init_network': config['init_network'],
     'reg_lambda': config['regularization_lambda'],
     'reg_loss': config['regularization_loss'],
-    'feature_type': config['features_folder_saving_path'][-1],
+    'feature_type': config['features_folder_saving_path'][-1] if config['features_folder_saving_path'][-1] != '' else config['features_folder_saving_path'][-2],
     'early_stopping_key': config['key_for_early_stopping'] + f'(pat={config["early_stopping"].patience},eps={config["early_stopping"].min_delta},t_mod={config["early_stopping"].threshold_mode})',
     'target_metric': config['target_metric_best_model'],
     'round_output_loss': config['round_output_loss'],
@@ -298,7 +310,10 @@ def generate_csv_row(data, test_id):
     **head_params,
     **mean_val_accuracies_last_epoch,
     **mean_train_accuracies_last_epoch,
+    # **mean_val_accuracies_200_epoch,
+    # **mean_train_accuracies_200_epoch,
     **mean_train_losses_last_epoch,
+    # **mean_train_losses_200_epoch,
     **train_losses_last,
     **test_losses,
     **test_accuracies,
@@ -313,6 +328,7 @@ def generate_csv_row(data, test_id):
     'mean_test_accuracy': np.mean(list(test_accuracies.values())),
     **train_accuracies,
     **val_accuracies,
+    'clip_grad_norm': clip_grad_norm,
     'time_min': time_,
   }
   return row_dict
@@ -380,7 +396,7 @@ def collect_loss_plots(summary_folder, output_folder):
             shutil.copy(src_path, dst_path)
   print(f"All loss plots collected in {output_folder}")
 
-def plot_run_details(parent_folder, output_root):
+def plot_run_details(parent_folder, output_root,only_csv):
   results_files = find_results_files(parent_folder)
   results_data = {file: load_results(file) for file in results_files}
   print(f'Loaded {len(results_data)} results files')
@@ -395,18 +411,19 @@ def plot_run_details(parent_folder, output_root):
     test_id = test_folder.split('_')[0]
     run_output_folder = os.path.join(output_root)
     list_row_csv.append(generate_csv_row(data, test_id))
-    data_best = get_best_result(data)
-    data_wo_best = {k: v for k, v in data.items() if k != f'k{data_best["best_fold"]}_cross_val_sub_{data_best["best_sub_folder"]}_train_val' and k != f'k{data_best["best_fold"]}_test'}
-    try:
-      plot_losses(data_wo_best, os.path.join(run_output_folder, grid_search_folder, 'loss_plots'), test_id)
-      plot_accuracies(data_wo_best, os.path.join(run_output_folder, grid_search_folder, 'accuracy_plots'), test_id)
-      plot_confusion_matrices(data_wo_best, os.path.join(run_output_folder, grid_search_folder, 'confusion_matrices'), test_id)
-      plot_test_metrics(data, os.path.join(run_output_folder, grid_search_folder, 'test_plots'), test_id)
-      plot_losses(data_best, os.path.join(run_output_folder, grid_search_folder, 'loss_plots'), test_id, '_best', plot_mae_per_subject=True, plot_mae_per_class=True)
-      plot_accuracies(data_best, os.path.join(run_output_folder, grid_search_folder, 'accuracy_plots'), test_id, '_best')
-      plot_confusion_matrices(data_best, os.path.join(run_output_folder, grid_search_folder, 'confusion_matrices'), test_id, '_best')
-    except Exception as e:
-      print(f'Error in {file} - {e}')
+    if not only_csv:
+      data_best = get_best_result(data)
+      data_wo_best = {k: v for k, v in data.items() if k != f'k{data_best["best_fold"]}_cross_val_sub_{data_best["best_sub_folder"]}_train_val' and k != f'k{data_best["best_fold"]}_test'}
+      try:
+        plot_losses(data_wo_best, os.path.join(run_output_folder, grid_search_folder, 'loss_plots'), test_id)
+        plot_accuracies(data_wo_best, os.path.join(run_output_folder, grid_search_folder, 'accuracy_plots'), test_id)
+        plot_confusion_matrices(data_wo_best, os.path.join(run_output_folder, grid_search_folder, 'confusion_matrices'), test_id)
+        plot_test_metrics(data, os.path.join(run_output_folder, grid_search_folder, 'test_plots'), test_id)
+        plot_losses(data_best, os.path.join(run_output_folder, grid_search_folder, 'loss_plots'), test_id, '_best', plot_mae_per_subject=True, plot_mae_per_class=True)
+        plot_accuracies(data_best, os.path.join(run_output_folder, grid_search_folder, 'accuracy_plots'), test_id, '_best')
+        plot_confusion_matrices(data_best, os.path.join(run_output_folder, grid_search_folder, 'confusion_matrices'), test_id, '_best')
+      except Exception as e:
+        print(f'Error in {file} - {e}')
   df = pd.DataFrame(list_row_csv)
   df = df.fillna('ND')
   if not os.path.exists(output_root):
@@ -414,7 +431,7 @@ def plot_run_details(parent_folder, output_root):
   df.to_csv(os.path.join(output_root, 'summary.csv'), index=False)
   print(f'Summary CSV saved to {output_root}/summary.csv')
 
-def plot_filtered_run_details(parent_folder, output_root, filter_dict):
+def plot_filtered_run_details(parent_folder, output_root, filter_dict,only_csv):
   """
   Processes only results whose config matches the filter_dict criteria.
   Filtered plots are saved under 'filtered_plots' along with a 'filters.txt'
@@ -459,18 +476,19 @@ def plot_filtered_run_details(parent_folder, output_root, filter_dict):
     run_output_folder = os.path.join(filtered_output_folder, grid_search_folder, 'plot_per_run')
     os.makedirs(run_output_folder, exist_ok=True)
     list_row_csv.append(generate_csv_row(data, test_id))
-    data_best = get_best_result(data)
-    data_wo_best = {k: v for k, v in data.items() if k != f'k{data_best["best_fold"]}_cross_val_sub_{data_best["best_sub_folder"]}_train_val' and k != f'k{data_best["best_fold"]}_test'}
-    try:
-      plot_losses(data_wo_best, os.path.join(run_output_folder, 'loss_plots'), test_id)
-      plot_accuracies(data_wo_best, os.path.join(run_output_folder, 'accuracy_plots'), test_id)
-      plot_confusion_matrices(data_wo_best, os.path.join(run_output_folder, 'confusion_matrices'), test_id)
-      plot_test_metrics(data, os.path.join(run_output_folder, 'test_plots'), test_id)
-      plot_losses(data_best, os.path.join(run_output_folder, 'loss_plots'), test_id, '_best', plot_mae_per_subject=True, plot_mae_per_class=True)
-      plot_accuracies(data_best, os.path.join(run_output_folder, 'accuracy_plots'), test_id, '_best')
-      plot_confusion_matrices(data_best, os.path.join(run_output_folder, 'confusion_matrices'), test_id, '_best')
-    except Exception as e:
-      print(f'Error in {file} - {e}')
+    if not only_csv:
+      data_best = get_best_result(data)
+      data_wo_best = {k: v for k, v in data.items() if k != f'k{data_best["best_fold"]}_cross_val_sub_{data_best["best_sub_folder"]}_train_val' and k != f'k{data_best["best_fold"]}_test'}
+      try:
+        plot_losses(data_wo_best, os.path.join(run_output_folder, 'loss_plots'), test_id)
+        plot_accuracies(data_wo_best, os.path.join(run_output_folder, 'accuracy_plots'), test_id)
+        plot_confusion_matrices(data_wo_best, os.path.join(run_output_folder, 'confusion_matrices'), test_id)
+        plot_test_metrics(data, os.path.join(run_output_folder, 'test_plots'), test_id)
+        plot_losses(data_best, os.path.join(run_output_folder, 'loss_plots'), test_id, '_best', plot_mae_per_subject=True, plot_mae_per_class=True)
+        plot_accuracies(data_best, os.path.join(run_output_folder, 'accuracy_plots'), test_id, '_best')
+        plot_confusion_matrices(data_best, os.path.join(run_output_folder, 'confusion_matrices'), test_id, '_best')
+      except Exception as e:
+        print(f'Error in {file} - {e}')
   df = pd.DataFrame(list_row_csv).fillna('ND')
   csv_path = os.path.join(filtered_output_folder, 'summary.csv')
   df.to_csv(csv_path, index=False)
@@ -482,8 +500,11 @@ if __name__ == '__main__':
                       help='Path to folder containing all the results')
   parser.add_argument('--filter', type=str, default='',
                       help='Optional filter criteria in format key1=val1,key2=val2')
+  parser.add_argument('--only_csv', action='store_true',
+                      help='Generate only the summary CSV file without generating any plots')
   args = parser.parse_args()
   parent_folder = args.parent_folder
+  only_csv = args.only_csv
   print(f'Parent folder: {parent_folder}')
   output_root = os.path.join(parent_folder, '_summary')
   os.makedirs(output_root, exist_ok=True)
@@ -495,7 +516,7 @@ if __name__ == '__main__':
         key, value = pair.split('=')
         filter_dict_arg[key.strip()] = value.strip()
     print(f'Applying filter: {filter_dict_arg}')
-    plot_filtered_run_details(parent_folder, output_root, filter_dict_arg)
+    plot_filtered_run_details(parent_folder, output_root, filter_dict_arg,only_csv)
   else:
   # Generate the unfiltered plots
-    plot_run_details(parent_folder, os.path.join(output_root, 'plot_per_run'))
+    plot_run_details(parent_folder, os.path.join(output_root, 'plot_per_run'),only_csv)
