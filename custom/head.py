@@ -14,7 +14,8 @@ from custom.dataset import get_dataset_and_loader
 import tqdm
 import copy
 from jepa.src.models.attentive_pooler import AttentiveClassifier as AttentiveClassifierJEPA
-
+from jepa.evals.video_classification_frozen import eval as jepa_eval 
+import pickle
 # import wandb
 
 class BaseHead(nn.Module):
@@ -34,23 +35,12 @@ class BaseHead(nn.Module):
       print(f'  GPU memory free  : {free_gpu_mem:.2f} GB')
       
   def start_train(self, num_epochs, criterion, optimizer,lr, saving_path, train_csv_path, val_csv_path ,batch_size,dataset_type,
-                  round_output_loss, shuffle_training_batch, regularization_loss,regularization_lambda,concatenate_temp_dim,
+                  round_output_loss, shuffle_training_batch, regularization_loss,regularization_lambda,concatenate_temp_dim,clip_grad_norm,
                   early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,backbone_dict,n_workers):
     device = 'cuda'
     self.model.to(device)
     if init_network:
       self.model._initialize_weights(init_type=init_network)
-    optimizer = optimizer(self.model.parameters(), lr=lr, weight_decay=regularization_lambda if regularization_loss == 'L2' else 0)
-    if enable_scheduler:
-      scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau( optimizer=optimizer, 
-                                                              mode='min' if key_for_early_stopping == 'val_loss' else 'max',
-                                                              cooldown=5,
-                                                              patience=10,
-                                                              factor=0.1,
-                                                              verbose=True,
-                                                              threshold=1e-4,
-                                                              threshold_mode='abs',
-                                                              min_lr=1e-7)
     
     list_train_losses = []
     list_train_losses_per_class = []
@@ -77,9 +67,39 @@ class BaseHead(nn.Module):
                                                           model=self.model,
                                                           n_workers=n_workers)
     
-    train_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
+    if isinstance(self.model,AttentiveClassifierJEPA):
+      optimizer, scaler, scheduler, wd_scheduler = jepa_eval.init_opt(
+          classifier=self.model,
+          start_lr=lr,
+          ref_lr=lr,
+          iterations_per_epoch=len(train_loader),
+          warmup=0.0,
+          wd=regularization_lambda if regularization_loss == 'L2' else 0,
+          num_epochs=num_epochs,
+          use_bfloat16=False)
+    else:
+      if enable_scheduler:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau( optimizer=optimizer, 
+                                                                mode='min' if key_for_early_stopping == 'val_loss' else 'max',
+                                                                cooldown=5,
+                                                                patience=10,
+                                                                factor=0.1,
+                                                                verbose=True,
+                                                                threshold=1e-4,
+                                                                threshold_mode='abs',
+                                                                min_lr=1e-7)
+        wd_scheduler = None
+        # wd_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+      else:
+        scheduler = None
+        wd_scheduler = None
+      optimizer = optimizer(self.model.parameters(), lr=lr, weight_decay=regularization_lambda if regularization_loss == 'L2' else 0)
+    
+    # train_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
+    train_unique_classes = train_dataset.get_unique_classes()
     train_unique_subjects = train_dataset.get_unique_subjects()
-    val_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
+    # val_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
+    val_unique_classes = val_dataset.get_unique_classes()
     val_unique_subjects = val_dataset.get_unique_subjects()
     list_val_losses = []
     list_val_losses_per_class = []
@@ -87,26 +107,48 @@ class BaseHead(nn.Module):
     list_val_confusion_matricies = []
     list_train_macro_accuracy = []
     list_val_macro_accuracy = []
+    total_norm_epoch = {}
     early_stopping.reset()
+    list_list_samples = []
+    list_list_y = []
     for epoch in range(num_epochs):
       self.model.train()
+      if scheduler:
+        scheduler.step()
+      if wd_scheduler:
+        wd_scheduler.step()
       class_loss = np.zeros(train_unique_classes.shape[0])
       subject_loss = np.zeros(train_unique_subjects.shape[0])
       train_confusion_matrix = ConfusionMatrix(task='multiclass',num_classes=train_unique_classes.shape[0]+1)
       train_loss = 0.0
       subject_count_batch = np.zeros(train_unique_subjects.shape[0])
-      
-      for dict_batch_X, batch_y, batch_subjects in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
+      count_batch=0
+      total_norm_epoch[epoch] = []
+      list_samples = []
+      list_y = []
+      for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
         tmp = np.isin(train_unique_subjects,batch_subjects)
         subject_count_batch[tmp] += 1
+        list_samples.append(sample_id)
+        list_y.append(batch_y)
+        # [list_samples.append(sample.item()) for sample in sample_id]
+        # [list_y.append(y.item()) for y in batch_y]
         batch_y = batch_y.to(device)
         dict_batch_X = {key: value.to(device) for key, value in dict_batch_X.items()}
         optimizer.zero_grad()
         outputs = self.model(**dict_batch_X) # input [batch, seq_len, emb_dim]
         if round_output_loss:
           outputs = torch.round(outputs)
-        loss = criterion(outputs, batch_y)
-        loss.backward()
+        loss = criterion(outputs, batch_y) # Maybe the class 4 should be class 1
+        if regularization_loss == 'L1':
+          # Sum absolute values of all trainable parameters
+          l1_norm = sum(param.abs().sum() for param in self.model.parameters() if param.requires_grad)
+          loss = loss + regularization_lambda * l1_norm  # Note: scaling factor lambda
+        loss.backward()        
+        if clip_grad_norm:
+          total_norm=torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm).detach().cpu() #  torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)
+          total_norm_epoch[epoch].append(total_norm)
+        # remove dict_batch_X from GPU
         optimizer.step()
         # outputs = torch.argmax(outputs, dim=1)
         train_loss += loss.item()
@@ -123,6 +165,7 @@ class BaseHead(nn.Module):
                                        subject_loss=subject_loss,
                                        unique_train_val_subjects=train_unique_subjects)
         batch_y = batch_y.detach().cpu().reshape(-1)
+        count_batch+=1
         if self.is_classification:
           predictions = torch.argmax(outputs, dim=1).detach().cpu().reshape(-1)
         else:
@@ -131,7 +174,10 @@ class BaseHead(nn.Module):
           predictions[~mask] = self.model.num_classes # put prediction in the last class (bad_classified)
           
         train_confusion_matrix.update(predictions, batch_y)
-      
+        
+      # tools.check_sample_id_y_from_csv(list_samples,list_y,train_csv_path)
+      list_list_samples.append(list_samples)
+      list_list_y.append(list_y)
       train_confusion_matrix.compute()
       list_train_losses.append(train_loss / len(train_loader))
       list_train_losses_per_class.append(class_loss / len(train_loader))
@@ -157,9 +203,6 @@ class BaseHead(nn.Module):
         best_model_state = copy.deepcopy(self.model.state_dict())
         best_model_state = {key: value.cpu() for key, value in best_model_state.items()}
         best_model_epoch = epoch
-      
-      if enable_scheduler:
-        scheduler.step(dict_eval[key_for_early_stopping])
         
       if early_stopping(dict_eval[key_for_early_stopping]):
         break
@@ -190,22 +233,25 @@ class BaseHead(nn.Module):
       'best_model_state': best_model_state,
       'list_train_macro_accuracy': list_train_macro_accuracy,
       'list_val_macro_accuracy': list_val_macro_accuracy,
-      'epochs': epoch
+      'epochs': epoch,
+      'total_norm_epoch': total_norm_epoch,
+      'list_samples': list_list_samples,
+      'list_y': list_list_y
     }
-  
+
   def evaluate(self, val_loader, criterion, unique_val_subjects, unique_val_classes, is_test):
     # unique_train_val_classes is only for eval but kept the name for compatibility
     device = 'cuda'
+    count = 0
     self.model.to(device)
     self.model.eval()
-    count = 0
     with torch.no_grad():
       val_loss = 0.0
       val_loss_per_class = np.zeros(self.model.num_classes)
       subject_loss = np.zeros(unique_val_subjects.shape[0])
       val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=self.model.num_classes+1) # last class is for bad_classified in regression
       subject_batch_count = np.zeros(unique_val_subjects.shape[0])
-      for dict_batch_X, batch_y, batch_subjects in tqdm.tqdm(val_loader,total=len(val_loader),desc='Validation' if not is_test else 'Test'):
+      for dict_batch_X, batch_y, batch_subjects,_ in tqdm.tqdm(val_loader,total=len(val_loader),desc='Validation' if not is_test else 'Test'):
         tmp = np.isin(unique_val_subjects,batch_subjects)
         dict_batch_X = {key: value.to(device) for key, value in dict_batch_X.items()}
         batch_y = batch_y.to(device).long()
@@ -254,7 +300,30 @@ class BaseHead(nn.Module):
           'dict_precision_recall': dict_precision_recall
         }      
 
-  
+  def log_and_save_gradients(model, epoch, batch_idx, saving_path):
+    """
+    Logs and saves the gradients of the model parameters to a .pkl file.
+
+    Args:
+        model (torch.nn.Module): The model whose gradients are to be logged.
+        saving_path (str): The directory where the gradient file will be saved.
+        epoch (int): The current epoch number.
+        batch_idx (int): The current batch index.
+    """
+    gradients = {}
+    for name, param in model.named_parameters():
+      if param.grad is not None:
+        # Detach the gradient and move it to CPU for saving
+        gradients[name] = param.grad.detach().cpu().clone()
+
+        # Optionally, print some stats
+        print(f"{name} - grad mean: {gradients[name].mean().item():.4f}, std: {gradients[name].std().item():.4f}")
+    
+    # Create the file name with epoch and batch index
+    grad_filename = os.path.join(saving_path, f'gradients_epoch{epoch}_batch{batch_idx}.pkl')
+    with open(grad_filename, 'wb') as f:
+        pickle.dump(gradients, f)
+
   def load_state_weights(self, path):
     self.model.load_state_dict(torch.load(path))
     print(f'Model weights loaded from {path}')
@@ -276,7 +345,11 @@ class AttentiveHeadJEPA(BaseHead):
       norm_layer=nn.LayerNorm,
       init_std=0.02,
       qkv_bias=True,
+      dropout=0.0,
+      residual_dropout=0.0,
+      attn_dropout=0.0,
       num_classes=5,
+      pos_enc=False,
       complete_block=True):
     model = AttentiveClassifierJEPA(embed_dim=embed_dim,
                                               num_heads=num_heads,
@@ -286,6 +359,10 @@ class AttentiveHeadJEPA(BaseHead):
                                               init_std=init_std,
                                               qkv_bias=qkv_bias,
                                               num_classes=num_classes,
+                                              dropout_mlp=dropout,
+                                              attn_dropout=attn_dropout,
+                                              residual_dropout=residual_dropout,
+                                              pos_enc=pos_enc,
                                               complete_block=complete_block)
     super().__init__(model,is_classification=True)
 
@@ -315,6 +392,7 @@ class GRUProbe(nn.Module):
     self.dropout = dropout
     self.num_classes = 5
     self.output_size = output_size
+    self.batchNorm = nn.BatchNorm1d(input_size)
     self.gru = nn.GRU(input_size, hidden_size, num_layers, dropout=dropout, batch_first=True)
     self.norm = nn.LayerNorm(hidden_size) if layer_norm else nn.Identity()
     self.fc = nn.Linear(hidden_size, output_size)
