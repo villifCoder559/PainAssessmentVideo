@@ -814,3 +814,4 @@ k_fold_resulst_output.txt
 VideoMAEv2/pretrained/vit_b_k710_dl_from_giant.pth
 .gitignore
 VideoMAEv2/pretrained/vit_s_k710_dl_from_giant.pth
+VideoMAEv2/pretrained/vit_g_hybrid_pt_1200e_k710_ft.pth
