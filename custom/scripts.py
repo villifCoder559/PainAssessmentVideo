@@ -37,7 +37,8 @@ def set_seed(seed):
 def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced, k_fold, seed_random_state,
                           lr, epochs, optimizer_fn, round_output_loss, shuffle_training_batch, criterion,
                           early_stopping, enable_scheduler, concatenate_temp_dim, init_network,
-                          regularization_lambda, regularization_loss, key_for_early_stopping, target_metric_best_model,stop_after_kth_fold):
+                          regularization_lambda, regularization_loss, key_for_early_stopping, target_metric_best_model,stop_after_kth_fold,
+                          clip_grad_norm):
   """
   Perform k-fold cross-validation on the dataset and train the model.
   
@@ -82,7 +83,7 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
       concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
       init_network, regularization_loss, regularization_lambda,
       key_for_early_stopping, early_stopping, enable_scheduler,
-      target_metric_best_model, seed_random_state
+      target_metric_best_model, seed_random_state, clip_grad_norm,stop_after_kth_fold
     )
     
     # Store results
@@ -95,13 +96,12 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
       'epoch': fold_results['best_model_epoch']
     }
     
+    # stop to make the tests faster
+    if stop_after_kth_fold is not None and i == stop_after_kth_fold - 1:
+      break
     # Clean up extra model weights to save space
     cleanup_extra_models(train_folder_path, i, k_fold, dict_results_model_weights)
     
-    # Stop after k-th fold
-    if stop_after_kth_fold is not None and i == stop_after_kth_fold - 1:
-      break
-  
   # Create result summary plots
   compile_test_loss_plots(list_test_results)
   
@@ -125,7 +125,8 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
                    concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
                    init_network, regularization_loss, regularization_lambda,
                    key_for_early_stopping, early_stopping, enable_scheduler,
-                   target_metric_best_model, seed_random_state):
+                   target_metric_best_model, seed_random_state,clip_grad_norm,
+                   stop_after_kth_fold):
   """Run a single fold of the cross-validation"""
   # Setup folder structure for this fold
   saving_path_kth_fold = os.path.join(train_folder_path, f'k{fold_idx}_cross_val')
@@ -161,7 +162,8 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
     saving_path_kth_fold, model_advanced, lr, epochs, optimizer_fn,
     concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
     init_network, regularization_loss, regularization_lambda,
-    key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state
+    key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state,
+    clip_grad_norm,stop_after_kth_fold
   )
   
   # Select best model from sub-folds
@@ -192,9 +194,11 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
   
   # Add sub-fold results
   for sub_idx in range(k_fold - 1):
-    reduced_dict = reduce_logs_for_subfold(fold_results_kth[sub_idx])
-    fold_results['fold_results'][f'k{fold_idx}_cross_val_sub_{sub_idx}_train_val'] = reduced_dict
-  
+    if sub_idx < len(fold_results_kth):
+      reduced_dict = reduce_logs_for_subfold(fold_results_kth[sub_idx])
+      fold_results['fold_results'][f'k{fold_idx}_cross_val_sub_{sub_idx}_train_val'] = reduced_dict
+    else:
+      break
   return fold_results
 
 def create_split_indices(test_idx_split, val_idx_split, train_idxs_split, list_splits_idxs, sample_ids):
@@ -231,7 +235,8 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
                       saving_path_kth_fold, model_advanced, lr, epochs, optimizer_fn,
                       concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
                       init_network, regularization_loss, regularization_lambda,
-                      key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state):
+                      key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state,clip_grad_norm,
+                      stop_after_kth_fold):
   """Train models on sub-folds"""
   if not isinstance(model_advanced, Model_Advanced):
     raise ValueError('model_advanced must be an instance of Model_Advanced')
@@ -266,7 +271,8 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
       regularization_lambda=regularization_lambda,
       key_for_early_stopping=key_for_early_stopping,
       early_stopping=early_stopping,
-      enable_scheduler=enable_scheduler
+      enable_scheduler=enable_scheduler,
+      clip_grad_norm=clip_grad_norm
     )
     
     # Plot training results
@@ -279,6 +285,10 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
     )
     
     fold_results_kth.append(dict_train)
+    
+    # Stop to make the tests faster
+    if stop_after_kth_fold is not None and sub_idx == stop_after_kth_fold - 1:
+      break
   
   return fold_results_kth
 
@@ -454,6 +464,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    concatenate_temp_dim,
                    stop_after_kth_fold,
                    n_workers,
+                   clip_grad_norm
                   ):
  
 
@@ -489,6 +500,10 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'target_metric_best_model': target_metric_best_model,
     'early_stopping': early_stopping,
     'enable_scheduler': enable_scheduler,
+    'concatenate_temp_dim': concatenate_temp_dim,
+    'stop_after_kth_fold': stop_after_kth_fold,
+    'n_workers': n_workers,
+    'clip_grad_norm': clip_grad_norm,
     }
   def get_json_config():
     return {
@@ -599,6 +614,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                           regularization_loss=regularization_loss,
                                           key_for_early_stopping=key_for_early_stopping,
                                           enable_scheduler=enable_scheduler,
+                                          clip_grad_norm=clip_grad_norm,
                                           target_metric_best_model=target_metric_best_model,
                                           stop_after_kth_fold=stop_after_kth_fold)
   fold_results['dict_k_fold_results']['time'] = time.time() - start  
