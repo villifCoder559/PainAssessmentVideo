@@ -17,7 +17,7 @@ import pickle
 from sklearn.metrics import silhouette_score, davies_bouldin_score
 from scipy.spatial.distance import pdist
 from custom.helper import CUSTOM_DATASET_TYPE,INSTANCE_MODEL_NAME
-
+import torch.nn as nn
 
 class NpEncoder(json.JSONEncoder):
   def default(self, obj):
@@ -112,12 +112,10 @@ def is_dict_data(folder_path):
   """
   list_target_files = ['features.pt','list_frames.pt','list_labels.pt','list_path.npy','list_subject_id.pt','list_sample_id.pt']
   list_files = os.listdir(folder_path)
-  if len(list_files) != len(list_target_files):
-    return False
   for file in list_files:
-    if file not in list_target_files:
-      return False
-  return True
+    if file in list_target_files:
+      list_target_files.remove(file)
+  return len(list_target_files) == 0
 
 def get_instace_model_name(model):
   model_name = model.__class__.__name__
@@ -1034,7 +1032,7 @@ def generate_video_from_list_frame(list_frame,path_video_output,fps=25):
   out = cv2.VideoWriter(path_video_output, cv2.VideoWriter_fourcc(*'avc1'), fps, (list_frame[0].shape[1], list_frame[0].shape[0]))
   for frame in list_frame:
     if not isinstance(frame,np.ndarray):
-      frame = np.array(frame)
+      frame = np.array(frame,dtype=np.uint8)
     frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
     out.write(frame)
   out.release()
@@ -1411,19 +1409,52 @@ def plot_dataset_distribuition(csv_path,run_folder_path,per_class=True,per_parte
 
 
 def compute_loss_per_class(criterion,unique_train_val_classes,batch_y,class_loss,outputs):
-  for cls in unique_train_val_classes:
-    mask = (batch_y == cls).reshape(-1)
-    if mask.any():
-      class_idx = np.where(unique_train_val_classes == cls)[0][0]
-      loss = criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
-      class_loss[class_idx] += loss
+  if isinstance(criterion,nn.CrossEntropyLoss):
+    for cls in unique_train_val_classes:
+        mask = (batch_y == cls).reshape(-1)
+        if mask.any():
+          class_idx = np.where(unique_train_val_classes == cls)[0][0]
+          predicted = torch.argmax(outputs[mask], 1)
+          correct = (predicted == batch_y[mask]).sum().item()
+          total = mask.sum().item()
+          class_loss[class_idx] += correct / total
+  else:
+    for cls in unique_train_val_classes:
+      mask = (batch_y == cls).reshape(-1)
+      if mask.any():
+        class_idx = np.where(unique_train_val_classes == cls)[0][0]
+        loss = criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
+        class_loss[class_idx] += loss
       
 def compute_loss_per_subject(criterion,unique_train_val_subjects,batch_subjects,batch_y,subject_loss,outputs):
-  for subj in unique_train_val_subjects:
-    mask = (batch_subjects == subj).reshape(-1)
-    # if epoch == 0:
-    #   nr_samples_per_subject[subj] += mask.sum().item()
-    if mask.any():
-      subj_idx = np.where(unique_train_val_subjects == subj)[0][0]
-      subject_loss[subj_idx] += criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
+  if isinstance(criterion,nn.CrossEntropyLoss):
+    for subj in unique_train_val_subjects:
+      mask = (batch_subjects == subj).reshape(-1)
+      if mask.any():
+        subj_idx = np.where(unique_train_val_subjects == subj)[0][0]
+        _, predicted = torch.max(outputs[mask], 1)
+        correct = (predicted == batch_y[mask]).sum().item()
+        total = mask.sum().item()
+        subject_loss[subj_idx] += correct / total
 
+  else:
+    for subj in unique_train_val_subjects:
+      mask = (batch_subjects == subj).reshape(-1)
+      # if epoch == 0:
+      #   nr_samples_per_subject[subj] += mask.sum().item()
+      if mask.any():
+        subj_idx = np.where(unique_train_val_subjects == subj)[0][0]
+        subject_loss[subj_idx] += criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
+
+def generate_new_csv(csv_path,filter):
+  df = pd.read_csv(csv_path, sep='\t')
+  for key,value in filter.items():
+    df = df[df[key].isin(value)]
+    
+def check_sample_id_y_from_csv(list_samples, list_y,csv_path):
+  df = pd.read_csv(csv_path,sep='\t')
+  for sample,y in zip(list_samples,list_y):
+    csv_label = df[df['sample_id'] == sample]['class_id'].values[0]
+    if y != csv_label:
+      print(f'Error: {sample} y: {y} csv: {csv_label}')
+      raise ValueError('Error: sample_id and y do not match with csv')
