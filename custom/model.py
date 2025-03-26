@@ -52,6 +52,11 @@ class Model_Advanced: # Scenario_Advanced
       self.head = AttentiveHeadJEPA(embed_dim=head_params['input_dim'],
                                           num_classes=head_params['num_classes'],
                                           num_heads=head_params['num_heads'],
+                                          dropout=head_params['dropout'],
+                                          attn_dropout=head_params['attn_dropout'],
+                                          residual_dropout=head_params['residual_dropout'],
+                                          mlp_ratio=head_params['mlp_ratio'],
+                                          pos_enc=head_params['pos_enc'],
                                           )
       print(f'sys path: {sys.path}')
       print('Warning: Dropout is not implemented for the AttentiveClassifierJEPA model.')
@@ -122,7 +127,7 @@ class Model_Advanced: # Scenario_Advanced
             optimizer_fn, lr,saving_path,round_output_loss,
             shuffle_training_batch,init_network,
             regularization_loss,regularization_lambda,key_for_early_stopping,early_stopping,
-            enable_scheduler,concatenate_temporal
+            enable_scheduler,concatenate_temporal,clip_grad_norm
             ):
     """
     Train the model using the specified training and testing datasets.
@@ -176,6 +181,7 @@ class Model_Advanced: # Scenario_Advanced
                                           shuffle_training_batch=shuffle_training_batch,
                                           val_csv_path=val_csv_path,
                                           n_workers=self.n_workers,
+                                          clip_grad_norm=clip_grad_norm,
                                           backbone_dict=self.backbone_dict)
     return {'dict_results':dict_results, 
               'count_y_train':count_y_train, 
