@@ -13,7 +13,7 @@ from custom.helper import CUSTOM_DATASET_TYPE, SAMPLE_FRAME_STRATEGY
 import custom.tools as tools
 from sklearn.model_selection import StratifiedKFold
 from torch.utils.data import  Sampler
-
+import torchvision.transforms.functional as F
 import torchvision.transforms as T
 import custom.faceExtractor as extractor
 import pickle
@@ -41,6 +41,8 @@ class customDataset(torch.utils.data.Dataset):
       preprocess_crop_detection=False,
       saving_folder_path_extracted_video=None,
       video_labels=None,
+      flip_horizontal=False,
+      color_jitter=None,
       backbone_dict=None
   ):
     """
@@ -89,6 +91,8 @@ class customDataset(torch.utils.data.Dataset):
     self.preprocess_align = preprocess_align
     self.preprocess_frontalize = preprocess_frontalize
     self.preprocess_crop_detection = preprocess_crop_detection
+    self.h_flip = flip_horizontal
+    self.color_jitter = color_jitter
     
     # Image dimensions and channels
     self.image_resize_w = 224
@@ -171,19 +175,22 @@ class customDataset(torch.utils.data.Dataset):
     
     # Define preprocessing constants
     crop_size = (224, 224)
-    rescale_factor = 1/255  # More readable than 0.00392156862745098
+    rescale_factor = 1/255  
     image_mean = [0.485, 0.456, 0.406]
     image_std = [0.229, 0.224, 0.225]
-    shortest_edge = 224
     
+      
     # Define transform pipeline
     transform = T.Compose([
-      T.Resize(shortest_edge),  # Resize the shortest edge to 224, preserving aspect ratio
-      T.CenterCrop(crop_size),  # Center crop
+      T.Resize(crop_size),  
       T.Lambda(lambda x: x * rescale_factor),  # Rescale (1/255)
       T.Normalize(mean=image_mean, std=image_std)  # Normalize
     ])
-    
+    if self.h_flip:
+      transform.transforms.insert(0, T.RandomHorizontalFlip(p=1))
+      # tensors = [F.hflip(t) for t in tensors]  # Horizontally flip each image
+    if self.color_jitter:
+      transform.transforms.insert(0, T.ColorJitter(brightness=0.4, contrast=0.3, saturation=0.1, hue=0.3)) # 
     # Apply transforms to each tensor in batch
     return torch.stack([transform(t) for t in tensors])
   
@@ -464,19 +471,37 @@ class customDataset(torch.utils.data.Dataset):
 class customDatasetAggregated(torch.utils.data.Dataset):
   def __init__(self,root_folder_features,csv_path,concatenate_temporal,model):
     self.root_folder_feature = root_folder_features
-    self.df = pd.read_csv(csv_path,sep='\t')
+    self.csv_path = csv_path
     self.concatenate_temporal = concatenate_temporal
-    self.dict_data = self._feature_extraction()
+    self.df = pd.read_csv(csv_path,sep='\t')
+    self.dict_data = self._populate_feature_dict()
     self.model = model
     self.instance_model_name = tools.get_instace_model_name(model)
   
-  def _feature_extraction(self):
+
+  def _populate_feature_dict(self):
     dict_data = tools.load_dict_data(self.root_folder_feature)
     sample_id_list = torch.tensor(self.df['sample_id'].tolist())
+    if 'hflip' in self.root_folder_feature:
+      sample_id_list = sample_id_list + 8700
     is_in = torch.isin(dict_data['list_sample_id'],sample_id_list)
     for k,v in dict_data.items():
       dict_data[k] = v[is_in]
+    self._populate_dict_data_from_dataframe(dict_data=dict_data)
     return dict_data
+  
+  def _populate_dict_data_from_dataframe(self,dict_data):
+    for sample_id in self.df['sample_id']:
+      # get the real label from csv
+      real_csv_label = self.df[self.df['sample_id'] == sample_id]['class_id'].values[0] 
+      if 'hflip' in self.root_folder_feature:
+        sample_id = sample_id + 8700
+      mask = dict_data['list_sample_id'] == sample_id # torch tensor
+      nr_values = mask.sum().item()
+      # create a tensor with the same label
+      csv_labels = torch.full((nr_values,),real_csv_label,dtype=dict_data['list_labels'].dtype) 
+      dict_data['list_labels'][mask] = csv_labels
+  
   
   def __len__(self):
     return len(self.df)
@@ -485,6 +510,8 @@ class customDatasetAggregated(torch.utils.data.Dataset):
     def _get_element(idx):
       csv_row = self.df.iloc[idx]
       sample_id = csv_row['sample_id']
+      if 'hflip' in self.root_folder_feature:
+        sample_id = sample_id + 8700
       mask = self.dict_data['list_sample_id'] == sample_id
       features = self.dict_data['features'][mask]
       labels = self.dict_data['list_labels'][mask]
@@ -492,7 +519,8 @@ class customDatasetAggregated(torch.utils.data.Dataset):
       return {
           'features': features,     # [8,8,1,1,768]-> [seq_len,Temporal,Space,Space,Emb]
           'labels': labels,         # [8]
-          'subject_id': subject_id  # [8]
+          'subject_id': subject_id,  # [8]
+          'sample_id': sample_id    # int
       }
     if isinstance(idx,int):
       return _get_element(idx)
@@ -525,11 +553,24 @@ class customDatasetWhole(torch.utils.data.Dataset):
   def __len__(self):
     return len(self.df)
   
+  def _populate_dict_data_from_dataframe(self,dict_data,csv_row):
+    sample_id = csv_row['sample_id']
+    real_csv_label = self.df[self.df['sample_id'] == sample_id]['class_id'].values[0] 
+    if 'hflip' in self.root_folder_features:
+      sample_id = sample_id + 8700
+    mask = dict_data['list_sample_id'] == sample_id # torch tensor
+    nr_values = mask.sum().item()
+    # get the real label from csv
+    # create a tensor with the same label
+    csv_labels = torch.full((nr_values,),real_csv_label,dtype=dict_data['list_labels'].dtype) 
+    dict_data['list_labels'][mask] = csv_labels
+    
   def __getitem__(self,idx):
     def _get_element(idx=idx):
       csv_row = self.df.iloc[idx]
       folder_path = os.path.join(self.root_folder_features,csv_row['subject_name'],csv_row['sample_name'])
       features = tools.load_dict_data(folder_path)
+      self._populate_dict_data_from_dataframe(features,csv_row)
       return {
           'features': features['features'],
           'labels': features['list_labels'],
@@ -566,63 +607,66 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model):
       features = [sample['features'].reshape(-1,sample['features'].shape[-1]*sample['features'].shape[-4]) for sample in batch]
     # features -> [seq_len,emb_dim]
     lengths = [feat.size(0) for feat in features]
-    padded_features = torch.nn.utils.rnn.pad_sequence(features,batch_first=True) # [batch_size,seq_len,emb_dim]
+    features = torch.nn.utils.rnn.pad_sequence(features,batch_first=True) # [batch_size,seq_len,emb_dim]
     lengths_tensor = torch.tensor(lengths)  
     labels = torch.tensor([sample['labels'][0] for sample in batch],dtype=torch.long)
     subject_id = torch.tensor([sample['subject_id'][0] for sample in batch])
-    
+    sample_id = torch.tensor([sample['sample_id'] for sample in batch])
     if instance_model_name.value == 'AttentiveProbe' or instance_model_name.value == 'AttentiveClassifier':
       max_len = max(lengths)
-      key_padding_mask = torch.arange(max_len, device=padded_features.device).expand(len(batch), max_len) >= lengths_tensor.unsqueeze(1)
-      return {'x':padded_features,
+      key_padding_mask = torch.arange(max_len).expand(len(batch), max_len) >= lengths_tensor.unsqueeze(1)
+      return {'x':features,
               'key_padding_mask': key_padding_mask},\
               labels,\
-              subject_id
+              subject_id,\
+              sample_id
     elif instance_model_name.value == 'GRUProbe':
-      packed_input = torch.nn.utils.rnn.pack_padded_sequence(padded_features,lengths_tensor,batch_first=True,enforce_sorted=False)
+      packed_input = torch.nn.utils.rnn.pack_padded_sequence(features,lengths_tensor,batch_first=True,enforce_sorted=False)
       if model.output_size == 1:
         labels = labels.float()
       return {'x':packed_input},\
               labels,\
-              subject_id
+              subject_id,\
+              sample_id
   else:
     features = torch.cat([torch.mean(sample['features'],dim=0,keepdim=True) for sample in batch],dim=0) # mean over the sequence
     labels = torch.tensor([sample['labels'][0] for sample in batch],dtype=torch.long)
     subject_id = torch.tensor([sample['subject_id'][0] for sample in batch])
     return {'x':features},\
             labels,\
-            subject_id
+            subject_id, 
 
 def fake_collate(batch): # to avoid strange error when use customSampler
   return batch[0]  
 
 class customSampler(Sampler):
-  def __init__(self,path_cvs_dataset, batch_size, shuffle, random_state=0):
+  def __init__(self,path_cvs_dataset, batch_size, shuffle, random_state=42):
     csv_array,_ = tools.get_array_from_csv(path_cvs_dataset)
     self.y_labels = np.array(csv_array[:,2]).astype(int)
-    nr_samples = len(self.y_labels)
     self.n_batch_size = batch_size
-    # -(-a//b) is the same as math.ceil(a/b)
-    self.skf = StratifiedKFold(n_splits = math.ceil(nr_samples/batch_size) , shuffle=shuffle, random_state=random_state)
-    self.n_batches = self.skf.get_n_splits()
-    
-  def initialize(self):
+    self.random_state = random_state
+    self.shuffle = shuffle
     _, count = np.unique(self.y_labels, return_counts=True)
     min_member = np.min(count)
     max_member = np.max(count)
-    idx_min = np.argmin(count)
-    print(f'Min count class: {min_member} for class: {idx_min}')
-    print(f'Min count member: {min_member}')
-    print(f'Number of splits: {self.skf.get_n_splits()}')
-    # n_splits cannot be greater than the number of members in each class.
+    self.initialize()
     if max_member < self.skf.get_n_splits():
       raise ValueError(f"Impossible to split the dataset in {self.skf.get_n_splits()} splits. The maximum number of samples per class is {max_member}")
     if min_member < self.skf.get_n_splits():
       raise ValueError(f"Impossible to split the dataset in {self.skf.get_n_splits()} splits. The minimum number of samples per class is {min_member}")
-  
+    # -(-a//b) is the same as math.ceil(a/b)
+
+    
+  def initialize(self):
+    nr_samples = len(self.y_labels)
+    self.skf = StratifiedKFold(n_splits = math.ceil(nr_samples/self.n_batch_size) , shuffle=self.shuffle, random_state=self.random_state)
+    self.n_batches = self.skf.get_n_splits()
+    
   def __iter__(self):
     for _,test in self.skf.split(np.zeros(self.y_labels.shape[0]), self.y_labels):
       yield test
+    self.random_state += 13
+    self.initialize()
       
 
   def __len__(self):
@@ -664,12 +708,11 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
       customSampler_train = customSampler(path_cvs_dataset=csv_path, 
                                           batch_size=batch_size,
                                           shuffle=shuffle_training_batch)
-      customSampler_train.initialize()
-      loader_ = DataLoader(dataset=dataset_, sampler=customSampler_train,collate_fn=fake_collate,batch_size=1) 
+      loader_ = DataLoader(dataset=dataset_, sampler=customSampler_train,collate_fn=fake_collate,batch_size=1,pin_memory=True) 
     except Exception as e:
       print(f'Err: {e}')
       print(f'Use standard DataLoader')
-      loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate)
+      loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate,pin_memory=True)
   else:
     loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=False,collate_fn=dataset_._custom_collate)
   return dataset_,loader_
