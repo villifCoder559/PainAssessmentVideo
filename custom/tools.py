@@ -1458,3 +1458,14 @@ def check_sample_id_y_from_csv(list_samples, list_y,csv_path):
     if y != csv_label:
       print(f'Error: {sample} y: {y} csv: {csv_label}')
       raise ValueError('Error: sample_id and y do not match with csv')
+    
+def get_lr_and_weight_decay(optimizer):
+  """Retrieve the current learning rate and weight decay from the optimizer."""
+  lrs = []
+  wds = []
+
+  for param_group in optimizer.param_groups:
+    lrs.append(param_group['lr'])
+    wds.append(param_group.get('weight_decay', 0))  # Defaults to 0 if not set
+
+  return lrs, wds
