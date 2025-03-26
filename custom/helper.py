@@ -2,6 +2,8 @@ from enum import Enum
 import os
 from pathlib import Path
 
+stoic_subjects = [27,28,32,33,34,35,36,39,40,41,42,44,51,53,55,56,61,64,74,87]
+
 class SAMPLE_FRAME_STRATEGY(Enum):
   UNIFORM = 'uniform'
   SLIDING_WINDOW = 'sliding_window'
@@ -11,9 +13,64 @@ class SAMPLE_FRAME_STRATEGY(Enum):
 class MODEL_TYPE(Enum):
   VIDEOMAE_v2_S = os.path.join('VideoMAEv2','pretrained',"vit_s_k710_dl_from_giant.pth")
   VIDEOMAE_v2_B = os.path.join('VideoMAEv2','pretrained',"vit_b_k710_dl_from_giant.pth")
-  VIDEOMAE_v2_G_pt_1200e = os.path.join('VideoMAEv2','pretrained',"vit_g_hybrid_pt_1200e.pth")
-  VIDEOMAE_v2_G_pt_1200e_K710_it_HMDB51_ft = os.path.join('VideoMAEv2','pretrained',"vit_g_hybrid_pt_1200e_k710_it_hmdb51_ft.pth")
+  # VIDEOMAE_v2_G_pt_1200e = os.path.join('VideoMAEv2','pretrained',"vit_g_hybrid_pt_1200e.pth")
+  VIDEOMAE_v2_G = os.path.join('VideoMAEv2','pretrained',"vit_g_hybrid_pt_1200e_k710_ft.pth")
   ViT_image = 'ViT_image'
+  def get_model_type(type):
+    """
+    Retrieves the corresponding model type based on the provided type identifier.
+
+    Args:
+      type (str): A string representing the model type. 
+            Accepted values are:
+            - 'S': Corresponds to MODEL_TYPE.VIDEOMAE_v2_S
+            - 'B': Corresponds to MODEL_TYPE.VIDEOMAE_v2_B
+            - 'G': Corresponds to MODEL_TYPE.VIDEOMAE_v2_G
+            - 'ViT_image': Corresponds to MODEL_TYPE.ViT_image
+
+    Returns:
+      MODEL_TYPE: The corresponding model type constant.
+
+    Raises:
+      ValueError: If the provided type is not one of the accepted values.
+    """
+    if type == 'S':
+      return MODEL_TYPE.VIDEOMAE_v2_S
+    elif type == 'B':
+      return MODEL_TYPE.VIDEOMAE_v2_B
+    elif type == 'G':
+      return MODEL_TYPE.VIDEOMAE_v2_G
+    elif type == 'ViT_image':
+      return MODEL_TYPE.ViT_image
+    else:
+      raise ValueError(f"Model type {type} not found. Choose between 'S','B','G' or 'ViT_image'")
+  def get_embedding_size(type):
+    """
+    Returns the embedding size for a given model type.
+
+    Parameters:
+    type (str): The type of the model. Accepted values are:
+          - 'S': Small model, returns an embedding size of 384.
+          - 'B': Base model, returns an embedding size of 768.
+          - 'G': Large model, returns an embedding size of 1408.
+          - 'ViT_image': Vision Transformer model, returns an embedding size of 768.
+
+    Returns:
+    int: The embedding size corresponding to the specified model type.
+
+    Raises:
+    ValueError: If the provided model type is not one of the accepted values.
+    """
+    if type == 'S':
+      return 384
+    elif type == 'B':
+      return 768
+    elif type == 'G':
+      return 1408
+    elif type == 'ViT_image':
+      return 768
+    else:
+      raise ValueError(f"Model type {type} not found. Choose between 'S','B','G' or 'ViT_image'")
 class EMBEDDING_REDUCTION(Enum):  
   # [B,t,p,p,emb] -> [B,1,p,p,emb] ex: [3,8,14,14,768] -> [3,1,14,14,768]
   MEAN_TEMPORAL = (1,) 
@@ -25,6 +82,17 @@ class EMBEDDING_REDUCTION(Enum):
   MEAN_TEMPORAL_SPATIAL = (1,2,3)
   NONE = None
   
+  def get_embedding_reduction(pooling_embedding_reduction):
+    if pooling_embedding_reduction.lower() == 'spatial':
+      return EMBEDDING_REDUCTION.MEAN_SPATIAL
+    elif pooling_embedding_reduction.lower() == 'temporal':
+      return EMBEDDING_REDUCTION.MEAN_TEMPORAL
+    elif pooling_embedding_reduction.lower() == 'all':
+      return EMBEDDING_REDUCTION.MEAN_TEMPORAL_SPATIAL
+    elif pooling_embedding_reduction.lower() == 'none':
+      return EMBEDDING_REDUCTION.NONE
+    else:
+      raise ValueError(f'Pooling embedding reduction not recognized: {pooling_embedding_reduction}. Can be spatial, temporal, all or none')
 class INSTANCE_MODEL_NAME(Enum): # model.__class__.__name__
   LINEARPROBE = 'LinearProbe'
   GRUPROBE = 'GRUProbe'
