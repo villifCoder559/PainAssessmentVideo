@@ -23,12 +23,29 @@ class BaseHead(nn.Module):
     super(BaseHead, self).__init__()
     self.model = model
     self.is_classification = is_classification
-  def log_performance(self,epoch, stage,num_epochs, loss, precision):
+  
+  def log_performance(self,epoch, stage,num_epochs, loss, precision,list_grad_norm=None,wds=None,lrs=None):
       if epoch>-1:
         print(f'Epoch [{epoch}/{num_epochs}]')
       print(f' {stage}')
       print(f'  Loss             : {loss:.4f}')
-      print(f'  Accuracy         : {precision:.4f}')  
+      print(f'  Accuracy         : {precision:.4f}')
+      if stage == 'Train' and list_grad_norm:
+        list_grad_norm = np.array(list_grad_norm)
+        print(f'  Grad norm        ')
+        print(f'    Mean           : {list_grad_norm.mean():.4f}+-{list_grad_norm.std():.4f}')
+        print(f'    Max            : {list_grad_norm.max():.4f}')
+        print(f'    Min            : {list_grad_norm.min():.4f}')
+      if wds:
+        if isinstance(wds,list):
+          print(f'  Weight decay     : {[round(wd,8) for wd in wds]}')
+        else:
+          print(f'  Weight decay     : {wds:.8f}')
+      if lrs:
+        if isinstance(lrs,list):
+          print(f'  Learning rate    : {[round(lr,8) for lr in lrs]}')
+        else:
+          print(f'  Learning rate    : {lrs:.8f}')  
       free_gpu_mem,total_gpu_mem = torch.cuda.mem_get_info()
       total_gpu_mem = total_gpu_mem / 1024 ** 3
       free_gpu_mem = free_gpu_mem / 1024 ** 3
@@ -107,30 +124,35 @@ class BaseHead(nn.Module):
     list_val_confusion_matricies = []
     list_train_macro_accuracy = []
     list_val_macro_accuracy = []
-    total_norm_epoch = {}
+    total_norm_epoch = []
     early_stopping.reset()
-    list_list_samples = []
-    list_list_y = []
+    list_lrs = []
+    list_wds = []
+    # list_list_samples = []
+    # list_list_y = []
     for epoch in range(num_epochs):
       self.model.train()
       if scheduler:
         scheduler.step()
       if wd_scheduler:
         wd_scheduler.step()
+      lrs, wds = tools.get_lr_and_weight_decay(optimizer)
+      list_lrs.append(lrs)
+      list_wds.append(wds)
       class_loss = np.zeros(train_unique_classes.shape[0])
       subject_loss = np.zeros(train_unique_subjects.shape[0])
       train_confusion_matrix = ConfusionMatrix(task='multiclass',num_classes=train_unique_classes.shape[0]+1)
       train_loss = 0.0
       subject_count_batch = np.zeros(train_unique_subjects.shape[0])
       count_batch=0
-      total_norm_epoch[epoch] = []
-      list_samples = []
-      list_y = []
+      total_norm_epoch.append([])
+      # list_samples = []
+      # list_y = []
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
         tmp = np.isin(train_unique_subjects,batch_subjects)
         subject_count_batch[tmp] += 1
-        list_samples.append(sample_id)
-        list_y.append(batch_y)
+        # list_samples.append(sample_id)
+        # list_y.append(batch_y)
         # [list_samples.append(sample.item()) for sample in sample_id]
         # [list_y.append(y.item()) for y in batch_y]
         batch_y = batch_y.to(device)
@@ -147,7 +169,9 @@ class BaseHead(nn.Module):
         loss.backward()        
         if clip_grad_norm:
           total_norm=torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm).detach().cpu() #  torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)
-          total_norm_epoch[epoch].append(total_norm)
+        else:
+          total_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 100).detach().cpu()
+        total_norm_epoch[epoch].append(total_norm.item())
         # remove dict_batch_X from GPU
         optimizer.step()
         # outputs = torch.argmax(outputs, dim=1)
@@ -176,8 +200,8 @@ class BaseHead(nn.Module):
         train_confusion_matrix.update(predictions, batch_y)
         
       # tools.check_sample_id_y_from_csv(list_samples,list_y,train_csv_path)
-      list_list_samples.append(list_samples)
-      list_list_y.append(list_y)
+      # list_list_samples.append(list_samples)
+      # list_list_y.append(list_y)
       train_confusion_matrix.compute()
       list_train_losses.append(train_loss / len(train_loader))
       list_train_losses_per_class.append(class_loss / len(train_loader))
@@ -195,7 +219,8 @@ class BaseHead(nn.Module):
       list_train_macro_accuracy.append(train_dict_precision_recall['macro_precision'])
       list_val_macro_accuracy.append(dict_eval['val_macro_precision'])
       # log performance
-      self.log_performance(stage='Train', num_epochs=num_epochs, loss=list_train_losses[-1], precision=train_dict_precision_recall['macro_precision'],epoch=epoch)
+      self.log_performance(stage='Train', num_epochs=num_epochs, loss=list_train_losses[-1], precision=train_dict_precision_recall['macro_precision'],epoch=epoch,list_grad_norm=total_norm_epoch[epoch],
+                           lrs=lrs,wds=wds)
       self.log_performance(stage='Val', num_epochs=num_epochs, loss=dict_eval['val_loss'], precision=dict_eval['val_macro_precision'],epoch=-1,)
       
       if epoch == 0 or (dict_eval[key_for_early_stopping] < best_test_loss if key_for_early_stopping == 'val_loss' else dict_eval[key_for_early_stopping] > best_test_loss):
@@ -234,9 +259,11 @@ class BaseHead(nn.Module):
       'list_train_macro_accuracy': list_train_macro_accuracy,
       'list_val_macro_accuracy': list_val_macro_accuracy,
       'epochs': epoch,
-      'total_norm_epoch': total_norm_epoch,
-      'list_samples': list_list_samples,
-      'list_y': list_list_y
+      'total_norm_epoch': np.array(total_norm_epoch).mean(axis=1),
+      'list_lrs': list_lrs,
+      'list_wds': list_wds,
+      # 'list_samples': list_list_samples,
+      # 'list_y': list_list_y
     }
 
   def evaluate(self, val_loader, criterion, unique_val_subjects, unique_val_classes, is_test):
