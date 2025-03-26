@@ -71,22 +71,16 @@ class VideoBackbone(BackboneBase):
           f"Model not found at {model_path}. "
           )
     
-    # Initialize model based on type
-    if model_type == MODEL_TYPE.VIDEOMAE_v2_G_pt_1200e:
-      raise NotImplementedError(
-        "This version of the model doesn't have forward_features function. "
-        "Use one of the fine-tuned models instead."
-      )
-    else:
-      self.model = self._load_model_finetune(model_type, remove_head=remove_head)
-        
-      # Cache important model parameters for efficient access
-      self.tubelet_size = self.model.patch_embed.tubelet_size
-      self.img_size = self.model.patch_embed.img_size[0]  # [224, 224]
-      self.patch_size = self.model.patch_embed.patch_size[0]  # 16
-      self.out_spatial_size = self.img_size // self.patch_size  # 224/16 = 14
-      self.embed_dim = self.model.embed_dim
-      self.frame_size = 16  # Default frame size
+
+    self.model = self._load_model_finetune(model_type, remove_head=remove_head)
+      
+    # Cache important model parameters for efficient access
+    self.tubelet_size = self.model.patch_embed.tubelet_size
+    self.img_size = self.model.patch_embed.img_size[0]  # [224, 224]
+    self.patch_size = self.model.patch_embed.patch_size[0]  # 16
+    self.out_spatial_size = self.img_size // self.patch_size  # 224/16 = 14
+    self.embed_dim = self.model.embed_dim
+    self.frame_size = 16  # Default frame size
         
     self.model_type = model_type
   
@@ -171,7 +165,7 @@ class VideoBackbone(BackboneBase):
     model_map = {
       MODEL_TYPE.VIDEOMAE_v2_S: (vit_small_patch16_224, {'num_classes': 710}),
       MODEL_TYPE.VIDEOMAE_v2_B: (vit_base_patch16_224, {'num_classes': 710}),
-      MODEL_TYPE.VIDEOMAE_v2_G_pt_1200e_K710_it_HMDB51_ft: (vit_giant_patch14_224, {'num_classes': 51})
+      MODEL_TYPE.VIDEOMAE_v2_G: (vit_giant_patch14_224, {'num_classes': 710})
     }
     
     if model_type not in model_map:
