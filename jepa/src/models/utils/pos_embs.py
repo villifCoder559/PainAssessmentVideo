@@ -6,7 +6,7 @@
 #
 
 import numpy as np
-
+import torch
 
 def get_3d_sincos_pos_embed(
     embed_dim,
@@ -63,37 +63,72 @@ def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):
     return pos_embed
 
 
-def get_1d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):
+# def get_1d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):
+#     """
+#     embed_dim: output dimension for each position
+#     grid_size: int of the grid length
+#     returns:
+#         pos_embed: [grid_size, embed_dim] (w/o cls_token)
+#                 or [1+grid_size, embed_dim] (w/ cls_token)
+#     """
+#     grid = np.arange(grid_size, dtype=float)
+#     pos_embed = get_1d_sincos_pos_embed_from_grid(embed_dim, grid)
+#     if cls_token:
+#         pos_embed = np.concatenate([np.zeros([1, embed_dim]), pos_embed], axis=0)
+#     return pos_embed
+
+
+# def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
+#     """
+#     embed_dim: output dimension for each position
+#     pos: a list of positions to be encoded: size (M,)
+#     returns: (M, D)
+#     """
+#     assert embed_dim % 2 == 0
+#     omega = np.arange(embed_dim // 2, dtype=float)
+#     omega /= embed_dim / 2.
+#     omega = 1. / 10000**omega   # (D/2,)
+
+#     pos = pos.reshape(-1)   # (M,)
+#     out = np.einsum('m,d->md', pos, omega)   # (M, D/2), outer product
+
+#     emb_sin = np.sin(out)  # (M, D/2)
+#     emb_cos = np.cos(out)  # (M, D/2)
+
+#     emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
+#     return emb
+
+def get_1d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, device='cpu'):
     """
+    GPU-optimized 1D sinusoidal positional embedding
     embed_dim: output dimension for each position
     grid_size: int of the grid length
     returns:
         pos_embed: [grid_size, embed_dim] (w/o cls_token)
                 or [1+grid_size, embed_dim] (w/ cls_token)
     """
-    grid = np.arange(grid_size, dtype=float)
+    grid = torch.arange(grid_size, dtype=torch.float32, device=device)
     pos_embed = get_1d_sincos_pos_embed_from_grid(embed_dim, grid)
     if cls_token:
-        pos_embed = np.concatenate([np.zeros([1, embed_dim]), pos_embed], axis=0)
+        pos_embed = torch.cat([
+            torch.zeros(1, embed_dim, device=device), 
+            pos_embed
+        ], dim=0)
     return pos_embed
-
 
 def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     """
+    GPU-optimized version of grid embedding helper
     embed_dim: output dimension for each position
-    pos: a list of positions to be encoded: size (M,)
-    returns: (M, D)
+    pos: Tensor of positions to be encoded (already on GPU)
     """
     assert embed_dim % 2 == 0
-    omega = np.arange(embed_dim // 2, dtype=float)
-    omega /= embed_dim / 2.
-    omega = 1. / 10000**omega   # (D/2,)
-
-    pos = pos.reshape(-1)   # (M,)
-    out = np.einsum('m,d->md', pos, omega)   # (M, D/2), outer product
-
-    emb_sin = np.sin(out)  # (M, D/2)
-    emb_cos = np.cos(out)  # (M, D/2)
-
-    emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
-    return emb
+    omega = torch.arange(embed_dim // 2, dtype=torch.float32, device=pos.device)
+    omega /= (embed_dim / 2.) - 1.0
+    omega = 1.0 / (10000.0 ** omega)
+    
+    out = torch.outer(pos, omega)
+    emb_sin = torch.sin(out)
+    emb_cos = torch.cos(out)
+    
+    return torch.cat([emb_sin, emb_cos], dim=1)
