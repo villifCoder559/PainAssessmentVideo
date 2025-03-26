@@ -202,7 +202,7 @@ class FaceExtractor:
     mask = cv2.fillConvexPoly(mask, np.array(routes), 1)
     mask = mask.astype(bool)
 
-    out = np.zeros_like(img) + 255
+    out = np.zeros_like(img)
     out[mask] = img[mask]
     return out, mask
 
@@ -442,7 +442,7 @@ class FaceExtractor:
     print(f'shift_x: {shift_x}, shift_y: {shift_y}')
     return shift_x,shift_y
   
-  def frontalized_video(self,video_path,ref_landmarks,align_before_front=True,log_path=None,time_logs=False,extra_landmark_smoothing=None):
+  def frontalized_video(self,video_path,ref_landmarks,only_landmarks_crop=False,align_before_front=True,log_path=None,time_logs=False,extra_landmark_smoothing=None):
 
     def validate_frame_detection(list_to_validate):
       miss_detection = False
@@ -477,35 +477,47 @@ class FaceExtractor:
           print(f"Additional landmark smoothing: {extra_landmark_smoothing.method}")
           list_landmarks = extra_landmark_smoothing.smooth(list_landmarks)
         # start = time.time()
-        for count, (frame, landmarks) in enumerate(zip(list_frames, list_landmarks)):
-          # landmarks = np.array([[lm.x, lm.y, lm.z] for lm in landmarks])
-          # frame,mask = self.extract_frame_oval_from_img(frame,landmarks)
-          rotation, translation = self.compute_rigid_transform(landmarks, ref_landmarks)
-          frontalized_landmarks = self.apply_rigid_transform(rotation, translation, landmarks).T
-          # rotation_stable, translation_stable = self.compute_rigid_transform(frontalized_landmarks[self.STABLE_POINTS], ref_landmarks[self.STABLE_POINTS])
-          # print(f'Nose coords: {frontalized_landmarks[self.NOSE_INDEX]}')
-          # frontalized_landmarks = self.apply_rigid_transform(rotation_stable, translation_stable, frontalized_landmarks).T
-          # print(f'Nose coords: {frontalized_landmarks[self.NOSE_INDEX]}')
-          
-          frontalized_img_SVD = self._get_frontalized_img(landmarks_2d=landmarks,
-                                                          frontalized_landmarks_2d=frontalized_landmarks,
-                                                          orig_frame=frame,
-                                                          log_path=log_path)
+        if not only_landmarks_crop:
+          for count, (frame, landmarks) in enumerate(zip(list_frames, list_landmarks)):
+            # landmarks = np.array([[lm.x, lm.y, lm.z] for lm in landmarks])
+            # frame,mask = self.extract_frame_oval_from_img(frame,landmarks)
+            rotation, translation = self.compute_rigid_transform(landmarks, ref_landmarks)
+            frontalized_landmarks = self.apply_rigid_transform(rotation, translation, landmarks).T
+            # rotation_stable, translation_stable = self.compute_rigid_transform(frontalized_landmarks[self.STABLE_POINTS], ref_landmarks[self.STABLE_POINTS])
+            # print(f'Nose coords: {frontalized_landmarks[self.NOSE_INDEX]}')
+            # frontalized_landmarks = self.apply_rigid_transform(rotation_stable, translation_stable, frontalized_landmarks).T
+            # print(f'Nose coords: {frontalized_landmarks[self.NOSE_INDEX]}')
+            
+            frontalized_img_SVD = self._get_frontalized_img(landmarks_2d=landmarks,
+                                                            frontalized_landmarks_2d=frontalized_landmarks,
+                                                            orig_frame=frame,
+                                                            log_path=log_path)
 
-          top_left_corner = (int(np.min(frontalized_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
-                            int(np.min(frontalized_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
-          bottom_right_corner = (int(np.max(frontalized_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
-                            int(np.max(frontalized_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
+            top_left_corner = (int(np.min(frontalized_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
+                              int(np.min(frontalized_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
+            bottom_right_corner = (int(np.max(frontalized_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
+                              int(np.max(frontalized_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
 
-          frontalized_img_SVD = self.post_process_frontalized_img(frontalized_img=frontalized_img_SVD,
-                                                                    top_left_corner=top_left_corner,
-                                                                    bottom_right_corner=bottom_right_corner,
-                                                                    landmarks=frontalized_landmarks,
-                                                                    )
-          list_frontalized_img.append(frontalized_img_SVD)
-          list_frontalized_landmarks.append(frontalized_landmarks)
-          # print(f'Processed frame {count+1} of {len(list_frames)}')
-        # print(f'Elapsed time to frontalize video: {time.time()-start}')
+            frontalized_img_SVD = self.post_process_frontalized_img(frontalized_img=frontalized_img_SVD,
+                                                                      top_left_corner=top_left_corner,
+                                                                      bottom_right_corner=bottom_right_corner,
+                                                                      landmarks=frontalized_landmarks,
+                                                                      )
+            list_frontalized_img.append(frontalized_img_SVD)
+            list_frontalized_landmarks.append(frontalized_landmarks)
+        else:
+          for count, (frame, landmarks) in enumerate(zip(list_frames, list_landmarks)):
+            frame,mask = self.extract_frame_oval_from_img(frame,landmarks)
+            top_left_corner = (int(np.min(landmarks[:, 0]*frame.shape[1])),
+                              int(np.min(landmarks[:, 1]*frame.shape[0])))
+            bottom_right_corner = (int(np.max(landmarks[:, 0]*frame.shape[1])),
+                              int(np.max(landmarks[:, 1]*frame.shape[0])))
+            frame = self.post_process_frontalized_img(frontalized_img=frame,
+                                                      top_left_corner=top_left_corner,
+                                                      bottom_right_corner=bottom_right_corner,
+                                                      landmarks=landmarks)
+            list_frontalized_img.append(frame)
+            list_frontalized_landmarks.append(landmarks)
         return{
           'list_frontalized_frame': list_frontalized_img,
           'list_frontalized_landmarks': list_frontalized_landmarks,
@@ -525,9 +537,6 @@ class FaceExtractor:
       
       rotation, translation = self.compute_rigid_transform(landmarks, ref_landmarks)
       rot_trans_landmarks = self.apply_rigid_transform(rotation, translation, landmarks).T
-        # print(f'TIme compute rigid trans: {time.time()-time_transf:.4f} s')
-      # landmarks_aligned_SVD = plot_landmarks_triangulation(image=np.zeros_like(orig_frame),
-      #                                                                   landmarks=rot_trans_landmarks.T)
       frontalized_img_SVD = self._get_frontalized_img(landmarks_2d=landmarks,
                                                       frontalized_landmarks_2d=rot_trans_landmarks,
                                                       orig_frame=orig_frame,
@@ -571,26 +580,15 @@ class FaceExtractor:
     return cv_transfo_landmarks
 
   def post_process_frontalized_img(self,frontalized_img,top_left_corner,bottom_right_corner,landmarks):
-    # fill the image with face as much as possible
-    # orig_image = copy.deepcopy(frontalized_img)
-    # print(f'landmarks shape {landmarks.shape}')
     if self.apply_mirroring_reconstruction:
       landmarks = (landmarks * 256).astype(int) # from normalized to pixel coordinates
       mask = np.zeros((frontalized_img.shape[0], frontalized_img.shape[1]))
       filler = cv2.convexHull(landmarks[:,:2])
       mask = cv2.fillConvexPoly(mask, filler, 1).astype(bool)
 
-      # out = np.zeros_like(frontalized_img)
-      # out[mask] = frontalized_img[mask]
-      # fig, ax = plt.subplots(1,2, figsize=(12,12))
-      # # print(f'img[mask] shape: {frontalized_img[dupl_mask].shape}')
-      # ax[0].imshow(out)
-      # ax[1].imshow(mask)
-
       center_pixel = (frontalized_img.shape[1]//2,frontalized_img.shape[0]//2)
       coords_face = np.argwhere(mask)
       count = 0
-      # print(f'len coords: {len(coords_face)}')
       for coord in coords_face:
         x = coord[1]
         y = coord[0]
@@ -599,30 +597,11 @@ class FaceExtractor:
           # mirror the pixel
           mirror_x = center_pixel[0] - (x - center_pixel[0])
           frontalized_img[y,x] = frontalized_img[y,mirror_x]
-    # print(f'count changes: {count}')
-    # bgr_frame = cv2.cvtColor(frontalized_img, cv2.COLOR_RGB2BGR)
-    # gray_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2GRAY)
-    # _, bw_image = cv2.threshold(gray_frame, 150, 255, cv2.THRESH_BINARY)
-    # fig,ax = plt.subplots(1,2,figsize=(12,12))
-    # ax[0].imshow(bw_image,cmap='gray')
-    # ax[1].imshow(frontalized_img)
-    # frontalized_img = cv2.inpaint(frontalized_img, bw_image, 3, cv2.INPAINT_TELEA)
-    # frontalized_img = self.plot_landmarks_triangulation(frontalized_img,landmarks)
-    
-    #TODO: These operations can create jittering in the video
     frontalized_img = frontalized_img[top_left_corner[1]:bottom_right_corner[1],top_left_corner[0]:bottom_right_corner[0]]
     frontalized_img=cv2.resize(frontalized_img,(224,224))
-    # frontalized_img=cv2.resize(frontalized_img,(256,256))
 
     return frontalized_img
-  
-  # def post_process_list_frontalized_img(self,list_dict_frames):
-  #   for dict_frame in list_dict_frames:
-  #     dict_frame['frontalized_img'] = self.post_process_frontalized_img(dict_frame['frontalized_img'],
-  #                                                                     dict_frame['top_left_corner'],
-  #                                                                     dict_frame['bottom_right_corner'],
-  #                                                                     dict_frame['frontalized_landmarks'])
-    
+
   def rigid_transform_3D(self,A, B):
     assert A.shape == B.shape
 
