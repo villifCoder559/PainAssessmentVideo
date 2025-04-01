@@ -43,7 +43,8 @@ class customDataset(torch.utils.data.Dataset):
       video_labels=None,
       flip_horizontal=False,
       color_jitter=None,
-      backbone_dict=None
+      backbone_dict=None,
+      smooth_labels= 0.0
   ):
     """
     Initialize the dataset with specified parameters.
@@ -93,6 +94,7 @@ class customDataset(torch.utils.data.Dataset):
     self.preprocess_crop_detection = preprocess_crop_detection
     self.h_flip = flip_horizontal
     self.color_jitter = color_jitter
+    self.smooth_labels = smooth_labels
     
     # Image dimensions and channels
     self.image_resize_w = 224
@@ -229,6 +231,7 @@ class customDataset(torch.utils.data.Dataset):
     labels = torch.full((nr_clips,), int(csv_array.iloc[2]), dtype=torch.int32)
     subject_id = torch.full((nr_clips,), int(csv_array.iloc[0]), dtype=torch.int32)
     path = np.repeat(video_path, nr_clips)
+      
     return {
         'preprocess': preprocessed_tensors, # [B,C,T,H,W]
         'labels': labels,
@@ -371,7 +374,7 @@ class customDataset(torch.utils.data.Dataset):
     return data, labels, subject_id, sample_id, path, list_frames
   
   def _custom_collate(self, batch):
-    return _custom_collate(batch,self.backbone_dict['instance_model_name'],self.backbone_dict['concatenate_temporal'],self.backbone_dict['model'])
+    return _custom_collate(batch,self.backbone_dict['instance_model_name'],self.backbone_dict['concatenate_temporal'],self.backbone_dict['model'],self.smooth_labels)
   
   def _single_uniform_sampling(self, video_len):
     """
@@ -469,7 +472,7 @@ class customDataset(torch.utils.data.Dataset):
 
 
 class customDatasetAggregated(torch.utils.data.Dataset):
-  def __init__(self,root_folder_features,csv_path,concatenate_temporal,model):
+  def __init__(self,root_folder_features,csv_path,concatenate_temporal,model,smooth_labels= 0.0):
     self.root_folder_feature = root_folder_features
     self.csv_path = csv_path
     self.concatenate_temporal = concatenate_temporal
@@ -477,6 +480,8 @@ class customDatasetAggregated(torch.utils.data.Dataset):
     self.dict_data = self._populate_feature_dict()
     self.model = model
     self.instance_model_name = tools.get_instace_model_name(model)
+    self.smooth_labels = smooth_labels
+    self.num_classes = len(self.get_unique_classes())
   
 
   def _populate_feature_dict(self):
@@ -514,6 +519,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
         sample_id = sample_id + 8700
       mask = self.dict_data['list_sample_id'] == sample_id
       features = self.dict_data['features'][mask]
+      
       labels = self.dict_data['list_labels'][mask]
       subject_id = self.dict_data['list_subject_id'][mask]
       return {
@@ -530,7 +536,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
       return batch
   
   def _custom_collate(self,batch):
-    return _custom_collate(batch,self.instance_model_name,self.concatenate_temporal,self.model)
+    return _custom_collate(batch,self.instance_model_name,self.concatenate_temporal,self.model,self.num_classes,self.smooth_labels)
   
   def get_unique_subjects(self):
     return np.sort(self.df['subject_id'].unique().tolist())
@@ -542,13 +548,14 @@ class customDatasetAggregated(torch.utils.data.Dataset):
     return np.sort(self.df['class_id'].unique().tolist())
 
 class customDatasetWhole(torch.utils.data.Dataset):
-  def __init__(self,csv_path,root_folder_features,concatenate_temporal,model):
+  def __init__(self,csv_path,root_folder_features,concatenate_temporal,model,smooth_labels= 0.0):
     self.csv_path = csv_path
     self.root_folder_features = root_folder_features
     self.df = pd.read_csv(csv_path,sep='\t') # subject_id, subject_name, class_id, class_name, sample_id, sample_name
     self.concatenate_temporal = concatenate_temporal
     self.model = model
     self.instance_model_name = tools.get_instace_model_name(model)
+    self.smooth_labels = smooth_labels
     
   def __len__(self):
     return len(self.df)
@@ -586,7 +593,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
       return batch
 
   def _custom_collate(self,batch):
-    return _custom_collate(batch,self.instance_model_name,self.concatenate_temporal,self.model)  
+    return _custom_collate(batch,self.instance_model_name,self.concatenate_temporal,self.model,self.smooth_labels)  
       
   
   def get_unique_subjects(self):
@@ -598,7 +605,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
   def get_unique_classes(self):
     return np.sort(self.df['class_id'].unique().tolist())
 
-def _custom_collate(batch,instance_model_name,concatenate_temporal,model):
+def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_classes,smooth_labels):
   # Pre-flatten features: reshape each sample to (sequence_length, emb_dim)
   if instance_model_name.value != 'LinearProbe':
     if not concatenate_temporal:
@@ -610,6 +617,8 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model):
     features = torch.nn.utils.rnn.pad_sequence(features,batch_first=True) # [batch_size,seq_len,emb_dim]
     lengths_tensor = torch.tensor(lengths)  
     labels = torch.tensor([sample['labels'][0] for sample in batch],dtype=torch.long)
+    if smooth_labels > 0.0: # and model.output_size > 1:
+      labels = smooth_labels_batch(gt_classes=labels, num_classes=num_classes, smoothing=smooth_labels)
     subject_id = torch.tensor([sample['subject_id'][0] for sample in batch])
     sample_id = torch.tensor([sample['sample_id'] for sample in batch])
     if instance_model_name.value == 'AttentiveProbe' or instance_model_name.value == 'AttentiveClassifier':
@@ -672,18 +681,43 @@ class customSampler(Sampler):
   def __len__(self):
     return self.n_batches
   
+def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: float = 0.1) -> torch.Tensor:
+  """
+  Create label-smoothed targets for a batch of ground truth classes.
   
+  Args:
+    gt_classes (torch.Tensor): 1D tensor of shape (batch_size,) with ground truth class indices.
+    num_classes (int): The total number of classes.
+    smoothing (float): Smoothing factor in [0, 1). Default is 0.1.
   
+  Returns:
+    torch.Tensor: A tensor of shape (batch_size, num_classes) with smoothed probabilities.
+  """
+  assert 0 <= smoothing < 1, "Smoothing value should be in the range [0, 1)"
+  # Probability for the ground truth class
+  confidence = 1.0 - smoothing
+  # Value for all other classes
+  smooth_value = smoothing / (num_classes - 1)
+  
+  batch_size = gt_classes.size(0)
+  # Create a tensor filled with smooth_value for each sample and class
+  smoothed_labels = torch.full((batch_size, num_classes), smooth_value)
+  # Set the ground truth class indices to have the confidence value
+  smoothed_labels[torch.arange(batch_size), gt_classes] = confidence
+  
+  return smoothed_labels
+
+ 
 def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_training_batch,is_training,dataset_type,concatenate_temporal,model,
-                           n_workers=None,backbone_dict=None):
+                           n_workers=None,backbone_dict=None,label_smooth= 0.0):
   if dataset_type.value == CUSTOM_DATASET_TYPE.WHOLE.value:
     dataset_ = customDatasetWhole(csv_path,root_folder_features=root_folder_features,concatenate_temporal=concatenate_temporal,
-                                  model=model)
+                                  model=model,smooth_labels=label_smooth)
   elif dataset_type.value == CUSTOM_DATASET_TYPE.AGGREGATED.value:
     dataset_ = customDatasetAggregated(csv_path=csv_path,
                                         root_folder_features=root_folder_features,
                                         concatenate_temporal=concatenate_temporal,
-                                        model=model)
+                                        model=model,smooth_labels=label_smooth)
   elif dataset_type.value == CUSTOM_DATASET_TYPE.BASE.value:
     if backbone_dict is not None:
       dataset_ = customDataset(path_dataset=root_folder_features,
@@ -697,7 +731,8 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                               preprocess_crop_detection=False,
                               saving_folder_path_extracted_video=None,
                               video_labels=None,
-                              backbone_dict=backbone_dict)
+                              backbone_dict=backbone_dict,
+                              smooth_labels=label_smooth)
     else:
       raise ValueError(f'backbone_dict must be provided for dataset_type: {dataset_type}')
   else:
