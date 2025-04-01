@@ -87,26 +87,26 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
     )
     
     # Store results
-    list_test_results.append(fold_results['dict_test'])
-    list_best_model_idx.append(fold_results['best_model_epoch'])
-    best_results_state_dict.append(fold_results['best_model_state'])
+    # list_test_results.append(fold_results['dict_test'])
+    # list_best_model_idx.append(fold_results['best_model_epoch'])
+    # best_results_state_dict.append(fold_results['best_model_state'])
     dict_k_fold_results.update(fold_results['fold_results'])
-    dict_results_model_weights[f'{i}'] = {
-      'sub': fold_results['best_model_subfolder_idx'],
-      'epoch': fold_results['best_model_epoch']
-    }
+    # dict_results_model_weights[f'{i}'] = {
+    #   'sub': fold_results['best_model_subfolder_idx'],
+    #   'epoch': fold_results['best_model_epoch']
+    # }
     
     # stop to make the tests faster
     if stop_after_kth_fold is not None and i == stop_after_kth_fold - 1:
       break
     # Clean up extra model weights to save space
-    cleanup_extra_models(train_folder_path, i, k_fold, dict_results_model_weights)
+    # cleanup_extra_models(train_folder_path, i, k_fold, dict_results_model_weights)
     
   # Create result summary plots
-  compile_test_loss_plots(list_test_results)
+  # compile_test_loss_plots(list_test_results)
   
   return {
-    'list_test_results': list_test_results,
+    # 'list_test_results': list_test_results,
     'best_results_idx': list_best_model_idx,
     'best_results_state_dict': best_results_state_dict,
     'dict_k_fold_results': dict_k_fold_results
@@ -145,12 +145,12 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
   path_csv_kth_fold = generate_fold_csv_files(split_indices, csv_array, cols, saving_path_kth_fold)
   
   # Generate dataset distribution plots
-  for _, csv_path in path_csv_kth_fold.items():
-    tools.plot_dataset_distribuition(
-      csv_path=csv_path,
-      run_folder_path=saving_path_kth_fold,
-      total_classes=model_advanced.dataset.total_classes
-    )
+  # for _, csv_path in path_csv_kth_fold.items():
+  #   tools.plot_dataset_distribuition(
+  #     csv_path=csv_path,
+  #     run_folder_path=saving_path_kth_fold,
+  #     total_classes=model_advanced.dataset.total_classes
+  #   )
   
   # Prepare sub-folds for training
   sub_k_fold_list = [list_splits_idxs[idx] for idx in train_idxs_split]
@@ -163,40 +163,18 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
     concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
     init_network, regularization_loss, regularization_lambda,
     key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state,
-    clip_grad_norm,stop_after_kth_fold
+    clip_grad_norm,stop_after_kth_fold,path_csv_kth_fold['test']
   )
-  
-  # Select best model from sub-folds
-  best_model_info = select_best_model(
-    fold_results_kth, target_metric_best_model, saving_path_kth_fold, fold_idx
-  )
-  
-  # Test best model on test set
-  dict_test = test_best_model(
-    model_advanced, best_model_info['path'], path_csv_kth_fold['test'],
-    saving_path_kth_fold, criterion, concatenate_temp_dim, fold_idx,
-    best_model_info['subfolder_idx']
-  )
-  
-  # Compile results
-  fold_results = {
-    'dict_test': dict_test,
-    'best_model_epoch': best_model_info['epoch'],
-    'best_model_state': best_model_info['state_dict'],
-    'best_model_subfolder_idx': best_model_info['subfolder_idx'],
-    'fold_results': {
-      f'k{fold_idx}_test': {
-        'dict_test': dict_test,
-        'best_model_subfolder_idx': best_model_info['subfolder_idx']
-      }
-    }
-  }
-  
+    
+  fold_results ={'fold_results':{}}
   # Add sub-fold results
   for sub_idx in range(k_fold - 1):
     if sub_idx < len(fold_results_kth):
-      reduced_dict = reduce_logs_for_subfold(fold_results_kth[sub_idx])
-      fold_results['fold_results'][f'k{fold_idx}_cross_val_sub_{sub_idx}_train_val'] = reduced_dict
+      reduced_dict = reduce_logs_for_subfold(fold_results_kth[f'k{fold_idx}_cross_val_sub_{sub_idx}']['train'])
+      if f'k{fold_idx}_cross_val_sub_{sub_idx}' not in fold_results['fold_results']:
+        fold_results['fold_results'][f'k{fold_idx}_cross_val_sub_{sub_idx}'] = {}
+      fold_results['fold_results'][f'k{fold_idx}_cross_val_sub_{sub_idx}']['train_val'] = reduced_dict
+      fold_results['fold_results'][f'k{fold_idx}_cross_val_sub_{sub_idx}']['test'] = fold_results_kth[f'k{fold_idx}_cross_val_sub_{sub_idx}']['test']
     else:
       break
   return fold_results
@@ -236,11 +214,11 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
                       concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
                       init_network, regularization_loss, regularization_lambda,
                       key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state,clip_grad_norm,
-                      stop_after_kth_fold):
+                      stop_after_kth_fold,test_csv_path):
   """Train models on sub-folds"""
   if not isinstance(model_advanced, Model_Advanced):
     raise ValueError('model_advanced must be an instance of Model_Advanced')
-  fold_results_kth = []
+  fold_results_kth = {}
   
   for sub_idx in range(k_fold - 1):
     # Create subfold directory
@@ -274,17 +252,11 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
       enable_scheduler=enable_scheduler,
       clip_grad_norm=clip_grad_norm
     )
+    dict_test = test_model(
+      model_advanced=model_advanced, path_model_weights=None, test_csv_path=test_csv_path,state_dict=dict_train['dict_results']['best_model_state'],
+      criterion=criterion, concatenate_temporal=concatenate_temp_dim)
     
-    # Plot training results
-    count_epochs = dict_train['dict_results']['epochs']
-    tools.plot_loss_and_precision_details(
-      dict_train=dict_train,
-      train_folder_path=saving_path_kth_sub_fold,
-      total_epochs=count_epochs,
-      criterion=str(criterion).split('(')[0]
-    )
-    
-    fold_results_kth.append(dict_train)
+    fold_results_kth[f'k{fold_idx}_cross_val_sub_{sub_idx}']={'train':dict_train,'test':dict_test}
     
     # Stop to make the tests faster
     if stop_after_kth_fold is not None and sub_idx == stop_after_kth_fold - 1:
@@ -356,37 +328,36 @@ def select_best_model(fold_results_kth, target_metric_best_model, saving_path_kt
     'path': path_model_weights
   }
 
-def test_best_model(model_advanced, path_model_weights, test_csv_path, 
-                   saving_path_kth_fold, criterion, concatenate_temporal, fold_idx,
-                   best_model_subfolder_idx):
+def test_model(model_advanced, path_model_weights, test_csv_path,
+                   state_dict, criterion, concatenate_temporal,
+                   subfolder_idx=None,saving_path_kth_fold=None,fold_idx=None):
   """Test the best model on the test set"""
   if not isinstance(model_advanced, Model_Advanced):
     raise ValueError('model_advanced must be an instance of Model_Advanced')
   dict_test = model_advanced.test_pretrained_model(
     path_model_weights=path_model_weights,
+    state_dict=state_dict,
     csv_path=test_csv_path,
     is_test=True,
     criterion=criterion,
     concatenate_temporal=concatenate_temporal
   )
   
-  # Plot confusion matrix
-  tools.plot_confusion_matrix(
-    confusion_matrix=dict_test['test_confusion_matrix'],
-    title=f'Confusion matrix Test folder k-{fold_idx} considering best model',
-    saving_path=os.path.join(
-      saving_path_kth_fold,
-      f'confusion_matrix_test_submodel_{best_model_subfolder_idx}.png'
-    )
-  )
+  # # Plot confusion matrix
+  # tools.plot_confusion_matrix(
+  #   confusion_matrix=dict_test['test_confusion_matrix'],
+  #   title=f'Confusion matrix Test folder k-{fold_idx} considering best model',
+  #   saving_path=os.path.join(
+  #     saving_path_kth_fold,
+  #     f'confusion_matrix_test_submodel_{subfolder_idx}.png'
+  #   )
+  # )
   
   return dict_test
 
 def reduce_logs_for_subfold(dict_train):
-  """Reduce logs to save space, keeping only results every 50 epochs and the best model epoch"""
+  """Reduce logs to save space, keeping only results every count_epochs//10 and the best model epoch"""
   list_to_reduce_for_logs = [
-    'train_loss_per_class', 'train_loss_per_subject',
-    'val_loss_per_class', 'val_loss_per_subject',
     'train_confusion_matricies', 'val_confusion_matricies'
   ]
   
@@ -394,18 +365,21 @@ def reduce_logs_for_subfold(dict_train):
   best_model_idx = dict_train['dict_results']['best_model_idx']
   reduced_dict_train = {}
   
+  # At least 12 logs are saved for each epoch
+  target_nr_matricies = count_epochs//10 if count_epochs > 10 else 1
   for key, v in dict_train['dict_results'].items():
     if key != 'best_model_state':
       if key in list_to_reduce_for_logs:
-        # Keep results every 50 epochs
-        reduced_dict_train[key] = {f'{epoch}': v[epoch] for epoch in range(0, count_epochs, 50)}
-        
+        # Keep results every target_nr_matricies epochs
+        reduced_dict_train[key] = {f'{epoch}': v[epoch] for epoch in range(0, count_epochs, target_nr_matricies)}
+        if count_epochs - 1 not in reduced_dict_train[key]:
+          reduced_dict_train[key].update({f'{count_epochs - 1}': v[count_epochs - 1]})
         # Also keep the best model epoch if not already included
-        if best_model_idx % 50 != 0:
+        if best_model_idx % target_nr_matricies != 0:
           reduced_dict_train[key].update({f'{best_model_idx}': v[best_model_idx]})
       else:
         reduced_dict_train[key] = v
-  
+  # save only the last matrix
   return reduced_dict_train
 
 def cleanup_extra_models(train_folder_path, fold_idx, k_fold, dict_results_model_weights):
@@ -464,7 +438,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    concatenate_temp_dim,
                    stop_after_kth_fold,
                    n_workers,
-                   clip_grad_norm
+                   clip_grad_norm,
+                   label_smooth
                   ):
  
 
@@ -504,6 +479,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'stop_after_kth_fold': stop_after_kth_fold,
     'n_workers': n_workers,
     'clip_grad_norm': clip_grad_norm,
+    'label_smooth': label_smooth
     }
   def get_json_config():
     return {
@@ -554,7 +530,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   features_folder_saving_path= features_folder_saving_path,
                                   clip_length=clip_length,
                                   concatenate_temporal=concatenate_temp_dim,
-                                  n_workers=n_workers
+                                  n_workers=n_workers,
+                                  label_smooth=label_smooth
                                   )
   
   # Check if the global folder exists 
@@ -617,9 +594,11 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                           clip_grad_norm=clip_grad_norm,
                                           target_metric_best_model=target_metric_best_model,
                                           stop_after_kth_fold=stop_after_kth_fold)
-  fold_results['dict_k_fold_results']['time'] = time.time() - start  
-  fold_results['dict_k_fold_results']['config'] = get_obj_config()                                     
-  tools.save_dict_k_fold_results(dict_k_fold_results=fold_results['dict_k_fold_results'],
+  summary_res = {}
+  summary_res['results'] = fold_results['dict_k_fold_results']
+  summary_res['time'] = time.time() - start  
+  summary_res['config'] = get_obj_config()                                     
+  tools.save_dict_k_fold_results(dict_k_fold_results=summary_res,
                                   folder_path=run_folder_path)
   model_advanced.free_gpu_memory()
   del model_advanced
