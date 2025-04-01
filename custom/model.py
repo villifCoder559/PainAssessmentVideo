@@ -131,8 +131,8 @@ class Model_Advanced: # Scenario_Advanced
   def train(self, train_csv_path, val_csv_path, num_epochs, criterion,
             optimizer_fn, lr,saving_path,round_output_loss,
             shuffle_training_batch,init_network,
-            regularization_loss,regularization_lambda,key_for_early_stopping,early_stopping,
-            enable_scheduler,concatenate_temporal,clip_grad_norm
+            regularization_lambda_L1,key_for_early_stopping,early_stopping,
+            enable_scheduler,concatenate_temporal,clip_grad_norm,regularization_lambda_L2
             ):
     """
     Train the model using the specified training and testing datasets.
@@ -179,8 +179,8 @@ class Model_Advanced: # Scenario_Advanced
                                           dataset_type=self.dataset_type,
                                           num_epochs=num_epochs,
                                           train_csv_path=train_csv_path,
-                                          regularization_lambda=regularization_lambda,
-                                          regularization_loss=regularization_loss,
+                                          regularization_lambda_L1=regularization_lambda_L1,
+                                          regularization_lambda_L2=regularization_lambda_L2,
                                           root_folder_features=self.path_to_extracted_features,
                                           round_output_loss=round_output_loss,
                                           shuffle_training_batch=shuffle_training_batch,

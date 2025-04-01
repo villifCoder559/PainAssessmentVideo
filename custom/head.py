@@ -16,6 +16,8 @@ import tqdm
 import copy
 from jepa.src.models.attentive_pooler import AttentiveClassifier as AttentiveClassifierJEPA
 from jepa.evals.video_classification_frozen import eval as jepa_eval 
+from jepa.src.models.utils import pos_embs
+
 import pickle
 # import wandb
 
@@ -53,8 +55,9 @@ class BaseHead(nn.Module):
       print(f'  GPU memory free  : {free_gpu_mem:.2f} GB')
       
   def start_train(self, num_epochs, criterion, optimizer,lr, saving_path, train_csv_path, val_csv_path ,batch_size,dataset_type,
-                  round_output_loss, shuffle_training_batch, regularization_loss,regularization_lambda,concatenate_temp_dim,clip_grad_norm,
-                  early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,backbone_dict,n_workers,label_smooth):
+                  round_output_loss, shuffle_training_batch, regularization_lambda_L1,concatenate_temp_dim,clip_grad_norm,
+                  early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,backbone_dict,n_workers,label_smooth,
+                  regularization_lambda_L2):
     device = 'cuda'
     self.model.to(device)
     if init_network:
@@ -83,33 +86,36 @@ class BaseHead(nn.Module):
                                                           label_smooth=label_smooth,
                                                           n_workers=n_workers)
     
-    if isinstance(self.model,AttentiveClassifierJEPA):
-      optimizer, scaler, scheduler, wd_scheduler = jepa_eval.init_opt(
+    if isinstance(self.model,AttentiveClassifierJEPA) and enable_scheduler:
+      optimizer, _, scheduler, wd_scheduler = jepa_eval.init_opt(
           classifier=self.model,
           start_lr=lr,
           ref_lr=lr,
           iterations_per_epoch=len(train_loader),
           warmup=0.0,
-          wd=regularization_lambda if regularization_loss == 'L2' else 0,
+          wd=regularization_lambda_L2,
           num_epochs=num_epochs,
           use_bfloat16=False)
     else:
       if enable_scheduler:
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau( optimizer=optimizer, 
-                                                                mode='min' if key_for_early_stopping == 'val_loss' else 'max',
-                                                                cooldown=5,
-                                                                patience=10,
-                                                                factor=0.1,
-                                                                verbose=True,
-                                                                threshold=1e-4,
-                                                                threshold_mode='abs',
-                                                                min_lr=1e-7)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer,
+                                                               T_max=num_epochs,
+                                                               eta_min=1e-7,
+                                                               last_epoch=-1)
+        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau( optimizer=optimizer, 
+        #                                                         mode='min' if key_for_early_stopping == 'val_loss' else 'max',
+        #                                                         cooldown=5,
+        #                                                         patience=10,
+        #                                                         factor=0.1,
+        #                                                         verbose=True,
+        #                                                         threshold=1e-4,
+        #                                                         threshold_mode='abs',
+        #                                                         min_lr=1e-7)
         wd_scheduler = None
-        # wd_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
       else:
         scheduler = None
         wd_scheduler = None
-      optimizer = optimizer(self.model.parameters(), lr=lr, weight_decay=regularization_lambda if regularization_loss == 'L2' else 0)
+      optimizer = optimizer(self.model.parameters(), lr=lr, weight_decay=regularization_lambda_L2)
     
     # train_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
     train_unique_classes = train_dataset.get_unique_classes()
@@ -184,10 +190,10 @@ class BaseHead(nn.Module):
         if round_output_loss:
           outputs = torch.round(outputs)
         loss = criterion(outputs, batch_y) # Maybe the class 4 should be class 1
-        if regularization_loss == 'L1':
-          # Sum absolute values of all trainable parameters
-          l1_norm = sum(param.abs().sum() for param in self.model.parameters() if param.requires_grad)
-          loss = loss + regularization_lambda * l1_norm  # Note: scaling factor lambda
+        if regularization_lambda_L1 > 0:
+          # Sum absolute values of all trainable parameters except biases
+          l1_norm = sum(param.abs().sum() for name,param in self.model.named_parameters() if param.requires_grad and 'bias' not in name)
+          loss = loss + regularization_lambda_L1 * l1_norm 
         loss.backward()        
         if clip_grad_norm:
           total_norm=torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm).detach().cpu() #  torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)
@@ -215,6 +221,7 @@ class BaseHead(nn.Module):
                                       subject_loss=subject_loss,
                                       subject_accuracy=subject_accuracy,
                                       unique_train_val_subjects=train_unique_subjects)
+
         tools.compute_confidence_predictions_(list_prediction_right_mean=batch_train_confidence_prediction_right_mean,
                                               list_prediction_right_std=batch_train_confidence_prediction_right_std,
                                               list_prediction_wrong_mean=batch_train_confidence_prediction_wrong_mean,
@@ -494,8 +501,8 @@ class AttentiveHeadJEPA(BaseHead):
 
       
 class AttentiveHead(BaseHead):
-  def __init__(self,input_dim,num_classes,num_heads,dropout):
-    model = AttentiveProbe(input_dim=input_dim,num_classes=num_classes,num_heads=num_heads,dropout=dropout)
+  def __init__(self,input_dim,num_classes,num_heads,dropout,pos_enc):
+    model = AttentiveProbe(input_dim=input_dim,num_classes=num_classes,num_heads=num_heads,dropout=dropout,pos_enc=pos_enc)
     is_classification = True if num_classes > 1 else False
     super().__init__(model,is_classification)
   # def get_dataset_and_loader(self, csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal):
@@ -589,18 +596,20 @@ class GRUProbe(nn.Module):
 
 
 class AttentiveProbe(nn.Module):
-  def __init__(self,input_dim,num_classes,num_heads,dropout):
+  def __init__(self,input_dim,num_classes,num_heads,dropout,pos_enc=False):
     super().__init__()
     self.query = nn.Parameter(torch.ones(1, input_dim)) # [1, emb_dim]
     self.input_dim = input_dim
     self.num_classes = num_classes
     self.num_heads = num_heads
+    self.pos_enc = pos_enc
     self.attn = nn.MultiheadAttention(embed_dim=input_dim,
                                       num_heads=num_heads,
                                       dropout=dropout,
                                       batch_first=True # [batch_size, seq_len, emb_dim]
                                       )
     self.linear = nn.Linear(input_dim, num_classes)
+    self.pos_enc_tensor = None
     self._initialize_weights()
     
   def forward(self, x, key_padding_mask=None):
@@ -608,6 +617,10 @@ class AttentiveProbe(nn.Module):
     # key_padding_mask: [batch_size, seq_len]
     q = self.query.unsqueeze(0).expand(x.shape[0], -1, -1) # [batch_size, 1, emb_dim]
     # sum_key_padding = torch.sum(key_padding_mask, dim=1) # [batch_size]
+    if self.pos_enc:
+      if self.pos_enc_tensor is None or self.pos_enc_tensor.shape[0] != x.size(1):
+        self.pos_enc_tensor = pos_embs.get_1d_sincos_pos_embed(grid_size=x.size(1), embed_dim=x.size(2), device=x.device.type)
+      x = x + self.pos_enc_tensor
     attn_output,_ = self.attn(q, x, x, key_padding_mask=key_padding_mask) # [batch_size, 1, emb_dim]
     pooled = attn_output.squeeze(1) # [batch_size, emb_dim]
     logits = self.linear(pooled)
