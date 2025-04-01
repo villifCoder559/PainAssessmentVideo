@@ -132,14 +132,14 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_mae_p
       if plot_mae_per_subject:
         best_epoch = f"{data[key]['best_model_idx']}"
         uniqie_subject_ids_train, uniqie_subject_ids_val = retrieve_subject_ids(data, key, best_epoch)
-        tools.plot_error_per_subject(mae_per_subject=data[key]['train_loss_per_subject'][best_epoch],
-                                     uniqie_subject_ids=uniqie_subject_ids_train,
+        tools.plot_error_per_subject(loss_per_subject=data[key]['train_loss_per_subject'][best_epoch],
+                                     unique_subject_ids=uniqie_subject_ids_train,
                                      saving_path=os.path.join(class_subject_loss_folder, f'{test_id}{additional_info}_train_mae_per_subject_{key}.png'),
                                      title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
                                      criterion=data['config']['criterion'],
                                      y_lim=y_lim)
-        tools.plot_error_per_subject(mae_per_subject=data[key]['val_loss_per_subject'][best_epoch],
-                                     uniqie_subject_ids=uniqie_subject_ids_val,
+        tools.plot_error_per_subject(loss_per_subject=data[key]['val_loss_per_subject'][best_epoch],
+                                     unique_subject_ids=uniqie_subject_ids_val,
                                      saving_path=os.path.join(class_subject_loss_folder, f'{test_id}{additional_info}_val_mae_per_subject_{key}.png'),
                                      title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
                                      criterion=data['config']['criterion'],
@@ -165,8 +165,8 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_mae_p
                                  title=f'TEST {key} - {test_id}',
                                  criterion=data['config']['criterion'],
                                  y_lim=y_lim)
-      tools.plot_error_per_subject(mae_per_subject=data[key]['dict_test']['test_loss_per_subject'],
-                                   uniqie_subject_ids=data[key]['dict_test']['test_unique_subject_ids'],
+      tools.plot_error_per_subject(loss_per_subject=data[key]['dict_test']['test_loss_per_subject'],
+                                   unique_subject_ids=data[key]['dict_test']['test_unique_subject_ids'],
                                    saving_path=os.path.join(class_subject_loss_folder, f'{test_id}{additional_info}_test_mae_per_subject_{key}.png'),
                                    title=f'TEST {key} - {test_id}',
                                    criterion=data['config']['criterion'],
@@ -251,8 +251,16 @@ def get_range_k_fold(data):
       count += 1
   return count
 
+def get_range_subfold(data):
+  count = 0
+  for k in data.keys():
+    if 'cross_val' in k:
+      count += 1
+  return count
+
 def generate_csv_row(data, test_id):
   real_k_fold = data['config']['real_k_fold']
+  real_sub_fold = data['config']['real_sub_fold']
   k_fold = data['config']['k_fold']
   test_losses = {f'test_loss_k{i}': data[f'k{i}_test']['dict_test']['test_loss'] for i in range(real_k_fold)}
   test_accuracies = {f'test_accuracy_k{i}': data[f'k{i}_test']['dict_test']['test_macro_precision'].item() for i in range(real_k_fold)}
@@ -266,9 +274,9 @@ def generate_csv_row(data, test_id):
   mean_val_accuracies_last_epoch = {}
   mean_train_losses_last_epoch = {}
   mean_train_accuracies_last_epoch = {}
-  mean_train_losses_last_epoch = {f'mean_train_loss_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}_train_val']['train_losses'][-1] for j in range(k_fold-1)]) for i in range(real_k_fold)}
-  mean_val_accuracies_last_epoch = {f'mean_val_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}_train_val']['list_val_macro_accuracy'][-1] for j in range(k_fold-1)]) for i in range(real_k_fold)}
-  mean_train_accuracies_last_epoch = {f'mean_train_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}_train_val']['list_train_macro_accuracy'][-1] for j in range(k_fold-1)]) for i in range(real_k_fold)}
+  mean_train_losses_last_epoch = {f'mean_train_loss_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}_train_val']['train_losses'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  mean_val_accuracies_last_epoch = {f'mean_val_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}_train_val']['list_val_macro_accuracy'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  mean_train_accuracies_last_epoch = {f'mean_train_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}_train_val']['list_train_macro_accuracy'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   # try:
   #   mean_val_accuracies_200_epoch = {}
   #   mean_train_losses_200_epoch = {}
@@ -404,6 +412,7 @@ def plot_run_details(parent_folder, output_root,only_csv):
   for file, data in tqdm.tqdm(results_data.items()):
     test_folder = os.path.basename(os.path.dirname(file))
     data['config']['real_k_fold'] = get_range_k_fold(data)
+    data['config']['real_sub_fold'] = get_range_subfold(data)
     if data['config']['real_k_fold'] == 0:
       print(f'No TEST file found in {file}')
       continue
@@ -468,6 +477,7 @@ def plot_filtered_run_details(parent_folder, output_root, filter_dict,only_csv):
   for file, data in tqdm.tqdm(filtered_data.items()):
     test_folder = os.path.basename(os.path.dirname(file))
     data['config']['real_k_fold'] = get_range_k_fold(data)
+    data['config']['real_sub_fold'] = get_range_subfold(data)
     if data['config']['real_k_fold'] == 0:
       print(f'No TEST file found in {file}')
       continue
