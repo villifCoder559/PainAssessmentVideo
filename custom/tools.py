@@ -144,26 +144,67 @@ def load_dict_data(saving_folder_path):
       print(f"Unsupported file format: {file}")
   return dict_data
 
-def plot_error_per_class(unique_classes, mae_per_class, criterion,title='', count_classes=None, saving_path=None,y_lim=None):
-  """ Plot Mean Absolute Error per class. """
-  plt.figure(figsize=(10, 5))
-  if y_lim:
-    plt.ylim(0,y_lim)
-  plt.bar(unique_classes, mae_per_class, color='blue', width=0.8, label='MAE per Class',edgecolor='black')
-  plt.xlabel('Class')
-  plt.ylabel(f'{criterion}')
-  plt.xticks(unique_classes)  # Show each element in x-axis
-  plt.title(f'{criterion} per Class {title}')
+def plot_error_per_class(unique_classes, mae_per_class, criterion, title='', accuracy_per_class=None,y_label=None,
+                         count_classes=None, saving_path=None, y_lim=None, ax=None):
+  """Plot Mean Absolute Error per class.
   
+  If `ax` is provided, the plot is drawn on that axis; otherwise, a new figure and axis are created.
+  If `accuracy_per_class` is provided, it also plots accuracy for the same class.
+  """
+  # Create a new figure and axis if none is provided
+  
+  if ax is None:
+    fig, ax = plt.subplots(figsize=(10, 5))
+  
+  # Set y-axis limit if provided
+  if y_lim:
+    ax.set_ylim(0, y_lim)
+  
+  # Define bar width
+  bar_width = 0.4  
+  indices = np.arange(len(unique_classes))  # X positions for bars
+
+  # Plot the MAE (loss) per class
+  ax.bar(indices - bar_width/2, mae_per_class, color='blue', width=bar_width,
+         label='Loss per Class', edgecolor='black')
+
+  # Plot accuracy per class if provided
+  if accuracy_per_class is not None:
+    ax.bar(indices + bar_width/2, accuracy_per_class, color='orange', width=bar_width,
+           label='Accuracy per Class', edgecolor='black')
+    ax2 = ax.twinx()  # Create a second y-axis for accuracy
+    ax2.set_ylabel('Accuracy')
+    ax2.set_ylim(0, 1)  # Set y-axis limit for accuracy
+    ax2.yaxis.set_major_locator(MaxNLocator(integer=True))  # Set y-ticks to be integers
+    ax2.tick_params(axis='y', labelcolor='orange')
+    ax2.set_yticks(np.arange(0, 1.1, 0.1))  # Set y-ticks for accuracy
+    
+
+  # Set axis labels and title
+  ax.set_xlabel('Class')
+  ax.set_ylabel(criterion)
+  ax.set_title(f'{criterion} per Class {title}')
+  
+  # Set x-ticks with class names
+  ax.set_xticks(indices)
+  ax.set_xticklabels(unique_classes, rotation=45)
+
+  # Add count text above each bar if count_classes is provided
   if count_classes is not None:
-    for cls,count in count_classes.items():
-      plt.text(unique_classes[cls], mae_per_class[cls], str(count), ha='center', va='bottom')
-  plt.legend()
+    for i, cls in enumerate(unique_classes):
+      if cls in count_classes:
+        ax.text(indices[i] - bar_width/2, mae_per_class[i], str(count_classes[cls]),
+                ha='center', va='bottom', fontsize=10)
+  
+  # Add legend
+  ax.legend()
+  
+  # Save or show the plot
   if saving_path is not None:
     plt.savefig(saving_path)
-  else:
-    plt.show()
+  
   plt.close()
+
 
 def get_accuracy_from_confusion_matrix(confusion_matrix,list_real_classes=None):
   """
@@ -261,32 +302,70 @@ def plot_accuracy_confusion_matrix(confusion_matricies, type_conf,title='', savi
       path=os.path.join(saving_path,f'{type_conf}_{key}.png')
       plt.savefig(path)
       print(f'Plot {key} over Epochs {title} saved to {path}.png')
-    else:
-      plt.show()
+
     plt.close()
 
-def plot_error_per_subject(uniqie_subject_ids, criterion,mae_per_subject,title='', count_subjects=None, saving_path=None,y_lim=None):
-  """ Plot Mean Absolute Error per participant. """
-  plt.figure(figsize=(15, 5))
+def plot_error_per_subject(unique_subject_ids, criterion, loss_per_subject,
+  title='', count_subjects=None, saving_path=None,bar_color='green',y_label=None,
+  list_stoic_subject=None, y_lim=None, ax=None):
+  """Plot Mean Absolute Error per participant.
+  
+  If `ax` is provided, the plot is drawn on that axes; otherwise, a new figure and axes are created.
+  If `list_stoic_subject` is given, the x-axis labels corresponding to those subject IDs are colored differently.
+  """
+  if y_label is None:
+    y_label = criterion
+  # Create a new figure and axis if none is provided
+  if ax is None:
+    fig, ax = plt.subplots(figsize=(15, 5))
+  
+  # Set y-axis limit if provided
   if y_lim:
-    plt.ylim(0,y_lim)
-  str_uniqie_subject_ids = [str(id) for id in uniqie_subject_ids]
-  plt.bar(str_uniqie_subject_ids, mae_per_subject,width=0.8, color='green', edgecolor='black')
-  plt.xlabel('Participant')
-  plt.ylabel(f'{criterion}')
-  plt.title(f'{criterion} per Participant -- {title}')
-  plt.xticks(fontsize=11,rotation=45)
+    ax.set_ylim(0, y_lim)
+  
+  # Convert subject IDs to strings for the x-axis
+  str_unique_subject_ids = [str(id) for id in unique_subject_ids]
+  
+  # Plot the bar chart (all bars are green)
+  ax.bar(str_unique_subject_ids, loss_per_subject, width=0.8,
+    color=bar_color, edgecolor='black')
+  
+  # Label the axes and add title
+  ax.set_xlabel('Participant')
+  ax.set_ylabel(y_label)
+  ax.set_title(f'{y_label} per Participant -- {title}')
+  
+  # Rotate the x-axis tick labels
+  ax.tick_params(axis='x', labelsize=11, rotation=45)
+  
+  # Change the color of x-axis tick labels if they are in list_stoic_subject
+  if list_stoic_subject is not None:
+    # Convert list_stoic_subject to string form to compare with tick labels
+    stoic_ids_str = {str(x) for x in list_stoic_subject}
+    for tick in ax.get_xticklabels():
+      if tick.get_text() in stoic_ids_str:
+        tick.set_color('red')
+      else:
+        tick.set_color('black')
+  
+  # Add count text above each bar if count_subjects is provided
   if count_subjects is not None:
-    for id,count in count_subjects.items():
-      idx = np.where(id == uniqie_subject_ids)[0]
-      plt.text(str(uniqie_subject_ids[idx]), mae_per_subject[idx], str(count), ha='center', va='bottom')
+    for id, count in count_subjects.items():
+      idx = np.where(id == unique_subject_ids)[0]
+      # Use the first index if there are multiple
+      if idx.size > 0:
+        ax.text(str(unique_subject_ids[idx[0]]),
+          loss_per_subject[idx[0]], str(count),
+          ha='center', va='bottom')
+  
+  # Save or show the plot
   if saving_path is not None:
     plt.savefig(saving_path)
-  else:
-    plt.show()
+
   plt.close()
 
-def plot_losses(train_losses, val_losses, saving_path=None):
+
+def plot_losses_and_test(train_losses, val_losses, saving_path=None):
   plt.figure(figsize=(10, 5))
   plt.yticks(fontsize=12)
   plt.plot(train_losses, label='Training Loss')
@@ -465,28 +544,29 @@ def generate_plot_train_val_results(dict_results,best_model_idx, count_y_train, 
     uniqie_subject_ids_train = dict_results['train_unique_subject_ids']
     uniqie_subject_ids_val = dict_results['val_unique_subject_ids']    
   plot_error_per_subject(title='training', 
-                       mae_per_subject=dict_results['train_loss_per_subject'][best_model_idx], 
-                       uniqie_subject_ids=uniqie_subject_ids_train,
+                       loss_per_subject=dict_results['train_loss_per_subject'][best_model_idx], 
+                       unique_subject_ids=uniqie_subject_ids_train,
                        count_subjects=count_subject_ids_train,
                        criterion=criterion,
                        saving_path=os.path.join(saving_path_losses,f'train_mae_per_subject_{best_model_idx}.png'))
   plot_error_per_subject(title='val',
-                       mae_per_subject=dict_results['val_loss_per_subject'][best_model_idx], 
-                       uniqie_subject_ids=uniqie_subject_ids_val,
+                       loss_per_subject=dict_results['val_loss_per_subject'][best_model_idx], 
+                       unique_subject_ids=uniqie_subject_ids_val,
                        count_subjects=count_subject_ids_test,
                        criterion=criterion,
                        saving_path=os.path.join(saving_path_losses,f'val_mae_per_subject_{best_model_idx}.png'))
   
-  plot_losses(dict_results['train_losses'], dict_results['val_losses'], saving_path=os.path.join(saving_path_losses,'train_val_loss.png'))
+  plot_losses_and_test(dict_results['train_losses'], dict_results['val_losses'], saving_path=os.path.join(saving_path_losses,'train_val_loss.png'))
       
-def plot_confusion_matrix(confusion_matrix, title, saving_path):
+def plot_confusion_matrix(confusion_matrix, title, ax=None, saving_path=None):
   # confusion_matrix must be from torchmetrics
-  # assert not isinstance(confusion_matrix, ConfusionMatrix), 'confusion_matrix must be from torchmetrics.classification'
-  # if not os.path.exists(os.path):
-  fig, _ = confusion_matrix.plot() 
-  fig.suptitle(title)
-  fig.savefig(saving_path)
-  plt.close()
+  if not isinstance(confusion_matrix, MulticlassConfusionMatrix):
+    raise ValueError('confusion_matrix must be an instance of torchmetrics.classification.MulticlassConfusionMatrix')
+  fig, ax = confusion_matrix.plot(ax=ax)
+  ax.set_title(title) 
+  if saving_path is not None:
+    fig.savefig(saving_path)
+
 
 def get_unique_subjects_and_classes(csv_path):
   """
@@ -1314,8 +1394,8 @@ def plot_loss_and_precision_details(dict_train, train_folder_path, total_epochs,
 
   generate_plot_train_val_results(dict_results=dict_train['dict_results'], 
                                 count_subject_ids_train=dict_train['count_subject_ids_train'],
-                                count_subject_ids_test=dict_train['count_subject_ids_test'],
-                                count_y_test=dict_train['count_y_test'], 
+                                count_subject_ids_test=dict_train['count_subject_ids_val'],
+                                count_y_test=dict_train['count_y_val'], 
                                 count_y_train=dict_train['count_y_train'],
                                 saving_path=train_folder_path,
                                 criterion=criterion,
@@ -1408,42 +1488,31 @@ def plot_dataset_distribuition(csv_path,run_folder_path,per_class=True,per_parte
   #                                                   saving_path=dataset_folder_path) # 2 plots
 
 
-def compute_loss_per_class(criterion,unique_train_val_classes,batch_y,class_loss,outputs):
-  if isinstance(criterion,nn.CrossEntropyLoss):
-    for cls in unique_train_val_classes:
-        mask = (batch_y == cls).reshape(-1)
-        if mask.any():
-          class_idx = np.where(unique_train_val_classes == cls)[0][0]
-          predicted = torch.argmax(outputs[mask], 1)
-          correct = (predicted == batch_y[mask]).sum().item()
-          total = mask.sum().item()
-          class_loss[class_idx] += correct / total
-  else:
-    for cls in unique_train_val_classes:
-      mask = (batch_y == cls).reshape(-1)
-      if mask.any():
-        class_idx = np.where(unique_train_val_classes == cls)[0][0]
+def compute_loss_per_class_(criterion,unique_train_val_classes,batch_y,outputs,class_loss=None,class_accuracy=None):
+  for cls in unique_train_val_classes:
+    mask = (batch_y == cls).reshape(-1)
+    if mask.any():
+      class_idx = np.where(unique_train_val_classes == cls)[0][0]
+      if class_accuracy is not None:
+        predicted = torch.argmax(outputs[mask], 1)
+        correct = (predicted == batch_y[mask]).sum().item() if batch_y.dim()== 1 else (predicted == batch_y[mask].argmax(1)).sum().item()
+        total = mask.sum().item()
+        class_accuracy[class_idx] += correct / total
+      if class_loss is not None:
         loss = criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
         class_loss[class_idx] += loss
       
-def compute_loss_per_subject(criterion,unique_train_val_subjects,batch_subjects,batch_y,subject_loss,outputs):
-  if isinstance(criterion,nn.CrossEntropyLoss):
-    for subj in unique_train_val_subjects:
-      mask = (batch_subjects == subj).reshape(-1)
-      if mask.any():
-        subj_idx = np.where(unique_train_val_subjects == subj)[0][0]
+def compute_loss_per_subject_(criterion,unique_train_val_subjects,batch_subjects,batch_y,outputs,subject_loss=None,subject_accuracy=None):
+  for subj in unique_train_val_subjects:
+    mask = (batch_subjects == subj).reshape(-1)
+    if mask.any():
+      subj_idx = np.where(unique_train_val_subjects == subj)[0][0]
+      if subject_accuracy is not None:
         _, predicted = torch.max(outputs[mask], 1)
-        correct = (predicted == batch_y[mask]).sum().item()
+        correct = (predicted == batch_y[mask]).sum().item() if batch_y.dim()== 1 else (predicted == batch_y[mask].argmax(1)).sum().item()
         total = mask.sum().item()
-        subject_loss[subj_idx] += correct / total
-
-  else:
-    for subj in unique_train_val_subjects:
-      mask = (batch_subjects == subj).reshape(-1)
-      # if epoch == 0:
-      #   nr_samples_per_subject[subj] += mask.sum().item()
-      if mask.any():
-        subj_idx = np.where(unique_train_val_subjects == subj)[0][0]
+        subject_accuracy[subj_idx] += correct / total
+      if subject_loss is not None:
         subject_loss[subj_idx] += criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
 
 def generate_new_csv(csv_path,filter):
@@ -1469,3 +1538,102 @@ def get_lr_and_weight_decay(optimizer):
     wds.append(param_group.get('weight_decay', 0))  # Defaults to 0 if not set
 
   return lrs, wds
+
+def plot_losses_and_test_new(list_1,title, list_2=None,output_path=None,point=None,ax=None,x_label='Epochs',
+                         y_label_1='Training Loss',y_label_2='Val loss',y_label_3='Test loss', 
+                         y_lim_1=[0,5],y_lim_2=[0,1], y_lim_3 = [0,1],step_ylim_1=0.2,step_ylim_2=0.2,step_ylim_3=0.2,
+                         dict_to_string=None,color_1='tab:red',color_2='tab:blue', color_3='tab:green'):
+  # plt.figure()
+  if ax is None:
+    fig, ax1 = plt.subplots()
+  else:
+    ax1 = ax
+  # Plot training loss (primary y-axis)
+  ax1.set_xlabel(x_label)
+  ax1.set_ylabel(y_label_1, color=color_1)
+  ax1.plot(list_1, label=y_label_1, color=color_1)
+  ax1.set_ylim(y_lim_1)  # Scale y-axis
+  ax1.set_yticks(np.arange(y_lim_1[0], y_lim_1[1], step_ylim_1))
+  ax1.tick_params(axis='y', labelcolor=color_1)
+  # ax1.legend()
+  
+  if point is not None:
+    ax3 = ax1.twinx()
+    # ax3.spines["right"].set_position(("axes", 1.05))  # Offset the third axis to the right
+    ax3.spines["right"].set_visible(False)
+    ax3.set_ylabel(y_label_3, color=color_3, labelpad=15)
+    ax3.plot(point['epoch'],point['value'],'o', label=y_label_3, color=color_3)
+    ax3.set_ylim(y_lim_3)
+    ax3.set_yticks(np.arange(y_lim_3[0], y_lim_3[1], step=step_ylim_3))
+    ax3.tick_params(axis='y', labelcolor=color_3)
+    # ax3.legend()
+  
+  # Create second y-axis for validation accuracy
+  if list_2 is not None:
+    ax2 = ax1.twinx()
+    ax2.set_ylabel(y_label_2, color=color_2)
+    ax2.plot(list_2, label=y_label_2, color=color_2)
+    ax2.set_ylim(y_lim_2)  # Accuracy in percentage
+    ax2.set_yticks(np.arange(y_lim_2[0], y_lim_2[1], step=step_ylim_2))
+    ax2.tick_params(axis='y', labelcolor=color_2)
+  # ax2.legend()
+  lines, labels = ax1.get_legend_handles_labels()
+  if list_2 is not None:
+      lines2, labels2 = ax2.get_legend_handles_labels()
+      lines += lines2
+      labels += labels2
+  if point is not None:
+      lines3, labels3 = ax3.get_legend_handles_labels()
+      lines += lines3
+      labels += labels3
+  ax1.legend(lines, labels, loc='best')
+  # Add additional text on the 
+  if dict_to_string:
+    plt.figtext(1.1, 0.5, dict_to_string, ha='left', va='center', fontsize=12, color='black')
+
+  # Titles, grid, and legend
+  # plt.title(f'{title}')
+  ax1.grid(True)
+  ax1.title.set_text(title)
+  if ax is None and output_path is not None:
+  # Save plot and close
+    plt.savefig(output_path, bbox_inches='tight')
+    plt.close(fig)
+    
+def plot_with_std(ax,x, mean, std,x_label,y_label,title,y_lim,legend_label_mean='Mean',legend_label_std='std',color='blue'):
+  if ax is None:
+    fig, ax = plt.subplots()
+  if not isinstance(mean, np.ndarray):
+    mean = np.array(mean)
+  if not isinstance(std, np.ndarray):
+    std = np.array(std)
+  ax.plot(x, mean, label=legend_label_mean, color=color)
+  ax.set_ylim(y_lim)
+  ax.fill_between(x, mean-std, mean+std, color=color, alpha=0.2, label=legend_label_std)
+  ax.set_xlabel(x_label)
+  ax.set_ylabel(y_label)
+  ax.set_title(title)
+  ax.legend()
+  if ax is None:
+    plt.show()
+    plt.close(fig)
+    
+def compute_confidence_predictions_(list_prediction_right_mean,list_prediction_wrong_mean,list_prediction_right_std,list_prediction_wrong_std,outputs,gt,pred_before_softmax=True):
+  if pred_before_softmax:
+    outputs = torch.softmax(outputs, dim=1)
+  if not isinstance(gt,torch.Tensor):
+    gt = torch.tensor(gt)
+  if gt.dim() > 1: 
+    gt = torch.argmax(gt, dim=1) # if gt is not one hot encoded
+  
+     
+  prediction_class = torch.argmax(outputs, dim=1)
+  mask_right = (prediction_class == gt).reshape(-1)
+  tmp = outputs[mask_right]
+  outputs_right,_ = torch.max(outputs[mask_right],dim=1)
+  outputs_wrong,_ = torch.max(outputs[~mask_right],dim=1)
+  list_prediction_right_mean.append(torch.mean(outputs_right, dim=0).detach().cpu().numpy())
+  list_prediction_wrong_mean.append(torch.mean(outputs_wrong, dim=0).detach().cpu().numpy())
+  list_prediction_right_std.append(torch.std(outputs_right, dim=0).detach().cpu().numpy())
+  list_prediction_wrong_std.append(torch.std(outputs_wrong, dim=0).detach().cpu().numpy())
+  
