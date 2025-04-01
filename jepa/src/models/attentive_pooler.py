@@ -175,3 +175,4 @@ class AttentiveClassifier(nn.Module):
             self.linear.reset_parameters()
         else:
             raise NotImplementedError(f'Initialization method {init_type} not implemented')
+        
