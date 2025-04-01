@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 stoic_subjects = [27,28,32,33,34,35,36,39,40,41,42,44,51,53,55,56,61,64,74,87]
+saving_rate_training_logs = 3
 
 class SAMPLE_FRAME_STRATEGY(Enum):
   UNIFORM = 'uniform'
