@@ -13,7 +13,7 @@ class Model_Advanced: # Scenario_Advanced
   def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,
               path_labels, sample_frame_strategy, head, head_params,
               batch_size_training,stride_window,clip_length,
-              features_folder_saving_path,concatenate_temporal,n_workers=1):
+              features_folder_saving_path,concatenate_temporal,label_smooth=0.0,n_workers=1):
     """
     Initialize the custom model. 
     Parameters:
@@ -66,6 +66,7 @@ class Model_Advanced: # Scenario_Advanced
     self.concatenate_temporal = concatenate_temporal
     self.path_to_extracted_features = features_folder_saving_path
     self.dataset_type = tools.get_dataset_type(self.path_to_extracted_features)
+    self.label_smooth = label_smooth
     if self.dataset_type == CUSTOM_DATASET_TYPE.BASE:
       self.backbone_dict = {
         'backbone': self.backbone,
@@ -78,7 +79,7 @@ class Model_Advanced: # Scenario_Advanced
     self.n_workers = n_workers
     
       
-  def test_pretrained_model(self,path_model_weights, csv_path, criterion, concatenate_temporal,is_test):
+  def test_pretrained_model(self,path_model_weights,state_dict, csv_path, criterion, concatenate_temporal,is_test):
     """
     Evaluate the model using the specified dataset.
     Parameters:
@@ -95,7 +96,10 @@ class Model_Advanced: # Scenario_Advanced
     """
     if not is_test:
       raise Exception('Set is_test to True. Currently this function is only for testing.')
-    self.head.load_state_weights(path=path_model_weights)
+    if path_model_weights is not None:
+      self.head.load_state_weights()
+    else:
+      self.head.model.load_state_dict(state_dict)
     test_dataset, test_loader = get_dataset_and_loader(csv_path=csv_path,
                                                         batch_size=self.batch_size_training,
                                                         concatenate_temporal=concatenate_temporal,
@@ -105,6 +109,7 @@ class Model_Advanced: # Scenario_Advanced
                                                         shuffle_training_batch=False,
                                                         backbone_dict=self.backbone_dict,
                                                         model=self.head.model,
+                                                        label_smooth=self.label_smooth,
                                                         n_workers=self.n_workers
                                                                  )
     unique_test_subjects = test_dataset.get_unique_subjects()
@@ -182,10 +187,11 @@ class Model_Advanced: # Scenario_Advanced
                                           val_csv_path=val_csv_path,
                                           n_workers=self.n_workers,
                                           clip_grad_norm=clip_grad_norm,
+                                          label_smooth=self.label_smooth,
                                           backbone_dict=self.backbone_dict)
     return {'dict_results':dict_results, 
               'count_y_train':count_y_train, 
-              'count_y_test':count_y_val,
+              'count_y_val':count_y_val,
               'count_subject_ids_train':count_subject_ids_train,
-              'count_subject_ids_test':count_subject_ids_val
+              'count_subject_ids_val':count_subject_ids_val
               }    
