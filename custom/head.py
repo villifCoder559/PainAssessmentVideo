@@ -8,6 +8,7 @@ import math
 import os
 from custom.helper import CUSTOM_DATASET_TYPE
 import torch.nn.init as init
+import custom.helper as helper
 from custom.dataset import customSampler
 from torch.nn.utils.rnn import pack_padded_sequence,pack_padded_sequence
 from custom.dataset import get_dataset_and_loader
@@ -24,7 +25,7 @@ class BaseHead(nn.Module):
     self.model = model
     self.is_classification = is_classification
   
-  def log_performance(self,epoch, stage,num_epochs, loss, precision,list_grad_norm=None,wds=None,lrs=None):
+  def log_performance(self, stage, loss, precision,epoch=-1,num_epochs=-1,list_grad_norm=None,wds=None,lrs=None):
       if epoch>-1:
         print(f'Epoch [{epoch}/{num_epochs}]')
       print(f' {stage}')
@@ -53,16 +54,12 @@ class BaseHead(nn.Module):
       
   def start_train(self, num_epochs, criterion, optimizer,lr, saving_path, train_csv_path, val_csv_path ,batch_size,dataset_type,
                   round_output_loss, shuffle_training_batch, regularization_loss,regularization_lambda,concatenate_temp_dim,clip_grad_norm,
-                  early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,backbone_dict,n_workers):
+                  early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,backbone_dict,n_workers,label_smooth):
     device = 'cuda'
     self.model.to(device)
     if init_network:
       self.model._initialize_weights(init_type=init_network)
     
-    list_train_losses = []
-    list_train_losses_per_class = []
-    list_train_losses_per_subject = []
-    list_train_confusion_matricies = []
     train_dataset, train_loader = get_dataset_and_loader(batch_size=batch_size,
                                                               csv_path=train_csv_path,
                                                               root_folder_features=root_folder_features,
@@ -72,6 +69,7 @@ class BaseHead(nn.Module):
                                                               dataset_type=dataset_type,
                                                               backbone_dict=backbone_dict,
                                                               model=self.model,
+                                                              label_smooth=label_smooth,
                                                               n_workers=n_workers)
     val_dataset, val_loader = get_dataset_and_loader(batch_size=batch_size,
                                                           csv_path=val_csv_path,
@@ -82,6 +80,7 @@ class BaseHead(nn.Module):
                                                           dataset_type=dataset_type,
                                                           backbone_dict=backbone_dict,
                                                           model=self.model,
+                                                          label_smooth=label_smooth,
                                                           n_workers=n_workers)
     
     if isinstance(self.model,AttentiveClassifierJEPA):
@@ -118,18 +117,35 @@ class BaseHead(nn.Module):
     # val_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
     val_unique_classes = val_dataset.get_unique_classes()
     val_unique_subjects = val_dataset.get_unique_subjects()
+    list_train_losses = []
+    list_train_losses_per_class = []
+    list_train_accuracy_per_class = []
+    list_train_accuracy_per_subject = []
+    list_train_losses_per_subject = []
+    list_train_confusion_matricies = []
     list_val_losses = []
     list_val_losses_per_class = []
+    list_val_accuracy_per_class = []
     list_val_losses_per_subject = []
+    list_val_accuracy_per_subject = []
     list_val_confusion_matricies = []
     list_train_macro_accuracy = []
     list_val_macro_accuracy = []
     total_norm_epoch = []
-    early_stopping.reset()
     list_lrs = []
     list_wds = []
     # list_list_samples = []
     # list_list_y = []
+    # best_epoch = False
+    list_train_confidence_prediction_right_mean = []
+    list_train_confidence_prediction_wrong_mean = []
+    list_val_confidence_prediction_right_mean = []
+    list_val_confidence_prediction_wrong_mean = []
+    list_train_confidence_prediction_right_std = []
+    list_train_confidence_prediction_wrong_std = []
+    list_val_confidence_prediction_right_std = []
+    list_val_confidence_prediction_wrong_std = []
+    early_stopping.reset()
     for epoch in range(num_epochs):
       self.model.train()
       if scheduler:
@@ -140,12 +156,18 @@ class BaseHead(nn.Module):
       list_lrs.append(lrs)
       list_wds.append(wds)
       class_loss = np.zeros(train_unique_classes.shape[0])
+      class_accuracy = np.zeros(train_unique_classes.shape[0])
       subject_loss = np.zeros(train_unique_subjects.shape[0])
+      subject_accuracy = np.zeros(train_unique_subjects.shape[0])
       train_confusion_matrix = ConfusionMatrix(task='multiclass',num_classes=train_unique_classes.shape[0]+1)
       train_loss = 0.0
       subject_count_batch = np.zeros(train_unique_subjects.shape[0])
       count_batch=0
       total_norm_epoch.append([])
+      batch_train_confidence_prediction_right_mean = []
+      batch_train_confidence_prediction_right_std = []
+      batch_train_confidence_prediction_wrong_mean = []
+      batch_train_confidence_prediction_wrong_std = []
       # list_samples = []
       # list_y = []
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
@@ -169,26 +191,36 @@ class BaseHead(nn.Module):
         loss.backward()        
         if clip_grad_norm:
           total_norm=torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm).detach().cpu() #  torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)
+          # total_norm = torch.tensor(total_norm)
         else:
           total_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 100).detach().cpu()
+        
         total_norm_epoch[epoch].append(total_norm.item())
         # remove dict_batch_X from GPU
         optimizer.step()
         # outputs = torch.argmax(outputs, dim=1)
         train_loss += loss.item()
         # Compute loss per class and subject
-        tools.compute_loss_per_class(batch_y=batch_y,
-                                     class_loss=class_loss,
-                                     unique_train_val_classes=train_unique_classes,
-                                     outputs=outputs,
-                                     criterion=criterion)
-        tools.compute_loss_per_subject(batch_subjects=batch_subjects,
-                                       criterion=criterion,
-                                       batch_y=batch_y,
-                                       outputs=outputs,
-                                       subject_loss=subject_loss,
-                                       unique_train_val_subjects=train_unique_subjects)
-        batch_y = batch_y.detach().cpu().reshape(-1)
+        # if epoch % helper.saving_rate_training_logs == 0:
+        tools.compute_loss_per_class_(batch_y=batch_y,
+                                    class_loss=class_loss,
+                                    unique_train_val_classes=train_unique_classes,
+                                    outputs=outputs,
+                                    class_accuracy=class_accuracy,
+                                    criterion=criterion)
+        tools.compute_loss_per_subject_(batch_subjects=batch_subjects,
+                                      criterion=criterion,
+                                      batch_y=batch_y,
+                                      outputs=outputs,
+                                      subject_loss=subject_loss,
+                                      subject_accuracy=subject_accuracy,
+                                      unique_train_val_subjects=train_unique_subjects)
+        tools.compute_confidence_predictions_(list_prediction_right_mean=batch_train_confidence_prediction_right_mean,
+                                              list_prediction_right_std=batch_train_confidence_prediction_right_std,
+                                              list_prediction_wrong_mean=batch_train_confidence_prediction_wrong_mean,
+                                              list_prediction_wrong_std=batch_train_confidence_prediction_wrong_std,
+                                              gt=batch_y,
+                                              outputs=outputs)
         count_batch+=1
         if self.is_classification:
           predictions = torch.argmax(outputs, dim=1).detach().cpu().reshape(-1)
@@ -197,44 +229,67 @@ class BaseHead(nn.Module):
           mask = torch.isin(predictions, torch.tensor(train_unique_classes))
           predictions[~mask] = self.model.num_classes # put prediction in the last class (bad_classified)
           
+        batch_y = batch_y.detach().cpu()
+        if batch_y.dim() > 1:
+          batch_y = torch.argmax(batch_y, dim=1).reshape(-1)
         train_confusion_matrix.update(predictions, batch_y)
         
       # tools.check_sample_id_y_from_csv(list_samples,list_y,train_csv_path)
       # list_list_samples.append(list_samples)
       # list_list_y.append(list_y)
-      train_confusion_matrix.compute()
-      list_train_losses.append(train_loss / len(train_loader))
-      list_train_losses_per_class.append(class_loss / len(train_loader))
-      list_train_losses_per_subject.append(subject_loss / subject_count_batch)
-      list_train_confusion_matricies.append(train_confusion_matrix)
+      
       dict_eval = self.evaluate(criterion=criterion,is_test=False,
                                 unique_val_classes=val_unique_classes,
                                 unique_val_subjects=val_unique_subjects,
                                 val_loader=val_loader)
+            
+      if epoch == 0 or (dict_eval[key_for_early_stopping] < best_test_loss if key_for_early_stopping == 'val_loss' else dict_eval[key_for_early_stopping] > best_test_loss):
+        best_test_loss = dict_eval[key_for_early_stopping]
+        best_model_state = copy.deepcopy(self.model.state_dict())
+        best_model_state = {key: value.cpu() for key, value in best_model_state.items()}
+        best_model_epoch = epoch
+        best_epoch = True
+      
+      list_train_losses.append(train_loss / len(train_loader))
       list_val_losses.append(dict_eval['val_loss'])
-      list_val_losses_per_class.append(dict_eval['val_loss_per_class'])
-      list_val_losses_per_subject.append(dict_eval['val_loss_per_subject'])
+      list_train_confidence_prediction_right_mean.append(np.mean(batch_train_confidence_prediction_right_mean))
+      list_train_confidence_prediction_wrong_mean.append(np.mean(batch_train_confidence_prediction_wrong_mean))
+      list_train_confidence_prediction_right_std.append(np.std(batch_train_confidence_prediction_right_mean))
+      list_train_confidence_prediction_wrong_std.append(np.std(batch_train_confidence_prediction_wrong_mean))
+      
+      if epoch % helper.saving_rate_training_logs == 0 or best_epoch:
+        list_train_confusion_matricies.append(train_confusion_matrix)
+        list_train_losses_per_class.append(class_loss / len(train_loader))
+        list_train_losses_per_subject.append(subject_loss / subject_count_batch)
+        list_train_accuracy_per_class.append(class_accuracy / len(train_loader))
+        list_train_accuracy_per_subject.append(subject_accuracy / subject_count_batch)
+        list_val_losses_per_class.append(dict_eval['val_loss_per_class'])
+        list_val_losses_per_subject.append(dict_eval['val_loss_per_subject'])
+        list_val_accuracy_per_class.append(dict_eval['val_accuracy_per_class'])
+        list_val_accuracy_per_subject.append(dict_eval['val_accuracy_per_subject'])
+        
+      list_val_confidence_prediction_right_mean.append(dict_eval['val_prediction_confidence_right_mean'])
+      list_val_confidence_prediction_wrong_mean.append(dict_eval['val_prediction_confidence_wrong_mean'])
+      list_val_confidence_prediction_right_std.append(dict_eval['val_prediction_confidence_right_std'])
+      list_val_confidence_prediction_wrong_std.append(dict_eval['val_prediction_confidence_wrong_std'])
       list_val_confusion_matricies.append(dict_eval['val_confusion_matrix'])
+      
+      train_confusion_matrix.compute()
       train_dict_precision_recall = tools.get_accuracy_from_confusion_matrix(confusion_matrix=train_confusion_matrix,list_real_classes=train_unique_classes)
       list_train_macro_accuracy.append(train_dict_precision_recall['macro_precision'])
       list_val_macro_accuracy.append(dict_eval['val_macro_precision'])
       # log performance
       self.log_performance(stage='Train', num_epochs=num_epochs, loss=list_train_losses[-1], precision=train_dict_precision_recall['macro_precision'],epoch=epoch,list_grad_norm=total_norm_epoch[epoch],
                            lrs=lrs,wds=wds)
-      self.log_performance(stage='Val', num_epochs=num_epochs, loss=dict_eval['val_loss'], precision=dict_eval['val_macro_precision'],epoch=-1,)
-      
-      if epoch == 0 or (dict_eval[key_for_early_stopping] < best_test_loss if key_for_early_stopping == 'val_loss' else dict_eval[key_for_early_stopping] > best_test_loss):
-        best_test_loss = dict_eval[key_for_early_stopping]
-        best_model_state = copy.deepcopy(self.model.state_dict())
-        best_model_state = {key: value.cpu() for key, value in best_model_state.items()}
-        best_model_epoch = epoch
+      self.log_performance(stage='Val', num_epochs=num_epochs, loss=dict_eval['val_loss'], precision=dict_eval['val_macro_precision'])
         
       if early_stopping(dict_eval[key_for_early_stopping]):
         break
-    if saving_path:
-        print('Load and save best model for next steps...')
-        torch.save(best_model_state, os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth'))
-        print(f"Best model weights saved to {os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth')}")
+      
+    # if saving_path:
+    #     print('Load and save best model for next steps...')
+    #     torch.save(best_model_state, os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth'))
+    #     print(f"Best model weights saved to {os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth')}")
     return {
       'train_losses': list_train_losses,
       'train_loss_per_class': np.array(list_train_losses_per_class),
@@ -250,6 +305,18 @@ class BaseHead(nn.Module):
       'train_unique_y': train_unique_classes,
       'val_unique_y': val_unique_classes,
       'subject_ids_unique': np.unique(np.concatenate((train_unique_subjects,val_unique_subjects),axis=0)),
+      'list_val_accuracy_per_subject': list_val_accuracy_per_subject,
+      'list_train_accuracy_per_subject': list_train_accuracy_per_subject,
+      'list_val_accuracy_per_class': list_val_accuracy_per_class,
+      'list_train_accuracy_per_class': list_train_accuracy_per_class,
+      'list_train_confidence_prediction_right_mean': list_train_confidence_prediction_right_mean,
+      'list_train_confidence_prediction_wrong_mean': list_train_confidence_prediction_wrong_mean,
+      'list_train_confidence_prediction_right_std': list_train_confidence_prediction_right_std,
+      'list_train_confidence_prediction_wrong_std': list_train_confidence_prediction_wrong_std,
+      'list_val_confidence_prediction_right_mean': list_val_confidence_prediction_right_mean,
+      'list_val_confidence_prediction_wrong_mean': list_val_confidence_prediction_wrong_mean,
+      'list_val_confidence_prediction_right_std': list_val_confidence_prediction_right_std,
+      'list_val_confidence_prediction_wrong_std': list_val_confidence_prediction_wrong_std,
       # 'train_accuracy_per_class': train_accuracy_per_class,
       # 'test_accuracy_per_class': test_accuracy_per_class,
       'train_confusion_matricies': list_train_confusion_matricies,
@@ -259,14 +326,17 @@ class BaseHead(nn.Module):
       'list_train_macro_accuracy': list_train_macro_accuracy,
       'list_val_macro_accuracy': list_val_macro_accuracy,
       'epochs': epoch,
-      'total_norm_epoch': np.array(total_norm_epoch).mean(axis=1),
+      'list_mean_total_norm_epoch': np.array(total_norm_epoch).mean(axis=1),
+      'list_std_total_norm_epoch': np.array(total_norm_epoch).std(axis=1),
+      'list_max_total_norm_epoch': np.array(total_norm_epoch).max(axis=1),
+      'list_min_total_norm_epoch': np.array(total_norm_epoch).min(axis=1),
       'list_lrs': list_lrs,
       'list_wds': list_wds,
       # 'list_samples': list_list_samples,
       # 'list_y': list_list_y
     }
 
-  def evaluate(self, val_loader, criterion, unique_val_subjects, unique_val_classes, is_test):
+  def evaluate(self, val_loader, criterion, unique_val_subjects, unique_val_classes, is_test,save_log=True):
     # unique_train_val_classes is only for eval but kept the name for compatibility
     device = 'cuda'
     count = 0
@@ -274,23 +344,34 @@ class BaseHead(nn.Module):
     self.model.eval()
     with torch.no_grad():
       val_loss = 0.0
-      val_loss_per_class = np.zeros(self.model.num_classes)
+      loss_per_class = np.zeros(self.model.num_classes)
+      accuracy_per_class = np.zeros(self.model.num_classes)
       subject_loss = np.zeros(unique_val_subjects.shape[0])
+      accuracy_per_subject = np.zeros(unique_val_subjects.shape[0])
       val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=self.model.num_classes+1) # last class is for bad_classified in regression
       subject_batch_count = np.zeros(unique_val_subjects.shape[0])
+      batch_confidence_prediction_right_mean = []
+      batch_confidence_prediction_wrong_mean = []
+      batch_confidence_prediction_right_std = []
+      batch_confidence_prediction_wrong_std = []
       for dict_batch_X, batch_y, batch_subjects,_ in tqdm.tqdm(val_loader,total=len(val_loader),desc='Validation' if not is_test else 'Test'):
         tmp = np.isin(unique_val_subjects,batch_subjects)
         dict_batch_X = {key: value.to(device) for key, value in dict_batch_X.items()}
-        batch_y = batch_y.to(device).long()
+        batch_y = batch_y.to(device)
         subject_batch_count[tmp] += 1
         outputs = self.model(**dict_batch_X)
         loss = criterion(outputs, batch_y)
         val_loss += loss.item()
-        tools.compute_loss_per_class(batch_y=batch_y, class_loss=val_loss_per_class, unique_train_val_classes=unique_val_classes,
-                                     outputs=outputs, criterion=criterion)
-        tools.compute_loss_per_subject(batch_subjects=batch_subjects, criterion=criterion, batch_y=batch_y, outputs=outputs,
-                                       subject_loss=subject_loss, unique_train_val_subjects=unique_val_subjects)
-        batch_y = batch_y.detach().cpu().reshape(-1)
+        if save_log:
+          tools.compute_loss_per_class_(batch_y=batch_y, class_loss=loss_per_class, unique_train_val_classes=unique_val_classes,
+                                      outputs=outputs, criterion=criterion,class_accuracy=accuracy_per_class)
+          tools.compute_loss_per_subject_(batch_subjects=batch_subjects, criterion=criterion, batch_y=batch_y, outputs=outputs,
+                                        subject_loss=subject_loss, unique_train_val_subjects=unique_val_subjects,subject_accuracy=accuracy_per_subject)
+          tools.compute_confidence_predictions_(list_prediction_right_mean=batch_confidence_prediction_right_mean,
+                                                list_prediction_wrong_mean=batch_confidence_prediction_wrong_mean,
+                                                list_prediction_right_std=batch_confidence_prediction_right_std,
+                                                list_prediction_wrong_std=batch_confidence_prediction_wrong_std,
+                                                gt=batch_y, outputs=outputs)
         if self.is_classification:
           predictions = torch.argmax(outputs, dim=1).detach().cpu().reshape(-1)
         else:
@@ -298,32 +379,50 @@ class BaseHead(nn.Module):
           mask = torch.isin(predictions, torch.tensor(unique_val_classes))
           predictions[~mask] = self.model.num_classes # put prediction in the last class (bad_classified)
           
+        batch_y = batch_y.detach().cpu()
+        if batch_y.dim() > 1:
+          batch_y = torch.argmax(batch_y, dim=1).reshape(-1)
         val_confusion_matricies.update(predictions, batch_y)
         count += 1
       
       val_confusion_matricies.compute()
       val_loss = val_loss / len(val_loader)
-      val_loss_per_class = val_loss_per_class / len(val_loader)
-      subject_loss = subject_loss / subject_batch_count
+      if save_log:
+        loss_per_class = loss_per_class / len(val_loader)
+        accuracy_per_class = accuracy_per_class / len(val_loader)
+        subject_loss = subject_loss / subject_batch_count
+        accuracy_per_subject = accuracy_per_subject / subject_batch_count
       dict_precision_recall = tools.get_accuracy_from_confusion_matrix(confusion_matrix=val_confusion_matricies,
                                                                        list_real_classes=unique_val_classes)
       if is_test:
-        self.log_performance(stage='Test', num_epochs=-1, loss=val_loss, precision=dict_precision_recall['macro_precision'],epoch=-1)
+        self.log_performance(stage='Test', loss=val_loss, precision=dict_precision_recall['macro_precision'])
         return {
           'test_loss': val_loss,
-          'test_loss_per_class': val_loss_per_class,
+          'test_loss_per_class': loss_per_class,
           'test_loss_per_subject': subject_loss,
+          'test_accuracy_per_class': accuracy_per_class,
+          'test_accuracy_per_subject': accuracy_per_subject,
           'test_macro_precision': dict_precision_recall["macro_precision"],
           'test_confusion_matrix': val_confusion_matricies,
+          'test_prediction_confidence_right_mean': np.mean(batch_confidence_prediction_right_mean),
+          'test_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean),
+          'test_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean),
+          'test_prediction_confidence_wrong_std': np.std(batch_confidence_prediction_wrong_mean),
           'dict_precision_recall': dict_precision_recall
         }
       else:
         return {
           'val_loss': val_loss,
-          'val_loss_per_class': val_loss_per_class,
+          'val_loss_per_class': loss_per_class,
           'val_loss_per_subject': subject_loss,
+          'val_accuracy_per_class': accuracy_per_class,
+          'val_accuracy_per_subject': accuracy_per_subject,
           'val_macro_precision': dict_precision_recall["macro_precision"],
           'val_confusion_matrix': val_confusion_matricies,
+          'val_prediction_confidence_right_mean': np.mean(batch_confidence_prediction_right_mean),
+          'val_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean),
+          'val_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean),
+          'val_prediction_confidence_wrong_std': np.std(batch_confidence_prediction_wrong_mean),
           'dict_precision_recall': dict_precision_recall
         }      
 
