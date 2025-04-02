@@ -72,7 +72,7 @@ def train_with_gru_head(
   lr_list, optim_list, loss_reg, k_fold, epochs, seed_random_state, is_plot_dataset_distribution,
   is_round_output_loss, is_shuffle_video_chunks, is_shuffle_training_batch, key_for_early_stopping,
   target_metric_best_model, early_stopping, enable_scheduler, clip_length, layer_norm, stop_after_kth_fold,n_workers,
-  list_regularization_lambda_L2
+  list_regularization_lambda_L2,dict_augmented
 ):
   """Run training with GRU head configuration."""
   stride_window_in_video = 16  # sliding window
@@ -138,7 +138,8 @@ def train_with_gru_head(
                       concatenate_temp_dim=concatenate_temp_dim,
                       stop_after_kth_fold=stop_after_kth_fold,
                       n_workers=n_workers,
-                      clip_grad_norm=clip_grad_norm
+                      clip_grad_norm=clip_grad_norm,
+                      dict_augmented=dict_augmented
                     )
                     print(f'Time taken for this run: {(time.time()-start)//60} min')
 
@@ -150,7 +151,7 @@ def train_with_attentive_head(
   is_shuffle_video_chunks, is_shuffle_training_batch, key_for_early_stopping,
   target_metric_best_model, early_stopping, enable_scheduler, clip_grad_norm,
   clip_length, stop_after_kth_fold,emb_dim,list_num_heads,list_attn_dropout,n_workers,list_init_network,num_classes,pos_encoder,
-  list_label_smooth,list_regularization_lambda_L2
+  list_label_smooth,list_regularization_lambda_L2,dict_augmented
 ):
   """Run training with Attentive head configuration."""
   stride_window_in_video = 16  # sliding window
@@ -213,7 +214,8 @@ def train_with_attentive_head(
                       stop_after_kth_fold=stop_after_kth_fold,
                       label_smooth=label_smooth,
                       n_workers=n_workers,
-                      clip_grad_norm=clip_grad_norm
+                      clip_grad_norm=clip_grad_norm,
+                      dict_augmented=dict_augmented
                     )
                     # scrit example: python3 train_model.py --mt B --head ATTENTIVE --lr 0.0001 --ep 500 --opt adamw --batch_train 8700  --stop 3 --num_heads 8 --csv partA/starting_point/samples_exc_no_detection.csv --ffsp partA/video/video_frontalized --global_folder_name history_run_att --path_video_dataset partA/video/video_frontalized  --k_fold 3 
                     print(f'Time taken for this run: {(time.time()-start)//60} min')
@@ -226,7 +228,7 @@ def train_with_jepa_attentive_head(
   is_shuffle_video_chunks, is_shuffle_training_batch, key_for_early_stopping,list_regularization_lambda_L2,
   target_metric_best_model, early_stopping, enable_scheduler, clip_grad_norm,
   clip_length, stop_after_kth_fold,emb_dim,list_num_heads,list_model_dropout,n_workers,head_type,list_init_network,
-  list_drop_attn, list_drop_residual, list_mlp_ratio, pos_encoder, num_classes, list_label_smooth
+  list_drop_attn, list_drop_residual, list_mlp_ratio, pos_encoder, num_classes, list_label_smooth,dict_augmented
 ):
   """Run training with Attentive head configuration."""
   stride_window_in_video = 16  # sliding window
@@ -295,12 +297,11 @@ def train_with_jepa_attentive_head(
                             stop_after_kth_fold=stop_after_kth_fold,
                             n_workers=n_workers,
                             clip_grad_norm=clip_grad_norm,
-                            label_smooth=label_smooth
+                            label_smooth=label_smooth,
+                            dict_augmented=dict_augmented
                           )
                           # scrit example: python3 train_model.py --mt B --head ATTENTIVE --lr 0.0001 --ep 500 --opt adamw --batch_train 8700  --stop 3 --num_heads 8 --csv partA/starting_point/samples_exc_no_detection.csv --ffsp partA/video/video_frontalized --global_folder_name history_run_att --path_video_dataset partA/video/video_frontalized  --k_fold 3 
                           print(f'Time taken for this run: {(time.time()-start)//60} min')
-
-
 
 def train_with_linear_head(
   model_type, pooling_clips_reduction, sample_frame_strategy, concatenate_temp_dim,
@@ -385,7 +386,7 @@ def train(
   is_round_output_loss, GRU_output_size, key_for_early_stopping, seed_random_state, is_shuffle_training_batch,
   is_shuffle_video_chunks, clip_length, target_metric_best_model, is_plot_dataset_distribution, layer_norm,
   enable_scheduler, loss_reg, head, stop_after_kth_fold,list_num_heads,linear_dim_reduction,n_workers,clip_grad_norm,
-  list_drop_attn, list_drop_residual, list_mlp_ratio,pos_encoder,list_label_smooth,list_regularization_lambda_L2
+  list_drop_attn, list_drop_residual, list_mlp_ratio,pos_encoder,list_label_smooth,list_regularization_lambda_L2,dict_augmented
 ):
   """Main training function that dispatches to specific head training functions."""
   # Initialize common parameters
@@ -427,7 +428,8 @@ def train(
       clip_length=clip_length, layer_norm=layer_norm,
       stop_after_kth_fold=stop_after_kth_fold,
       n_workers=n_workers,
-      clip_grad_norm=clip_grad_norm
+      clip_grad_norm=clip_grad_norm,
+      dict_augmented=dict_augmented
     )
   elif head_type.name == 'ATTENTIVE':
     train_with_attentive_head(
@@ -445,7 +447,7 @@ def train(
       early_stopping=early_stopping, enable_scheduler=enable_scheduler, clip_length=clip_length,
       stop_after_kth_fold=stop_after_kth_fold,list_num_heads=list_num_heads,list_attn_dropout=list_drop_attn,
       n_workers=n_workers, list_init_network=list_init_network, clip_grad_norm=clip_grad_norm,num_classes=num_classes,
-      pos_encoder=pos_encoder,list_label_smooth=list_label_smooth
+      pos_encoder=pos_encoder,list_label_smooth=list_label_smooth,dict_augmented=dict_augmented
       
     )
   elif head_type.name == 'ATTENTIVE_JEPA':
@@ -466,9 +468,10 @@ def train(
       n_workers=n_workers,head_type=head_type, list_init_network=list_init_network, clip_grad_norm=clip_grad_norm,
       list_drop_attn=list_drop_attn, list_drop_residual=list_drop_residual, list_mlp_ratio=list_mlp_ratio,
       pos_encoder=pos_encoder,num_classes=num_classes, list_label_smooth=list_label_smooth,
+      dict_augmented=dict_augmented
     )
   elif head_type.name == 'LINEAR':
-    # Label smoothing not implemeted
+    # Label smoothing, augmentation not implemeted
     train_with_linear_head(
       model_type=model_type, pooling_clips_reduction=pooling_clips_reduction,emb_dim=emb_dim,
       sample_frame_strategy=sample_frame_strategy, concatenate_temp_dim=concatenate_temp_dim,
@@ -552,6 +555,9 @@ if __name__ == '__main__':
   parser.add_argument('--label_smooth', type=float, nargs='*',default=[0.0], help='Label smoothing factor. Default is 0.0 (no smoothing)')
   # parser.add_argument('--alpha_regulariz',type=float,default=0.0, help='Alpha for regularization loss between L1 and L2. COnsider the regulariz_lambda_L1 while regulariz_lambda_L2 is empty')
   parser.add_argument('--loss_regression', type=str, default='L1', help='Regression loss function: L1 or L2. Default is L1')
+  parser.add_argument('--hflip', type=float, default=0.0, help='Horizontal flip augmentation probability. Default is 0.0')
+  parser.add_argument('--jitter', type=float, default=0.0, help='Jitter augmentation probability. Default is 0.0')
+  parser.add_argument('--rotation', type=float, default=0.0, help='Rotation augmentation probability. Default is 0.0')
   
   # Early stopping parameters
   parser.add_argument('--key_early_stopping', type=str, default='val_macro_precision', 
@@ -604,7 +610,11 @@ if __name__ == '__main__':
     )
   
   print(f'Early stopping configuration: {str(early_stopping)}\n')
-  
+  dict_augmented = {
+      'hflip': args.hflip,
+      'jitter': args.jitter,
+      'rotation': args.rotation
+    }
   # Create config summary for later reference
   config_prompt = {
     'model_type': args.mt,
@@ -709,6 +719,7 @@ if __name__ == '__main__':
     list_mlp_ratio=args.mlp_ratio,
     pos_encoder = args.pos_enc,
     list_label_smooth=args.label_smooth,
+    dict_augmented=dict_augmented,
     is_shuffle_video_chunks=False,
     is_shuffle_training_batch=True,
     is_plot_dataset_distribution=False
