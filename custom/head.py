@@ -96,6 +96,7 @@ class BaseHead(nn.Module):
           wd=regularization_lambda_L2,
           num_epochs=num_epochs,
           use_bfloat16=False)
+      wd_scheduler = None # remove this line if you want to use the scheduler
     else:
       if enable_scheduler:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer,
