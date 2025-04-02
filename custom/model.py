@@ -6,14 +6,15 @@ import sys
 import custom.tools as tools
 from custom.dataset import get_dataset_and_loader
 from custom.head import LinearHead, GRUHead, AttentiveHead, AttentiveHeadJEPA
-from custom.helper import CUSTOM_DATASET_TYPE, MODEL_TYPE
+from custom.helper import CUSTOM_DATASET_TYPE, MODEL_TYPE, get_shift_for_sample_id
+import pandas as pd
 # import wandb
 
 class Model_Advanced: # Scenario_Advanced
   def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,
               path_labels, sample_frame_strategy, head, head_params,
-              batch_size_training,stride_window,clip_length,
-              features_folder_saving_path,concatenate_temporal,label_smooth=0.0,n_workers=1):
+              batch_size_training,stride_window,clip_length,dict_augmented,
+              features_folder_saving_path,concatenate_temporal,label_smooth=0.0,n_workers=1,new_csv_path=None):
     """
     Initialize the custom model. 
     Parameters:
@@ -77,8 +78,34 @@ class Model_Advanced: # Scenario_Advanced
     else:
       self.backbone_dict = None
     self.n_workers = n_workers
+
+    if dict_augmented is not None:
+      self.generate_csv_augmented(original_csv_path=path_labels,
+                                  dict_augmentation=dict_augmented,
+                                  out_csv_path=new_csv_path)
     
-      
+  def generate_csv_augmented(self, original_csv_path, dict_augmentation, out_csv_path):
+    def _get_rnd_from_type(type_augm):
+      if type_augm == 'hflip':
+        return 42
+      elif type_augm == 'jitter':
+        return 53
+      elif type_augm == 'rotate':
+        return 63
+      else:
+        raise ValueError(f'Unknown augmentation type: {type_augm}')
+    list_df = []
+    df = pd.read_csv(original_csv_path,sep='\t')
+    list_df.append(df)
+    for type_augm, p in dict_augmentation.items():
+      if p > 0 and p<= 1:
+        df_sampled = df.sample(frac=p, random_state=_get_rnd_from_type(type_augm))
+        df_sampled['sample_id'] = df_sampled['sample_id'].apply(lambda x: x + get_shift_for_sample_id(type_augm))
+        list_df.append(df_sampled)
+    df_merged = pd.concat(list_df, ignore_index=True)
+    df_merged.to_csv(out_csv_path, index=False, sep='\t')
+    print(f'CSV file with augmentations saved to {out_csv_path}')
+    
   def test_pretrained_model(self,path_model_weights,state_dict, csv_path, criterion, concatenate_temporal,is_test):
     """
     Evaluate the model using the specified dataset.
