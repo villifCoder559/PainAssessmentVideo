@@ -369,8 +369,8 @@ def generate_csv_row(data,config,time_, test_id):
     'learning_rate': config['lr'],
     'criterion': type(config['criterion']).__name__,
     'init_network': config['init_network'],
-    'reg_lambda': config['regularization_lambda'],
-    'reg_loss': config['regularization_loss'],
+    'reg_lambda_L1': config['regularization_lambda_L1'],
+    'reg_lambda_L2': config['regularization_lambda_L2'],
     'feature_type': config['features_folder_saving_path'][-1] if config['features_folder_saving_path'][-1] != '' else config['features_folder_saving_path'][-2],
     'early_stopping_key': config['key_for_early_stopping'] + f'(pat={config["early_stopping"].patience},eps={config["early_stopping"].min_delta},t_mod={config["early_stopping"].threshold_mode})',
     'target_metric': config['target_metric_best_model'],
@@ -443,24 +443,6 @@ def get_best_result(data):
                       'config': config}
   return dict_best_result
 
-def collect_loss_plots(summary_folder, output_folder):
-  if not os.path.exists(output_folder):
-    os.makedirs(output_folder)
-  folders = [f for f in os.listdir(summary_folder) if os.path.isdir(os.path.join(summary_folder, f))]
-  for folder in folders:
-    losses_png_path = os.path.join(summary_folder, folder, 'loss_plots')
-    for _, _, files in os.walk(losses_png_path):
-      for file in files:
-        if file.endswith(".png"):
-          src_path = os.path.join(losses_png_path, file)
-          new_name = f"{folder.split('_')[0]}_{file}"
-          dst_path = os.path.join(output_folder, new_name)
-          try:
-            if not os.path.exists(dst_path):
-              os.symlink(src_path, dst_path)
-          except OSError:
-            shutil.copy(src_path, dst_path)
-  print(f"All loss plots collected in {output_folder}")
 
 def plot_run_details(results_data, output_root,only_csv):
   list_row_csv = []
