@@ -146,8 +146,7 @@ def load_dict_data(saving_folder_path):
 
 def plot_error_per_class(unique_classes, mae_per_class, criterion, title='', accuracy_per_class=None,y_label=None,
                          count_classes=None, saving_path=None, y_lim=None, ax=None):
-  """Plot Mean Absolute Error per class.
-  
+  """
   If `ax` is provided, the plot is drawn on that axis; otherwise, a new figure and axis are created.
   If `accuracy_per_class` is provided, it also plots accuracy for the same class.
   """
@@ -167,19 +166,19 @@ def plot_error_per_class(unique_classes, mae_per_class, criterion, title='', acc
   # Plot the MAE (loss) per class
   ax.bar(indices - bar_width/2, mae_per_class, color='blue', width=bar_width,
          label='Loss per Class', edgecolor='black')
-
+  ax.tick_params(axis='y', labelcolor='blue')
+  
   # Plot accuracy per class if provided
   if accuracy_per_class is not None:
-    ax.bar(indices + bar_width/2, accuracy_per_class, color='orange', width=bar_width,
-           label='Accuracy per Class', edgecolor='black')
     ax2 = ax.twinx()  # Create a second y-axis for accuracy
+    ax2.bar(indices + bar_width/2, accuracy_per_class, color='orange', width=bar_width,
+           label='Accuracy per Class', edgecolor='black')
     ax2.set_ylabel('Accuracy')
     ax2.set_ylim(0, 1)  # Set y-axis limit for accuracy
     ax2.yaxis.set_major_locator(MaxNLocator(integer=True))  # Set y-ticks to be integers
     ax2.tick_params(axis='y', labelcolor='orange')
     ax2.set_yticks(np.arange(0, 1.1, 0.1))  # Set y-ticks for accuracy
     
-
   # Set axis labels and title
   ax.set_xlabel('Class')
   ax.set_ylabel(criterion)
@@ -187,7 +186,7 @@ def plot_error_per_class(unique_classes, mae_per_class, criterion, title='', acc
   
   # Set x-ticks with class names
   ax.set_xticks(indices)
-  ax.set_xticklabels(unique_classes, rotation=45)
+  ax.set_xticklabels(unique_classes)
 
   # Add count text above each bar if count_classes is provided
   if count_classes is not None:
@@ -197,7 +196,12 @@ def plot_error_per_class(unique_classes, mae_per_class, criterion, title='', acc
                 ha='center', va='bottom', fontsize=10)
   
   # Add legend
-  ax.legend()
+  handles, labels = ax.get_legend_handles_labels()
+  if accuracy_per_class is not None:
+      handles2, labels2 = ax2.get_legend_handles_labels()
+      handles += handles2
+      labels += labels2
+  ax.legend(handles, labels, loc='upper right')
   
   # Save or show the plot
   if saving_path is not None:
@@ -302,7 +306,7 @@ def plot_accuracy_confusion_matrix(confusion_matricies, type_conf,title='', savi
       path=os.path.join(saving_path,f'{type_conf}_{key}.png')
       plt.savefig(path)
       print(f'Plot {key} over Epochs {title} saved to {path}.png')
-
+      
     plt.close()
 
 def plot_error_per_subject(unique_subject_ids, criterion, loss_per_subject,
@@ -897,11 +901,11 @@ def get_array_from_csv(csv_path):
   csv_array = pd.read_csv(csv_path)  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
   cols_array = csv_array.columns.to_numpy()[0].split('\t')
   csv_array = csv_array.to_numpy()
-  list_samples = []
+  list_entry = []
   for entry in csv_array:
     tmp = entry[0].split("\t")
-    list_samples.append(tmp)
-  return np.stack(list_samples),cols_array
+    list_entry.append(tmp)
+  return np.stack(list_entry),cols_array
 
 def save_frames_as_video(list_input_video_path, list_frame_indices,sample_ids, output_video_path, all_predictions, list_ground_truth, output_fps=1):
   """
@@ -1629,11 +1633,19 @@ def compute_confidence_predictions_(list_prediction_right_mean,list_prediction_w
      
   prediction_class = torch.argmax(outputs, dim=1)
   mask_right = (prediction_class == gt).reshape(-1)
-  tmp = outputs[mask_right]
+  
   outputs_right,_ = torch.max(outputs[mask_right],dim=1)
   outputs_wrong,_ = torch.max(outputs[~mask_right],dim=1)
-  list_prediction_right_mean.append(torch.mean(outputs_right, dim=0).detach().cpu().numpy())
-  list_prediction_wrong_mean.append(torch.mean(outputs_wrong, dim=0).detach().cpu().numpy())
-  list_prediction_right_std.append(torch.std(outputs_right, dim=0).detach().cpu().numpy())
-  list_prediction_wrong_std.append(torch.std(outputs_wrong, dim=0).detach().cpu().numpy())
+  if len(outputs_right) != 0:
+    list_prediction_right_mean.append(torch.mean(outputs_right, dim=0).detach().cpu().numpy())
+    list_prediction_right_std.append(torch.std(outputs_right, dim=0).detach().cpu().numpy())
+  else:
+    list_prediction_right_mean.append(np.array(0,dtype=np.float32))
+    list_prediction_right_std.append(np.array(0,dtype=np.float32))
+  if len(outputs_wrong) != 0:
+    list_prediction_wrong_mean.append(torch.mean(outputs_wrong, dim=0).detach().cpu().numpy())
+    list_prediction_wrong_std.append(torch.std(outputs_wrong, dim=0).detach().cpu().numpy())
+  else:
+    list_prediction_wrong_mean.append(np.array(0,dtype=np.float32))
+    list_prediction_wrong_std.append(np.array(0,dtype=np.float32))
   
