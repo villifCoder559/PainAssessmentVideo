@@ -441,7 +441,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    stop_after_kth_fold,
                    n_workers,
                    clip_grad_norm,
-                   label_smooth
+                   label_smooth,
+                   dict_augmented,
                   ):
  
 
@@ -482,6 +483,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'n_workers': n_workers,
     'clip_grad_norm': clip_grad_norm,
     'label_smooth': label_smooth,
+    **dict_augmented,
     'type_regul': 'elastic' if regularization_lambda_L1 > 0 and regularization_lambda_L2 > 0 else 'L1' if regularization_lambda_L1 > 0 else 'L2' if regularization_lambda_L2 > 0 else 'none'
     }
   def get_json_config():
@@ -518,25 +520,6 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   ###############################
   # START of the main function  #
   ###############################
-  # Create the model
-  set_seed(seed_random_state)  
-  model_advanced = Model_Advanced(model_type=model_type,
-                                  path_dataset=path_video_dataset,
-                                  embedding_reduction=pooling_embedding_reduction,
-                                  clips_reduction=pooling_clips_reduction,
-                                  sample_frame_strategy=sample_frame_strategy,
-                                  stride_window=stride_window_in_video,
-                                  path_labels=path_csv_dataset,
-                                  batch_size_training=batch_size_training,
-                                  head=head.value,
-                                  head_params=head_params,
-                                  features_folder_saving_path= features_folder_saving_path,
-                                  clip_length=clip_length,
-                                  concatenate_temporal=concatenate_temp_dim,
-                                  n_workers=n_workers,
-                                  label_smooth=label_smooth
-                                  )
-  
   # Check if the global folder exists 
   print(f'Global folder name {global_foder_name}')
   if not os.path.exists(global_foder_name):
@@ -554,6 +537,29 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   
   if not os.path.exists(run_folder_path):
     os.makedirs(os.path.join(global_foder_name,run_folder_name))
+  set_seed(seed_random_state)  
+
+  # Create the model
+  new_csv_path = os.path.join(run_folder_path,'augmented_'+os.path.split(path_csv_dataset)[-1])
+  model_advanced = Model_Advanced(model_type=model_type,
+                                  path_dataset=path_video_dataset,
+                                  embedding_reduction=pooling_embedding_reduction,
+                                  clips_reduction=pooling_clips_reduction,
+                                  sample_frame_strategy=sample_frame_strategy,
+                                  stride_window=stride_window_in_video,
+                                  path_labels=path_csv_dataset,
+                                  batch_size_training=batch_size_training,
+                                  head=head.value,
+                                  head_params=head_params,
+                                  features_folder_saving_path= features_folder_saving_path,
+                                  clip_length=clip_length,
+                                  concatenate_temporal=concatenate_temp_dim,
+                                  n_workers=n_workers,
+                                  label_smooth=label_smooth,
+                                  dict_augmented=dict_augmented,
+                                  new_csv_path=new_csv_path if dict_augmented is not None else None,
+                                  )
+  
   # print(f"Run folder created at {run_folder_path}")
   
   # Save model configuration
@@ -576,7 +582,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   
   # Train the model
   start = time.time()
-  fold_results = k_fold_cross_validation(path_csv_dataset=path_csv_dataset,
+  fold_results = k_fold_cross_validation(path_csv_dataset=path_csv_dataset if dict_augmented is None else new_csv_path,
                                           train_folder_path=train_folder_path,
                                           model_advanced=model_advanced,
                                           k_fold=k_fold,
