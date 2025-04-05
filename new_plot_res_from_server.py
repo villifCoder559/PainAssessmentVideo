@@ -85,6 +85,9 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_mae_p
         # add test_id in dict_to_string
         dict_to_string += f'\nTest ID: {test_id}'
         dict_to_string += f'\nfold_subfold: {key.split("_")[0]}_{key.split("_")[-1]}'
+        dict_to_string += f'\naugm_hflip: {data["config"]["hflip"] if "hflip" in data["config"] else 0}'
+        dict_to_string += f'\naugm_jitter: {data["config"]["jitter"] if "jitter" in data["config"] else 0}'
+        dict_to_string += f'\naugm_rotation: {data["config"]["rotation"] if "rotation" in data["config"] else 0}'
         input_dict_loss_acc= {
           'list_1':train_losses,
           'list_2':val_accuracy,
@@ -366,20 +369,24 @@ def generate_csv_row(data,config,time_, test_id):
     'head': head_type,
     'optimizer': config['optimizer_fn'],
     'enable_scheduler': config['enable_scheduler'] if 'enable_scheduler' in config else 'ND',
-    'learning_rate': config['lr'],
+    'target_metric': config['target_metric_best_model'],
     'criterion': type(config['criterion']).__name__,
+    'round_output_loss': config['round_output_loss'],
+    'early_stopping_key': config['key_for_early_stopping'] + f'(pat={config["early_stopping"].patience},eps={config["early_stopping"].min_delta},t_mod={config["early_stopping"].threshold_mode})',
+    'feature_type': config['features_folder_saving_path'][-1] if config['features_folder_saving_path'][-1] != '' else config['features_folder_saving_path'][-2],
+    'max_epochs': config['epochs'],
     'init_network': config['init_network'],
+    'learning_rate': config['lr'],
+    'batch_size_training': config['batch_size_training'],
     'reg_lambda_L1': config['regularization_lambda_L1'] if 'regularization_lambda_L1' in config else config['regularization_lambda'] if config['regularization_loss'] == 'L1' else 0,
     'reg_lambda_L2': config['regularization_lambda_L2'] if 'regularization_lambda_L2' in config else config['regularization_lambda'] if config['regularization_loss'] == 'L2' else 0,
+    'label_smooth': config['label_smooth'] if 'label_smooth' in config else 0,
+    'hflip': config['hflip'] if 'hflip' in config else 0,
+    'jitter': config['jitter'] if 'jitter' in config else 0,
+    'rotation': config['rotation'] if 'rotation' in config else 0,
     # 'reg_lambda_L2': config['regularization_lambda_L2'],
     # 'reg_lambda': config['regularization_lambda'],
     # 'reg_loss': config['regularization_loss'],
-    'feature_type': config['features_folder_saving_path'][-1] if config['features_folder_saving_path'][-1] != '' else config['features_folder_saving_path'][-2],
-    'early_stopping_key': config['key_for_early_stopping'] + f'(pat={config["early_stopping"].patience},eps={config["early_stopping"].min_delta},t_mod={config["early_stopping"].threshold_mode})',
-    'target_metric': config['target_metric_best_model'],
-    'round_output_loss': config['round_output_loss'],
-    'batch_size_training': config['batch_size_training'],
-    'max_epochs': config['epochs'],
     **head_params,
     **total_mean_train_losses_best_epoch,
     **total_mean_val_accuracy_best_epoch,
@@ -507,7 +514,7 @@ def plot_filtered_run_details(parent_folder, output_root, filter_dict,only_csv):
   # Process filtered data
   plot_run_details(filtered_data, filtered_output_folder,only_csv)
 
-
+      
 if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='Plot results from a folder') 
   parser.add_argument('--parent_folder', type=str, required=True,
@@ -516,8 +523,8 @@ if __name__ == '__main__':
                       help='Optional filter criteria in format key1=val1,key2=val2')
   parser.add_argument('--only_csv', action='store_true',
                       help='Generate only the summary CSV file without generating any plots')
-  parser.add_argument('--print_filter_from', type=str, default=None,
-                      help='Print list of avilable filter from the given .pkl file')
+  parser.add_argument('--print_filter', action='store_true',
+                      help='Print list of avilable filter from the first .pkl file in parent_folder')
   args = parser.parse_args()
   
   parent_folder = args.parent_folder
@@ -525,11 +532,11 @@ if __name__ == '__main__':
   print(f'Parent folder: {parent_folder}')
   output_root = os.path.join(parent_folder, '_summary')
   os.makedirs(output_root, exist_ok=True)
-  if args.print_filter_from is not None:
-    print(f'Printing filter from: {args.print_filter_from}')
-    results_files = find_results_files(args.print_filter_from)
+  if args.print_filter == True:
+    print(f'Printing filter from: {args.print_filter}')
+    results_files = find_results_files(args.parent_folder)
     if len(results_files) == 0:
-      raise ValueError(f'No results files found in {args.print_filter_from}')
+      raise ValueError(f'No results files found in {args.parent_folder}')
     data = load_results(results_files[0])
     config = data.get('config', {})
     print(f'Available filter keys:\n{[f" {k}" for k in config.keys()]}')  
@@ -541,7 +548,10 @@ if __name__ == '__main__':
       for pair in args.filter.split(','):
         if '=' in pair:
           key, value = pair.split('=')
-          filter_dict_arg[key.strip()] = value.strip()
+          try:
+            filter_dict_arg[key.strip()] = float(value.strip())
+          except ValueError:
+            filter_dict_arg[key.strip()] = value.strip() 
       print(f'Applying filter: {filter_dict_arg}')
       
       plot_filtered_run_details(parent_folder, output_root, filter_dict_arg,only_csv)
@@ -549,5 +559,11 @@ if __name__ == '__main__':
     # Generate the unfiltered plots
       results_files = find_results_files(parent_folder) # get .pkl files
       results_data = {file: load_results(file) for file in results_files} # load .pkl files with path as a key
-      print(f'Loaded {len(results_data)} results files')
+      # print(f'Loaded {len(results_data)} results files')
       plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv)
+
+
+
+  
+      
+      
