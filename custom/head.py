@@ -340,6 +340,9 @@ class BaseHead(nn.Module):
       'list_min_total_norm_epoch': np.array(total_norm_epoch).min(axis=1),
       'list_lrs': list_lrs,
       'list_wds': list_wds,
+      'optimizer': optimizer.state_dict()['param_groups'],
+      'wd_scheduler': wd_scheduler.get_config() if wd_scheduler else None,
+      'scheduler': scheduler.state_dict() if scheduler else None,
       # 'list_samples': list_list_samples,
       # 'list_y': list_list_y
     }
