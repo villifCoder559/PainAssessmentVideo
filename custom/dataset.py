@@ -97,6 +97,7 @@ class customDataset(torch.utils.data.Dataset):
     self.color_jitter = color_jitter
     self.smooth_labels = smooth_labels
     self.rotation = rotation
+    
     if rotation is not None:
       warnings.warn('The rotation is not implemented yet')
     # Image dimensions and channels
@@ -157,6 +158,7 @@ class customDataset(torch.utils.data.Dataset):
     """
     self.path_labels = path
     self.video_labels = pd.read_csv(self.path_labels,sep='\t')
+    self.df = self.video_labels
     print(f'Set path_labels: {self.path_labels}')
   
   def __len__(self):
@@ -264,6 +266,7 @@ class customDataset(torch.utils.data.Dataset):
         return {
           'features': features,
           'labels': dict_data['labels'],
+          'sample_id': dict_data['sample_id'],
           'subject_id': dict_data['subject_id'],
         }
     else: # list case
@@ -279,11 +282,18 @@ class customDataset(torch.utils.data.Dataset):
         for i, item in enumerate(batch_preprocess):
           batch.append({
             'features': batch_features[i],
-            'labels': item['labels'],
-            'subject_id': item['subject_id']
+            'list_labels': item['labels'],
+            'list_sample_id': item['sample_id'],
+            'list_subject_id': item['subject_id']
           })
+        batch = [_get_element(dict_data=dict_data,df=self.video_labels,idx=i) for i,dict_data in zip(idx, batch)]
         return self._custom_collate(batch)
-      
+      #      return {
+      #     'features': features,     # [8, 8, 1, 1, 768]-> [seq_len,Temporal,Space,Space,Emb]
+      #     'labels': labels,         # [8]
+      #     'subject_id': subject_id, # [8]
+      #     'sample_id': sample_id    # int
+      # }
   
   def _read_video_cv2_and_process(self, container, list_indices, width_frames, height_frames):
     """
@@ -377,7 +387,12 @@ class customDataset(torch.utils.data.Dataset):
     return data, labels, subject_id, sample_id, path, list_frames
   
   def _custom_collate(self, batch):
-    return _custom_collate(batch,self.backbone_dict['instance_model_name'],self.backbone_dict['concatenate_temporal'],self.backbone_dict['model'],self.smooth_labels)
+    return _custom_collate(batch=batch,
+                           instance_model_name=self.backbone_dict['instance_model_name'],
+                           concatenate_temporal=self.backbone_dict['concatenate_temporal'],
+                           model=self.backbone_dict['model'],
+                           smooth_labels=self.smooth_labels,
+                           num_classes=self.total_classes)
   
   def _single_uniform_sampling(self, video_len):
     """
@@ -532,37 +547,16 @@ class customDatasetAggregated(torch.utils.data.Dataset):
         merged_dict_data[k] = torch.cat([d[k] for d in list_dict_data],dim=0)
       elif isinstance(v,np.ndarray):
         merged_dict_data[k] = np.concatenate([d[k] for d in list_dict_data],axis=0)
-    return merged_dict_data
-  
-
-  
+    return merged_dict_data 
   
   def __len__(self):
     return len(self.df)
   
   def __getitem__(self,idx):
-    def _get_element(idx):
-      csv_row = self.df.iloc[idx]
-      sample_id = csv_row['sample_id']
-      # if 'hflip' in self.root_folder_feature:
-      #   sample_id = sample_id + 8700
-      mask = self.dict_data['list_sample_id'] == sample_id
-      if mask.sum() == 0:
-        print(f"Sample ID {sample_id} not found in the dataset.")
-      features = self.dict_data['features'][mask]
-      
-      labels = self.dict_data['list_labels'][mask]
-      subject_id = self.dict_data['list_subject_id'][mask]
-      return {
-          'features': features,     # [8,8,1,1,768]-> [seq_len,Temporal,Space,Space,Emb]
-          'labels': labels,         # [8]
-          'subject_id': subject_id,  # [8]
-          'sample_id': sample_id    # int
-      }
     if isinstance(idx,int):
-      return _get_element(idx)
+      return _get_element(df=self.df,dict_data=self.dict_data,idx=idx)
     else:
-      batch = [_get_element(idx) for idx in idx]
+      batch = [_get_element(df=self.df,dict_data=self.dict_data,idx=idx) for idx in idx]
       batch = self._custom_collate(batch)
       return batch
   
@@ -809,7 +803,24 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
     loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=False,collate_fn=dataset_._custom_collate)
   return dataset_,loader_
  
-    
+def _get_element(dict_data,df,idx):
+  csv_row = df.iloc[idx]
+  sample_id = csv_row['sample_id']
+  # if 'hflip' in self.root_folder_feature:
+  #   sample_id = sample_id + 8700
+  mask = dict_data['list_sample_id'] == sample_id
+  if mask.sum() == 0:
+    print(f"Sample ID {sample_id} not found in the dataset.")
+  features = dict_data['features'][mask]
+  
+  labels = dict_data['list_labels'][mask]
+  subject_id = dict_data['list_subject_id'][mask]
+  return {
+      'features': features,     # [8,8,1,1,768]-> [seq_len,Temporal,Space,Space,Emb]
+      'labels': labels,         # [8]
+      'subject_id': subject_id, # [8]
+      'sample_id': sample_id    # int
+  }    
     
         
       
