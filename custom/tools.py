@@ -171,7 +171,7 @@ def plot_error_per_class(unique_classes, mae_per_class, criterion, title='', acc
   # Plot accuracy per class if provided
   if accuracy_per_class is not None:
     ax2 = ax.twinx()  # Create a second y-axis for accuracy
-    ax2.bar(indices + bar_width/2, accuracy_per_class, color='orange', width=bar_width,
+    ax.bar(indices + bar_width/2, accuracy_per_class, color='orange', width=bar_width,
            label='Accuracy per Class', edgecolor='black')
     ax2.set_ylabel('Accuracy')
     ax2.set_ylim(0, 1)  # Set y-axis limit for accuracy
@@ -1493,6 +1493,8 @@ def plot_dataset_distribuition(csv_path,run_folder_path,per_class=True,per_parte
 
 
 def compute_loss_per_class_(criterion,unique_train_val_classes,batch_y,outputs,class_loss=None,class_accuracy=None):
+  if batch_y.dim() != 1:
+    batch_y = torch.argmax(batch_y,1)
   for cls in unique_train_val_classes:
     mask = (batch_y == cls).reshape(-1)
     if mask.any():
@@ -1639,13 +1641,7 @@ def compute_confidence_predictions_(list_prediction_right_mean,list_prediction_w
   if len(outputs_right) != 0:
     list_prediction_right_mean.append(torch.mean(outputs_right, dim=0).detach().cpu().numpy())
     list_prediction_right_std.append(torch.std(outputs_right, dim=0).detach().cpu().numpy())
-  else:
-    list_prediction_right_mean.append(np.array(0,dtype=np.float32))
-    list_prediction_right_std.append(np.array(0,dtype=np.float32))
   if len(outputs_wrong) != 0:
     list_prediction_wrong_mean.append(torch.mean(outputs_wrong, dim=0).detach().cpu().numpy())
     list_prediction_wrong_std.append(torch.std(outputs_wrong, dim=0).detach().cpu().numpy())
-  else:
-    list_prediction_wrong_mean.append(np.array(0,dtype=np.float32))
-    list_prediction_wrong_std.append(np.array(0,dtype=np.float32))
   
