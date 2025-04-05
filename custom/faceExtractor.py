@@ -531,10 +531,10 @@ class FaceExtractor:
       orig_frame = np.copy(frame)
 
     landmarks = self.extract_facial_landmarks([(orig_frame, 0)])
-
-    if landmarks[0] is not None and len(landmarks[0].face_landmarks) > 0:
-      landmarks = np.array([[lm.x, lm.y, lm.z] for lm in landmarks[0].face_landmarks[0]])
-      
+    print(f'landmarks: {landmarks}')
+    if landmarks[0] is not None: # or len(landmarks[0].face_landmarks) > 0:
+      # landmarks = np.array([[lm.x, lm.y, lm.z] for lm in landmarks[0].face_landmarks[0]])
+      landmarks = landmarks.squeeze()
       rotation, translation = self.compute_rigid_transform(landmarks, ref_landmarks)
       rot_trans_landmarks = self.apply_rigid_transform(rotation, translation, landmarks).T
       frontalized_img_SVD = self._get_frontalized_img(landmarks_2d=landmarks,
@@ -603,6 +603,7 @@ class FaceExtractor:
     return frontalized_img
 
   def rigid_transform_3D(self,A, B):
+    print(f"rigid_transform_3D: A.shape: {A.shape}, B.shape: {B.shape}")
     assert A.shape == B.shape
 
     num_rows, num_cols = A.shape
