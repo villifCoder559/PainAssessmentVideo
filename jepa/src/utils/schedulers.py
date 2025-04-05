@@ -43,7 +43,15 @@ class WarmupCosineSchedule(object):
             group['lr'] = new_lr
 
         return new_lr
-
+    def state_dict(self):
+        return {
+            'step': self._step,
+            'warmup_steps': self.warmup_steps,
+            'start_lr': self.start_lr,
+            'ref_lr': self.ref_lr,
+            'final_lr': self.final_lr,
+            'T_max': self.T_max
+        }
 
 class CosineWDSchedule(object):
 
@@ -59,7 +67,13 @@ class CosineWDSchedule(object):
         self.final_wd = final_wd
         self.T_max = T_max
         self._step = 0.
-
+    def get_config(self):
+        return {
+            'ref_wd': self.ref_wd,
+            'final_wd': self.final_wd,
+            'T_max': self.T_max,
+            'optim_type': self.optimizer.__class__.__name__,
+        }
     def step(self):
         self._step += 1
         progress = self._step / self.T_max
