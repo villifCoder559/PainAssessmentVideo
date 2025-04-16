@@ -138,6 +138,7 @@ class CosAttention(nn.Module):
         x = self.proj_drop(x)
         return x
 
+import time
 
 class Attention(nn.Module):
 
@@ -164,12 +165,13 @@ class Attention(nn.Module):
         else:
             self.q_bias = None
             self.v_bias = None
-
+        self.att_drop_val = attn_drop
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(all_head_dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
     def forward(self, x):
+        
         B, N, C = x.shape
         qkv_bias = None
         if self.q_bias is not None:
@@ -181,15 +183,16 @@ class Attention(nn.Module):
         qkv = qkv.reshape(B, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[
             2]  # make torchscript happy (cannot use tensor as tuple)
-
-        q = q * self.scale
-        attn = (q @ k.transpose(-2, -1))
-
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B, N, -1)
-
+        if hasattr(torch.nn.functional,"scaled_dot_product_attention"):
+            x = F.scaled_dot_product_attention(q, k, v, 
+                                               dropout_p=self.att_drop_val if self.training else 0.0,
+                                               scale=self.scale).transpose(1, 2).reshape(B, N, -1)
+        else: 
+            q = q * self.scale
+            attn = (q @ k.transpose(-2, -1))
+            attn = attn.softmax(dim=-1)
+            attn = self.attn_drop(attn)
+            x = (attn @ v).transpose(1, 2).reshape(B, N, -1)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
