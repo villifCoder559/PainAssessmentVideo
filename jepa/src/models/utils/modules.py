@@ -45,7 +45,7 @@ class Attention(nn.Module):
         qk_scale=None,
         attn_drop=0.,
         proj_drop=0.,
-        use_sdpa=True
+        use_sdpa=False
     ):
         super().__init__()
         self.num_heads = num_heads
@@ -53,8 +53,8 @@ class Attention(nn.Module):
         self.scale = qk_scale or head_dim ** -0.5
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
+        self.attn_drop_value = attn_drop
         self.proj = nn.Linear(dim, dim)
-        self.proj_drop_prob = proj_drop
         self.proj_drop = nn.Dropout(proj_drop)
         self.use_sdpa = use_sdpa
 
@@ -64,8 +64,11 @@ class Attention(nn.Module):
         q, k, v = qkv[0], qkv[1], qkv[2]  # [B, num_heads, N, D]
 
         if self.use_sdpa:
-            with torch.backends.cuda.sdp_kernel():
-                x = F.scaled_dot_product_attention(q, k, v, dropout_p=self.proj_drop_prob)
+            with torch.nn.attention.sdpa_kernel(backends=torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION):
+                
+                x = F.scaled_dot_product_attention(q, k, v, 
+                                                   dropout_p=self.attn_drop_value if self.training else 0.0,
+                                                   scale=self.scale)
                 attn = None
         else:
             attn = (q @ k.transpose(-2, -1)) * self.scale  # [B, num_heads, D, D]
@@ -90,8 +93,7 @@ class Block(nn.Module):
         attn_drop=0.,
         act_layer=nn.GELU,
         norm_layer=nn.LayerNorm,
-        grid_size=None,
-        grid_depth=None,
+        use_sdpa=False
     ):
         super().__init__()
         self.norm1 = norm_layer(dim)
@@ -101,6 +103,7 @@ class Block(nn.Module):
             qkv_bias=qkv_bias,
             qk_scale=qk_scale,
             attn_drop=attn_drop,
+            use_sdpa=use_sdpa,
             proj_drop=drop)
 
         self.norm2 = norm_layer(dim)
@@ -128,7 +131,7 @@ class CrossAttention(nn.Module):
         qkv_bias=False,
         attn_drop=0.,
         proj_drop=0.,
-        use_sdpa=True
+        use_sdpa=False
     ):
         super().__init__()
         self.num_heads = num_heads
@@ -137,6 +140,7 @@ class CrossAttention(nn.Module):
         self.q = nn.Linear(dim, dim, bias=qkv_bias)
         self.kv = nn.Linear(dim, int(dim*2), bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
+        self.attn_drop_value = attn_drop
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
         self.use_sdpa = use_sdpa
@@ -150,8 +154,10 @@ class CrossAttention(nn.Module):
         k, v = kv[0], kv[1]  # (batch_size, num_heads, seq_len, feature_dim_per_head)
 
         if self.use_sdpa:
-            with torch.backends.cuda.sdp_kernel():
-                q = F.scaled_dot_product_attention(q, k, v)
+            with torch.nn.attention.sdpa_kernel(backends=torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION):
+                q = F.scaled_dot_product_attention(q, k, v,
+                                                   dropout_p=self.attn_drop_value if self.training else 0.0,
+                                                   scale=self.scale)
         else:
             xattn = (q @ k.transpose(-2, -1)) * self.scale
             xattn = xattn.softmax(dim=-1)  # (batch_size, num_heads, query_len, seq_len)
@@ -174,11 +180,12 @@ class CrossAttentionBlock(nn.Module):
         residual_drop=0.0,
         qkv_bias=False,
         act_layer=nn.GELU,
-        norm_layer=nn.LayerNorm
+        norm_layer=nn.LayerNorm,
+        use_sdpa=False
     ):
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.xattn = CrossAttention(dim, num_heads=num_heads, qkv_bias=qkv_bias, use_sdpa=False, attn_drop=attn_drop, proj_drop=drop)
+        self.xattn = CrossAttention(dim, num_heads=num_heads, qkv_bias=qkv_bias, use_sdpa=use_sdpa, attn_drop=attn_drop, proj_drop=drop)
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = MLP(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
