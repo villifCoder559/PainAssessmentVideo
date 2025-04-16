@@ -40,10 +40,15 @@ class AttentivePooler(nn.Module):
         pos_enc = False,
         qkv_bias=True,
         complete_block=True,
+        use_sdpa=False,
+        cross_block_after_transformers=False,
+        grid_size_pos=None # [T, S, S] -> S depends on the model (Base,Giant,etc), while T is input dependent
     ):
         super().__init__()
         self.query_tokens = nn.Parameter(torch.zeros(1, num_queries, embed_dim))
         self.pos_enc = pos_enc
+        self.grid_size_pos = grid_size_pos
+        self.cross_block_after_transformers = cross_block_after_transformers
         self.pos_enc_tensor = None
         self.complete_block = complete_block
         if complete_block:
@@ -55,6 +60,7 @@ class AttentivePooler(nn.Module):
                 drop=mlp_dropout,
                 attn_drop=attn_dropout,
                 residual_drop=residual_dropout,
+                use_sdpa=use_sdpa,
                 norm_layer=norm_layer)
         else:
             self.cross_attention_block = CrossAttention(
@@ -62,7 +68,7 @@ class AttentivePooler(nn.Module):
                 num_heads=num_heads,
                 attn_drop=attn_dropout,
                 proj_drop=mlp_dropout,
-                use_sdpa=False,
+                use_sdpa=use_sdpa,
                 qkv_bias=qkv_bias)
 
         self.blocks = None
@@ -74,6 +80,9 @@ class AttentivePooler(nn.Module):
                     mlp_ratio=mlp_ratio,
                     qkv_bias=qkv_bias,
                     qk_scale=False,
+                    use_sdpa=use_sdpa,
+                    drop=mlp_dropout,
+                    attn_drop=attn_dropout,
                     norm_layer=norm_layer)
                 for i in range(depth-1)])
 
@@ -112,15 +121,25 @@ class AttentivePooler(nn.Module):
     def forward(self, x): # x: [B, T, C]
         if self.pos_enc:
             if self.pos_enc_tensor is None or self.pos_enc_tensor.shape[0] != x.size(1):
-                self.pos_enc_tensor = pos_embs.get_1d_sincos_pos_embed(grid_size=x.size(1), embed_dim=x.size(2), device=x.device.type)
+                self.pos_enc_tensor = pos_embs.get_3d_sincos_pos_embed_torch(embed_dim=x.size(2),
+                                                                             grid_depth=x.size(1),
+                                                                             grid_size=self.grid_size_pos[1]).to(x.device)
             x = x + self.pos_enc_tensor
         
-        q = self.query_tokens.repeat(len(x), 1, 1)
-        q = self.cross_attention_block(q, x)
-        if self.blocks is not None:
-            for blk in self.blocks:
-                q = blk(q)
-        return q
+        if self.cross_block_after_transformers:
+            if self.blocks is not None:
+                for blk in self.blocks:
+                    x = blk(x)
+            q = self.query_tokens.repeat(len(x), 1, 1)
+            q = self.cross_attention_block(q, x)
+            return q
+        else:
+            q = self.query_tokens.repeat(len(x), 1, 1)
+            q = self.cross_attention_block(q, x)
+            if self.blocks is not None:
+                for blk in self.blocks:
+                    q = blk(q)
+            return q
 
 class AttentiveClassifier(nn.Module):
     """ Attentive Classifier """
@@ -138,7 +157,10 @@ class AttentiveClassifier(nn.Module):
         qkv_bias=True,
         num_classes=1000,
         complete_block=True,
-        pos_enc=False
+        pos_enc=False,
+        use_sdpa=False,
+        cross_block_after_transformers=False,
+        grid_size_pos=None
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -156,6 +178,9 @@ class AttentiveClassifier(nn.Module):
             qkv_bias=qkv_bias,
             pos_enc=pos_enc,
             complete_block=complete_block,
+            use_sdpa=use_sdpa,
+            grid_size_pos=grid_size_pos,
+            cross_block_after_transformers=cross_block_after_transformers
         )
         self.pos_enc = pos_enc
         self.pos_enc_tensor = None
