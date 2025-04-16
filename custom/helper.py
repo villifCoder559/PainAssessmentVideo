@@ -5,6 +5,9 @@ from pathlib import Path
 stoic_subjects = [27,28,32,33,34,35,36,39,40,41,42,44,51,53,55,56,61,64,74,87]
 saving_rate_training_logs = 3
 step_shift = 8700
+dict_data = None
+
+LOG_GRADIENT_PER_MODULE = False
 
 def get_shift_for_sample_id(folder_feature):
   if 'hflip' in folder_feature:
