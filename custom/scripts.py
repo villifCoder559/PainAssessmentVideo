@@ -98,7 +98,7 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
     # }
     
     # stop to make the tests faster
-    if stop_after_kth_fold is not None and i == stop_after_kth_fold - 1:
+    if stop_after_kth_fold is not None and i == stop_after_kth_fold[0] - 1:
       break
     # Clean up extra model weights to save space
     # cleanup_extra_models(train_folder_path, i, k_fold, dict_results_model_weights)
@@ -254,13 +254,18 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
       clip_grad_norm=clip_grad_norm
     )
     dict_test = test_model(
-      model_advanced=model_advanced, path_model_weights=None, test_csv_path=test_csv_path,state_dict=dict_train['dict_results']['best_model_state'],
+      model_advanced=model_advanced,
+      path_model_weights=None, 
+      test_csv_path=test_csv_path,
+      state_dict=dict_train['dict_results']['best_model_state'],
       criterion=criterion, concatenate_temporal=concatenate_temp_dim)
+    # Remove unnecessary data to save space
+    dict_train['dict_results']['best_model_state'] = None
     
     fold_results_kth[f'k{fold_idx}_cross_val_sub_{sub_idx}']={'train':dict_train,'test':dict_test}
     
     # Stop to make the tests faster
-    if stop_after_kth_fold is not None and sub_idx == stop_after_kth_fold - 1:
+    if stop_after_kth_fold is not None and sub_idx == stop_after_kth_fold[1] - 1:
       break
   
   return fold_results_kth
@@ -335,6 +340,7 @@ def test_model(model_advanced, path_model_weights, test_csv_path,
   """Test the best model on the test set"""
   if not isinstance(model_advanced, Model_Advanced):
     raise ValueError('model_advanced must be an instance of Model_Advanced')
+  
   dict_test = model_advanced.test_pretrained_model(
     path_model_weights=path_model_weights,
     state_dict=state_dict,
@@ -611,5 +617,6 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   folder_path=run_folder_path)
   model_advanced.free_gpu_memory()
   del model_advanced
+  return run_folder_path 
  
 
