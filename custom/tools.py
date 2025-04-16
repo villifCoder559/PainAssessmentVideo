@@ -18,6 +18,8 @@ from sklearn.metrics import silhouette_score, davies_bouldin_score
 from scipy.spatial.distance import pdist
 from custom.helper import CUSTOM_DATASET_TYPE,INSTANCE_MODEL_NAME
 import torch.nn as nn
+import safetensors.torch
+
 
 class NpEncoder(json.JSONEncoder):
   def default(self, obj):
@@ -100,6 +102,7 @@ def is_whole_data(folder_path):
             return True
           else:
             raise ValueError(f"Unsupported file format: {video_feature}")
+          
 def is_dict_data(folder_path):
   """
   Check if the specified folder contains dictionary data.
@@ -110,6 +113,8 @@ def is_dict_data(folder_path):
   Returns:
     bool: True if the folder contains dictionary data, False otherwise.
   """
+  if ".safetensors" in folder_path:
+    return True
   list_target_files = ['features.pt','list_frames.pt','list_labels.pt','list_path.npy','list_subject_id.pt','list_sample_id.pt']
   list_files = os.listdir(folder_path)
   for file in list_files:
@@ -134,14 +139,18 @@ def load_dict_data(saving_folder_path):
   Returns:
     dict: Dictionary containing the loaded data.
   """
-  dict_data = {}
-  for file in os.listdir(saving_folder_path):
-    if file.endswith(".pt"):
-      dict_data[file[:-3]] = torch.load(os.path.join(saving_folder_path, file))
-    elif file.endswith(".npy"):
-      dict_data[file[:-4]] = np.load(os.path.join(saving_folder_path, file))
-    else:
-      print(f"Unsupported file format: {file}")
+  if not ".safetensors" in saving_folder_path:
+    dict_data = {}
+    list_dir = os.listdir(saving_folder_path)
+    for file in tqdm(list_dir,desc="Loading files"):
+      if file.endswith(".pt"):
+        dict_data[file[:-3]] = torch.load(os.path.join(saving_folder_path, file),weights_only=True)
+      elif file.endswith(".npy"):
+        dict_data[file[:-4]] = np.load(os.path.join(saving_folder_path, file))
+      else:
+        print(f"Unsupported file format: {file}")
+  else:
+    dict_data = safetensors.torch.load_file(saving_folder_path)
   return dict_data
 
 def plot_error_per_class(unique_classes, mae_per_class, criterion, title='', accuracy_per_class=None,y_label=None,
@@ -171,7 +180,7 @@ def plot_error_per_class(unique_classes, mae_per_class, criterion, title='', acc
   # Plot accuracy per class if provided
   if accuracy_per_class is not None:
     ax2 = ax.twinx()  # Create a second y-axis for accuracy
-    ax.bar(indices + bar_width/2, accuracy_per_class, color='orange', width=bar_width,
+    ax2.bar(indices + bar_width/2, accuracy_per_class, color='orange', width=bar_width,
            label='Accuracy per Class', edgecolor='black')
     ax2.set_ylabel('Accuracy')
     ax2.set_ylim(0, 1)  # Set y-axis limit for accuracy
@@ -1606,7 +1615,7 @@ def plot_losses_and_test_new(list_1,title, list_2=None,output_path=None,point=No
     plt.savefig(output_path, bbox_inches='tight')
     plt.close(fig)
     
-def plot_with_std(ax,x, mean, std,x_label,y_label,title,y_lim,legend_label_mean='Mean',legend_label_std='std',color='blue'):
+def plot_with_std(ax,x, mean, std,x_label,y_label,title,y_lim=None,legend_label_mean='Mean',legend_label_std='std',color='blue',y_step=None, cap_line=None):
   if ax is None:
     fig, ax = plt.subplots()
   if not isinstance(mean, np.ndarray):
@@ -1614,7 +1623,13 @@ def plot_with_std(ax,x, mean, std,x_label,y_label,title,y_lim,legend_label_mean=
   if not isinstance(std, np.ndarray):
     std = np.array(std)
   ax.plot(x, mean, label=legend_label_mean, color=color)
-  ax.set_ylim(y_lim)
+  if y_lim is not None:
+    ax.set_ylim(y_lim)
+    ax.grid(True)
+    if y_step:
+      ax.set_yticks(np.arange(y_lim[0], y_lim[1], step=y_step))
+  if cap_line:
+    ax.axhline(y=cap_line, color='r', linestyle='--', label='Cap line for gradient')
   ax.fill_between(x, mean-std, mean+std, color=color, alpha=0.2, label=legend_label_std)
   ax.set_xlabel(x_label)
   ax.set_ylabel(y_label)
@@ -1640,8 +1655,159 @@ def compute_confidence_predictions_(list_prediction_right_mean,list_prediction_w
   outputs_wrong,_ = torch.max(outputs[~mask_right],dim=1)
   if len(outputs_right) != 0:
     list_prediction_right_mean.append(torch.mean(outputs_right, dim=0).detach().cpu().numpy())
-    list_prediction_right_std.append(torch.std(outputs_right, dim=0).detach().cpu().numpy())
+    list_prediction_right_std.append(torch.std(outputs_right, dim=0).detach().cpu().numpy() if len(outputs_right) > 1 else 0)
   if len(outputs_wrong) != 0:
     list_prediction_wrong_mean.append(torch.mean(outputs_wrong, dim=0).detach().cpu().numpy())
-    list_prediction_wrong_std.append(torch.std(outputs_wrong, dim=0).detach().cpu().numpy())
+    list_prediction_wrong_std.append(torch.std(outputs_wrong, dim=0).detach().cpu().numpy() if len(outputs_wrong) > 1 else 0)
+
+import cv2
+
+def add_grid_to_video(video_path: str, grid_size: tuple,output_folder):
+  """
+  Adds a grid overlay to a video and saves the result as a new video file.
   
+  Args:
+    video_path (str): Path to the input video.
+    grid_size (tuple): Grid size in format (num_rows, num_cols).
+                       Determines how many grid cells the frame is divided into.
+  """
+  cap = cv2.VideoCapture(video_path)
+  if not cap.isOpened():
+    print("Error: Could not open video.")
+    return
+
+  frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+  frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+  fps = cap.get(cv2.CAP_PROP_FPS)
+  output_video_path = os.path.join(output_folder,os.path.split(video_path)[-1][:-4]+'_grid.mp4')
+  out = cv2.VideoWriter(
+    output_video_path,
+    cv2.VideoWriter_fourcc(*'avc1'),
+    fps,
+    (frame_width, frame_height)
+  )
+
+  num_rows, num_cols = grid_size
+  cell_width = frame_width / num_cols
+  cell_height = frame_height / num_rows
+
+  frame_idx = 0
+  while True:
+    ret, frame = cap.read()
+    if not ret:
+      break
+
+    for i in range(1, num_cols):
+      x = int(i * cell_width)
+      cv2.line(frame, (x, 0), (x, frame_height), color=(0, 255, 0), thickness=1)
+
+    for j in range(1, num_rows):
+      y = int(j * cell_height)
+      cv2.line(frame, (0, y), (frame_width, y), color=(0, 255, 0), thickness=1)
+
+    # cv2.putText(frame, f"Frame: {frame_idx}", (10, frame_height - 10),
+    #             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+    out.write(frame)
+    frame_idx += 1
+
+  cap.release()
+  out.release()
+  print(f"The video with grid overlay has been saved at {output_video_path}")
+  
+import cv2
+import numpy as np
+
+def split_video_with_chunks(video_path: str, chunk_size: int,output_folder, separator_duration: int = None, new_fps: float = None):
+  """
+  Splits a video into chunks by inserting black frames labeled with the chunk number.
+
+  Args:
+    video_path (str): Path to the input video.
+    chunk_size (int): Number of frames in each chunk before inserting a separator.
+    separator_duration (int, optional): Number of black frames to insert as a separator. 
+                                        Defaults to original FPS.
+    new_fps (float, optional): FPS of the output video. Defaults to original FPS.
+  """
+  cap = cv2.VideoCapture(video_path)
+  if not cap.isOpened():
+    print("Error: Could not open video.")
+    return
+
+  width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+  height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+  original_fps = cap.get(cv2.CAP_PROP_FPS)
+  fps = new_fps if new_fps else original_fps
+  separator_frames = int(separator_duration if separator_duration else original_fps)
+  output_video_path = os.path.join(output_folder,os.path.split(video_path)[-1][:-4]+'_chunks.mp4')
+  out = cv2.VideoWriter(
+    output_video_path,
+    cv2.VideoWriter_fourcc(*'avc1'),
+    fps,
+    (width, height)
+  )
+
+  frame_count = 0
+  chunk_index = 0
+
+  while True:
+    ret, frame = cap.read()
+    if not ret:
+      break
+
+    if frame_count % chunk_size == 0:
+      for i in range(separator_frames):
+        black_frame = np.zeros((height, width, 3), dtype=np.uint8)
+        text = f"CHUNK {chunk_index}"
+        font_scale = 1
+        thickness = 3
+        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)[0]
+        text_x = (width - text_size[0]) // 2
+        text_y = (height + text_size[1]) // 2
+        cv2.putText(black_frame, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 
+                    font_scale, (255, 255, 255), thickness)
+        out.write(black_frame)
+      chunk_index += 1
+    out.write(frame)
+    frame_count += 1
+
+
+  cap.release()
+  out.release()
+  print(f"Video saved at {output_video_path}")
+
+def convert_dict_to_safetensors(dict_folder_path,output_folder_path=None):
+  dict_data = load_dict_data(dict_folder_path)
+  new_dict = {}
+  for k,v in dict_data.items():
+    if isinstance(v,torch.Tensor):
+      new_dict[k] = v
+    else:
+      try:
+        new_dict[k] = torch.tensor(v)
+      except:
+        print(f'Error converting {k} to tensor. Not saved in the new dict')
+  if output_folder_path is None:
+    safetensors_path = os.path.splitext(dict_folder_path)[0] + '.safetensors'
+  else:
+    safetensors_path = f'{output_folder_path}.safetensors'
+  safetensors.torch.save_file(new_dict, safetensors_path,metadata={'format': 'torch'})
+  print(f"Converted dict saved to {safetensors_path}")
+  
+def test_speed_safetensors_vs_standard(path_1,path_2):
+  start_1 = time.time()
+  a = load_dict_data(path_1)
+  end_1 = time.time()
+  print(f"Path1 load time: {end_1 - start_1} seconds")
+  for k,v in a.items():
+    print(f'  {k}: {v.shape}')
+  del a
+  # del dict_1
+  start_2 = time.time()
+  b = load_dict_data(path_2)
+  end_2 = time.time()
+  print(f"Path2 load time: {end_2 - start_2} seconds")
+  for k,v in b.items():
+    print(f'  {k}: {v.shape}')
+  del b
+  print(f'Speedup (path1/path2): {(end_1 - start_1) / (end_2 - start_2)}x')    
