@@ -2,12 +2,13 @@ import torch
 from custom.backbone import VideoBackbone, VitImageBackbone
 from custom.dataset import customDataset
 import numpy as np
-import sys
+import os
 import custom.tools as tools
 from custom.dataset import get_dataset_and_loader
 from custom.head import LinearHead, GRUHead, AttentiveHead, AttentiveHeadJEPA
 from custom.helper import CUSTOM_DATASET_TYPE, MODEL_TYPE, get_shift_for_sample_id
 import pandas as pd
+import custom.helper as helper
 # import wandb
 
 class Model_Advanced: # Scenario_Advanced
@@ -43,27 +44,13 @@ class Model_Advanced: # Scenario_Advanced
                                  clip_length=clip_length)
     self.batch_size_training = batch_size_training
     
-    if head == 'GRU':
-      if model_type != MODEL_TYPE.ViT_image:
-        assert self.backbone.frame_size % self.backbone.tubelet_size == 0, "Frame size must be divisible by tubelet size."
-      self.head = GRUHead(**head_params)
-    elif head == 'ATTENTIVE':
-      self.head = AttentiveHead(**head_params)
-    elif head == 'ATTENTIVE_JEPA':
-      self.head = AttentiveHeadJEPA(embed_dim=head_params['input_dim'],
-                                          num_classes=head_params['num_classes'],
-                                          num_heads=head_params['num_heads'],
-                                          dropout=head_params['dropout'],
-                                          attn_dropout=head_params['attn_dropout'],
-                                          residual_dropout=head_params['residual_dropout'],
-                                          mlp_ratio=head_params['mlp_ratio'],
-                                          pos_enc=head_params['pos_enc'],
-                                          )
-      print(f'sys path: {sys.path}')
-      print('Warning: Dropout is not implemented for the AttentiveClassifierJEPA model.')
-    elif head == 'LINEAR':
-      self.head = LinearHead(**head_params)
-      
+    self.n_workers = n_workers
+    self.dict_augmented = dict_augmented
+    # if dict_augmented is not None:
+    complete_df = self.generate_csv_augmented(original_csv_path=path_labels,
+                                dict_augmentation=dict_augmented,
+                                out_csv_path=new_csv_path)
+          
     self.concatenate_temporal = concatenate_temporal
     self.path_to_extracted_features = features_folder_saving_path
     self.dataset_type = tools.get_dataset_type(self.path_to_extracted_features)
@@ -77,12 +64,93 @@ class Model_Advanced: # Scenario_Advanced
       }
     else:
       self.backbone_dict = None
-    self.n_workers = n_workers
+    # if helper.dict_data is None:
+    if self.dataset_type == CUSTOM_DATASET_TYPE.AGGREGATED and helper.dict_data is None:
+      self.set_global_dict_data_from_hdd_(complete_df=complete_df)
+      # Set label according to the csv (ex: binary classification instead of multiclass)
+      self._set_real_label_from_csv_(complete_df=complete_df)
+      
+    if head == 'GRU':
+      if model_type != MODEL_TYPE.ViT_image:
+        assert self.backbone.frame_size % self.backbone.tubelet_size == 0, "Frame size must be divisible by tubelet size."
+      self.head = GRUHead(**head_params)
+    elif head == 'ATTENTIVE':
+      self.head = AttentiveHead(**head_params)
+    elif head == 'ATTENTIVE_JEPA':
+      if hasattr(torch.nn.functional,"scaled_dot_product_attention"):
+        use_sdpa = True
+        print('Use SDPA for computing')
+      else:
+        use_sdpa = False
+        print('SDPA not available. Using standard attention.')
+      if head_params['pos_enc']:
+        if embedding_reduction.value is not None:
+          T_S_S_shape = np.mean(helper.dict_data['features'][0].shape,axis=embedding_reduction.value)[:3]
+        else:
+          T_S_S_shape = np.array(helper.dict_data['features'][0].shape[:3])
+        # T_S_S_shape = T_S_S_shape.squeeze()
+        print(f"Shape of T_S_S_shape: {T_S_S_shape}\n")
+        # dim_pos_enc = 
+      self.head = AttentiveHeadJEPA(embed_dim=head_params['input_dim'],
+                                          num_classes=head_params['num_classes'],
+                                          num_heads=head_params['num_heads'],
+                                          dropout=head_params['dropout'],
+                                          attn_dropout=head_params['attn_dropout'],
+                                          residual_dropout=head_params['residual_dropout'],
+                                          mlp_ratio=head_params['mlp_ratio'],
+                                          pos_enc=head_params['pos_enc'],
+                                          grid_size_pos=T_S_S_shape, # [T, S, S]
+                                          depth=head_params['depth'],
+                                          use_sdpa=use_sdpa,
+                                          complete_block=True,
+                                          cross_block_after_transformers=head_params['cross_block_after_transformers'],
+                                          )
+    elif head == 'LINEAR':
+      self.head = LinearHead(**head_params)
 
-    if dict_augmented is not None:
-      self.generate_csv_augmented(original_csv_path=path_labels,
-                                  dict_augmentation=dict_augmented,
-                                  out_csv_path=new_csv_path)
+    
+  
+  def set_global_dict_data_from_hdd_(self,complete_df):
+    list_sample_id = complete_df['sample_id'].tolist()
+    dict_data_original = tools.load_dict_data(saving_folder_path=self.path_to_extracted_features)
+    
+    # Mask to keep only the data for the sample IDs in the CSV file
+    mask_keep_data = np.isin(dict_data_original['list_sample_id'],list_sample_id)
+
+    # Filter the data in the dictionary using the mask to save memory
+    if dict_data_original['features'].shape[0] != np.sum(mask_keep_data):
+      for k,v in dict_data_original.items():
+        dict_data_original[k] = v[mask_keep_data]
+      
+    for type_augm, p in self.dict_augmented.items():
+      if p > 0 and p<= 1:
+        dict_data_augm = tools.load_dict_data(saving_folder_path=os.path.splitext(self.path_to_extracted_features)[0]+f'_{type_augm}'+
+                                              ('.safetensors' if "safetensors" in self.path_to_extracted_features else ''))
+        mask_keep_data = np.isin(dict_data_augm['list_sample_id'],list_sample_id)
+        
+        # Filter the data in the dictionary using the mask to save memory
+        for k,v in dict_data_augm.items():
+          dict_data_augm[k] = v[mask_keep_data]
+          # Concatenate the data from the original and augmented dictionaries
+          if isinstance(v, np.ndarray):
+            dict_data_original[k] = np.concatenate((dict_data_original[k], v), axis=0)
+          if isinstance(v, torch.Tensor):
+            dict_data_original[k] = torch.cat((dict_data_original[k], v), dim=0)
+    
+    helper.dict_data = dict_data_original
+    
+  def _set_real_label_from_csv_(self,complete_df):
+    tensor_sample_id = torch.tensor(complete_df['sample_id'])
+    for sample_id in tensor_sample_id:
+      # get the real label from csv
+      real_csv_label = complete_df[complete_df['sample_id'] == sample_id.item()]['class_id'].values[0] 
+      mask = helper.dict_data['list_sample_id'] == sample_id # torch tensor
+      nr_values = mask.sum().item()
+      if nr_values == 0:
+        print(f"Sample ID {sample_id} not found in the dataset.")
+      # create a tensor with the same label
+      csv_labels = torch.full((nr_values,),real_csv_label,dtype=helper.dict_data['list_labels'].dtype) 
+      helper.dict_data['list_labels'][mask] = csv_labels
     
   def generate_csv_augmented(self, original_csv_path, dict_augmentation, out_csv_path):
     def _get_rnd_from_type(type_augm):
@@ -105,6 +173,7 @@ class Model_Advanced: # Scenario_Advanced
     df_merged = pd.concat(list_df, ignore_index=True)
     df_merged.to_csv(out_csv_path, index=False, sep='\t')
     print(f'CSV file with augmentations saved to {out_csv_path}')
+    return df_merged
     
   def test_pretrained_model(self,path_model_weights,state_dict, csv_path, criterion, concatenate_temporal,is_test):
     """
