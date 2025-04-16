@@ -85,9 +85,6 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_mae_p
         # add test_id in dict_to_string
         dict_to_string += f'\nTest ID: {test_id}'
         dict_to_string += f'\nfold_subfold: {key.split("_")[0]}_{key.split("_")[-1]}'
-        dict_to_string += f'\naugm_hflip: {data["config"]["hflip"] if "hflip" in data["config"] else 0}'
-        dict_to_string += f'\naugm_jitter: {data["config"]["jitter"] if "jitter" in data["config"] else 0}'
-        dict_to_string += f'\naugm_rotation: {data["config"]["rotation"] if "rotation" in data["config"] else 0}'
         input_dict_loss_acc= {
           'list_1':train_losses,
           'list_2':val_accuracy,
@@ -139,7 +136,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_mae_p
           'color_3':(0,0,0), # (r,g,b)
         }
         input_dict_accuracy_gap={
-          'list_1':np.array(train_accuracy)-np.array(val_accuracy),
+          'list_1': np.array(train_accuracy) - np.array(val_accuracy),
           'title':'Accuracy Gap in Train-Validation',
           'ax':axs[0][1],
           'x_label':'Epochs',
@@ -155,7 +152,9 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_mae_p
         
         # Plot GRADIENT
         tools.plot_with_std(ax=axs[1][1],x=list(range(len(grad_norm_mean))),mean=grad_norm_mean,std=grad_norm_std,
-                            title='Mean and std of GRADIENT norm',x_label='Epochs',y_label='Gradient norm',y_lim=[0, 15])
+                            title='Mean and std of GRADIENT norm',x_label='Epochs',y_label='Gradient norm',y_lim=[0, 15],
+                            cap_line=data['config']['clip_grad_norm'] if data['config']['clip_grad_norm'] else None,
+                            )
         
         if 'list_train_confidence_prediction_right_mean' in data['results'][key]['train_val']:
           tools.plot_with_std(ax=axs[2][0],x=list(range(len(train_prediction_confidence_right_mean))),
@@ -167,6 +166,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_mae_p
                               y_label='Prediction confidence',
                               legend_label_mean='Correct pred. mean',
                               legend_label_std='Correct pred. std',
+                              y_step=0.1,
                               y_lim=[0, 1])
           tools.plot_with_std(ax=axs[2][0],x=list(range(len(train_prediction_confidence_wrong_mean))),
                               mean=train_prediction_confidence_wrong_mean,
@@ -177,7 +177,8 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_mae_p
                               y_label='Prediction confidence',
                               legend_label_mean='Wrong pred. mean',
                               legend_label_std='Wrong pred. std',
-                              y_lim=[0, 1])
+                              y_lim=[0, 1],
+                              y_step=0.1,)
           
           
           tools.plot_with_std(ax=axs[2][1],
@@ -190,7 +191,8 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_mae_p
                               y_label='Right prediction confidence',
                               legend_label_mean='Correct pred. mean',
                               legend_label_std='Correct pred. std',
-                              y_lim=[0, 1])
+                              y_lim=[0, 1],
+                              y_step=0.1,)
           
           tools.plot_with_std(ax=axs[2][1],
                               x=list(range(len(val_prediction_confidence_wrong_mean))),
@@ -202,7 +204,8 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_mae_p
                               y_label='Wrong prediction confidence',
                               legend_label_mean='Wrong mean',
                               legend_label_std='Wrong std',
-                              y_lim=[0, 1])
+                              y_lim=[0, 1],
+                              y_step=0.1,)
         
         plot_path = os.path.join(test_output_folder, f'{test_id}{additional_info}_losses_{key}.png')
         
@@ -296,6 +299,120 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_mae_p
         fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_mae_per_class_{key}.png'))
         plt.close(fig)
 
+def plot_gradient_per_module(data, run_output_folder, test_id, additional_info='',):
+  
+  def get_total_mean_per_epoch(filtered_dict):
+    total_grad_mean_per_epoch = []
+    for k,_ in filtered_dict.items():
+      total_grad_mean_per_epoch.append([v['mean'] for v in filtered_dict[k]])
+    total_grad_mean_per_epoch = np.sum(total_grad_mean_per_epoch, axis=0)
+    return total_grad_mean_per_epoch
+  
+  def plot_gradient_distrib(ax,percentage_grad_per_module,title,xlabel,ylabel):
+    for k,v in percentage_grad_per_module.items():
+      list_x = list(range(len(v)))
+      label = k
+      ax.plot(list_x, v, label=label)
+      ax.legend()
+      ax.set_ylim(0, 1)
+      ax.set_title(title)
+      ax.set_xlabel(xlabel)
+      ax.set_ylabel(ylabel)  
+    
+      
+  for key,_ in data['results'].items():
+    if 'epochs_gradient_per_module' in data['results'][key]['train_val'] and data['results'][key]['train_val']['epochs_gradient_per_module']:
+      epochs_gradient_per_module = data['results'][key]['train_val']['epochs_gradient_per_module']
+      group_elements = ['linear','pooler.cross_attention_block','pooler.blocks','query_tokens']
+      test_output_folder = os.path.join(run_output_folder, test_id)
+      # loss_plots_output_folder = os.path.join(run_output_folder, 'loss_plots')
+      total_grad_per_epoch = get_total_mean_per_epoch(epochs_gradient_per_module)
+      total_grad_module_per_epoch = []
+      for query in group_elements:
+        if query == 'linear' or query == 'query_tokens':
+          fig,axs = plt.subplots(1,1,figsize=(10,5))
+          filtered_dict_mlp = {k:v for k,v in epochs_gradient_per_module.items() if query in k}
+          total_grad_mean_per_epoch = get_total_mean_per_epoch(filtered_dict=filtered_dict_mlp)
+          total_grad_module_per_epoch.append({query:total_grad_mean_per_epoch})
+          tools.plot_with_std(ax=axs,
+                              x_label='Epochs',
+                              y_label='Gradient norm',
+                              x=list(range(len(total_grad_mean_per_epoch))),
+                              mean=total_grad_mean_per_epoch,
+                              std=np.zeros(len(total_grad_mean_per_epoch)),title=f'Gradient norm {query}')
+          fig.tight_layout()
+          fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_gradient_per_module_{key}_{query}.png'))
+        elif query == 'pooler.cross_attention_block':
+          fig,axs = plt.subplots(1,2,figsize=(20,5))
+          filtered_dict_mlp = {k:v for k,v in epochs_gradient_per_module.items() if query in k and 'mlp' in k}
+          filtered_dict_not_mlp = {k:v for k,v in epochs_gradient_per_module.items() if query in k and 'mlp' not in k}
+          total_grad_mean_per_epoch_mlp = get_total_mean_per_epoch(filtered_dict=filtered_dict_mlp)
+          total_grad_mean_per_epoch_not_mlp = get_total_mean_per_epoch(filtered_dict=filtered_dict_not_mlp)
+          total_grad_module_per_epoch.append({query+'.mlp':total_grad_mean_per_epoch_mlp})
+          total_grad_module_per_epoch.append({query+'.NOT_mlp':total_grad_mean_per_epoch_not_mlp})
+          tools.plot_with_std(ax=axs[0],
+                              x_label='Epochs',
+                              y_label='Gradient norm',
+                              x=list(range(len(total_grad_mean_per_epoch_mlp))),
+                              mean=total_grad_mean_per_epoch_mlp,
+                              std=np.zeros(len(total_grad_mean_per_epoch_mlp)),title=f'Gradient norm {query}.mlp')
+          tools.plot_with_std(ax=axs[1],
+                              x_label='Epochs',
+                              y_label='Gradient norm',
+                              x=list(range(len(total_grad_mean_per_epoch_not_mlp))),
+                              mean=total_grad_mean_per_epoch_not_mlp,
+                              std=np.zeros(len(total_grad_mean_per_epoch_not_mlp)),title=f'Gradient norm {query}.NOT_mlp')
+          fig.tight_layout()
+          fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_gradient_per_module_{key}_{query}.png'))
+        elif query == 'pooler.blocks':
+          keys = [k for k in epochs_gradient_per_module.keys() if query in k]
+          if len(keys) == 0:
+            continue
+          nr_blocks = int(keys[-1].split('.')[2])
+          for idx_block in range(nr_blocks+1):
+            fig,axs = plt.subplots(1,2,figsize=(10,5))
+            filtered_dict_mlp = {k:v for k,v in epochs_gradient_per_module.items() if query in k and f'.{idx_block}.' in k and 'mlp' in k}
+            filtered_dict_not_mlp = {k:v for k,v in epochs_gradient_per_module.items() if query in k and f'.{idx_block}.' in k and 'mlp' not in k}
+            total_grad_mean_per_epoch_mlp = get_total_mean_per_epoch(filtered_dict=filtered_dict_mlp)
+            total_grad_mean_per_epoch_not_mlp = get_total_mean_per_epoch(filtered_dict=filtered_dict_not_mlp)
+            total_grad_module_per_epoch.append({query+f'.{idx_block}.mlp':total_grad_mean_per_epoch_mlp})
+            total_grad_module_per_epoch.append({query+f'.{idx_block}.NOT_mlp':total_grad_mean_per_epoch_not_mlp})
+            tools.plot_with_std(ax=axs[0],
+                                x_label='Epochs',
+                                y_label='Gradient norm',
+                                x=list(range(len(total_grad_mean_per_epoch_mlp))),
+                                mean=total_grad_mean_per_epoch_mlp,
+                                std=np.zeros(len(total_grad_mean_per_epoch_mlp)),title=f'Gradient norm {query}.{idx_block}.MLP')
+            tools.plot_with_std(ax=axs[1],
+                                x_label='Epochs',
+                                y_label='Gradient norm',
+                                x=list(range(len(total_grad_mean_per_epoch_not_mlp))),
+                                mean=total_grad_mean_per_epoch_not_mlp,
+                                std=np.zeros(len(total_grad_mean_per_epoch_not_mlp)),title=f'Gradient norm {query}.{idx_block}.NOT_mlp')
+            fig.tight_layout()
+            fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_gradient_per_module_{key}_{query}.{idx_block}.png'))
+      
+      percentage_grad_per_module = {}
+      sum_grad_per_module = []
+      for dict_data in total_grad_module_per_epoch:
+        for k,v in dict_data.items():
+          values = np.array(v)
+          sum_grad_per_module.append(values)
+          percentage_grad_per_module[k] = np.array(v) / np.array(total_grad_per_epoch)
+      sum_grad_per_module = np.sum(sum_grad_per_module, axis=0)
+      diff = np.abs(sum_grad_per_module - total_grad_per_epoch)
+      if np.any(diff > 1e-8):
+        raise ValueError('Sum of gradients per module is not equal to total gradient per epoch')
+      
+      fig, ax = plt.subplots(figsize=(10, 5))
+      plot_gradient_distrib(ax=ax,
+                            percentage_grad_per_module=percentage_grad_per_module,
+                            title='Gradient distribution per module in percentage',
+                            xlabel='Epochs',
+                            ylabel='Gradient norm in percentage')
+      fig.tight_layout()
+      fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_gradient_distrib_{key}.png'))
+      plt.close()
 
 
 def convert_dict_to_string(d):
@@ -365,6 +482,7 @@ def generate_csv_row(data,config,time_, test_id):
   head_params = flatten_dict({f'{head_type}': config['head_params']})
   row_dict = {
     'test_id': test_id,
+    'k_fold_(real_k_fold)': f'{config["k_fold"]}_({config["real_k_fold"]})',
     'model': config['model_type'].name,
     'head': head_type,
     'optimizer': config['optimizer_fn'],
@@ -470,6 +588,7 @@ def plot_run_details(results_data, output_root,only_csv):
       # try:
       plot_losses(data, os.path.join(output_root), test_id)
       plot_confusion_matrices(data, os.path.join(output_root), test_id)
+      plot_gradient_per_module(data, os.path.join(output_root), test_id)
       # except Exception as e:
       #   print(f'Error in {file} - {e}')
   df = pd.DataFrame(list_row_csv)
