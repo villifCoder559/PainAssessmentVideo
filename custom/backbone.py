@@ -178,7 +178,7 @@ class VideoBackbone(BackboneBase):
     model = model_fn(pretrained=False, **kwargs)
     
     # Load weights
-    checkpoint = torch.load(model_type.value, map_location=self.device)
+    checkpoint = torch.load(model_type.value, map_location=self.device,weights_only=True)
     model.load_state_dict(checkpoint['module'])
     
     # Remove classification head if requested
