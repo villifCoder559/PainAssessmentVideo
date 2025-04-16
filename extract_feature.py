@@ -17,7 +17,8 @@ import numpy as np
 
 def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_workers,saving_chunk_size=100,  preprocess_align = False,
          preprocess_crop_detection = False,preprocess_frontalize = True,path_dataset=None,path_labels=None,stride_window=16,clip_length=16,
-         log_file_path=None,root_saving_folder_path=None,backbone_type='video',from_=None,to_=None,save_big_feature=False,h_flip=False
+         log_file_path=None,root_saving_folder_path=None,backbone_type='video',from_=None,to_=None,save_big_feature=False,h_flip=False,
+         stride_inside_window=1,float_16=False
          ):
   model_type = MODEL_TYPE.get_model_type(model_type)    
   print(f'Pooling_embedding_reduction: {pooling_embedding_reduction.name}')
@@ -56,6 +57,8 @@ def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_wor
         feature = backbone.forward_features(x=data) # [1,8,14,14,768]
       if isinstance(backbone,VideoBackbone) and pooling_embedding_reduction != EMBEDDING_REDUCTION.NONE:
         feature = torch.mean(feature,dim=pooling_embedding_reduction.value,keepdim=True)
+      if float_16:
+        feature = feature.half()
       print(f'feature shape {feature.shape}')
       list_frames.append(list_sampled_frames)
       list_features.append(feature.detach().cpu())
@@ -156,6 +159,7 @@ def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_wor
                 flip_horizontal=h_flip,
                 preprocess_align=preprocess_align,
                 preprocess_frontalize=preprocess_frontalize,
+                stride_inside_window=stride_inside_window,
                 preprocess_crop_detection=preprocess_crop_detection,
                 saving_folder_path_extracted_video=None)
   
@@ -181,6 +185,9 @@ def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_wor
     'n_workers': n_workers,
     'save_big_feature': save_big_feature,
     'h_flip': h_flip,
+    'stride_inside_window': stride_inside_window,
+    'float_16': float_16,
+    
     # 'backbone_model': backbone_model,
   }
   if not os.path.exists(root_saving_folder_path):
@@ -209,11 +216,11 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser(description='Extract features from video dataset.')
   parser.add_argument('--gp', action='store_true', help='Global path')
   parser.add_argument('--model_type', type=str, required=False, default="B")
-  parser.add_argument('--saving_after', type=int, required=False, default=150,help='Number of batch to save in one file')
+  parser.add_argument('--saving_after', type=int, required=False, default=8700,help='Number of batch to save in one file')
   parser.add_argument('--emb_red', type=str, default='spatial', help='Embedding reduction. Can be spatial, temporal, all,none')
-  parser.add_argument('--prep_al', action='store_true', help='Preprocess align') # not use
-  parser.add_argument('--prep_crop', action='store_true', help='Preprocess crop') # not use
-  parser.add_argument('--prep_front', action='store_true', help='Preprocess frontalize') #not use
+  parser.add_argument('--prep_al', action='store_true', help='Preprocess align') # deprecated not use
+  parser.add_argument('--prep_crop', action='store_true', help='Preprocess crop') # deprecated not use
+  parser.add_argument('--prep_front', action='store_true', help='Preprocess frontalize') # deprecated not use
   parser.add_argument('--from_', type=int, default=None, help='START idx (included) extracting features from (--path_labels) row. Start from 0')
   parser.add_argument('--to_', type=int, default=None, help='STOP idx (excluded) extracting features from (--path_labels) row')
   parser.add_argument('--path_dataset', type=str, default=os.path.join('partA','video','video'), help='Path to dataset')
@@ -223,10 +230,12 @@ if __name__ == "__main__":
   parser.add_argument('--backbone_type', type=str, default='video', help='Type of backbone. Can be video or image')
   parser.add_argument('--batch_size_feat_extraction', type=int, default=1, help='Batch size for feature extraction')
   parser.add_argument('--n_workers', type=int, default=1, help='Number of workers for dataloader')
-  parser.add_argument('--save_big_feature', action='store_true', help='Save big feature')
+  parser.add_argument('--save_big_feature', action='store_true', help='Save one feature per sample')
   parser.add_argument('--stride_window', type=int, default=16, help='Stride window')
+  parser.add_argument('--stride_inside_window', type=int, default=1, help='Stride inside window')
   parser.add_argument('--clip_length', type=int, default=16, help='Clip length')
-  parser.add_argument('--h_flip', action='store_true', help='Horizontal flip')
+  parser.add_argument('--h_flip', action='store_true', help='Apply Horizontal flip')
+  parser.add_argument('--float_16', action='store_true', help='Use float 16')
   # CUDA_VISIBLE_DEVICES=0 python3 extract_feature.py --gp --model_type B --saving_after 150 --emb_red spatial --path_dataset partA/video/video_frontalized_new --path_labels partA/starting_point/samples_exc_no_detection.csv --saving_folder_path partA/video/features/samples_16_frontalized_new --backbone_type video --from_ 0 --to_ 1500 --batch_size_feat_extraction 5 --n_workers 5
   # prompt example: python3 extract_feature.py --gp --model_type B --saving_after 5000  --emb_red temporal  --path_dataset partA/video/video_frontalized --path_labels partA/starting_point/samples_exc_no_detection.csv --saving_folder_path partA/video/features/samples_vit_img --log_file_path partA/video/features/samples_vit_img/log_file.txt --backbone_type image 
   args = parser.parse_args()
@@ -263,7 +272,9 @@ if __name__ == "__main__":
        save_big_feature=args.save_big_feature,
        stride_window=args.stride_window,
        clip_length=args.clip_length,
-       h_flip=args.h_flip
+       h_flip=args.h_flip,
+       stride_inside_window=args.stride_inside_window,
+       float_16=args.float_16,
        )
   
   
