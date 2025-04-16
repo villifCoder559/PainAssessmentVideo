@@ -1,3 +1,4 @@
+import time
 import numpy as np
 import torch
 import torch.nn as nn
@@ -32,13 +33,13 @@ class BaseHead(nn.Module):
         print(f'Epoch [{epoch}/{num_epochs}]')
       print(f' {stage}')
       print(f'  Loss             : {loss:.4f}')
-      print(f'  Accuracy         : {precision:.4f}')
+      print(f'  Precision        : {precision:.4f}')
       if stage == 'Train' and list_grad_norm:
         list_grad_norm = np.array(list_grad_norm)
         print(f'  Grad norm        ')
         print(f'    Mean           : {list_grad_norm.mean():.4f}+-{list_grad_norm.std():.4f}')
-        print(f'    Max            : {list_grad_norm.max():.4f}')
-        print(f'    Min            : {list_grad_norm.min():.4f}')
+        # print(f'    Max            : {list_grad_norm.max():.4f}')
+        # print(f'    Min            : {list_grad_norm.min():.4f}')
       if wds:
         if isinstance(wds,list):
           print(f'  Weight decay     : {[round(wd,8) for wd in wds]}')
@@ -94,9 +95,9 @@ class BaseHead(nn.Module):
           iterations_per_epoch=len(train_loader),
           warmup=0.0,
           wd=regularization_lambda_L2,
+          final_wd=regularization_lambda_L2,
           num_epochs=num_epochs,
           use_bfloat16=False)
-      wd_scheduler = None # remove this line if you want to use the scheduler
     else:
       if enable_scheduler:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer,
@@ -152,9 +153,11 @@ class BaseHead(nn.Module):
     list_train_confidence_prediction_wrong_std = []
     list_val_confidence_prediction_right_std = []
     list_val_confidence_prediction_wrong_std = []
+    epochs_gradient_per_module = {}
     early_stopping.reset()
     for epoch in range(num_epochs):
       self.model.train()
+      
       if scheduler:
         scheduler.step()
       if wd_scheduler:
@@ -175,8 +178,8 @@ class BaseHead(nn.Module):
       batch_train_confidence_prediction_right_std = []
       batch_train_confidence_prediction_wrong_mean = []
       batch_train_confidence_prediction_wrong_std = []
-      # list_samples = []
-      # list_y = []
+      batch_dict_gradient_per_module = {}
+
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
         tmp = np.isin(train_unique_subjects,batch_subjects)
         subject_count_batch[tmp] += 1
@@ -190,11 +193,16 @@ class BaseHead(nn.Module):
         outputs = self.model(**dict_batch_X) # input [batch, seq_len, emb_dim]
         if round_output_loss:
           outputs = torch.round(outputs)
-        loss = criterion(outputs, batch_y) # Maybe the class 4 should be class 1
+        loss = criterion(outputs, batch_y)
         if regularization_lambda_L1 > 0:
           # Sum absolute values of all trainable parameters except biases
           l1_norm = sum(param.abs().sum() for name,param in self.model.named_parameters() if param.requires_grad and 'bias' not in name)
-          loss = loss + regularization_lambda_L1 * l1_norm 
+          l1_penalty = regularization_lambda_L1 * l1_norm
+          loss = loss + l1_penalty 
+        # if regularization_lambda_L2 > 0:
+        #   l2_norm = sum(param.pow(2).sum() for name,param in self.model.named_parameters() if param.requires_grad and 'bias' not in name)
+        #   l2_penalty= regularization_lambda_L2 * l2_norm
+        #   loss = loss + l2_penalty
         loss.backward()        
         if clip_grad_norm:
           total_norm=torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm).detach().cpu() #  torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)
@@ -229,6 +237,8 @@ class BaseHead(nn.Module):
                                               list_prediction_wrong_std=batch_train_confidence_prediction_wrong_std,
                                               gt=batch_y,
                                               outputs=outputs)
+        self.log_gradient_per_module(batch_dict_gradient_per_module)
+        
         count_batch+=1
         if self.is_classification:
           predictions = torch.argmax(outputs, dim=1).detach().cpu().reshape(-1)
@@ -245,7 +255,8 @@ class BaseHead(nn.Module):
       # tools.check_sample_id_y_from_csv(list_samples,list_y,train_csv_path)
       # list_list_samples.append(list_samples)
       # list_list_y.append(list_y)
-      
+      # frobenius_norm = self.calculate_frobenius_norm()
+
       dict_eval = self.evaluate(criterion=criterion,is_test=False,
                                 unique_val_classes=val_unique_classes,
                                 unique_val_subjects=val_unique_subjects,
@@ -264,6 +275,13 @@ class BaseHead(nn.Module):
       list_train_confidence_prediction_wrong_mean.append(np.mean(batch_train_confidence_prediction_wrong_mean))
       list_train_confidence_prediction_right_std.append(np.std(batch_train_confidence_prediction_right_mean))
       list_train_confidence_prediction_wrong_std.append(np.std(batch_train_confidence_prediction_wrong_mean))
+      if helper.LOG_GRADIENT_PER_MODULE:
+        print('Logging gradients...')
+        for k,v in batch_dict_gradient_per_module.items():
+          if k not in epochs_gradient_per_module:
+            epochs_gradient_per_module[k] = []
+          epochs_gradient_per_module[k].append({'mean':np.mean(v),
+                                                'std':np.std(v),})
       
       if epoch % helper.saving_rate_training_logs == 0 or best_epoch:
         list_train_confusion_matricies.append(train_confusion_matrix)
@@ -325,6 +343,7 @@ class BaseHead(nn.Module):
       'list_val_confidence_prediction_wrong_mean': list_val_confidence_prediction_wrong_mean,
       'list_val_confidence_prediction_right_std': list_val_confidence_prediction_right_std,
       'list_val_confidence_prediction_wrong_std': list_val_confidence_prediction_wrong_std,
+      'epochs_gradient_per_module': epochs_gradient_per_module,
       # 'train_accuracy_per_class': train_accuracy_per_class,
       # 'test_accuracy_per_class': test_accuracy_per_class,
       'train_confusion_matricies': list_train_confusion_matricies,
@@ -462,9 +481,26 @@ class BaseHead(nn.Module):
         pickle.dump(gradients, f)
 
   def load_state_weights(self, path):
-    self.model.load_state_dict(torch.load(path))
+    self.model.load_state_dict(torch.load(path,weights_only=True))
     print(f'Model weights loaded from {path}')
     
+  def log_gradient_per_module(self,dict_gradient_per_module):
+    for name, param in self.model.named_parameters():
+      if param.grad is not None:
+        if name not in dict_gradient_per_module:
+          dict_gradient_per_module[name] = []
+        dict_gradient_per_module[name].append(param.grad.detach().cpu().clone())
+    return dict_gradient_per_module
+   
+  def calculate_frobenius_norm(self):
+    norm = 0.0
+    for _, param in self.model.named_parameters():
+      if param.grad is not None:
+        norm += torch.linalg.vector_norm(param.grad, ord=2)
+        # norm += torch.norm(param.grad, p='fro').item()
+    return norm
+  
+  
 class LinearHead(BaseHead):
   def __init__(self, input_dim, num_classes, dim_reduction):
     model = LinearProbe(input_dim=input_dim, num_classes=num_classes,dim_reduction=dim_reduction)
@@ -487,6 +523,9 @@ class AttentiveHeadJEPA(BaseHead):
       attn_dropout=0.0,
       num_classes=5,
       pos_enc=False,
+      use_sdpa=False,
+      grid_size_pos=None,
+      cross_block_after_transformers=True,
       complete_block=True):
     model = AttentiveClassifierJEPA(embed_dim=embed_dim,
                                               num_heads=num_heads,
@@ -500,8 +539,12 @@ class AttentiveHeadJEPA(BaseHead):
                                               attn_dropout=attn_dropout,
                                               residual_dropout=residual_dropout,
                                               pos_enc=pos_enc,
+                                              use_sdpa=use_sdpa,
+                                              grid_size_pos=grid_size_pos,
+                                              cross_block_after_transformers=cross_block_after_transformers,
                                               complete_block=complete_block)
     super().__init__(model,is_classification=True)
+  
 
       
 class AttentiveHead(BaseHead):
