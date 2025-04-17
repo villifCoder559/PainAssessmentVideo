@@ -83,17 +83,17 @@ class Model_Advanced: # Scenario_Advanced
       else:
         use_sdpa = False
         print('SDPA not available. Using standard attention.')
-      if head_params['pos_enc']:
-        if embedding_reduction.value is not None:
-          T_S_S_shape = np.mean(helper.dict_data['features'][0].shape,axis=embedding_reduction.value)[:3]
-        else:
-          T_S_S_shape = np.array(helper.dict_data['features'][0].shape[:3])
+
+      T_S_S_shape = np.array(helper.dict_data['features'][0].shape[:3])
+      if embedding_reduction.value is not None:
+        T_S_S_shape = np.mean(helper.dict_data['features'][0].shape,axis=embedding_reduction.value)[:3]
         # T_S_S_shape = T_S_S_shape.squeeze()
-        print(f"Shape of T_S_S_shape: {T_S_S_shape}\n")
+      print(f"Shape of T_S_S_shape: {T_S_S_shape}\n")
         # dim_pos_enc = 
       self.head = AttentiveHeadJEPA(embed_dim=head_params['input_dim'],
                                           num_classes=head_params['num_classes'],
                                           num_heads=head_params['num_heads'],
+                                          num_cross_heads=head_params['num_cross_heads'],
                                           dropout=head_params['dropout'],
                                           attn_dropout=head_params['attn_dropout'],
                                           residual_dropout=head_params['residual_dropout'],

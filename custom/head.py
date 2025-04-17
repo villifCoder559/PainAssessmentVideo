@@ -513,6 +513,7 @@ class AttentiveHeadJEPA(BaseHead):
   def __init__(self,
       embed_dim=768,
       num_heads=12,
+      num_cross_heads=12,
       mlp_ratio=4.0,
       depth=1,
       norm_layer=nn.LayerNorm,
@@ -529,6 +530,7 @@ class AttentiveHeadJEPA(BaseHead):
       complete_block=True):
     model = AttentiveClassifierJEPA(embed_dim=embed_dim,
                                               num_heads=num_heads,
+                                              num_cross_heads=num_cross_heads,
                                               mlp_ratio=mlp_ratio,
                                               depth=depth,
                                               norm_layer=norm_layer,

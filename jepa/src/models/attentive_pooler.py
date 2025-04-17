@@ -30,6 +30,7 @@ class AttentivePooler(nn.Module):
         num_queries=1,
         embed_dim=768,
         num_heads=12,
+        num_cross_heads=12,
         mlp_ratio=4.0,
         depth=1,
         norm_layer=nn.LayerNorm,
@@ -48,13 +49,14 @@ class AttentivePooler(nn.Module):
         self.query_tokens = nn.Parameter(torch.zeros(1, num_queries, embed_dim))
         self.pos_enc = pos_enc
         self.grid_size_pos = grid_size_pos
+        self.total_grid_area = grid_size_pos[1]*grid_size_pos[2]
         self.cross_block_after_transformers = cross_block_after_transformers
         self.pos_enc_tensor = None
         self.complete_block = complete_block
         if complete_block:
             self.cross_attention_block = CrossAttentionBlock(
                 dim=embed_dim,
-                num_heads=num_heads,
+                num_heads=num_cross_heads,
                 mlp_ratio=mlp_ratio,
                 qkv_bias=qkv_bias,
                 drop=mlp_dropout,
@@ -65,7 +67,7 @@ class AttentivePooler(nn.Module):
         else:
             self.cross_attention_block = CrossAttention(
                 dim=embed_dim,
-                num_heads=num_heads,
+                num_heads=num_cross_heads,
                 attn_drop=attn_dropout,
                 proj_drop=mlp_dropout,
                 use_sdpa=use_sdpa,
@@ -85,6 +87,7 @@ class AttentivePooler(nn.Module):
                     attn_drop=attn_dropout,
                     norm_layer=norm_layer)
                 for i in range(depth-1)])
+            print(f'Using {len(self.blocks)} transformer blocks')
 
         self.init_std = init_std
         trunc_normal_(self.query_tokens, std=self.init_std)
@@ -121,8 +124,10 @@ class AttentivePooler(nn.Module):
     def forward(self, x): # x: [B, T, C]
         if self.pos_enc:
             if self.pos_enc_tensor is None or self.pos_enc_tensor.shape[0] != x.size(1):
+                if x.size(1) % self.total_grid_area != 0:
+                    raise ValueError(f'Input length {x.size(1)} is not divisible by batch size {x.size(0)}')
                 self.pos_enc_tensor = pos_embs.get_3d_sincos_pos_embed_torch(embed_dim=x.size(2),
-                                                                             grid_depth=x.size(1),
+                                                                             grid_depth=x.size(1)//(self.total_grid_area), # Considering same length for all dimensions!
                                                                              grid_size=self.grid_size_pos[1]).to(x.device)
             x = x + self.pos_enc_tensor
         
@@ -147,6 +152,7 @@ class AttentiveClassifier(nn.Module):
         self,
         embed_dim=768,
         num_heads=12,
+        num_cross_heads=12,
         mlp_ratio=4.0,
         depth=1,
         norm_layer=nn.LayerNorm,
@@ -168,6 +174,7 @@ class AttentiveClassifier(nn.Module):
             num_queries=1,
             embed_dim=embed_dim,
             num_heads=num_heads,
+            num_cross_heads=num_cross_heads,
             mlp_ratio=mlp_ratio,
             depth=depth,
             mlp_dropout=dropout_mlp,

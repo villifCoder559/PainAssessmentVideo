@@ -127,7 +127,7 @@ class CrossAttention(nn.Module):
     def __init__(
         self,
         dim,
-        num_heads=12,
+        num_heads,
         qkv_bias=False,
         attn_drop=0.,
         proj_drop=0.,
