@@ -150,7 +150,8 @@ def load_dict_data(saving_folder_path):
       else:
         print(f"Unsupported file format: {file}")
   else:
-    dict_data = safetensors.torch.load_file(saving_folder_path)
+    dict_data = safetensors.torch.load_file(saving_folder_path, device='cpu')
+    # dict_data = {key: value.clone() for key,value in dict_data.items()}
   return dict_data
 
 def plot_error_per_class(unique_classes, mae_per_class, criterion, title='', accuracy_per_class=None,y_label=None,
@@ -1794,7 +1795,7 @@ def convert_dict_to_safetensors(dict_folder_path,output_folder_path=None):
   safetensors.torch.save_file(new_dict, safetensors_path,metadata={'format': 'torch'})
   print(f"Converted dict saved to {safetensors_path}")
   
-def test_speed_safetensors_vs_standard(path_1,path_2):
+def test_speed_safetensors_vs_standard(path_1, path_2):
   start_1 = time.time()
   a = load_dict_data(path_1)
   end_1 = time.time()
