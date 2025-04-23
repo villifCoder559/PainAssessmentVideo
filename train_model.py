@@ -11,8 +11,11 @@ import custom.helper as helper
 import platform
 import pandas as pd
 import cProfile, pstats
-import torch.multiprocessing as mp
+import numpy as np
 from pstats import SortKey
+import optuna
+from copy import deepcopy
+import pickle
 # ------------ Helper Functions ------------
 
 
@@ -232,7 +235,7 @@ def train_with_jepa_attentive_head(
   target_metric_best_model, early_stopping, enable_scheduler, clip_grad_norm,
   clip_length, stop_after_kth_fold,emb_dim,list_num_heads,list_model_dropout,n_workers,head_type,list_init_network,
   list_drop_attn, list_drop_residual, list_mlp_ratio, pos_encoder, num_classes, list_label_smooth,dict_augmented,nr_blocks,
-  cross_block_after_transformers
+  cross_block_after_transformers,list_num_cross_heads
 ):
   """Run training with Attentive head configuration."""
   stride_window_in_video = 16  # sliding window
@@ -241,83 +244,82 @@ def train_with_jepa_attentive_head(
   
   for init_network in list_init_network:
     for num_heads in list_num_heads:
-      for batch_train in list_batch_train:
-        for regularization_lambda_L1 in list_regularization_lambda_L1:
-          for regularization_lambda_L2 in list_regularization_lambda_L2:
-            for dropout in list_model_dropout:
-              for drop_attn in list_drop_attn:
-                for drop_residual in list_drop_residual:
-                  for mlp_ratio in list_mlp_ratio:
-                    for label_smooth in list_label_smooth:
-                      for depth in nr_blocks:
-                    # Configure Attentive head parameters
-                        params = {
-                          'input_dim': emb_dim*8 if concatenate_temp_dim else emb_dim,
-                          'num_classes': num_classes,
-                          'num_heads': num_heads,
-                          'dropout': dropout,
-                          'attn_dropout': drop_attn,
-                          'residual_dropout': drop_residual,
-                          'mlp_ratio': mlp_ratio,
-                          'pos_enc': pos_encoder,
-                          'depth': depth,
-                          'cross_block_after_transformers': cross_block_after_transformers
-                        }
-                        
-                        for lr in lr_list:
-                          for optim_fn in optim_list:
-                            criterion = get_loss('CE')
-                            start = time.time()
-                            
-                            # Run training
-                            with cProfile.Profile() as pr:
-                              run_folder_path = scripts.run_train_test(
-                                model_type=model_type, 
-                                concatenate_temp_dim=concatenate_temp_dim,
-                                pooling_embedding_reduction=pooling_clips_reduction,
-                                pooling_clips_reduction=pooling_clips_reduction,
-                                sample_frame_strategy=sample_frame_strategy, 
-                                path_csv_dataset=path_csv_dataset, 
-                                path_video_dataset=path_dataset,
-                                head=HEAD.ATTENTIVE_JEPA,
-                                stride_window_in_video=stride_window_in_video,
-                                features_folder_saving_path=feature_folder_saving_path,
-                                head_params=params,
-                                k_fold=k_fold,
-                                global_foder_name=global_foder_name, 
-                                batch_size_training=batch_train, 
-                                epochs=epochs, 
-                                criterion=criterion, 
-                                optimizer_fn=optim_fn,
-                                lr=lr,
-                                seed_random_state=seed_random_state,
-                                is_plot_dataset_distribution=is_plot_dataset_distribution,
-                                is_round_output_loss=is_round_output_loss,
-                                is_shuffle_video_chunks=is_shuffle_video_chunks,
-                                is_shuffle_training_batch=is_shuffle_training_batch,
-                                init_network=init_network,
-                                key_for_early_stopping=key_for_early_stopping,
-                                regularization_lambda_L1=regularization_lambda_L1,
-                                regularization_lambda_L2=regularization_lambda_L2,
-                                clip_length=clip_length,
-                                target_metric_best_model=target_metric_best_model,
-                                early_stopping=early_stopping,
-                                enable_scheduler=enable_scheduler,
-                                stop_after_kth_fold=stop_after_kth_fold,
-                                n_workers=n_workers,
-                                clip_grad_norm=clip_grad_norm,
-                                label_smooth=label_smooth,
-                                dict_augmented=dict_augmented
-                              )
-                              # scrit example: python3 train_model.py --mt B --head ATTENTIVE --lr 0.0001 --ep 500 --opt adamw --batch_train 8700  --stop 3 --num_heads 8 --csv partA/starting_point/samples_exc_no_detection.csv --ffsp partA/video/video_frontalized --global_folder_name history_run_att --path_video_dataset partA/video/video_frontalized  --k_fold 3 
-                              print(f'Time taken for this run: {(time.time()-start)//60} min')
-                              # pr.print_stats(sort=SortKey.CUMULATIVE)
-                              # Save the profiling results to a file
-                              save_stats(pr, os.path.join(run_folder_path, 'profiling_results.txt'))
-                            
-
-                            
-
+      for num_cross_heads in list_num_cross_heads: 
+        for batch_train in list_batch_train:
+          for regularization_lambda_L1 in list_regularization_lambda_L1:
+            for regularization_lambda_L2 in list_regularization_lambda_L2:
+              for dropout in list_model_dropout:
+                for drop_attn in list_drop_attn:
+                  for drop_residual in list_drop_residual:
+                    for mlp_ratio in list_mlp_ratio:
+                      for label_smooth in list_label_smooth:
+                        for depth in nr_blocks: 
+                      # Configure Attentive head parameters
+                          params = {
+                            'input_dim': emb_dim*8 if concatenate_temp_dim else emb_dim,
+                            'num_classes': num_classes,
+                            'num_cross_heads': num_cross_heads,
+                            'num_heads': num_heads if num_heads is not None else num_cross_heads,
+                            'dropout': dropout,
+                            'attn_dropout': drop_attn,
+                            'residual_dropout': drop_residual,
+                            'mlp_ratio': mlp_ratio,
+                            'pos_enc': pos_encoder,
+                            'depth': depth,
+                            'cross_block_after_transformers': cross_block_after_transformers
+                          }
+                          
+                          for lr in lr_list:
+                            for optim_fn in optim_list:
+                              criterion = get_loss('CE')
+                              start = time.time()
+                              
+                              # Run training
+                              with cProfile.Profile() as pr:
+                                run_folder_path = scripts.run_train_test(
+                                  model_type=model_type, 
+                                  concatenate_temp_dim=concatenate_temp_dim,
+                                  pooling_embedding_reduction=pooling_clips_reduction,
+                                  pooling_clips_reduction=pooling_clips_reduction,
+                                  sample_frame_strategy=sample_frame_strategy, 
+                                  path_csv_dataset=path_csv_dataset, 
+                                  path_video_dataset=path_dataset,
+                                  head=HEAD.ATTENTIVE_JEPA,
+                                  stride_window_in_video=stride_window_in_video,
+                                  features_folder_saving_path=feature_folder_saving_path,
+                                  head_params=params,
+                                  k_fold=k_fold,
+                                  global_foder_name=global_foder_name, 
+                                  batch_size_training=batch_train, 
+                                  epochs=epochs, 
+                                  criterion=criterion, 
+                                  optimizer_fn=optim_fn,
+                                  lr=lr,
+                                  seed_random_state=seed_random_state,
+                                  is_plot_dataset_distribution=is_plot_dataset_distribution,
+                                  is_round_output_loss=is_round_output_loss,
+                                  is_shuffle_video_chunks=is_shuffle_video_chunks,
+                                  is_shuffle_training_batch=is_shuffle_training_batch,
+                                  init_network=init_network,
+                                  key_for_early_stopping=key_for_early_stopping,
+                                  regularization_lambda_L1=regularization_lambda_L1,
+                                  regularization_lambda_L2=regularization_lambda_L2,
+                                  clip_length=clip_length,
+                                  target_metric_best_model=target_metric_best_model,
+                                  early_stopping=early_stopping,
+                                  enable_scheduler=enable_scheduler,
+                                  stop_after_kth_fold=stop_after_kth_fold,
+                                  n_workers=n_workers,
+                                  clip_grad_norm=clip_grad_norm,
+                                  label_smooth=label_smooth,
+                                  dict_augmented=dict_augmented
+                                )
+                                # scrit example: python3 train_model.py --mt B --head ATTENTIVE --lr 0.0001 --ep 500 --opt adamw --batch_train 8700  --stop 3 --num_heads 8 --csv partA/starting_point/samples_exc_no_detection.csv --ffsp partA/video/video_frontalized --global_folder_name history_run_att --path_video_dataset partA/video/video_frontalized  --k_fold 3 
+                                print(f'Time taken for this run: {(time.time()-start)//60} min')
+                                # pr.print_stats(sort=SortKey.CUMULATIVE)
+                                # Save the profiling results to a file
+                                save_stats(pr, os.path.join(run_folder_path, 'profiling_results.txt'))
+                              
 def train_with_linear_head(
   model_type, pooling_clips_reduction, sample_frame_strategy, concatenate_temp_dim,
   path_csv_dataset, path_dataset, feature_folder_saving_path, global_foder_name,
@@ -390,7 +392,6 @@ def train_with_linear_head(
             )
             print(f'Time taken for this run: {(time.time()-start)//60} min')
 
-
 def save_stats(pr, file_path):
   with open(file_path, 'w') as f:
     ps = pstats.Stats(pr, stream=f)
@@ -421,7 +422,7 @@ def train(
   is_shuffle_video_chunks, clip_length, target_metric_best_model, is_plot_dataset_distribution, layer_norm,
   enable_scheduler, loss_reg, head, list_stop_fold,list_num_heads,linear_dim_reduction,n_workers,clip_grad_norm,
   list_drop_attn, list_drop_residual, list_mlp_ratio,pos_encoder,list_label_smooth,list_regularization_lambda_L2,dict_augmented,
-  nr_blocks,cross_block_after_transformers
+  nr_blocks,cross_block_after_transformers,nr_cross_heads
 ):
   """Main training function that dispatches to specific head training functions."""
   # Initialize common parameters
@@ -503,10 +504,11 @@ def train(
       n_workers=n_workers,head_type=head_type, list_init_network=list_init_network, clip_grad_norm=clip_grad_norm,
       list_drop_attn=list_drop_attn, list_drop_residual=list_drop_residual, list_mlp_ratio=list_mlp_ratio,
       pos_encoder=pos_encoder,num_classes=num_classes, list_label_smooth=list_label_smooth,
-      dict_augmented=dict_augmented,nr_blocks=nr_blocks, cross_block_after_transformers=cross_block_after_transformers
+      dict_augmented=dict_augmented,nr_blocks=nr_blocks, cross_block_after_transformers=cross_block_after_transformers,
+      list_num_cross_heads=nr_cross_heads
     )
   elif head_type.name == 'LINEAR':
-    # Label smoothing, augmentation not implemeted
+    # Label smoothing and augmentation not implemeted
     train_with_linear_head(
       model_type=model_type, pooling_clips_reduction=pooling_clips_reduction,emb_dim=emb_dim,
       sample_frame_strategy=sample_frame_strategy, concatenate_temp_dim=concatenate_temp_dim,
@@ -527,7 +529,166 @@ def train(
   print(f'Check the path {os.path.join(global_foder_name,"summary_log.csv")} file for the results of the training')
 
 # ------------ Main Entry Point ------------
+training_params = ['lr', 'ep', 'opt','batch_train','concatenate_temp_dim','init_network','regulariz_lambda_L1',
+                   'regulariz_lambda_L2','label_smooth']
 
+gru_params = ['GRU_hidden_size', 'GRU_num_layers', 'GRU_output_size', 'layer_norm']
+
+jepa_attentive_params = ['num_heads', 'num_cross_head', 'model_dropout', 'drop_attn', 'drop_residual', 'mlp_ratio', 'pos_enc', 
+                         'nr_blocks','cross_block_after_transformers']
+
+
+def objective(trial,original_kwargs):
+  """Objective function for Optuna hyperparameter optimization."""
+  kwargs = deepcopy(original_kwargs)
+  
+  # Define the hyperparameters to be optimized
+  model_type = MODEL_TYPE.get_model_type(kwargs['mt'])
+  epochs = kwargs['ep']
+  
+  nr_blocks = trial.suggest_categorical('nr_blocks', kwargs['nr_blocks'])
+  # NOT SUPPORTED BY OPTUNA. TODO: find workaround
+  # if nr_blocks == 1: # if nr_blocks == 1, there is only the cross-attention block
+  #   kwargs['num_heads'] = [0]
+  #   kwargs['cross_block_after_transformers'] = [0]
+  # Training params  
+  lr = trial.suggest_categorical('lr', kwargs['lr'])
+  opt = trial.suggest_categorical('opt', kwargs['opt'])
+  optimizer_fn = get_optimizer(opt)
+  init_network = trial.suggest_categorical('init_network', kwargs['init_network'])
+  batch_train = trial.suggest_categorical('batch_train', kwargs['batch_train'])
+  regulariz_lambda_L1 = trial.suggest_categorical('regulariz_lambda_L1', kwargs['regulariz_lambda_L1'])
+  regulariz_lambda_L2 = trial.suggest_categorical('regulariz_lambda_L2', kwargs['regulariz_lambda_L2'])
+  label_smooth = trial.suggest_categorical('label_smooth', kwargs['label_smooth'])
+  concatenate_temp_dim=trial.suggest_categorical('concatenate_temp_dim',kwargs['concatenate_temp_dim'])
+  
+  # augmentation
+  hflip = trial.suggest_categorical('hflip', kwargs['hflip'])
+  color_jitter = trial.suggest_categorical('color_jitter', kwargs['jitter'])
+  rotation = trial.suggest_categorical('rotation', kwargs['rotation'])
+  
+  # jepa_attentive params
+  num_heads = trial.suggest_categorical('num_heads', kwargs['num_heads'])
+  num_cross_head = trial.suggest_categorical('num_cross_head', kwargs['num_cross_head'])
+  model_dropout = trial.suggest_categorical('model_dropout', kwargs['model_dropout'])
+  drop_attn = trial.suggest_categorical('drop_attn', kwargs['drop_attn'])
+  drop_residual = trial.suggest_categorical('drop_residual', kwargs['drop_residual'])
+  mlp_ratio = trial.suggest_categorical('mlp_ratio', kwargs['mlp_ratio'])
+  pos_enc = trial.suggest_categorical('pos_enc', kwargs['pos_enc'])
+  cross_block_after_transformers = trial.suggest_categorical('cross_block_after_transformers', kwargs['cross_block_after_transformers'])
+  
+  emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
+  num_classes = pd.read_csv(kwargs['csv'],sep='\t')['class_id'].unique().shape[0]  
+  params = {
+    'input_dim': emb_dim*8 if concatenate_temp_dim else emb_dim,
+    'num_classes': num_classes,
+    'num_cross_heads': num_cross_head,
+    'num_heads': num_heads if num_heads is not None else num_cross_head,
+    'dropout': model_dropout,
+    'attn_dropout': drop_attn,
+    'residual_dropout': drop_residual,
+    'mlp_ratio': mlp_ratio,
+    'pos_enc': pos_enc,
+    'depth': nr_blocks,
+    'cross_block_after_transformers': cross_block_after_transformers}
+  
+  # Check if the hyperparameters have been tried before
+  for past in trial.study.trials:
+    if past.state != optuna.trial.TrialState.COMPLETE and past.state != optuna.trial.TrialState.PRUNED:
+      continue
+    if past.params == trial.params:
+      return past.value
+    
+  # Call the training function with the suggested hyperparameters
+  with cProfile.Profile() as pr:
+    run_folder_path,results = scripts.run_train_test(
+                                    model_type=model_type, 
+                                    criterion=get_loss('CE'), 
+                                    concatenate_temp_dim=concatenate_temp_dim,
+                                    pooling_embedding_reduction=kwargs['pooling_clips_reduction'],
+                                    pooling_clips_reduction=kwargs['pooling_clips_reduction'],
+                                    sample_frame_strategy=kwargs['sample_frame_strategy'], 
+                                    path_csv_dataset=kwargs['csv'], 
+                                    path_video_dataset=kwargs['path_video_dataset'],
+                                    head=HEAD.ATTENTIVE_JEPA,
+                                    stride_window_in_video=kwargs['stride_window_in_video'],
+                                    features_folder_saving_path=kwargs['ffsp'],
+                                    head_params=params,
+                                    k_fold=kwargs['k_fold'],
+                                    global_foder_name=kwargs['global_folder_name'], 
+                                    batch_size_training=batch_train, 
+                                    epochs=epochs, 
+                                    optimizer_fn=optimizer_fn,
+                                    lr=lr,
+                                    seed_random_state=seed_random_state,
+                                    is_plot_dataset_distribution=False,
+                                    is_round_output_loss=kwargs['is_round_output_loss'],
+                                    is_shuffle_video_chunks=False,
+                                    is_shuffle_training_batch=True,
+                                    init_network=init_network,
+                                    key_for_early_stopping=kwargs['key_early_stopping'],
+                                    regularization_lambda_L1=regulariz_lambda_L1,
+                                    regularization_lambda_L2=regulariz_lambda_L2,
+                                    clip_length=clip_length,
+                                    target_metric_best_model=target_metric_best_model,
+                                    early_stopping=early_stopping,
+                                    enable_scheduler=kwargs['enable_scheduler'],
+                                    stop_after_kth_fold=kwargs['stop'],
+                                    n_workers=kwargs['n_workers'],
+                                    clip_grad_norm=kwargs['clip_grad_norm'],
+                                    label_smooth=label_smooth,
+                                    dict_augmented={'hflip': hflip,
+                                                    'jitter': color_jitter,
+                                                    'rotation': rotation},
+                                    trial=trial
+                                  )
+    save_stats(pr, os.path.join(run_folder_path, 'profiling_results.txt'))
+    pr.dump_stats(os.path.join(run_folder_path, 'profiling_results.prof'))
+    
+  id_test = os.path.split(run_folder_path)[-1].split('_')[0]
+  trial.set_user_attr('id_test', id_test)
+  # Just to record this data
+  trial.set_user_attr('head', [kwargs['head']])
+  trial.set_user_attr('csv', [kwargs['csv']])
+  trial.set_user_attr('ffsp', [kwargs['ffsp']])
+  trial.set_user_attr('k_fold', [kwargs['k_fold']])
+  trial.set_user_attr('stop', kwargs['stop'])
+  trial.set_user_attr('n_workers', [kwargs['n_workers']])
+  
+  # Extract the validation accuracy from the results
+  mean_val_accuracy = get_mean_val_accuracy(results)
+  return mean_val_accuracy
+
+def get_mean_val_accuracy(results):
+  list_val_accuracy = []
+  for k_fold,dict_log_k_fold in results['results'].items():
+    best_epoch = dict_log_k_fold['train_val']['best_model_idx']
+    list_val_accuracy.append(dict_log_k_fold['train_val']['list_val_macro_accuracy'][best_epoch])
+  return np.mean(list_val_accuracy)
+
+
+def hyper_search_attentive_jepa(kwargs):
+  """Hyperparameter search for AttentiveJepa head using Optuna."""
+  # Define the study
+  study = optuna.create_study(direction='maximize',
+                              storage=f'sqlite:///{os.path.join(kwargs["global_folder_name"],"optuna_study.db")}',
+                              study_name=f'{kwargs["head"]}_{os.path.split(kwargs["global_folder_name"])[-1].split("_")[-1]}',
+                              pruner=optuna.pruners.ThresholdPruner(lower=0.15,
+                                                                    n_warmup_steps=30,
+                                                                    interval_steps=2))
+  
+  # Optimize the objective function
+  study.optimize(lambda trial: objective(trial, kwargs), n_trials=kwargs['n_trials'], timeout=kwargs['timeout'])
+  optuna_path = os.path.join(kwargs['global_folder_name'],'optuna_study.pkl')
+  with open(optuna_path,"wb") as f:
+    pickle.dump(study, f)
+    print(f'Study saved to {optuna_path}')
+  # Print the best hyperparameters and their corresponding accuracy
+  print('Best hyperparameters:')
+  print(study.best_params)
+  print('Best accuracy:', study.best_value)
+  
+  
 if __name__ == '__main__':
   # mp.set_start_method('spawn', force=True)
   # Set up argument parser
@@ -537,13 +698,13 @@ if __name__ == '__main__':
   
   # Model configuration
   parser.add_argument('--mt', type=str, default='B', help='Model type: B (Base), S (Small), or I (Image)')
-  parser.add_argument('--head', type=str, default='GRU', help='Head type: GRU, ATTENTIVE, or LINEAR')
+  parser.add_argument('--head', type=str, default='ATTENTIVE_JEPA', help='Head type: GRU, ATTENTIVE, LINEAR, ATTENTIVE_JEPA')
   
   # Path configuration
   parser.add_argument('--gp', action='store_true', help='Use global path prefix for file paths')
   parser.add_argument('--csv', type=str, default=os.path.join('partA','starting_point','samples_exc_no_detection.csv'), 
                     help='Path to CSV dataset file')
-  parser.add_argument('--ffsp', type=str, default=os.path.join('partA','video','features','samples_16_frontalized'), 
+  parser.add_argument('--ffsp', type=str, default="partA/video/features/samples_16_frontalized_new", 
                     help='Feature folder saving path')
   parser.add_argument('--global_folder_name', type=str, default=f'history_run', 
                     help='Global folder name for saving results')
@@ -552,25 +713,29 @@ if __name__ == '__main__':
   
   # Training parameters
   parser.add_argument('--lr', type=float, nargs='*', default=[0.0001], help='Learning rate(s)')
-  parser.add_argument('--ep', type=int, default=500, help='Number of epochs')
+  parser.add_argument('--ep', type=int, default=50, help='Number of epochs')
   parser.add_argument('--k_fold', type=int, default=3, help='Number of k-fold cross validation splits')
-  parser.add_argument('--opt', type=str, nargs='*', default=['adam'], help='Optimizer(s): adam, sgd, adamw')
+  parser.add_argument('--opt', type=str, nargs='*', default=['adamw'], help='Optimizer(s): adam, sgd, adamw')
   parser.add_argument('--batch_train', type=int, nargs='*', default=[64], help='Training batch size(s)')
   parser.add_argument('--is_round_output_loss', action='store_true', 
                     help='Round output from regression before computing loss')
   parser.add_argument('--enable_scheduler', action='store_true', help='Enable learning rate scheduler')
   parser.add_argument('--stop', type=int,nargs='*' ,default=None, help='Stop after [kth fold, ith subfold]')
   parser.add_argument('--clip_grad_norm', type=float, default=None, help='Clip gradient norm. Default is None (not applied)')
+  parser.add_argument('--concatenate_temp_dim', type=int, nargs='*', default=[0],
+                    help='Concatenate temporal dimension in input to the model. So the embeddind is [temporal*emb_dim]=6144 if model base')
+  
   
   # Attention parameters
-  parser.add_argument('--num_heads', type=int, nargs='*',default=[8], help='Number of heads for Attentive head')
+  parser.add_argument('--num_heads', type=int, nargs='*',default=[None], help='Number of heads for attention in transformer (when nr_blocks >1). Default is None (to considered heads = num_heads)')
+  parser.add_argument('--num_cross_head',type=int, nargs='*',default=[8], help='Number of heads for cross-attention.')
   parser.add_argument('--model_dropout', type=float, nargs='*', default=[0.0], help='Model dropout rate(s). This is drop_mlp for AttentiveJepa')
   parser.add_argument('--drop_attn', type=float, nargs='*', default=[0.0], help='Attention dropout rate(s)')
   parser.add_argument('--drop_residual', type=float, nargs='*', default=[0.0], help='Residual dropout rate(s)')
   parser.add_argument('--mlp_ratio', type=float, nargs='*', default=[4.0], help='MLP ratio(s) for AttentiveJepa')
-  parser.add_argument('--pos_enc', action='store_true', help='Use positional encoding for Attentive head')
-  parser.add_argument('--nr_blocks',type=int,nargs='*',default=[1], help='Number of blocks for Jepa Attentive head')
-  parser.add_argument('--cross_block_after_transformers', action='store_true', default=False,
+  parser.add_argument('--pos_enc', type=int,nargs='*',default=[0], help='Use positional encoding for Attentive head')
+  parser.add_argument('--nr_blocks',type=int,nargs='*',default=[1], help='Number of blocks for Jepa Attentive head. Default is 1 (only cross-attention)')
+  parser.add_argument('--cross_block_after_transformers', type=int,nargs='*', default=[0],
                     help='Use cross block after transformers for Jepa Attentive head')
   
   # Linear parameters
@@ -579,8 +744,6 @@ if __name__ == '__main__':
   # GRU parameters
   parser.add_argument('--GRU_hidden_size', type=int, nargs='*', default=[1024], help='GRU hidden layer size(s)')
   parser.add_argument('--GRU_num_layers', type=int, nargs='*', default=[2], help='GRU number of layers')
-  parser.add_argument('--concatenate_temp_dim', action='store_true', 
-                    help='Concatenate temporal dimension in input to the model. So the embeddind is [temporal*emb_dim]=6144')
   parser.add_argument('--GRU_output_size', type=int, default=1, 
                     help='Output size of GRU: 1 for regression, >1 for classification')
   parser.add_argument('--layer_norm', action='store_true', 
@@ -594,9 +757,9 @@ if __name__ == '__main__':
   parser.add_argument('--label_smooth', type=float, nargs='*',default=[0.0], help='Label smoothing factor. Default is 0.0 (no smoothing)')
   # parser.add_argument('--alpha_regulariz',type=float,default=0.0, help='Alpha for regularization loss between L1 and L2. COnsider the regulariz_lambda_L1 while regulariz_lambda_L2 is empty')
   parser.add_argument('--loss_regression', type=str, default='L1', help='Regression loss function: L1 or L2. Default is L1')
-  parser.add_argument('--hflip', type=float, default=0.0, help='Horizontal flip augmentation probability. Default is 0.0')
-  parser.add_argument('--jitter', type=float, default=0.0, help='Jitter augmentation probability. Default is 0.0')
-  parser.add_argument('--rotation', type=float, default=0.0, help='Rotation augmentation probability. Default is 0.0')
+  parser.add_argument('--hflip', type=float,nargs='*', default=[0.0], help='Horizontal flip augmentation probability. Default is 0.0')
+  parser.add_argument('--jitter', type=float,nargs='*',default=[0.0], help='Jitter augmentation probability. Default is 0.0')
+  parser.add_argument('--rotation', type=float, nargs='*',default=[0.0], help='Rotation augmentation probability. Default is 0.0')
   
   # Early stopping parameters
   parser.add_argument('--key_early_stopping', type=str, default='val_macro_precision', 
@@ -607,11 +770,19 @@ if __name__ == '__main__':
   
   # Logging parameters
   parser.add_argument('--log_grad_per_module', action='store_true',help='Log gradient per module')
-  
+  parser.add_argument('--n_trials', type=int, default=100, help='Number of trials for Optuna hyperparameter optimization. Default is 100')
+  parser.add_argument('--timeout', type=int, default=14, help='Timeout for Optuna hyperparameter optimization in hours. Default is 14 hours')
   
   # Parse arguments
   args = parser.parse_args()
+  args.timeout *= 3600 # Convert hours to seconds
+  dict_args = vars(args)
   
+  pooling_clips_reduction = CLIPS_REDUCTION.NONE
+  sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
+  dict_args['pooling_clips_reduction'] = pooling_clips_reduction
+  dict_args['sample_frame_strategy'] = sample_frame_strategy
+  dict_args['stride_window_in_video'] = 16 # To avoid errors but not used
   # Generate timestamp for unique folder name
   timestamp = int(time.time())
   server_name = platform.node()
@@ -659,60 +830,12 @@ if __name__ == '__main__':
     }
   # Create config summary for later reference
   config_prompt = {
-    'model_type': args.mt,
-    'epochs': args.ep,
-    'lr': args.lr,
-    'path_csv_dataset': args.csv,
-    'feature_folder_saving_path': args.ffsp,
-    'global_foder_name': args.global_folder_name,
-    'path_dataset': args.path_video_dataset,
-    'k_fold': args.k_fold,
-    'opt_list': args.opt,
-    'batch_train': args.batch_train,
-    'list_init_network': args.init_network,
-    'list_GRU_hidden_size': args.GRU_hidden_size,
-    'list_GRU_num_layers': args.GRU_num_layers,
-    'list_model_dropout': args.model_dropout,
-    'concatenate_temp_dim': args.concatenate_temp_dim,
-    'list_regularization_lambda_L1': args.regulariz_lambda_L1,
-    'list_regularization_lambda_L2': args.regulariz_lambda_L2,
-    # 'regularization_loss': args.reg_loss,
-    'GRU_output_size': args.GRU_output_size,
-    'is_round_output_loss': args.is_round_output_loss,
-    'key_for_early_stopping': args.key_early_stopping,
-    'clip_length': clip_length,
     'target_metric_best_model': target_metric_best_model,
     'seed_random_state': seed_random_state,
     'early_stopping': early_stopping,
-    'layer_norm': args.layer_norm,
-    'p_early_stop': args.p_early_stop,
-    'min_delta': args.min_delta,
-    'threshold_mode': args.threshold_mode,
-    'loss_regression': args.loss_regression,
-    'enable_scheduler': args.enable_scheduler,
-    'head': args.head,
-    'stop_after_kth_fold': args.stop,
-    'num_heads': args.num_heads,
-    'linear_dim_reduction': args.linear_dim_reduction,
-    'server_name': server_name,
-    'n_workers': args.n_workers,
-    'clip_grad_norm': args.clip_grad_norm,
-    'drop_attn': args.drop_attn,
-    'mlp_ratio': args.mlp_ratio,
-    'drop_residual': args.drop_residual,
-    'pos_enc': args.pos_enc,
-    'list_drop_attn': args.drop_attn,
-    'list_drop_residual': args.drop_residual,
-    'list_mlp_ratio': args.mlp_ratio,
-    'list_num_heads': args.num_heads,
-    'list_init_network': args.init_network,
-    'list_reg_lambda_l1': args.regulariz_lambda_L1,
-    'list_reg_lambda_l2': args.regulariz_lambda_L2,
-    'label_smooth': args.label_smooth,
-    'dim_reduction': args.linear_dim_reduction,
+    'clip_length': clip_length,
     'dict_augmented': dict_augmented,
-    'nr_block': args.nr_blocks,
-    'cross_block_after_transformers': args.cross_block_after_transformers,
+    **dict_args
   }
   
   # Create output directory and save configuration
@@ -724,7 +847,11 @@ if __name__ == '__main__':
       f.write(f'{key}: {value}\n')
   
   # Start training
-  train(
+  print(args)
+  if True:
+    hyper_search_attentive_jepa(kwargs=dict_args)
+  else:
+    train(
     model_type=args.mt,
     epochs=args.ep,
     lr=args.lr,
@@ -766,8 +893,13 @@ if __name__ == '__main__':
     list_label_smooth=args.label_smooth,
     nr_blocks=args.nr_blocks,
     cross_block_after_transformers=args.cross_block_after_transformers,
+    nr_cross_heads=args.num_cross_head,
     dict_augmented=dict_augmented,
     is_shuffle_video_chunks=False,
     is_shuffle_training_batch=True,
     is_plot_dataset_distribution=False
   )
+  
+# training_params = ['lr', 'ep', 'opt','batch_train','concatenate_temp_dim','init_network','regulariz_lambda_L1',
+#                    'regulariz_lambda_L2','label_smooth']
+  
