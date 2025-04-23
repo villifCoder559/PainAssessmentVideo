@@ -18,8 +18,9 @@ import copy
 from jepa.src.models.attentive_pooler import AttentiveClassifier as AttentiveClassifierJEPA
 from jepa.evals.video_classification_frozen import eval as jepa_eval 
 from jepa.src.models.utils import pos_embs
-
+from optuna.exceptions import TrialPruned
 import pickle
+# import tracemalloc
 # import wandb
 
 class BaseHead(nn.Module):
@@ -58,7 +59,7 @@ class BaseHead(nn.Module):
   def start_train(self, num_epochs, criterion, optimizer,lr, saving_path, train_csv_path, val_csv_path ,batch_size,dataset_type,
                   round_output_loss, shuffle_training_batch, regularization_lambda_L1,concatenate_temp_dim,clip_grad_norm,
                   early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,backbone_dict,n_workers,label_smooth,
-                  regularization_lambda_L2):
+                  regularization_lambda_L2,trial):
     device = 'cuda'
     self.model.to(device)
     if init_network:
@@ -155,9 +156,11 @@ class BaseHead(nn.Module):
     list_val_confidence_prediction_wrong_std = []
     epochs_gradient_per_module = {}
     early_stopping.reset()
+    # list_memory_snap= []
+    # tracemalloc.start()
+    # list_memory_snap.append(tracemalloc.take_snapshot())
     for epoch in range(num_epochs):
       self.model.train()
-      
       if scheduler:
         scheduler.step()
       if wd_scheduler:
@@ -179,8 +182,9 @@ class BaseHead(nn.Module):
       batch_train_confidence_prediction_wrong_mean = []
       batch_train_confidence_prediction_wrong_std = []
       batch_dict_gradient_per_module = {}
-
+      
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
+        # list_memory_snap.append(tracemalloc.take_snapshot())
         tmp = np.isin(train_unique_subjects,batch_subjects)
         subject_count_batch[tmp] += 1
         # list_samples.append(sample_id)
@@ -189,6 +193,7 @@ class BaseHead(nn.Module):
         # [list_y.append(y.item()) for y in batch_y]
         batch_y = batch_y.to(device)
         dict_batch_X = {key: value.to(device) for key, value in dict_batch_X.items()}
+        
         optimizer.zero_grad()
         outputs = self.model(**dict_batch_X) # input [batch, seq_len, emb_dim]
         if round_output_loss:
@@ -215,6 +220,7 @@ class BaseHead(nn.Module):
         optimizer.step()
         # outputs = torch.argmax(outputs, dim=1)
         train_loss += loss.item()
+           
         # Compute loss per class and subject
         # if epoch % helper.saving_rate_training_logs == 0:
         tools.compute_loss_per_class_(batch_y=batch_y,
@@ -237,7 +243,8 @@ class BaseHead(nn.Module):
                                               list_prediction_wrong_std=batch_train_confidence_prediction_wrong_std,
                                               gt=batch_y,
                                               outputs=outputs)
-        self.log_gradient_per_module(batch_dict_gradient_per_module)
+        if helper.LOG_GRADIENT_PER_MODULE:
+          self.log_gradient_per_module(batch_dict_gradient_per_module)
         
         count_batch+=1
         if self.is_classification:
@@ -251,6 +258,7 @@ class BaseHead(nn.Module):
         if batch_y.dim() > 1:
           batch_y = torch.argmax(batch_y, dim=1).reshape(-1)
         train_confusion_matrix.update(predictions, batch_y)
+        # list_memory_snap.append(tracemalloc.take_snapshot())
         
       # tools.check_sample_id_y_from_csv(list_samples,list_y,train_csv_path)
       # list_list_samples.append(list_samples)
@@ -311,11 +319,18 @@ class BaseHead(nn.Module):
         
       if early_stopping(dict_eval[key_for_early_stopping]):
         break
-      
+      trial.report(dict_eval[key_for_early_stopping], epoch)
+      if trial is not None and trial.should_prune():
+        raise TrialPruned()
     # if saving_path:
     #     print('Load and save best model for next steps...')
     #     torch.save(best_model_state, os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth'))
     #     print(f"Best model weights saved to {os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth')}")
+    
+    # tracemalloc.stop()
+    # save list_memory_snap
+    # with open(os.path.join(saving_path, f'memory_snap_epoch_{epoch}.pkl'), 'wb') as f:
+    #   pickle.dump(list_memory_snap, f)
     return {
       'train_losses': list_train_losses,
       'train_loss_per_class': np.array(list_train_losses_per_class),
