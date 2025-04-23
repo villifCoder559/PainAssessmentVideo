@@ -90,6 +90,7 @@ class Model_Advanced: # Scenario_Advanced
         # T_S_S_shape = T_S_S_shape.squeeze()
       print(f"Shape of T_S_S_shape: {T_S_S_shape}\n")
         # dim_pos_enc = 
+      print(f'\n num_heads: {head_params["num_heads"]},\n num_cross_heads: {head_params["num_cross_heads"]}\n')
       self.head = AttentiveHeadJEPA(embed_dim=head_params['input_dim'],
                                           num_classes=head_params['num_classes'],
                                           num_heads=head_params['num_heads'],
@@ -130,12 +131,12 @@ class Model_Advanced: # Scenario_Advanced
         
         # Filter the data in the dictionary using the mask to save memory
         for k,v in dict_data_augm.items():
-          dict_data_augm[k] = v[mask_keep_data]
+          # dict_data_augm[k] = v[mask_keep_data]
           # Concatenate the data from the original and augmented dictionaries
           if isinstance(v, np.ndarray):
-            dict_data_original[k] = np.concatenate((dict_data_original[k], v), axis=0)
+            dict_data_original[k] = np.concatenate((dict_data_original[k], v[mask_keep_data]), axis=0)
           if isinstance(v, torch.Tensor):
-            dict_data_original[k] = torch.cat((dict_data_original[k], v), dim=0)
+            dict_data_original[k] = torch.cat((dict_data_original[k], v[mask_keep_data]), dim=0)
     
     helper.dict_data = dict_data_original
     
@@ -158,7 +159,7 @@ class Model_Advanced: # Scenario_Advanced
         return 42
       elif type_augm == 'jitter':
         return 53
-      elif type_augm == 'rotate':
+      elif type_augm == 'rotation':
         return 63
       else:
         raise ValueError(f'Unknown augmentation type: {type_augm}')
@@ -228,7 +229,8 @@ class Model_Advanced: # Scenario_Advanced
             optimizer_fn, lr,saving_path,round_output_loss,
             shuffle_training_batch,init_network,
             regularization_lambda_L1,key_for_early_stopping,early_stopping,
-            enable_scheduler,concatenate_temporal,clip_grad_norm,regularization_lambda_L2
+            enable_scheduler,concatenate_temporal,clip_grad_norm,regularization_lambda_L2,
+            trial=None
             ):
     """
     Train the model using the specified training and testing datasets.
@@ -260,8 +262,6 @@ class Model_Advanced: # Scenario_Advanced
       - 'count_subject_ids_train': Count of unique subject IDs in the training set.
       - 'count_subject_ids_test': Count of unique subject IDs in the testing set.
     """
-    count_subject_ids_train, count_y_train = tools.get_unique_subjects_and_classes(train_csv_path)
-    count_subject_ids_val, count_y_val = tools.get_unique_subjects_and_classes(val_csv_path) 
     dict_results = self.head.start_train(batch_size=self.batch_size_training,
                                           criterion=criterion,
                                           optimizer=optimizer_fn,
@@ -284,7 +284,11 @@ class Model_Advanced: # Scenario_Advanced
                                           n_workers=self.n_workers,
                                           clip_grad_norm=clip_grad_norm,
                                           label_smooth=self.label_smooth,
-                                          backbone_dict=self.backbone_dict)
+                                          backbone_dict=self.backbone_dict,
+                                          trial=trial)
+    
+    count_subject_ids_train, count_y_train = tools.get_unique_subjects_and_classes(train_csv_path)
+    count_subject_ids_val, count_y_val = tools.get_unique_subjects_and_classes(val_csv_path) 
     return {'dict_results':dict_results, 
               'count_y_train':count_y_train, 
               'count_y_val':count_y_val,
