@@ -14,10 +14,9 @@ def get_shift_for_sample_id(folder_feature):
     return step_shift * 1
   elif 'jitter' in folder_feature:
     return step_shift * 2
-  elif 'rotate' in folder_feature:
+  elif 'rotation' in folder_feature:
     return step_shift * 3
-  else:
-    return 0
+  return 0
   
 class SAMPLE_FRAME_STRATEGY(Enum):
   UNIFORM = 'uniform'
