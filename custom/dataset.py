@@ -14,6 +14,7 @@ import custom.helper as helper
 import custom.tools as tools
 from sklearn.model_selection import StratifiedKFold
 from torch.utils.data import  Sampler
+from torchvision.transforms import v2
 import torchvision.transforms.functional as F
 import torchvision.transforms as T
 import custom.faceExtractor as extractor
@@ -22,6 +23,7 @@ from torch.utils.data import DataLoader
 from custom.helper import INSTANCE_MODEL_NAME,get_shift_for_sample_id
 import custom.helper as helper
 from pathlib import Path 
+from torchvision import tv_tensors
 
 class customDataset(torch.utils.data.Dataset):
   """
@@ -97,11 +99,11 @@ class customDataset(torch.utils.data.Dataset):
     self.preprocess_crop_detection = preprocess_crop_detection
     self.h_flip = flip_horizontal
     self.color_jitter = color_jitter
-    self.smooth_labels = smooth_labels
     self.rotation = rotation
+    self.smooth_labels = smooth_labels
     
-    if rotation is not None:
-      warnings.warn('The rotation is not implemented yet')
+    # if rotation is not None:
+    #   warnings.warn('The rotation is not implemented yet')
     # Image dimensions and channels
     self.image_resize_w = 224
     self.image_resize_h = 224
@@ -166,8 +168,8 @@ class customDataset(torch.utils.data.Dataset):
   def __len__(self):
     """Return the number of samples in the dataset"""
     return len(self.video_labels)
-  
-  def preprocess_images(self, tensors):
+
+  def preprocess_images(self, tensors,to_visualize=False):
     """
     Preprocess a batch of image tensors.
     
@@ -181,29 +183,36 @@ class customDataset(torch.utils.data.Dataset):
     Returns:
         torch.Tensor: Preprocessed tensor of shape (B, C, 224, 224).
     """
-    
+    tensors = tv_tensors.Video(tensors)
     # Define preprocessing constants
     crop_size = (224, 224)
     rescale_factor = 1/255  
     image_mean = [0.485, 0.456, 0.406]
     image_std = [0.229, 0.224, 0.225]
     
+    transform = []
+    if self.h_flip:
+      transform.append(v2.RandomHorizontalFlip(p=1))
+
+    if self.color_jitter:
+      transform.append(v2.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.05)) # 
+    if self.rotation:
+      transform.append(v2.RandomRotation(degrees=20))
       
     # Define transform pipeline
-    transform = T.Compose([
-      T.Resize(crop_size),  
-      T.Lambda(lambda x: x * rescale_factor),  # Rescale (1/255)
-      T.Normalize(mean=image_mean, std=image_std)  # Normalize
-    ])
-    if self.h_flip:
-      transform.transforms.insert(0, T.RandomHorizontalFlip(p=1))
-      # tensors = [F.hflip(t) for t in tensors]  # Horizontally flip each image
-    if self.color_jitter:
-      transform.transforms.insert(0, T.ColorJitter(brightness=0.4, contrast=0.3, saturation=0.1, hue=0.3)) # 
+    if not to_visualize:
+      transform += [
+        v2.Resize(crop_size),
+        v2.Lambda(lambda x: x * rescale_factor),  # Rescale (1/255)
+        v2.Normalize(mean=image_mean, std=image_std),  # Normalize
+      ]
+    else:
+      transform += [v2.Resize(crop_size)]
+    transform = v2.Compose(transform)
     # Apply transforms to each tensor in batch
-    return torch.stack([transform(t) for t in tensors])
-  
-  def generate_video(self, idx,fps_out=24):
+    return transform(tensors)
+
+  def generate_video(self, idx,output_folder,fps_out=24):
     """
     Generate a video from the frames at the specified index.
     
@@ -217,32 +226,28 @@ class customDataset(torch.utils.data.Dataset):
     video_path = os.path.join(self.path_dataset, csv_array.iloc[1], csv_array.iloc[5] + '.mp4')
     container = cv2.VideoCapture(video_path)
     tot_frames = int(container.get(cv2.CAP_PROP_FRAME_COUNT))
-    print(video_path)
     # Set frame dimensions based on preprocessing requirements
     width_frames = int(container.get(cv2.CAP_PROP_FRAME_WIDTH))
     height_frames = int(container.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     list_indices = self.sample_frame_strategy(tot_frames)
-    
-    frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames)
-    
+    frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames) # [nr_clips, nr_frames, H, W, C]
+    # original_shape = frames_list.shape
+    frames_list = self.preprocess_images(frames_list.reshape(-1,*frames_list.shape[2:]).permute(0,3,1,2),to_visualize=True) # [nr_clips, nr_frames, H, W, C] -> [B, C, H, W]
+
+    # frames_list = frames_list.reshape(*original_shape)
     # Save the generated video
-    output_path = os.path.join(self.saving_folder_path_extracted_video, f'{csv_array.iloc[5]}_inside_{self.stride_inside_window}_stride_{self.stride_window}_fps_{fps_out}.mp4')
-    fourcc = cv2.VideoWriter_fourcc(*'avc1')
-    out = cv2.VideoWriter(output_path, fourcc, fps_out, (width_frames, height_frames))
-    print(f'Numebr of chunks: {frames_list.shape[0]}')
-    print(f'List indices shape: {list_indices}')
-    for i in range(frames_list.shape[0]):
-      for j in range(frames_list.shape[1]):
-        indices = list_indices[i][j]
-        frame = cv2.cvtColor(np.array(frames_list[i][j]), cv2.COLOR_RGB2BGR)
-        text = cv2.putText(frame, f'Frame: {indices}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        out.write(frame)
-    
-    out.release()
-    print(f"Video saved at {output_path}")
-    
+    if output_folder is None:
+      output_path = os.path.join(self.saving_folder_path_extracted_video, f'{csv_array.iloc[5]}_inside_{self.stride_inside_window}_stride_{self.stride_window}_fps_{fps_out}.mp4')
+    else:
+      os.makedirs(output_folder, exist_ok=True)
+      output_path = os.path.join(output_folder, f'{csv_array.iloc[5]}_inside_{self.stride_inside_window}_stride_{self.stride_window}_fps_{fps_out}.mp4')
+    frames_list = frames_list.permute(0,2,3,1) # [B,C,H,W] -> [B,H,W,C]
+    tools.generate_video_from_list_frame(list_frame=frames_list,path_video_output=output_path,fps=fps_out)
+    # print(f"Video saved at {output_path}")
+ 
   def __standard_getitem__(self, idx):
+    
     csv_array = self.video_labels.iloc[idx]
     video_path = os.path.join(self.path_dataset, csv_array.iloc[1], csv_array.iloc[5] + '.mp4')
 
@@ -266,10 +271,10 @@ class customDataset(torch.utils.data.Dataset):
 
     # Reshape frames for preprocessing
     nr_clips, nr_frames = frames_list.shape[:2]
-    frames_list = frames_list.reshape(-1, *frames_list.shape[2:]).permute(0, 3, 1, 2) # [nr_clips, nr_frames, H, W, C] -> [nr_clips * nr_frames, H, W, C] -> [B,C,H,W]
-
-    # Preprocess frames
-    preprocessed_tensors = self.preprocess_images(frames_list) # frame list to [B,C,H,W]
+    # Preprocess frames (considering only 1 video at time)
+    # [nr_clips, nr_frames, H, W, C] -> [nr_clips * nr_frames, H, W, C] -> [B,C,H,W]
+    frames_list = frames_list.reshape(-1, *frames_list.shape[2:]).permute(0, 3, 1, 2) 
+    preprocessed_tensors = self.preprocess_images(frames_list) # [B,C,H,W]
     preprocessed_tensors = preprocessed_tensors.reshape(nr_clips, nr_frames, *preprocessed_tensors.shape[1:]) # [nr_clips, nr_frames, C, H, W]
     preprocessed_tensors = preprocessed_tensors.permute(0,2,1,3,4) # [B=nr_clips, T=nr_frames, C, H, W] -> [B, C, T, H, W]
     
@@ -547,7 +552,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
       # Save the filtered DataFrame to a new CSV file
       self.df = self.df[filter_mask]
       self.df.to_csv(csv_path,sep='\t',index=False)
-    
+      print(f"Filtered DataFrame saved to {csv_path}")
     # Save mask to use to filter helper.dict_data
     self.mask = np.isin(helper.dict_data['list_sample_id'],self.df['sample_id'].to_list())
     self.model = model
@@ -833,7 +838,10 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
       print(f'Use standard DataLoader')
       loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate,pin_memory=True)
   else:
-    loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=False,collate_fn=dataset_._custom_collate)
+    if n_workers > 1:
+      loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=False,collate_fn=dataset_._custom_collate,num_workers=n_workers,pin_memory=True)
+    else:
+      loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=False,collate_fn=dataset_._custom_collate)
   return dataset_,loader_
  
   
