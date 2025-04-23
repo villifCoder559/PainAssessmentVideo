@@ -38,7 +38,7 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
                           lr, epochs, optimizer_fn, round_output_loss, shuffle_training_batch, criterion,
                           early_stopping, enable_scheduler, concatenate_temp_dim, init_network,
                           regularization_lambda_L1, key_for_early_stopping, target_metric_best_model,stop_after_kth_fold,
-                          clip_grad_norm,regularization_lambda_L2):
+                          clip_grad_norm,regularization_lambda_L2,trial):
   """
   Perform k-fold cross-validation on the dataset and train the model.
   
@@ -84,7 +84,7 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
       init_network, regularization_lambda_L1,
       key_for_early_stopping, early_stopping, enable_scheduler,
       target_metric_best_model, seed_random_state, clip_grad_norm,stop_after_kth_fold,
-      regularization_lambda_L2
+      regularization_lambda_L2,trial
     )
     
     # Store results
@@ -127,7 +127,7 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
                    init_network, regularization_lambda_L1,
                    key_for_early_stopping, early_stopping, enable_scheduler,
                    target_metric_best_model, seed_random_state,clip_grad_norm,
-                   stop_after_kth_fold,regularization_lambda_L2):
+                   stop_after_kth_fold,regularization_lambda_L2,trial):
   """Run a single fold of the cross-validation"""
   # Setup folder structure for this fold
   saving_path_kth_fold = os.path.join(train_folder_path, f'k{fold_idx}_cross_val')
@@ -158,13 +158,15 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
   sub_k_fold_list.append(list_splits_idxs[val_idx_split])
   
   # Train sub-fold models
+  # AUGMENTAION: val and test csv will be filtered in function get_dataset_and_loader  
   fold_results_kth = train_subfold_models(
     fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sample_ids,
     saving_path_kth_fold, model_advanced, lr, epochs, optimizer_fn,
     concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
     init_network, regularization_lambda_L1,
     key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state,
-    clip_grad_norm,stop_after_kth_fold,path_csv_kth_fold['test'],regularization_lambda_L2
+    clip_grad_norm,stop_after_kth_fold,path_csv_kth_fold['test'],regularization_lambda_L2,
+    trial
   )
     
   fold_results ={'fold_results':{}}
@@ -178,6 +180,7 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
       fold_results['fold_results'][f'k{fold_idx}_cross_val_sub_{sub_idx}']['test'] = fold_results_kth[f'k{fold_idx}_cross_val_sub_{sub_idx}']['test']
     else:
       break
+    
   return fold_results
 
 def create_split_indices(test_idx_split, val_idx_split, train_idxs_split, list_splits_idxs, sample_ids):
@@ -215,7 +218,7 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
                       concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
                       init_network, regularization_lambda_L1,
                       key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state,clip_grad_norm,
-                      stop_after_kth_fold,test_csv_path,regularization_lambda_L2):
+                      stop_after_kth_fold,test_csv_path,regularization_lambda_L2,trial):
   """Train models on sub-folds"""
   if not isinstance(model_advanced, Model_Advanced):
     raise ValueError('model_advanced must be an instance of Model_Advanced')
@@ -251,7 +254,8 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
       key_for_early_stopping=key_for_early_stopping,
       early_stopping=early_stopping,
       enable_scheduler=enable_scheduler,
-      clip_grad_norm=clip_grad_norm
+      clip_grad_norm=clip_grad_norm,
+      trial=trial
     )
     dict_test = test_model(
       model_advanced=model_advanced,
@@ -449,6 +453,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    clip_grad_norm,
                    label_smooth,
                    dict_augmented,
+                   trial=None
                   ):
  
 
@@ -473,7 +478,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'features_folder_saving_path': features_folder_saving_path.split('/')[-3:], # get the last 3 folders
     'head': head,
     'key_for_early_stopping': key_for_early_stopping,
-    'stride_window_in_video': stride_window_in_video,
+    # 'stride_window_in_video': stride_window_in_video,
     'head_params': head_params,
     'random_state': seed_random_state,
     'plot_dataset_distribution': is_plot_dataset_distribution,
@@ -511,7 +516,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'features_folder_saving_path': features_folder_saving_path.split('/')[-3:], # get the last 3 folders
     'head': head.name,
     'key_for_early_stopping': key_for_early_stopping,
-    'stride_window_in_video': stride_window_in_video,
+    # 'stride_window_in_video': stride_window_in_video,
     'head_params': head_params,
     'random_state': seed_random_state,
     'plot_dataset_distribution': is_plot_dataset_distribution,
@@ -588,7 +593,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   
   # Train the model
   start = time.time()
-  fold_results = k_fold_cross_validation(path_csv_dataset=path_csv_dataset if dict_augmented is None else new_csv_path,
+  fold_results = k_fold_cross_validation(path_csv_dataset=new_csv_path if dict_augmented is not None else new_csv_path,
                                           train_folder_path=train_folder_path,
                                           model_advanced=model_advanced,
                                           k_fold=k_fold,
@@ -608,7 +613,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                           enable_scheduler=enable_scheduler,
                                           clip_grad_norm=clip_grad_norm,
                                           target_metric_best_model=target_metric_best_model,
-                                          stop_after_kth_fold=stop_after_kth_fold)
+                                          stop_after_kth_fold=stop_after_kth_fold,
+                                          trial=trial)
   summary_res = {}
   summary_res['results'] = fold_results['dict_k_fold_results']
   summary_res['time'] = time.time() - start  
@@ -617,6 +623,6 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   folder_path=run_folder_path)
   model_advanced.free_gpu_memory()
   del model_advanced
-  return run_folder_path 
+  return run_folder_path,summary_res 
  
 

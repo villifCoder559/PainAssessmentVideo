@@ -19,7 +19,7 @@ from scipy.spatial.distance import pdist
 from custom.helper import CUSTOM_DATASET_TYPE,INSTANCE_MODEL_NAME
 import torch.nn as nn
 import safetensors.torch
-
+import psutil
 
 class NpEncoder(json.JSONEncoder):
   def default(self, obj):
@@ -58,7 +58,7 @@ def save_csv_file(cols,csv_array,saving_path,sliding_windows):
   return csv_path
 
 
-def save_dict_data(dict_data, saving_folder_path):
+def save_dict_data(dict_data, saving_folder_path,save_as_safetensors=False):
   """
   Save the dictionary containing numpy and torch elements to the specified path.
 
@@ -69,15 +69,21 @@ def save_dict_data(dict_data, saving_folder_path):
   if not os.path.exists(saving_folder_path):
     os.makedirs(saving_folder_path)
   print(f'Saving dictionary data to {saving_folder_path}...')
-  for key, value in tqdm(dict_data.items(), desc="Saving files"):
-    if isinstance(value, torch.Tensor):
-      torch.save(value, os.path.join(saving_folder_path, f"{key}.pt"))
-    elif isinstance(value, np.ndarray):
-      np.save(os.path.join(saving_folder_path, f"{key}.npy"), value)
-    else:
-      print(f"Unsupported data type for key {key}: {type(value)}")
-      # raise ValueError(f"Unsupported data type for key {key}: {type(value)}")
-  print(f'Dictionary data saved to {saving_folder_path}')
+  if save_as_safetensors:
+    # Save the dictionary as a .safetensors file
+    dict_data = {k:v for k,v in dict_data.items() if isinstance(v,torch.Tensor)} 
+    safetensors.torch.save_file(dict_data, saving_folder_path+'.safetensors')
+    print(f'Safetensors data saved to {saving_folder_path}')
+  else:
+    for key, value in tqdm(dict_data.items(), desc="Saving files"):
+      if isinstance(value, torch.Tensor):
+        torch.save(value, os.path.join(saving_folder_path, f"{key}.pt"))
+      elif isinstance(value, np.ndarray):
+        np.save(os.path.join(saving_folder_path, f"{key}.npy"), value)
+      else:
+        print(f"Unsupported data type for key {key}: {type(value)}")
+        # raise ValueError(f"Unsupported data type for key {key}: {type(value)}")
+    print(f'Dictionary data saved to {saving_folder_path}')
 
 def get_dataset_type(folder_path):
   if is_dict_data(folder_path=folder_path):
@@ -150,8 +156,13 @@ def load_dict_data(saving_folder_path):
       else:
         print(f"Unsupported file format: {file}")
   else:
-    dict_data = safetensors.torch.load_file(saving_folder_path, device='cpu')
-    # dict_data = {key: value.clone() for key,value in dict_data.items()}
+    dict_data = safetensors.torch.load_file(saving_folder_path, device='cpu').copy()
+    # copy data in RAM
+    # if psutil.virtual_memory().available > os.path.getsize(saving_folder_path):
+    #   for k,v in tqdm(dict_data.items(),desc="Copying data"):
+    #     dict_data[k] = v
+    # else:
+    #   print(f"Not enough RAM available to copy data from {saving_folder_path}.")
   return dict_data
 
 def plot_error_per_class(unique_classes, mae_per_class, criterion, title='', accuracy_per_class=None,y_label=None,
@@ -1121,9 +1132,21 @@ def generate_video_from_list_video_path(list_video_path, list_frames, list_subje
   print(f"Generated video saved to folder {saving_path}")
     
 def generate_video_from_list_frame(list_frame,path_video_output,fps=25):
+  """
+  Generates a video file from a list of frames.
+
+  Args:
+    list_frame (list): Input shape (B, H, W, C) representing a video sequence.
+    path_video_output (str): The file path where the output video will be saved.
+    fps (int, optional): Frames per second for the output video. Defaults to 25.
+
+  Raises:
+    OSError: If the output directory cannot be created.
+  """
+
   if not os.path.exists(os.path.split(path_video_output)[0]):
     os.makedirs(os.path.split(path_video_output)[0])
-  out = cv2.VideoWriter(path_video_output, cv2.VideoWriter_fourcc(*'avc1'), fps, (list_frame[0].shape[1], list_frame[0].shape[0]))
+  out = cv2.VideoWriter(path_video_output, cv2.VideoWriter_fourcc(*'avc1'), fps, (list_frame[0].shape[0], list_frame[0].shape[1]))
   for frame in list_frame:
     if not isinstance(frame,np.ndarray):
       frame = np.array(frame,dtype=np.uint8)
@@ -1131,7 +1154,7 @@ def generate_video_from_list_frame(list_frame,path_video_output,fps=25):
     out.write(frame)
   out.release()
   print(f'Video saved to {path_video_output}')
-# def save_tsne_incrementsl_plots_(X_tsne, labels, saving_path):
+
   
 def get_list_frame_from_video_path(video_path):
   cap = cv2.VideoCapture(video_path)
@@ -1812,3 +1835,15 @@ def test_speed_safetensors_vs_standard(path_1, path_2):
     print(f'  {k}: {v.shape}')
   del b
   print(f'Speedup (path1/path2): {(end_1 - start_1) / (end_2 - start_2)}x')    
+
+
+def convert_safetensors_dict_to_int32(path):
+  dict_data = safetensors.torch.load_file(path)
+  for k,v in dict_data.items():
+    if k != 'features' and v.dtype != torch.int32:
+      print(f'Converting {k} from {v.dtype} to int32')
+      dict_data[k] = dict_data[k].to(torch.int32)
+  safetensors.torch.save_file(dict_data, path)
+  print(f"Converted dict saved to {path}")
+  
+  
