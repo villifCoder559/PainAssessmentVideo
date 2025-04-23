@@ -648,6 +648,7 @@ if __name__ == '__main__':
   
   parent_folder = args.parent_folder
   only_csv = args.only_csv
+  
   print(f'Parent folder: {parent_folder}')
   output_root = os.path.join(parent_folder, '_summary')
   os.makedirs(output_root, exist_ok=True)

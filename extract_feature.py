@@ -1,6 +1,7 @@
 from custom.dataset import customDataset
 from custom.backbone import VideoBackbone,VitImageBackbone
 from custom.helper import CLIPS_REDUCTION,EMBEDDING_REDUCTION,MODEL_TYPE,SAMPLE_FRAME_STRATEGY, HEAD, GLOBAL_PATH
+import custom.helper as helper
 import torch
 from torch.utils.data import DataLoader
 import os
@@ -18,7 +19,7 @@ import numpy as np
 def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_workers,saving_chunk_size=100,  preprocess_align = False,
          preprocess_crop_detection = False,preprocess_frontalize = True,path_dataset=None,path_labels=None,stride_window=16,clip_length=16,
          log_file_path=None,root_saving_folder_path=None,backbone_type='video',from_=None,to_=None,save_big_feature=False,h_flip=False,
-         stride_inside_window=1,float_16=False
+         stride_inside_window=1,float_16=False,color_jitter=False,rotation=False,save_as_safetensors=True
          ):
   model_type = MODEL_TYPE.get_model_type(model_type)    
   print(f'Pooling_embedding_reduction: {pooling_embedding_reduction.name}')
@@ -62,11 +63,16 @@ def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_wor
       print(f'feature shape {feature.shape}')
       list_frames.append(list_sampled_frames)
       list_features.append(feature.detach().cpu())
-      list_labels.append(labels)
+      list_labels.append(labels) 
       if h_flip:
-        list_sample_id.append(sample_id+8700) # if h_flip, add 8700 to sample_id
+        list_sample_id.append(sample_id+helper.get_shift_for_sample_id('hflip')) # if h_flip, add 8700 to sample_id
+      elif color_jitter:
+        list_sample_id.append(sample_id+helper.get_shift_for_sample_id('jitter'))
+      elif rotation:
+        list_sample_id.append(sample_id+helper.get_shift_for_sample_id('rotate'))  
       else:
         list_sample_id.append(sample_id)
+        
       list_subject_id.append(subject_id)
       list_path.append(path)
       # add list for random cropped part
@@ -84,32 +90,35 @@ def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_wor
       if count % saving_chunk_size == 0:
         if not save_big_feature:
           dict_data = {
-            'features': torch.cat(list_features,dim=0),
-            'list_labels': torch.cat(list_labels,dim=0),
-            'list_subject_id': torch.cat(list_subject_id).squeeze(),
-            'list_sample_id': torch.cat(list_sample_id),
+            'features': torch.cat(list_features,dim=0).half() if float_16 else torch.cat(list_features,dim=0),
+            'list_labels': torch.cat(list_labels,dim=0).to(torch.int32),
+            'list_subject_id': torch.cat(list_subject_id).squeeze().to(torch.int32),
+            'list_sample_id': torch.cat(list_sample_id).to(torch.int32),
             'list_path': np.concatenate(list_path),
-            'list_frames': torch.cat(list_frames,dim=0)
+            'list_frames': torch.cat(list_frames,dim=0).to(torch.int32)
           }
           dict_data_size = dict_data["features"].element_size()*dict_data["features"].nelement()/1024/1024
-          tools.save_dict_data(dict_data=dict_data,saving_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)))
+          tools.save_dict_data(dict_data=dict_data,
+                               save_as_safetensors=save_as_safetensors,
+                               saving_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)))
           _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(root_saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} with size {dict_data_size:.2f} MB \n time elapsed: {((end - start)//60//60):.0f} h {(((end - start)//60%60)):.0f} m {(((end - start)%60)):.0f} s\n')
         else:
           
           dict_data = {
-            'features': torch.cat(list_features,dim=0),
-            'list_labels': torch.cat(list_labels,dim=0),
-            'list_subject_id': torch.cat(list_subject_id).squeeze(),
-            'list_sample_id': torch.cat(list_sample_id),
+            'features': torch.cat(list_features,dim=0).half() if float_16 else torch.cat(list_features,dim=0),
+            'list_labels': torch.cat(list_labels,dim=0).to(torch.int32),
+            'list_subject_id': torch.cat(list_subject_id).squeeze().to(torch.int32),
+            'list_sample_id': torch.cat(list_sample_id).to(torch.int32),
             'list_path': np.concatenate(list_path),
-            'list_frames': torch.cat(list_frames,dim=0)
+            'list_frames': torch.cat(list_frames,dim=0).to(torch.int32)
           }
           dict_data_size = dict_data["features"].element_size()*dict_data["features"].nelement()/1024/1024
           path = Path(list_path[0][0])
           person_id = path.parts[-2]
           sample_id = path.parts[-1][:-4]
           tools.save_dict_data(dict_data=dict_data,
-                    saving_folder_path=os.path.join(root_saving_folder_path,person_id,sample_id))
+                               save_as_safetensors=save_as_safetensors,
+                               saving_folder_path=os.path.join(root_saving_folder_path,person_id,sample_id))
           _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(root_saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} \n')
         list_features = []
         list_labels = []
@@ -122,15 +131,15 @@ def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_wor
     # save last batch
     if len(list_features)>0:
       dict_data = {
-        'features': torch.cat(list_features,dim=0),
-        'list_labels': torch.cat(list_labels,dim=0),
-        'list_subject_id': torch.cat(list_subject_id).squeeze(),
-        'list_sample_id': torch.cat(list_sample_id),
-        'list_path': np.concatenate(list_path),
-        'list_frames': torch.cat(list_frames,dim=0)
-      }
-      tools.save_dict_data(dict_data=dict_data,
-                  saving_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)))
+            'features': torch.cat(list_features,dim=0).half() if float_16 else torch.cat(list_features,dim=0),
+            'list_labels': torch.cat(list_labels,dim=0).to(torch.int32),
+            'list_subject_id': torch.cat(list_subject_id).squeeze().to(torch.int32),
+            'list_sample_id': torch.cat(list_sample_id).to(torch.int32),
+            'list_path': np.concatenate(list_path),
+            'list_frames': torch.cat(list_frames,dim=0).to(torch.int32)
+          }
+      tools.save_dict_data(dict_data=dict_data,save_as_safetensors=save_as_safetensors,
+                           saving_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)))
       _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(root_saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} \n')
   
   print('Model type:',model_type)
@@ -157,6 +166,8 @@ def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_wor
                 clip_length=clip_length,
                 video_labels=video_labels,
                 flip_horizontal=h_flip,
+                color_jitter=color_jitter,
+                rotation=rotation,
                 preprocess_align=preprocess_align,
                 preprocess_frontalize=preprocess_frontalize,
                 stride_inside_window=stride_inside_window,
@@ -216,7 +227,7 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser(description='Extract features from video dataset.')
   parser.add_argument('--gp', action='store_true', help='Global path')
   parser.add_argument('--model_type', type=str, required=False, default="B")
-  parser.add_argument('--saving_after', type=int, required=False, default=8700,help='Number of batch to save in one file')
+  parser.add_argument('--saving_after', type=int, required=False, default=8800,help='Number of batch to save in one file')
   parser.add_argument('--emb_red', type=str, default='spatial', help='Embedding reduction. Can be spatial, temporal, all,none')
   parser.add_argument('--prep_al', action='store_true', help='Preprocess align') # deprecated not use
   parser.add_argument('--prep_crop', action='store_true', help='Preprocess crop') # deprecated not use
@@ -235,7 +246,10 @@ if __name__ == "__main__":
   parser.add_argument('--stride_inside_window', type=int, default=1, help='Stride inside window')
   parser.add_argument('--clip_length', type=int, default=16, help='Clip length')
   parser.add_argument('--h_flip', action='store_true', help='Apply Horizontal flip')
+  parser.add_argument('--color_jitter', action='store_true', help='Apply color jitter')
+  parser.add_argument('--rotation', action='store_true', help='Apply rotation')
   parser.add_argument('--float_16', action='store_true', help='Use float 16')
+  parser.add_argument('--save_as_safetensors', action='store_true', help='Save as safetensors')
   # CUDA_VISIBLE_DEVICES=0 python3 extract_feature.py --gp --model_type B --saving_after 150 --emb_red spatial --path_dataset partA/video/video_frontalized_new --path_labels partA/starting_point/samples_exc_no_detection.csv --saving_folder_path partA/video/features/samples_16_frontalized_new --backbone_type video --from_ 0 --to_ 1500 --batch_size_feat_extraction 5 --n_workers 5
   # prompt example: python3 extract_feature.py --gp --model_type B --saving_after 5000  --emb_red temporal  --path_dataset partA/video/video_frontalized --path_labels partA/starting_point/samples_exc_no_detection.csv --saving_folder_path partA/video/features/samples_vit_img --log_file_path partA/video/features/samples_vit_img/log_file.txt --backbone_type image 
   args = parser.parse_args()
@@ -273,8 +287,11 @@ if __name__ == "__main__":
        stride_window=args.stride_window,
        clip_length=args.clip_length,
        h_flip=args.h_flip,
+       color_jitter=args.color_jitter,
+       rotation=args.rotation,
        stride_inside_window=args.stride_inside_window,
        float_16=args.float_16,
+       save_as_safetensors=args.save_as_safetensors,
        )
   
   
