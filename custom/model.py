@@ -209,11 +209,11 @@ class Model_Advanced: # Scenario_Advanced
                                                         label_smooth=self.label_smooth,
                                                         n_workers=self.n_workers
                                                                  )
-    unique_test_subjects = test_dataset.get_unique_subjects()
-    unique_classes = np.array(list(range(self.head.model.num_classes)))
+    unique_test_subjects = torch.tensor(test_dataset.get_unique_subjects())
+    unique_classes = torch.tensor(list(range(self.head.model.num_classes)))
     dict_test = self.head.evaluate(val_loader=test_loader, criterion=criterion, unique_val_subjects=unique_test_subjects,
                                     unique_val_classes=unique_classes, is_test=is_test)
-    dict_test['test_unique_subject_ids'] = unique_test_subjects
+    dict_test['test_unique_subject_ids'] = unique_test_subjects.numpy()
     dict_test['test_count_subject_ids'] = test_dataset.get_count_subjects()
     dict_test['test_unique_y'] = unique_classes
     dict_test['test_count_y'] = test_dataset.get_count_classes()
@@ -221,7 +221,8 @@ class Model_Advanced: # Scenario_Advanced
   
   
   def free_gpu_memory(self):
-    self.head.model.to('cpu')
+    del self.head
+    # self.head.model.to('cpu')
     self.backbone.model.to('cpu')
     torch.cuda.empty_cache()
     
