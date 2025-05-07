@@ -57,11 +57,13 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
     # class_subject_loss_folder = os.path.join(run_output_folder, f'class_subject_loss_{key.split("_")[0]}_{key.split("_")[1]}')
     # os.makedirs(class_subject_loss_folder, exist_ok=True)
     if plot_train_loss_val_acc:
+      test_key = 'test_accuracy' if 'test_accuracy' in data['results'][key]['test'] else 'test_macro_precision'
+      
       train_losses = data['results'][key]['train_val'].get('train_losses', [])
       train_accuracy = data['results'][key]['train_val'].get('list_train_macro_accuracy', [])
       val_loss = data['results'][key]['train_val'].get('val_losses', [])
       val_accuracy = data['results'][key]['train_val'].get('list_val_macro_accuracy', [])
-      test_accuracy = data['results'][key]['test'].get('test_macro_precision', None)
+      test_accuracy = data['results'][key]['test'].get(test_key, None)
       test_loss = data['results'][key]['test'].get('test_loss', None)
       grad_norm_mean = data['results'][key]['train_val']['list_mean_total_norm_epoch']
       grad_norm_std = data['results'][key]['train_val']['list_std_total_norm_epoch']
@@ -260,7 +262,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         # Train accuracy
         tools.plot_error_per_subject(loss_per_subject=data['results'][key]['train_val']['list_train_accuracy_per_subject'][best_epoch],
                                      unique_subject_ids=data['results'][key]['train_val']['train_unique_subject_ids'],
-                                     y_label='Train Macro Precision',
+                                     y_label='Train Accuracy',
                                      title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
                                      criterion=data['config']['criterion'],
                                      list_stoic_subject=helper.stoic_subjects,
@@ -271,7 +273,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         # Val accuracy
         tools.plot_error_per_subject(loss_per_subject=data['results'][key]['train_val']['list_val_accuracy_per_subject'][best_epoch],
                                      unique_subject_ids=data['results'][key]['train_val']['val_unique_subject_ids'],
-                                     y_label='Val Macro Precision',
+                                     y_label='Val Accuracy',
                                      title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
                                      criterion=data['config']['criterion'],
                                      step_y_axis=0.1,
@@ -282,7 +284,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         # Test accuracy
         tools.plot_error_per_subject(loss_per_subject=data['results'][key]['test']['test_accuracy_per_subject'],
                               unique_subject_ids=data['results'][key]['test']['test_unique_subject_ids'],
-                              y_label='Test Macro Precision',
+                              y_label='Test Accuracy',
                               title=f'TEST Epoch_{best_epoch} {key} - {test_id}',
                               criterion=data['config']['criterion'],
                               step_y_axis=0.1,
@@ -480,6 +482,9 @@ def generate_csv_row(data,config,time_, test_id):
   real_k_fold = max(list_fold) + 1
   real_sub_fold = max(list_sub_fold) + 1
   
+  test_key = 'test_accuracy' if 'test_accuracy' in data[f'k{list_fold[0]}_cross_val_sub_{list_sub_fold[0]}']['test'] else 'test_macro_precision'
+  
+  
   mean_train_losses_last_epoch = {f'mean_train_loss_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_train_accuracies_last_epoch = {f'mean_train_mac_prec_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_macro_accuracy'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_val_accuracies_last_epoch = {f'mean_val_mac_prec_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_macro_accuracy'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
@@ -490,14 +495,14 @@ def generate_csv_row(data,config,time_, test_id):
   mean_val_accuracies_best_epoch = {f'mean_val_mac_prec_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_macro_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_val_losses_best_epoch = {f'mean_val_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   
-  mean_test_accuracies = {f'mean_test_mac_precision_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_macro_precision'] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  mean_test_accuracies = {f'mean_test_mac_precision_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test'][test_key] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_test_losses = {f'mean_test_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_loss'] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   
   total_mean_train_losses_best_epoch = {f'total_mean_train_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_train_accuracy_best_epoch = {f'total_mean_train_mac_prec_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_macro_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_val_accuracy_best_epoch = {f'total_mean_val_mac_prec_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_macro_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_val_losses_best_epoch = {f'total_mean_val_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-  total_mean_test_accuracy_best_epoch = {f'total_mean_test_mac_prec_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_macro_precision'] for i in range(real_k_fold) for j in range(real_sub_fold)])}
+  total_mean_test_accuracy_best_epoch = {f'total_mean_test_mac_prec_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test'][test_key] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_test_losses_best_epoch = {f'total_mean_test_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_loss'] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   
   total_mean_train_losses_last_epoch = {f'total_mean_train_loss_last_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][-1] for i in range(real_k_fold) for j in range(real_sub_fold)])}
@@ -584,6 +589,9 @@ def get_best_result(data):
         best_fold = k
     elif target_metric_best_model == 'val_macro_precision':
       if data[f'k{k}_test']['dict_test']['test_macro_precision'] > data[f'k{best_fold}_test']['dict_test']['test_macro_precision']:
+        best_fold = k
+    elif target_metric_best_model == 'val_accuracy':
+      if data[f'k{k}_test']['dict_test']['test_accuracy'] > data[f'k{best_fold}_test']['dict_test']['test_accuracy']:
         best_fold = k
     else:
       raise ValueError(f'Not implemented target metric {target_metric_best_model}')
