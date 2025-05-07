@@ -149,82 +149,82 @@ def train_with_gru_head(
                     )
                     print(f'Time taken for this run: {(time.time()-start)//60} min')
 
-def train_with_attentive_head(
-  model_type, pooling_clips_reduction, sample_frame_strategy, concatenate_temp_dim,
-  path_csv_dataset, path_dataset, feature_folder_saving_path, global_foder_name,
-  list_batch_train, list_regularization_lambda_L1, lr_list, optim_list, k_fold, epochs,
-  seed_random_state, is_plot_dataset_distribution, is_round_output_loss, 
-  is_shuffle_video_chunks, is_shuffle_training_batch, key_for_early_stopping,
-  target_metric_best_model, early_stopping, enable_scheduler, clip_grad_norm,
-  clip_length, stop_after_kth_fold,emb_dim,list_num_heads,list_attn_dropout,n_workers,list_init_network,num_classes,pos_encoder,
-  list_label_smooth,list_regularization_lambda_L2,dict_augmented
-):
-  """Run training with Attentive head configuration."""
-  stride_window_in_video = 16  # sliding window
-  print(f'\nLearning rates: {lr_list}')
-  print(f'Optimizers: {optim_list}')
-  for init_network in list_init_network:
-    for num_heads in list_num_heads:
-      for batch_train in list_batch_train:
-        for regularization_lambda_L1 in list_regularization_lambda_L1:
-          for regularization_lambda_L2 in list_regularization_lambda_L2:
-            for dropout in list_attn_dropout:
-              for label_smooth in list_label_smooth:
-                # Configure Attentive head parameters
-                params = {
-                  'input_dim': emb_dim*8 if concatenate_temp_dim else emb_dim,
-                  'num_classes': num_classes,
-                  'num_heads': num_heads,
-                  'dropout': dropout,
-                  'pos_enc': pos_encoder
-                }
+# def train_with_attentive_head(
+#   model_type, pooling_clips_reduction, sample_frame_strategy, concatenate_temp_dim,
+#   path_csv_dataset, path_dataset, feature_folder_saving_path, global_foder_name,
+#   list_batch_train, list_regularization_lambda_L1, lr_list, optim_list, k_fold, epochs,
+#   seed_random_state, is_plot_dataset_distribution, is_round_output_loss, 
+#   is_shuffle_video_chunks, is_shuffle_training_batch, key_for_early_stopping,
+#   target_metric_best_model, early_stopping, enable_scheduler, clip_grad_norm,
+#   clip_length, stop_after_kth_fold,emb_dim,list_num_heads,list_attn_dropout,n_workers,list_init_network,num_classes,pos_encoder,
+#   list_label_smooth,list_regularization_lambda_L2,dict_augmented
+# ):
+#   """Run training with Attentive head configuration."""
+#   stride_window_in_video = 16  # sliding window
+#   print(f'\nLearning rates: {lr_list}')
+#   print(f'Optimizers: {optim_list}')
+#   for init_network in list_init_network:
+#     for num_heads in list_num_heads:
+#       for batch_train in list_batch_train:
+#         for regularization_lambda_L1 in list_regularization_lambda_L1:
+#           for regularization_lambda_L2 in list_regularization_lambda_L2:
+#             for dropout in list_attn_dropout:
+#               for label_smooth in list_label_smooth:
+#                 # Configure Attentive head parameters
+#                 params = {
+#                   'input_dim': emb_dim*8 if concatenate_temp_dim else emb_dim,
+#                   'num_classes': num_classes,
+#                   'num_heads': num_heads,
+#                   'dropout': dropout,
+#                   'pos_enc': pos_encoder
+#                 }
                 
-                for lr in lr_list:
-                  for optim_fn in optim_list:
-                    criterion = get_loss('CE')
-                    start = time.time()
+#                 for lr in lr_list:
+#                   for optim_fn in optim_list:
+#                     criterion = get_loss('CE')
+#                     start = time.time()
                     
-                    # Run training
-                    scripts.run_train_test(
-                      model_type=model_type, 
-                      concatenate_temp_dim=concatenate_temp_dim,
-                      pooling_embedding_reduction=pooling_clips_reduction,
-                      pooling_clips_reduction=pooling_clips_reduction,
-                      sample_frame_strategy=sample_frame_strategy, 
-                      path_csv_dataset=path_csv_dataset, 
-                      path_video_dataset=path_dataset,
-                      head=HEAD.ATTENTIVE,
-                      stride_window_in_video=stride_window_in_video,
-                      features_folder_saving_path=feature_folder_saving_path,
-                      head_params=params,
-                      k_fold=k_fold,
-                      global_foder_name=global_foder_name, 
-                      batch_size_training=batch_train, 
-                      epochs=epochs, 
-                      criterion=criterion, 
-                      optimizer_fn=optim_fn,
-                      lr=lr,
-                      seed_random_state=seed_random_state,
-                      is_plot_dataset_distribution=is_plot_dataset_distribution,
-                      is_round_output_loss=is_round_output_loss,
-                      is_shuffle_video_chunks=is_shuffle_video_chunks,
-                      is_shuffle_training_batch=is_shuffle_training_batch,
-                      init_network=init_network,
-                      key_for_early_stopping=key_for_early_stopping,
-                      regularization_lambda_L1=regularization_lambda_L1,
-                      regularization_lambda_L2=regularization_lambda_L2,
-                      clip_length=clip_length,
-                      target_metric_best_model=target_metric_best_model,
-                      early_stopping=early_stopping,
-                      enable_scheduler=enable_scheduler,
-                      stop_after_kth_fold=stop_after_kth_fold,
-                      label_smooth=label_smooth,
-                      n_workers=n_workers,
-                      clip_grad_norm=clip_grad_norm,
-                      dict_augmented=dict_augmented
-                    )
-                    # scrit example: python3 train_model.py --mt B --head ATTENTIVE --lr 0.0001 --ep 500 --opt adamw --batch_train 8700  --stop 3 --num_heads 8 --csv partA/starting_point/samples_exc_no_detection.csv --ffsp partA/video/video_frontalized --global_folder_name history_run_att --path_video_dataset partA/video/video_frontalized  --k_fold 3 
-                    print(f'Time taken for this run: {(time.time()-start)//60} min')
+#                     # Run training
+#                     scripts.run_train_test(
+#                       model_type=model_type, 
+#                       concatenate_temp_dim=concatenate_temp_dim,
+#                       pooling_embedding_reduction=pooling_clips_reduction,
+#                       pooling_clips_reduction=pooling_clips_reduction,
+#                       sample_frame_strategy=sample_frame_strategy, 
+#                       path_csv_dataset=path_csv_dataset, 
+#                       path_video_dataset=path_dataset,
+#                       head=HEAD.ATTENTIVE,
+#                       stride_window_in_video=stride_window_in_video,
+#                       features_folder_saving_path=feature_folder_saving_path,
+#                       head_params=params,
+#                       k_fold=k_fold,
+#                       global_foder_name=global_foder_name, 
+#                       batch_size_training=batch_train, 
+#                       epochs=epochs, 
+#                       criterion=criterion, 
+#                       optimizer_fn=optim_fn,
+#                       lr=lr,
+#                       seed_random_state=seed_random_state,
+#                       is_plot_dataset_distribution=is_plot_dataset_distribution,
+#                       is_round_output_loss=is_round_output_loss,
+#                       is_shuffle_video_chunks=is_shuffle_video_chunks,
+#                       is_shuffle_training_batch=is_shuffle_training_batch,
+#                       init_network=init_network,
+#                       key_for_early_stopping=key_for_early_stopping,
+#                       regularization_lambda_L1=regularization_lambda_L1,
+#                       regularization_lambda_L2=regularization_lambda_L2,
+#                       clip_length=clip_length,
+#                       target_metric_best_model=target_metric_best_model,
+#                       early_stopping=early_stopping,
+#                       enable_scheduler=enable_scheduler,
+#                       stop_after_kth_fold=stop_after_kth_fold,
+#                       label_smooth=label_smooth,
+#                       n_workers=n_workers,
+#                       clip_grad_norm=clip_grad_norm,
+#                       dict_augmented=dict_augmented
+#                     )
+#                     # scrit example: python3 train_model.py --mt B --head ATTENTIVE --lr 0.0001 --ep 500 --opt adamw --batch_train 8700  --stop 3 --num_heads 8 --csv partA/starting_point/samples_exc_no_detection.csv --ffsp partA/video/video_frontalized --global_folder_name history_run_att --path_video_dataset partA/video/video_frontalized  --k_fold 3 
+#                     print(f'Time taken for this run: {(time.time()-start)//60} min')
 
 def train_with_jepa_attentive_head(
   model_type, pooling_clips_reduction, sample_frame_strategy, concatenate_temp_dim,
@@ -320,77 +320,77 @@ def train_with_jepa_attentive_head(
                                 # Save the profiling results to a file
                                 save_stats(pr, os.path.join(run_folder_path, 'profiling_results.txt'))
                               
-def train_with_linear_head(
-  model_type, pooling_clips_reduction, sample_frame_strategy, concatenate_temp_dim,
-  path_csv_dataset, path_dataset, feature_folder_saving_path, global_foder_name,
-  list_batch_train, list_regularization_lambda_L1, lr_list, optim_list, k_fold, epochs,
-  seed_random_state, is_plot_dataset_distribution, is_round_output_loss, 
-  is_shuffle_video_chunks, is_shuffle_training_batch, key_for_early_stopping,
-  target_metric_best_model, early_stopping, enable_scheduler, 
-  clip_length, stop_after_kth_fold,emb_dim,dim_reduction,n_workers,list_init_network,clip_grad_norm, num_classes
-):
-  """Run training with Linear head configuration."""
-  stride_window_in_video = 16
-  print(f'\nLearning rates: {lr_list}')
-  print(f'Optimizers: {optim_list}')
-  dim_reduction = get_embedding_reduction(dim_reduction)
-  for init_network in list_init_network:
-    for batch_train in list_batch_train:
-      for regularization_lambda in list_regularization_lambda_L1:
-        # Configure feature shape and dimension reduction
-        feature_shape = [1, 8, 14, 14, emb_dim]  # 8 temporal dimension, 14x14 spatial dimension
-        if dim_reduction.value:
-          for dim in dim_reduction.value:
-            feature_shape[dim] = 1
+# def train_with_linear_head(
+#   model_type, pooling_clips_reduction, sample_frame_strategy, concatenate_temp_dim,
+#   path_csv_dataset, path_dataset, feature_folder_saving_path, global_foder_name,
+#   list_batch_train, list_regularization_lambda_L1, lr_list, optim_list, k_fold, epochs,
+#   seed_random_state, is_plot_dataset_distribution, is_round_output_loss, 
+#   is_shuffle_video_chunks, is_shuffle_training_batch, key_for_early_stopping,
+#   target_metric_best_model, early_stopping, enable_scheduler, 
+#   clip_length, stop_after_kth_fold,emb_dim,dim_reduction,n_workers,list_init_network,clip_grad_norm, num_classes
+# ):
+#   """Run training with Linear head configuration."""
+#   stride_window_in_video = 16
+#   print(f'\nLearning rates: {lr_list}')
+#   print(f'Optimizers: {optim_list}')
+#   dim_reduction = get_embedding_reduction(dim_reduction)
+#   for init_network in list_init_network:
+#     for batch_train in list_batch_train:
+#       for regularization_lambda in list_regularization_lambda_L1:
+#         # Configure feature shape and dimension reduction
+#         feature_shape = [1, 8, 14, 14, emb_dim]  # 8 temporal dimension, 14x14 spatial dimension
+#         if dim_reduction.value:
+#           for dim in dim_reduction.value:
+#             feature_shape[dim] = 1
                   
-        params = {
-          'dim_reduction': dim_reduction.value,
-          'input_dim': math.prod(feature_shape),
-          'num_classes': num_classes,
-        }
+#         params = {
+#           'dim_reduction': dim_reduction.value,
+#           'input_dim': math.prod(feature_shape),
+#           'num_classes': num_classes,
+#         }
         
-        for lr in lr_list:
-          for optim_fn in optim_list:
-            criterion = get_loss('CE')
-            start = time.time()
+#         for lr in lr_list:
+#           for optim_fn in optim_list:
+#             criterion = get_loss('CE')
+#             start = time.time()
             
-            # Run training
-            scripts.run_train_test(
-              model_type=model_type,
-              concatenate_temp_dim=concatenate_temp_dim,
-              pooling_embedding_reduction=pooling_clips_reduction,
-              pooling_clips_reduction=pooling_clips_reduction,
-              sample_frame_strategy=sample_frame_strategy,
-              path_csv_dataset=path_csv_dataset,
-              path_video_dataset=path_dataset,
-              head=HEAD.LINEAR,
-              stride_window_in_video=stride_window_in_video,
-              features_folder_saving_path=feature_folder_saving_path,
-              head_params=params,
-              k_fold=k_fold,
-              global_foder_name=global_foder_name,
-              batch_size_training=batch_train,
-              epochs=epochs,
-              criterion=criterion,
-              optimizer_fn=optim_fn,
-              lr=lr,
-              seed_random_state=seed_random_state,
-              is_plot_dataset_distribution=is_plot_dataset_distribution,
-              is_round_output_loss=is_round_output_loss,
-              is_shuffle_video_chunks=is_shuffle_video_chunks,
-              is_shuffle_training_batch=is_shuffle_training_batch,
-              init_network=init_network,
-              key_for_early_stopping=key_for_early_stopping,
-              regularization_lambda_L1=regularization_lambda,
-              clip_length=clip_length,
-              target_metric_best_model=target_metric_best_model,
-              early_stopping=early_stopping,
-              enable_scheduler=enable_scheduler,
-              stop_after_kth_fold=stop_after_kth_fold,
-              n_workers=n_workers,
-              clip_grad_norm=clip_grad_norm
-            )
-            print(f'Time taken for this run: {(time.time()-start)//60} min')
+#             # Run training
+#             scripts.run_train_test(
+#               model_type=model_type,
+#               concatenate_temp_dim=concatenate_temp_dim,
+#               pooling_embedding_reduction=pooling_clips_reduction,
+#               pooling_clips_reduction=pooling_clips_reduction,
+#               sample_frame_strategy=sample_frame_strategy,
+#               path_csv_dataset=path_csv_dataset,
+#               path_video_dataset=path_dataset,
+#               head=HEAD.LINEAR,
+#               stride_window_in_video=stride_window_in_video,
+#               features_folder_saving_path=feature_folder_saving_path,
+#               head_params=params,
+#               k_fold=k_fold,
+#               global_foder_name=global_foder_name,
+#               batch_size_training=batch_train,
+#               epochs=epochs,
+#               criterion=criterion,
+#               optimizer_fn=optim_fn,
+#               lr=lr,
+#               seed_random_state=seed_random_state,
+#               is_plot_dataset_distribution=is_plot_dataset_distribution,
+#               is_round_output_loss=is_round_output_loss,
+#               is_shuffle_video_chunks=is_shuffle_video_chunks,
+#               is_shuffle_training_batch=is_shuffle_training_batch,
+#               init_network=init_network,
+#               key_for_early_stopping=key_for_early_stopping,
+#               regularization_lambda_L1=regularization_lambda,
+#               clip_length=clip_length,
+#               target_metric_best_model=target_metric_best_model,
+#               early_stopping=early_stopping,
+#               enable_scheduler=enable_scheduler,
+#               stop_after_kth_fold=stop_after_kth_fold,
+#               n_workers=n_workers,
+#               clip_grad_norm=clip_grad_norm
+#             )
+#             print(f'Time taken for this run: {(time.time()-start)//60} min')
 
 def save_stats(pr, file_path):
   with open(file_path, 'w') as f:
@@ -538,126 +538,327 @@ jepa_attentive_params = ['num_heads', 'num_cross_head', 'model_dropout', 'drop_a
                          'nr_blocks','cross_block_after_transformers']
 
 
-def objective(trial,original_kwargs):
+def _suggest(trial: optuna.trial.Trial, name, values, categorical):
+  """Suggest a hyperparameter value based on the type of values provided."""
+  if categorical:
+    return trial.suggest_categorical(name, values)
+
+  low, high = values[0], values[-1]
+  if low > high:
+    low, high = high, low
+  if isinstance(low, int) and isinstance(high, int):
+    return trial.suggest_int(name, low=low, high=high)
+  else:
+    return trial.suggest_float(name, low=low, high=high)
+
+def objective(trial: optuna.trial.Trial, original_kwargs):
   """Objective function for Optuna hyperparameter optimization."""
   kwargs = deepcopy(original_kwargs)
-  
-  # Define the hyperparameters to be optimized
   model_type = MODEL_TYPE.get_model_type(kwargs['mt'])
   epochs = kwargs['ep']
-  
-  nr_blocks = trial.suggest_categorical('nr_blocks', kwargs['nr_blocks'])
-  # NOT SUPPORTED BY OPTUNA. TODO: find workaround
-  # if nr_blocks == 1: # if nr_blocks == 1, there is only the cross-attention block
-  #   kwargs['num_heads'] = [0]
-  #   kwargs['cross_block_after_transformers'] = [0]
-  # Training params  
-  lr = trial.suggest_categorical('lr', kwargs['lr'])
+
+  # common training params
+  nr_blocks = _suggest(trial, 'nr_blocks', kwargs['nr_blocks'], kwargs['optuna_categorical'])
+  lr = _suggest(trial, 'lr', kwargs['lr'], kwargs['optuna_categorical'])
   opt = trial.suggest_categorical('opt', kwargs['opt'])
   optimizer_fn = get_optimizer(opt)
   init_network = trial.suggest_categorical('init_network', kwargs['init_network'])
-  batch_train = trial.suggest_categorical('batch_train', kwargs['batch_train'])
-  regulariz_lambda_L1 = trial.suggest_categorical('regulariz_lambda_L1', kwargs['regulariz_lambda_L1'])
-  regulariz_lambda_L2 = trial.suggest_categorical('regulariz_lambda_L2', kwargs['regulariz_lambda_L2'])
-  label_smooth = trial.suggest_categorical('label_smooth', kwargs['label_smooth'])
-  concatenate_temp_dim=trial.suggest_categorical('concatenate_temp_dim',kwargs['concatenate_temp_dim'])
-  
+  batch_train = _suggest(trial, 'batch_train', kwargs['batch_train'], kwargs['optuna_categorical'])
+  regulariz_lambda_L1 = _suggest(trial, 'regulariz_lambda_L1', kwargs['regulariz_lambda_L1'], kwargs['optuna_categorical'])
+  regulariz_lambda_L2 = _suggest(trial, 'regulariz_lambda_L2', kwargs['regulariz_lambda_L2'], kwargs['optuna_categorical'])
+  label_smooth = _suggest(trial, 'label_smooth', kwargs['label_smooth'], kwargs['optuna_categorical'])
+  concatenate_temp_dim = trial.suggest_categorical('concatenate_temp_dim', kwargs['concatenate_temp_dim'])
+
   # augmentation
-  hflip = trial.suggest_categorical('hflip', kwargs['hflip'])
-  color_jitter = trial.suggest_categorical('color_jitter', kwargs['jitter'])
-  rotation = trial.suggest_categorical('rotation', kwargs['rotation'])
-  
-  # jepa_attentive params
-  num_heads = trial.suggest_categorical('num_heads', kwargs['num_heads'])
-  num_cross_head = trial.suggest_categorical('num_cross_head', kwargs['num_cross_head'])
-  model_dropout = trial.suggest_categorical('model_dropout', kwargs['model_dropout'])
-  drop_attn = trial.suggest_categorical('drop_attn', kwargs['drop_attn'])
-  drop_residual = trial.suggest_categorical('drop_residual', kwargs['drop_residual'])
-  mlp_ratio = trial.suggest_categorical('mlp_ratio', kwargs['mlp_ratio'])
-  pos_enc = trial.suggest_categorical('pos_enc', kwargs['pos_enc'])
-  cross_block_after_transformers = trial.suggest_categorical('cross_block_after_transformers', kwargs['cross_block_after_transformers'])
-  
-  emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
-  num_classes = pd.read_csv(kwargs['csv'],sep='\t')['class_id'].unique().shape[0]  
-  params = {
-    'input_dim': emb_dim*8 if concatenate_temp_dim else emb_dim,
-    'num_classes': num_classes,
-    'num_cross_heads': num_cross_head,
-    'num_heads': num_heads if num_heads is not None else num_cross_head,
-    'dropout': model_dropout,
-    'attn_dropout': drop_attn,
-    'residual_dropout': drop_residual,
-    'mlp_ratio': mlp_ratio,
-    'pos_enc': pos_enc,
-    'depth': nr_blocks,
-    'cross_block_after_transformers': cross_block_after_transformers}
-  
-  # Check if the hyperparameters have been tried before
+  hflip = _suggest(trial, 'hflip', kwargs['hflip'], kwargs['optuna_categorical'])
+  color_jitter = _suggest(trial, 'color_jitter', kwargs['jitter'], kwargs['optuna_categorical'])
+  rotation = _suggest(trial, 'rotation', kwargs['rotation'], kwargs['optuna_categorical'])
+
+  # choose head-specific hyperparameters
+  head_name = kwargs['head']
+  if head_name.upper() == 'GRU':
+    # Sample GRU-specific params
+    GRU_hidden_size = _suggest(trial, 'GRU_hidden_size', kwargs['GRU_hidden_size'], kwargs['optuna_categorical'])
+    GRU_num_layers = _suggest(trial, 'GRU_num_layers', kwargs['GRU_num_layers'], kwargs['optuna_categorical'])
+    GRU_output_size = kwargs['GRU_output_size']
+    layer_norm = trial.suggest_categorical('layer_norm', kwargs['layer_norm'])
+    GRU_dropout = _suggest(trial, 'GRU_dropout', kwargs['GRU_dropout'], kwargs['optuna_categorical'])
+    GRU_round_output_loss = trial.suggest_categorical('GRU_round_output_loss', kwargs['GRU_round_output_loss'])
+    # Build head parameters
+    emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
+    params = {
+      'input_dim': emb_dim * 8 if concatenate_temp_dim else emb_dim,
+      'hidden_size': GRU_hidden_size,
+      'num_layers': GRU_num_layers,
+      'output_size': GRU_output_size,
+      'layer_norm': layer_norm,
+      'dropout': GRU_dropout,
+    }
+    head_enum = HEAD.GRU
+    num_classes = GRU_output_size
+
+  else:
+    # JEPA-attentive head parameters
+    num_heads = _suggest(trial, 'num_heads', kwargs['num_heads'], kwargs['optuna_categorical'])
+    num_cross_head = _suggest(trial, 'num_cross_head', kwargs['num_cross_head'], kwargs['optuna_categorical'])
+    model_dropout = _suggest(trial, 'model_dropout', kwargs['model_dropout'], kwargs['optuna_categorical'])
+    drop_attn = _suggest(trial, 'drop_attn', kwargs['drop_attn'], kwargs['optuna_categorical'])
+    drop_residual = _suggest(trial, 'drop_residual', kwargs['drop_residual'], kwargs['optuna_categorical'])
+    mlp_ratio = _suggest(trial, 'mlp_ratio', kwargs['mlp_ratio'], kwargs['optuna_categorical'])
+    pos_enc = trial.suggest_categorical('pos_enc', kwargs['pos_enc'])
+    cross_block_after_transformers = trial.suggest_categorical(
+      'cross_block_after_transformers', kwargs['cross_block_after_transformers'])
+
+    emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
+    num_classes = pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique()
+    params = {
+      'input_dim': emb_dim * 8 if concatenate_temp_dim else emb_dim,
+      'num_classes': num_classes,
+      'num_cross_heads': num_cross_head,
+      'num_heads': num_heads or num_cross_head,
+      'dropout': model_dropout,
+      'attn_dropout': drop_attn,
+      'residual_dropout': drop_residual,
+      'mlp_ratio': mlp_ratio,
+      'pos_enc': pos_enc,
+      'depth': nr_blocks,
+      'cross_block_after_transformers': cross_block_after_transformers
+    }
+    head_enum = HEAD.ATTENTIVE_JEPA
+
+  # avoid duplicate trials
   for past in trial.study.trials:
-    if past.state != optuna.trial.TrialState.COMPLETE and past.state != optuna.trial.TrialState.PRUNED:
+    if past.state not in (
+      optuna.trial.TrialState.COMPLETE,
+      optuna.trial.TrialState.PRUNED
+    ):
       continue
     if past.params == trial.params:
       return past.value
-    
-  # Call the training function with the suggested hyperparameters
+
+  # run training
   with cProfile.Profile() as pr:
-    run_folder_path,results = scripts.run_train_test(
-                                    model_type=model_type, 
-                                    criterion=get_loss('CE'), 
-                                    concatenate_temp_dim=concatenate_temp_dim,
-                                    pooling_embedding_reduction=kwargs['pooling_clips_reduction'],
-                                    pooling_clips_reduction=kwargs['pooling_clips_reduction'],
-                                    sample_frame_strategy=kwargs['sample_frame_strategy'], 
-                                    path_csv_dataset=kwargs['csv'], 
-                                    path_video_dataset=kwargs['path_video_dataset'],
-                                    head=HEAD.ATTENTIVE_JEPA,
-                                    stride_window_in_video=kwargs['stride_window_in_video'],
-                                    features_folder_saving_path=kwargs['ffsp'],
-                                    head_params=params,
-                                    k_fold=kwargs['k_fold'],
-                                    global_foder_name=kwargs['global_folder_name'], 
-                                    batch_size_training=batch_train, 
-                                    epochs=epochs, 
-                                    optimizer_fn=optimizer_fn,
-                                    lr=lr,
-                                    seed_random_state=seed_random_state,
-                                    is_plot_dataset_distribution=False,
-                                    is_round_output_loss=kwargs['is_round_output_loss'],
-                                    is_shuffle_video_chunks=False,
-                                    is_shuffle_training_batch=True,
-                                    init_network=init_network,
-                                    key_for_early_stopping=kwargs['key_early_stopping'],
-                                    regularization_lambda_L1=regulariz_lambda_L1,
-                                    regularization_lambda_L2=regulariz_lambda_L2,
-                                    clip_length=clip_length,
-                                    target_metric_best_model=target_metric_best_model,
-                                    early_stopping=early_stopping,
-                                    enable_scheduler=kwargs['enable_scheduler'],
-                                    stop_after_kth_fold=kwargs['stop'],
-                                    n_workers=kwargs['n_workers'],
-                                    clip_grad_norm=kwargs['clip_grad_norm'],
-                                    label_smooth=label_smooth,
-                                    dict_augmented={'hflip': hflip,
-                                                    'jitter': color_jitter,
-                                                    'rotation': rotation},
-                                    trial=trial
-                                  )
+    run_folder_path, results = scripts.run_train_test(
+      model_type=model_type,
+      criterion=get_loss('ce') if num_classes > 1 else get_loss('l1'),
+      concatenate_temp_dim=concatenate_temp_dim,
+      pooling_embedding_reduction=kwargs['pooling_clips_reduction'],
+      pooling_clips_reduction=kwargs['pooling_clips_reduction'],
+      sample_frame_strategy=kwargs['sample_frame_strategy'],
+      path_csv_dataset=kwargs['csv'],
+      path_video_dataset=kwargs['path_video_dataset'],
+      head=head_enum,
+      stride_window_in_video=kwargs['stride_window_in_video'],
+      features_folder_saving_path=kwargs['ffsp'],
+      head_params=params,
+      k_fold=kwargs['k_fold'],
+      global_foder_name=kwargs['global_folder_name'],
+      batch_size_training=batch_train,
+      epochs=epochs,
+      optimizer_fn=optimizer_fn,
+      lr=lr,
+      seed_random_state=seed_random_state,
+      is_plot_dataset_distribution=False,
+      is_round_output_loss=GRU_round_output_loss if head_enum == HEAD.GRU else 0,
+      is_shuffle_video_chunks=False,
+      is_shuffle_training_batch=True,
+      init_network=init_network,
+      key_for_early_stopping=kwargs['key_early_stopping'],
+      regularization_lambda_L1=regulariz_lambda_L1,
+      regularization_lambda_L2=regulariz_lambda_L2,
+      clip_length=clip_length,
+      target_metric_best_model=target_metric_best_model,
+      early_stopping=early_stopping,
+      enable_scheduler=kwargs['enable_scheduler'],
+      stop_after_kth_fold=kwargs['stop'],
+      n_workers=kwargs['n_workers'],
+      clip_grad_norm=kwargs['clip_grad_norm'],
+      label_smooth=label_smooth,
+      dict_augmented={
+        'hflip': hflip,
+        'jitter': color_jitter,
+        'rotation': rotation
+      },
+      trial=trial
+    )
     save_stats(pr, os.path.join(run_folder_path, 'profiling_results.txt'))
     pr.dump_stats(os.path.join(run_folder_path, 'profiling_results.prof'))
-    
-  id_test = os.path.split(run_folder_path)[-1].split('_')[0]
-  trial.set_user_attr('id_test', id_test)
-  # Just to record this data
+
+  trial.set_user_attr('id_test', os.path.basename(run_folder_path).split('_')[0])
+
+  # record config
   trial.set_user_attr('head', [kwargs['head']])
   trial.set_user_attr('csv', [kwargs['csv']])
   trial.set_user_attr('ffsp', [kwargs['ffsp']])
   trial.set_user_attr('k_fold', [kwargs['k_fold']])
   trial.set_user_attr('stop', kwargs['stop'])
   trial.set_user_attr('n_workers', [kwargs['n_workers']])
-  
-  # Extract the validation accuracy from the results
+
+  # return metric
   mean_val_accuracy = get_mean_val_accuracy(results)
   return mean_val_accuracy
+
+# def hyper_search_gru(kwargs):
+#   """Hyperparameter search for GRU head using Optuna."""
+#   study = optuna.create_study(
+#     direction='maximize',
+#     storage=f"sqlite:///{os.path.join(kwargs['global_folder_name'], 'optuna_gru_study.db')}",
+#     study_name=f"GRU_{os.path.basename(kwargs['global_folder_name'])}",
+#     pruner=optuna.pruners.ThresholdPruner(
+#       lower=kwargs['--pruner_n_warmup_steps'],
+#       n_warmup_steps=30,
+#       interval_steps=2
+#     )
+#   )
+#   study.optimize(lambda trial: objective(trial, kwargs), n_trials=kwargs['n_trials'], timeout=kwargs['timeout'])
+
+#   # save study
+#   optuna_path = os.path.join(kwargs['global_folder_name'], 'optuna_gru_study.pkl')
+#   with open(optuna_path, 'wb') as f:
+#     pickle.dump(study, f)
+#     print(f'Study saved to {optuna_path}')
+
+#   print('Best hyperparameters:')
+#   print(study.best_params)
+#   print('Best accuracy:', study.best_value)
+
+def _suggest(trial:optuna.trial.Trial,name,values,categorical):
+  """Suggest a hyperparameter value based on the type of values provided."""
+  if categorical:
+    return trial.suggest_categorical(name, values)
+
+  low, high = values[0], values[-1]
+  if low > high:
+    low, high = high, low
+  # if both endpoints are ints, do integer
+  if isinstance(low, int) and isinstance(high, int):
+    return trial.suggest_int(name, low=low, high=high)
+  else:
+    return trial.suggest_float(name, low=low, high=high)
+
+# def objective(trial:optuna.trial.Trial, original_kwargs):
+#   """Objective function for Optuna hyperparameter optimization."""
+#   kwargs = deepcopy(original_kwargs)
+  
+#   # Define the hyperparameters to be optimized
+#   model_type = MODEL_TYPE.get_model_type(kwargs['mt'])
+#   epochs = kwargs['ep']
+  
+#   # NOT SUPPORTED BY OPTUNA. TODO: find workaround
+#   # if nr_blocks == 1: # if nr_blocks == 1, there is only the cross-attention block
+#   #   kwargs['num_heads'] = [0]
+#   #   kwargs['cross_block_after_transformers'] = [0]
+  
+#   # Training params  
+  
+#   nr_blocks = _suggest(trial, 'nr_blocks', kwargs['nr_blocks'], kwargs['optuna_categorical'])
+#   lr = _suggest(trial, 'lr', kwargs['lr'], kwargs['optuna_categorical'])
+#   opt = trial.suggest_categorical('opt', kwargs['opt'])
+#   optimizer_fn = get_optimizer(opt)
+#   init_network = trial.suggest_categorical('init_network', kwargs['init_network'])
+#   batch_train = _suggest(trial, 'batch_train', kwargs['batch_train'], kwargs['optuna_categorical'])
+#   regulariz_lambda_L1 = _suggest(trial, 'regulariz_lambda_L1', kwargs['regulariz_lambda_L1'], kwargs['optuna_categorical'])
+#   regulariz_lambda_L2 = _suggest(trial, 'regulariz_lambda_L2', kwargs['regulariz_lambda_L2'], kwargs['optuna_categorical'])
+#   label_smooth = _suggest(trial, 'label_smooth', kwargs['label_smooth'], kwargs['optuna_categorical'])
+  
+#   concatenate_temp_dim=trial.suggest_categorical('concatenate_temp_dim',kwargs['concatenate_temp_dim'])
+  
+#   # augmentation
+#   hflip = _suggest(trial, 'hflip', kwargs['hflip'], kwargs['optuna_categorical'])
+#   color_jitter = _suggest(trial, 'color_jitter', kwargs['jitter'], kwargs['optuna_categorical'])
+#   rotation = _suggest(trial, 'rotation', kwargs['rotation'], kwargs['optuna_categorical'])
+  
+#   # jepa_attentive params
+#   num_heads = _suggest(trial, 'num_heads', kwargs['num_heads'], kwargs['optuna_categorical'])
+#   num_cross_head = _suggest(trial, 'num_cross_head', kwargs['num_cross_head'], kwargs['optuna_categorical'])
+#   model_dropout = _suggest(trial, 'model_dropout', kwargs['model_dropout'], kwargs['optuna_categorical'])
+#   drop_attn = _suggest(trial, 'drop_attn', kwargs['drop_attn'], kwargs['optuna_categorical'])
+#   drop_residual = _suggest(trial, 'drop_residual', kwargs['drop_residual'], kwargs['optuna_categorical'])
+#   mlp_ratio = _suggest(trial, 'mlp_ratio', kwargs['mlp_ratio'], kwargs['optuna_categorical'])
+#   pos_enc = trial.suggest_categorical('pos_enc', kwargs['pos_enc'])
+#   cross_block_after_transformers = trial.suggest_categorical('cross_block_after_transformers', kwargs['cross_block_after_transformers'])
+  
+#   emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
+#   num_classes = pd.read_csv(kwargs['csv'],sep='\t')['class_id'].unique().shape[0]  
+#   params = {
+#     'input_dim': emb_dim * 8 if concatenate_temp_dim else emb_dim,
+#     'num_classes': num_classes,
+#     'num_cross_heads': num_cross_head,
+#     'num_heads': num_heads if num_heads is not None else num_cross_head,
+#     'dropout': model_dropout,
+#     'attn_dropout': drop_attn,
+#     'residual_dropout': drop_residual,
+#     'mlp_ratio': mlp_ratio,
+#     'pos_enc': pos_enc,
+#     'depth': nr_blocks,
+#     'cross_block_after_transformers': cross_block_after_transformers}
+  
+#   # Check if the hyperparameters have been tried before
+#   for past in trial.study.trials:
+#     if past.state != optuna.trial.TrialState.COMPLETE and past.state != optuna.trial.TrialState.PRUNED:
+#       continue
+#     if past.params == trial.params:
+#       return past.value
+    
+#   # Call the training function with the suggested hyperparameters
+#   with cProfile.Profile() as pr:
+#     run_folder_path,results = scripts.run_train_test(
+#                                     model_type=model_type, 
+#                                     criterion=get_loss('CE'), 
+#                                     concatenate_temp_dim=concatenate_temp_dim,
+#                                     pooling_embedding_reduction=kwargs['pooling_clips_reduction'],
+#                                     pooling_clips_reduction=kwargs['pooling_clips_reduction'],
+#                                     sample_frame_strategy=kwargs['sample_frame_strategy'], 
+#                                     path_csv_dataset=kwargs['csv'], 
+#                                     path_video_dataset=kwargs['path_video_dataset'],
+#                                     head=HEAD.ATTENTIVE_JEPA,
+#                                     stride_window_in_video=kwargs['stride_window_in_video'],
+#                                     features_folder_saving_path=kwargs['ffsp'],
+#                                     head_params=params,
+#                                     k_fold=kwargs['k_fold'],
+#                                     global_foder_name=kwargs['global_folder_name'], 
+#                                     batch_size_training=batch_train, 
+#                                     epochs=epochs, 
+#                                     optimizer_fn=optimizer_fn,
+#                                     lr=lr,
+#                                     seed_random_state=seed_random_state,
+#                                     is_plot_dataset_distribution=False,
+#                                     is_round_output_loss=kwargs['is_round_output_loss'],
+#                                     is_shuffle_video_chunks=False,
+#                                     is_shuffle_training_batch=True,
+#                                     init_network=init_network,
+#                                     key_for_early_stopping=kwargs['key_early_stopping'],
+#                                     regularization_lambda_L1=regulariz_lambda_L1,
+#                                     regularization_lambda_L2=regulariz_lambda_L2,
+#                                     clip_length=clip_length,
+#                                     target_metric_best_model=target_metric_best_model,
+#                                     early_stopping=early_stopping,
+#                                     enable_scheduler=kwargs['enable_scheduler'],
+#                                     stop_after_kth_fold=kwargs['stop'],
+#                                     n_workers=kwargs['n_workers'],
+#                                     clip_grad_norm=kwargs['clip_grad_norm'],
+#                                     label_smooth=label_smooth,
+#                                     dict_augmented={'hflip': hflip,
+#                                                     'jitter': color_jitter,
+#                                                     'rotation': rotation},
+#                                     trial=trial
+#                                   )
+#     save_stats(pr, os.path.join(run_folder_path, 'profiling_results.txt'))
+#     pr.dump_stats(os.path.join(run_folder_path, 'profiling_results.prof'))
+    
+#   id_test = os.path.split(run_folder_path)[-1].split('_')[0]
+#   trial.set_user_attr('id_test', id_test)
+#   # Just to record this data
+#   trial.set_user_attr('head', [kwargs['head']])
+#   trial.set_user_attr('csv', [kwargs['csv']])
+#   trial.set_user_attr('ffsp', [kwargs['ffsp']])
+#   trial.set_user_attr('k_fold', [kwargs['k_fold']])
+#   trial.set_user_attr('stop', kwargs['stop'])
+#   trial.set_user_attr('n_workers', [kwargs['n_workers']])
+  
+#   # Extract the validation accuracy from the results
+#   mean_val_accuracy = get_mean_val_accuracy(results)
+#   return mean_val_accuracy
 
 def get_mean_val_accuracy(results):
   list_val_accuracy = []
@@ -667,14 +868,14 @@ def get_mean_val_accuracy(results):
   return np.mean(list_val_accuracy)
 
 
-def hyper_search_attentive_jepa(kwargs):
+def hyper_search(kwargs):
   """Hyperparameter search for AttentiveJepa head using Optuna."""
   # Define the study
   study = optuna.create_study(direction='maximize',
                               storage=f'sqlite:///{os.path.join(kwargs["global_folder_name"],"optuna_study.db")}',
                               study_name=f'{kwargs["head"]}_{os.path.split(kwargs["global_folder_name"])[-1].split("_")[-1]}',
-                              pruner=optuna.pruners.ThresholdPruner(lower=0.15,
-                                                                    n_warmup_steps=30,
+                              pruner=optuna.pruners.ThresholdPruner(lower=dict_args['pruner_threshold_lower'],
+                                                                    n_warmup_steps=dict_args['pruner_n_warmup_steps'],
                                                                     interval_steps=2))
   
   # Optimize the objective function
@@ -717,8 +918,6 @@ if __name__ == '__main__':
   parser.add_argument('--k_fold', type=int, default=3, help='Number of k-fold cross validation splits')
   parser.add_argument('--opt', type=str, nargs='*', default=['adamw'], help='Optimizer(s): adam, sgd, adamw')
   parser.add_argument('--batch_train', type=int, nargs='*', default=[64], help='Training batch size(s)')
-  parser.add_argument('--is_round_output_loss', action='store_true', 
-                    help='Round output from regression before computing loss')
   parser.add_argument('--enable_scheduler', action='store_true', help='Enable learning rate scheduler')
   parser.add_argument('--stop', type=int,nargs='*' ,default=None, help='Stop after [kth fold, ith subfold]')
   parser.add_argument('--clip_grad_norm', type=float, default=None, help='Clip gradient norm. Default is None (not applied)')
@@ -727,12 +926,12 @@ if __name__ == '__main__':
   
   
   # Attention parameters
-  parser.add_argument('--num_heads', type=int, nargs='*',default=[None], help='Number of heads for attention in transformer (when nr_blocks >1). Default is None (to considered heads = num_heads)')
+  parser.add_argument('--num_heads', type=int, nargs='*',default=[8], help='Number of heads for attention in transformer (when nr_blocks >1). Default is 8')
   parser.add_argument('--num_cross_head',type=int, nargs='*',default=[8], help='Number of heads for cross-attention.')
   parser.add_argument('--model_dropout', type=float, nargs='*', default=[0.0], help='Model dropout rate(s). This is drop_mlp for AttentiveJepa')
   parser.add_argument('--drop_attn', type=float, nargs='*', default=[0.0], help='Attention dropout rate(s)')
   parser.add_argument('--drop_residual', type=float, nargs='*', default=[0.0], help='Residual dropout rate(s)')
-  parser.add_argument('--mlp_ratio', type=float, nargs='*', default=[4.0], help='MLP ratio(s) for AttentiveJepa')
+  parser.add_argument('--mlp_ratio', type=float, nargs='*', default=[2.0], help='MLP ratio(s) for AttentiveJepa')
   parser.add_argument('--pos_enc', type=int,nargs='*',default=[0], help='Use positional encoding for Attentive head')
   parser.add_argument('--nr_blocks',type=int,nargs='*',default=[1], help='Number of blocks for Jepa Attentive head. Default is 1 (only cross-attention)')
   parser.add_argument('--cross_block_after_transformers', type=int,nargs='*', default=[0],
@@ -744,19 +943,23 @@ if __name__ == '__main__':
   # GRU parameters
   parser.add_argument('--GRU_hidden_size', type=int, nargs='*', default=[1024], help='GRU hidden layer size(s)')
   parser.add_argument('--GRU_num_layers', type=int, nargs='*', default=[2], help='GRU number of layers')
+  parser.add_argument('--GRU_dropout', type=float, nargs='*', default=[0.0], help='GRU dropout rate(s)')
   parser.add_argument('--GRU_output_size', type=int, default=1, 
                     help='Output size of GRU: 1 for regression, >1 for classification')
-  parser.add_argument('--layer_norm', action='store_true', 
+  parser.add_argument('--layer_norm', type=int, nargs='*', default=[0],
                     help='Add Layer normalization before final linear layer') # Only in GRU
+  parser.add_argument('--GRU_round_output_loss', type=int, default=[0],nargs='*',
+                    help='Round output from regression before computing loss')
   
-  # Network initialization and regularization
+  # Network initialization
   parser.add_argument('--init_network', type=str, nargs='*', default=['default'], 
                     help='Network initialization: xavier, default, uniform. Default init. is "default"')
   parser.add_argument('--regulariz_lambda_L1', type=float, nargs='*', default=[0], help='Regularization strength(s) L1')
   parser.add_argument('--regulariz_lambda_L2', type=float, nargs='*', default=[0], help='Regularization strength(s) L2')
   parser.add_argument('--label_smooth', type=float, nargs='*',default=[0.0], help='Label smoothing factor. Default is 0.0 (no smoothing)')
-  # parser.add_argument('--alpha_regulariz',type=float,default=0.0, help='Alpha for regularization loss between L1 and L2. COnsider the regulariz_lambda_L1 while regulariz_lambda_L2 is empty')
   parser.add_argument('--loss_regression', type=str, default='L1', help='Regression loss function: L1 or L2. Default is L1')
+  
+  # Network augmentation
   parser.add_argument('--hflip', type=float,nargs='*', default=[0.0], help='Horizontal flip augmentation probability. Default is 0.0')
   parser.add_argument('--jitter', type=float,nargs='*',default=[0.0], help='Jitter augmentation probability. Default is 0.0')
   parser.add_argument('--rotation', type=float, nargs='*',default=[0.0], help='Rotation augmentation probability. Default is 0.0')
@@ -772,6 +975,11 @@ if __name__ == '__main__':
   parser.add_argument('--log_grad_per_module', action='store_true',help='Log gradient per module')
   parser.add_argument('--n_trials', type=int, default=100, help='Number of trials for Optuna hyperparameter optimization. Default is 100')
   parser.add_argument('--timeout', type=int, default=14, help='Timeout for Optuna hyperparameter optimization in hours. Default is 14 hours')
+  
+  # Optuna parameters
+  parser.add_argument('--pruner_threshold_lower', type=float, default=0.15, help='Threshold for Optuna pruner. Default is 0.15')
+  parser.add_argument('--pruner_n_warmup_steps', type=int, default=30, help='Number of warmup steps for Optuna pruner. Default is 30')
+  parser.add_argument('--optuna_categorical',type=int, default=1, help='Use categorical optimization for Optuna. Default is 1 (True). Otherwise, use continuous optimization in range [list[0],list[-1]]')
   
   # Parse arguments
   args = parser.parse_args()
@@ -848,58 +1056,9 @@ if __name__ == '__main__':
   
   # Start training
   print(args)
-  if True:
-    hyper_search_attentive_jepa(kwargs=dict_args)
-  else:
-    train(
-    model_type=args.mt,
-    epochs=args.ep,
-    lr=args.lr,
-    path_csv_dataset=args.csv,
-    feature_folder_saving_path=args.ffsp,
-    global_foder_name=args.global_folder_name,
-    path_dataset=args.path_video_dataset,
-    k_fold=args.k_fold,
-    opt_list=args.opt,
-    list_batch_train=args.batch_train,
-    list_init_network=args.init_network,
-    list_GRU_hidden_size=args.GRU_hidden_size,
-    list_GRU_num_layers=args.GRU_num_layers,
-    list_model_dropout=args.model_dropout,
-    concatenate_temp_dim=args.concatenate_temp_dim,
-    list_regularization_lambda_L1=args.regulariz_lambda_L1,
-    list_regularization_lambda_L2=args.regulariz_lambda_L2,
-    # regularization_loss=args.reg_loss,
-    GRU_output_size=args.GRU_output_size,
-    is_round_output_loss=args.is_round_output_loss,
-    key_for_early_stopping=args.key_early_stopping,
-    clip_length=clip_length,
-    target_metric_best_model=target_metric_best_model,
-    seed_random_state=seed_random_state,
-    early_stopping=early_stopping,
-    layer_norm=args.layer_norm,
-    loss_reg=args.loss_regression,
-    enable_scheduler=args.enable_scheduler,
-    head=args.head,
-    list_stop_fold=args.stop,
-    list_num_heads=args.num_heads,
-    linear_dim_reduction = args.linear_dim_reduction,
-    n_workers = args.n_workers,
-    clip_grad_norm = args.clip_grad_norm,
-    list_drop_attn=args.drop_attn,
-    list_drop_residual=args.drop_residual,
-    list_mlp_ratio=args.mlp_ratio,
-    pos_encoder = args.pos_enc,
-    list_label_smooth=args.label_smooth,
-    nr_blocks=args.nr_blocks,
-    cross_block_after_transformers=args.cross_block_after_transformers,
-    nr_cross_heads=args.num_cross_head,
-    dict_augmented=dict_augmented,
-    is_shuffle_video_chunks=False,
-    is_shuffle_training_batch=True,
-    is_plot_dataset_distribution=False
-  )
-  
-# training_params = ['lr', 'ep', 'opt','batch_train','concatenate_temp_dim','init_network','regulariz_lambda_L1',
-#                    'regulariz_lambda_L2','label_smooth']
-  
+  # if args.head.upper() == 'ATTENTIVE_JEPA':
+  hyper_search(dict_args)
+  # elif args.head.upper() == 'GRU':
+  #   hyper_search_gru(dict_args)
+  # else:
+  #   raise ValueError(f"Hyperparameter search not supported for head '{args.head}'")
