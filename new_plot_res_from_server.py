@@ -44,7 +44,7 @@ def retrieve_subject_ids(data, key, best_epoch):
   return uniqie_subject_ids_train, uniqie_subject_ids_val
 
 
-def plot_losses(data, run_output_folder, test_id, additional_info='', plot_mae_per_subject=True, plot_mae_per_class=True,plot_train_loss_val_acc=True):
+def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_per_subject=True,plot_acc_per_subject=True, plot_loss_per_class=True,plot_train_loss_val_acc=True):
   # Adjust run_output_folder to store plots
   # run_output_folder = Path(run_output_folder).parts[:-3]
   test_output_folder = os.path.join(run_output_folder, test_id)
@@ -220,57 +220,81 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_mae_p
         # Create a new symlink
         os.symlink(plot_path, symlink_path)
       
-      if plot_mae_per_subject:
+      if plot_loss_per_subject:
         y_lim = 3
-        fig, axs = plt.subplots(4,1,figsize=(20,20))
+        fig, axs = plt.subplots(3,1,figsize=(20,20))
         best_epoch = data['results'][key]['train_val']['best_model_idx']
-        # Train accuracy
-        # Train
-        tools.plot_error_per_subject(loss_per_subject=data['results'][key]['train_val']['list_train_accuracy_per_subject'][best_epoch],
-                                     unique_subject_ids=data['results'][key]['train_val']['train_unique_subject_ids'],
-                                     y_label='Train Accuracy',
-                                     title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
-                                     criterion=data['config']['criterion'],
-                                     list_stoic_subject=helper.stoic_subjects,
-                                     bar_color='blue',
-                                    #  accuracy_per_subject=data['results'][key]['train_val']['list_train_accuracy_per_subject'][best_epoch],
-                                    #  count_subjects=data['results'][key]['train_val']['train_count_subject_ids'],
-                                     y_lim=1,
-                                     ax=axs[0])
+
         # Train Loss
         tools.plot_error_per_subject(loss_per_subject=data['results'][key]['train_val']['train_loss_per_subject'][best_epoch],
                                      unique_subject_ids=data['results'][key]['train_val']['train_unique_subject_ids'],
                                      title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
                                      criterion=data['config']['criterion'],
                                      list_stoic_subject=helper.stoic_subjects,
-                                    #  accuracy_per_subject=data['results'][key]['train_val']['list_train_accuracy_per_subject'][best_epoch],
-                                    #  count_subjects=data['results'][key]['train_val']['train_count_subject_ids'],
                                      y_lim=y_lim,
-                                     ax=axs[1])
-        # Val
+                                     ax=axs[0])
+        # Val Loss
         tools.plot_error_per_subject(loss_per_subject=data['results'][key]['train_val']['val_loss_per_subject'][best_epoch],
                                      unique_subject_ids=data['results'][key]['train_val']['val_unique_subject_ids'],
                                      title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
                                      criterion=data['config']['criterion'],
                                      list_stoic_subject=helper.stoic_subjects,
-                                    #  accuracy_per_subject=data['results'][key]['train_val']['list_val_accuracy_per_subject'][best_epoch],
-                                    #  count_subjects=data['results'][key]['train_val']['val_count_subject_ids'],
                                      y_lim=y_lim,
-                                     ax=axs[2])
-        # Test
+                                     ax=axs[1])
+        # Test Loss
         tools.plot_error_per_subject(loss_per_subject=data['results'][key]['test']['test_loss_per_subject'],
                                    unique_subject_ids=data['results'][key]['test']['test_unique_subject_ids'],
                                    title=f'TEST {key} - {test_id}',
                                    criterion=data['config']['criterion'],
-                                  #  accuracy_per_subject=data['results'][key]['test']['test_accuracy_per_subject'],
-                                  #  count_subjects=data['results'][key]['test']['test_count_subject_ids'],
                                    list_stoic_subject=helper.stoic_subjects,
                                    y_lim=y_lim,
-                                   ax=axs[3])
+                                   ax=axs[2])
         fig.tight_layout()
-        fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_mae_per_subject_{key}.png'))
+        fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_loss_per_subject_{key}.png'))
         plt.close(fig)
-      if plot_mae_per_class:
+        
+      if plot_acc_per_subject:
+        y_lim = 1
+        fig, axs = plt.subplots(3,1,figsize=(20,20))
+        best_epoch = data['results'][key]['train_val']['best_model_idx']
+        # Train accuracy
+        tools.plot_error_per_subject(loss_per_subject=data['results'][key]['train_val']['list_train_accuracy_per_subject'][best_epoch],
+                                     unique_subject_ids=data['results'][key]['train_val']['train_unique_subject_ids'],
+                                     y_label='Train Macro Precision',
+                                     title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
+                                     criterion=data['config']['criterion'],
+                                     list_stoic_subject=helper.stoic_subjects,
+                                     bar_color='blue',
+                                     step_y_axis=0.1, 
+                                     y_lim=y_lim,
+                                     ax=axs[0])
+        # Val accuracy
+        tools.plot_error_per_subject(loss_per_subject=data['results'][key]['train_val']['list_val_accuracy_per_subject'][best_epoch],
+                                     unique_subject_ids=data['results'][key]['train_val']['val_unique_subject_ids'],
+                                     y_label='Val Macro Precision',
+                                     title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
+                                     criterion=data['config']['criterion'],
+                                     step_y_axis=0.1,
+                                     list_stoic_subject=helper.stoic_subjects,
+                                     bar_color='blue',
+                                     y_lim=y_lim,
+                                     ax=axs[1])
+        # Test accuracy
+        tools.plot_error_per_subject(loss_per_subject=data['results'][key]['test']['test_accuracy_per_subject'],
+                              unique_subject_ids=data['results'][key]['test']['test_unique_subject_ids'],
+                              y_label='Test Macro Precision',
+                              title=f'TEST Epoch_{best_epoch} {key} - {test_id}',
+                              criterion=data['config']['criterion'],
+                              step_y_axis=0.1,
+                              list_stoic_subject=helper.stoic_subjects,
+                              bar_color='blue',
+                              y_lim=y_lim,
+                              ax=axs[2])  
+        fig.tight_layout()
+        fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_acc_per_subject_{key}.png'))
+        plt.close(fig)
+        
+      if plot_loss_per_class:
         y_lim = 3
         fig, axs = plt.subplots(3,1,figsize=(10,8))
         best_epoch = data['results'][key]['train_val']['best_model_idx']
@@ -457,23 +481,23 @@ def generate_csv_row(data,config,time_, test_id):
   real_sub_fold = max(list_sub_fold) + 1
   
   mean_train_losses_last_epoch = {f'mean_train_loss_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  mean_train_accuracies_last_epoch = {f'mean_train_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_macro_accuracy'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  mean_val_accuracies_last_epoch = {f'mean_val_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_macro_accuracy'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  mean_train_accuracies_last_epoch = {f'mean_train_mac_prec_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_macro_accuracy'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  mean_val_accuracies_last_epoch = {f'mean_val_mac_prec_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_macro_accuracy'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_val_losses_last_epoch = {f'mean_val_loss_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
     
   mean_train_losses_best_epoch = {f'mean_train_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  mean_train_accuracies_best_epoch = {f'mean_train_accuracy_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_macro_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  mean_val_accuracies_best_epoch = {f'mean_val_accuracy_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_macro_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  mean_train_accuracies_best_epoch = {f'mean_train_mac_prec_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_macro_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  mean_val_accuracies_best_epoch = {f'mean_val_mac_prec_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_macro_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_val_losses_best_epoch = {f'mean_val_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   
-  mean_test_accuracies = {f'mean_test_accuracy_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_macro_precision'] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  mean_test_accuracies = {f'mean_test_mac_precision_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_macro_precision'] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_test_losses = {f'mean_test_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_loss'] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   
   total_mean_train_losses_best_epoch = {f'total_mean_train_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-  total_mean_train_accuracy_best_epoch = {f'total_mean_train_accuracy_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_macro_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-  total_mean_val_accuracy_best_epoch = {f'total_mean_val_accuracy_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_macro_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
+  total_mean_train_accuracy_best_epoch = {f'total_mean_train_mac_prec_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_macro_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
+  total_mean_val_accuracy_best_epoch = {f'total_mean_val_mac_prec_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_macro_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_val_losses_best_epoch = {f'total_mean_val_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-  total_mean_test_accuracy_best_epoch = {f'total_mean_test_accuracy_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_macro_precision'] for i in range(real_k_fold) for j in range(real_sub_fold)])}
+  total_mean_test_accuracy_best_epoch = {f'total_mean_test_mac_prec_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_macro_precision'] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_test_losses_best_epoch = {f'total_mean_test_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_loss'] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   
   total_mean_train_losses_last_epoch = {f'total_mean_train_loss_last_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][-1] for i in range(real_k_fold) for j in range(real_sub_fold)])}
@@ -537,14 +561,14 @@ def plot_confusion_matrices(data, root_output_folder, test_id, additional_info='
     dict_val_conf_matrix = dict_sub_fold['train_val']['val_confusion_matricies']
     dict_test_conf_matrix = {f'{best_epoch_idx}':dict_sub_fold['test']['test_confusion_matrix']}
     for epoch in dict_train_conf_matrix.keys():
-      # if int(epoch) == best_epoch_idx:
-      #   fig, axs = plt.subplots(3, 1, figsize=(10, 7))
-      # else:
-      fig, axs = plt.subplots(2, 1, figsize=(5, 10))
+      if int(epoch) == best_epoch_idx:
+        fig, axs = plt.subplots(3, 1, figsize=(5, 15))
+      else:
+        fig, axs = plt.subplots(2, 1, figsize=(5, 10))
       tools.plot_confusion_matrix(dict_train_conf_matrix[epoch], ax=axs[0], title=f'TRAIN - Epoch {epoch}   - {test_id}')
       tools.plot_confusion_matrix(dict_val_conf_matrix[epoch], ax=axs[1], title=f'VAL - Epoch {epoch}   - {test_id}')
-      # if epoch == best_epoch_idx:
-      #   tools.plot_confusion_matrix(dict_test_conf_matrix[epoch], ax=axs[2], title=f'TEST {test_id} - {key} - Epoch {epoch}')
+      if int(epoch) == best_epoch_idx:
+        tools.plot_confusion_matrix(dict_test_conf_matrix[epoch], ax=axs[2], title=f'TEST {test_id} - {key} - Epoch {epoch}')
       fig.tight_layout()
       fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_confusion_matrix_{key}_epoch_{epoch}.png'))
       plt.close(fig)
