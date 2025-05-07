@@ -965,8 +965,8 @@ if __name__ == '__main__':
   parser.add_argument('--rotation', type=float, nargs='*',default=[0.0], help='Rotation augmentation probability. Default is 0.0')
   
   # Early stopping parameters
-  parser.add_argument('--key_early_stopping', type=str, default='val_macro_precision', 
-                    help='Metric for early stopping: val_loss or val_macro_precision. Default is val_macro_precision')
+  parser.add_argument('--key_early_stopping', type=str, default='val_accuracy', 
+                    help='Metric for early stopping: val_loss or val_accuracy. Default is val_accuracy')
   parser.add_argument('--p_early_stop', type=int, default=2000, help='Patience for early stopping. Default is 2000')
   parser.add_argument('--min_delta', type=float, default=0.001, help='Minimum delta for early stopping. Default is 0.001')
   parser.add_argument('--threshold_mode', type=str, default='abs', help='Early stopping threshold mode: abs or rel. Default is abs')
@@ -1014,7 +1014,7 @@ if __name__ == '__main__':
   seed_random_state = 42
   
   # Determine target metric for model selection
-  target_metric_best_model = 'val_loss' if args.key_early_stopping == 'val_loss' else 'val_macro_precision'
+  target_metric_best_model = args.key_early_stopping 
   
   # Configure early stopping
   if args.key_early_stopping == 'val_loss':
