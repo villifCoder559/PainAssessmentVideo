@@ -167,10 +167,7 @@ tsne_new_frontalized/*
 tsne_Results_all/*
 tsne_Results_all_grouped*/*
 tsne_Results_per_subj_new_comp/*
-tsne_Results_stoic_sbj/test_1740409358/config.txt
-tsne_Results_stoic_sbj/test_1740409358/log_time_tsne.txt
-tsne_Results_stoic_sbj/test_1740409358/nested_dict_results.pkl
-tsne_Results_stoic_sbj/test_1740409358/plot_\[27, 28, 32, 33, 34, 35, 36, 39, 40, 41, 42, 44, 51, 53, 55, 56, 61, 64, 74, 87].png
+tsne_Results_stoic_sbj/*
 tsne_whole/results.csv
 tsne_whole/stoic.csv
 video_comparisons/*
