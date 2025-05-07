@@ -637,52 +637,52 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       return past.value
 
   # run training
-  with cProfile.Profile() as pr:
-    run_folder_path, results = scripts.run_train_test(
-      model_type=model_type,
-      criterion=get_loss('ce') if num_classes > 1 else get_loss('l1'),
-      concatenate_temp_dim=concatenate_temp_dim,
-      pooling_embedding_reduction=kwargs['pooling_clips_reduction'],
-      pooling_clips_reduction=kwargs['pooling_clips_reduction'],
-      sample_frame_strategy=kwargs['sample_frame_strategy'],
-      path_csv_dataset=kwargs['csv'],
-      path_video_dataset=kwargs['path_video_dataset'],
-      head=head_enum,
-      stride_window_in_video=kwargs['stride_window_in_video'],
-      features_folder_saving_path=kwargs['ffsp'],
-      head_params=params,
-      k_fold=kwargs['k_fold'],
-      global_foder_name=kwargs['global_folder_name'],
-      batch_size_training=batch_train,
-      epochs=epochs,
-      optimizer_fn=optimizer_fn,
-      lr=lr,
-      seed_random_state=seed_random_state,
-      is_plot_dataset_distribution=False,
-      is_round_output_loss=GRU_round_output_loss if head_enum == HEAD.GRU else 0,
-      is_shuffle_video_chunks=False,
-      is_shuffle_training_batch=True,
-      init_network=init_network,
-      key_for_early_stopping=kwargs['key_early_stopping'],
-      regularization_lambda_L1=regulariz_lambda_L1,
-      regularization_lambda_L2=regulariz_lambda_L2,
-      clip_length=clip_length,
-      target_metric_best_model=target_metric_best_model,
-      early_stopping=early_stopping,
-      enable_scheduler=kwargs['enable_scheduler'],
-      stop_after_kth_fold=kwargs['stop'],
-      n_workers=kwargs['n_workers'],
-      clip_grad_norm=kwargs['clip_grad_norm'],
-      label_smooth=label_smooth,
-      dict_augmented={
-        'hflip': hflip,
-        'jitter': color_jitter,
-        'rotation': rotation
-      },
-      trial=trial
-    )
-    save_stats(pr, os.path.join(run_folder_path, 'profiling_results.txt'))
-    pr.dump_stats(os.path.join(run_folder_path, 'profiling_results.prof'))
+  # with cProfile.Profile() as pr:
+  run_folder_path, results = scripts.run_train_test(
+    model_type=model_type,
+    criterion=get_loss('ce') if num_classes > 1 else get_loss('l1'),
+    concatenate_temp_dim=concatenate_temp_dim,
+    pooling_embedding_reduction=kwargs['pooling_clips_reduction'],
+    pooling_clips_reduction=kwargs['pooling_clips_reduction'],
+    sample_frame_strategy=kwargs['sample_frame_strategy'],
+    path_csv_dataset=kwargs['csv'],
+    path_video_dataset=kwargs['path_video_dataset'],
+    head=head_enum,
+    stride_window_in_video=kwargs['stride_window_in_video'],
+    features_folder_saving_path=kwargs['ffsp'],
+    head_params=params,
+    k_fold=kwargs['k_fold'],
+    global_foder_name=kwargs['global_folder_name'],
+    batch_size_training=batch_train,
+    epochs=epochs,
+    optimizer_fn=optimizer_fn,
+    lr=lr,
+    seed_random_state=seed_random_state,
+    is_plot_dataset_distribution=False,
+    is_round_output_loss=GRU_round_output_loss if head_enum == HEAD.GRU else 0,
+    is_shuffle_video_chunks=False,
+    is_shuffle_training_batch=True,
+    init_network=init_network,
+    key_for_early_stopping=kwargs['key_early_stopping'],
+    regularization_lambda_L1=regulariz_lambda_L1,
+    regularization_lambda_L2=regulariz_lambda_L2,
+    clip_length=clip_length,
+    target_metric_best_model=target_metric_best_model,
+    early_stopping=early_stopping,
+    enable_scheduler=kwargs['enable_scheduler'],
+    stop_after_kth_fold=kwargs['stop'],
+    n_workers=kwargs['n_workers'],
+    clip_grad_norm=kwargs['clip_grad_norm'],
+    label_smooth=label_smooth,
+    dict_augmented={
+      'hflip': hflip,
+      'jitter': color_jitter,
+      'rotation': rotation
+    },
+    trial=trial
+  )
+    # save_stats(pr, os.path.join(run_folder_path, 'profiling_results.txt'))
+    # pr.dump_stats(os.path.join(run_folder_path, 'profiling_results.prof'))
 
   trial.set_user_attr('id_test', os.path.basename(run_folder_path).split('_')[0])
 
