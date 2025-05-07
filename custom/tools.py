@@ -275,6 +275,8 @@ def get_accuracy_from_confusion_matrix(confusion_matrix,list_real_classes=None):
   macro_precision = torch.mean(precision_per_class)
   macro_recall = torch.mean(recall_per_class)
   
+  accuracy = tp_sum / (tp_sum + fn_sum + fp_sum) if (tp_sum + fn_sum + fp_sum) != 0 else torch.tensor(0.0)
+  
   return {
     'precision_per_class': precision_per_class.detach().numpy(),
     'recall_per_class': recall_per_class.detach().numpy(),
@@ -284,6 +286,7 @@ def get_accuracy_from_confusion_matrix(confusion_matrix,list_real_classes=None):
     'micro_recall': micro_recall.detach().numpy(), 
     'weighted_precision': weighted_precision.detach().numpy(), 
     'weighted_recall': weighted_recall.detach().numpy(),
+    'accuracy': accuracy.detach().numpy(),
   }
 
 def plot_accuracy_confusion_matrix(confusion_matricies, type_conf,title='', saving_path=None, list_real_classes=None):
