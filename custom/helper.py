@@ -8,6 +8,7 @@ step_shift = 8700
 dict_data = None
 
 LOG_GRADIENT_PER_MODULE = False
+LOG_PER_CLASS_AND_SUBJECT = True
 
 def get_shift_for_sample_id(folder_feature):
   if 'hflip' in folder_feature:
@@ -96,6 +97,8 @@ class EMBEDDING_REDUCTION(Enum):
   MEAN_TEMPORAL_SPATIAL = (1,2,3)
   NONE = None
   
+  ADAPTIVE_POOLING_3D = (0,0,0) # [B,emb,t,p,p] -> [B,emb,2,2,2] ex: [3,768,8,14,14] -> [3,768,2,2,2]
+  
   def get_embedding_reduction(pooling_embedding_reduction):
     if pooling_embedding_reduction.lower() == 'spatial':
       return EMBEDDING_REDUCTION.MEAN_SPATIAL
@@ -105,8 +108,11 @@ class EMBEDDING_REDUCTION(Enum):
       return EMBEDDING_REDUCTION.MEAN_TEMPORAL_SPATIAL
     elif pooling_embedding_reduction.lower() == 'none':
       return EMBEDDING_REDUCTION.NONE
+    elif pooling_embedding_reduction.lower() == 'adaptive_pooling_3d':
+      return EMBEDDING_REDUCTION.ADAPTIVE_POOLING_3D
     else:
       raise ValueError(f'Pooling embedding reduction not recognized: {pooling_embedding_reduction}. Can be spatial, temporal, all or none')
+
 class INSTANCE_MODEL_NAME(Enum): # model.__class__.__name__
   LINEARPROBE = 'LinearProbe'
   GRUPROBE = 'GRUProbe'
