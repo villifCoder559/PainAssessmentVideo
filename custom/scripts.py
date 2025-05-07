@@ -623,6 +623,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   folder_path=run_folder_path)
   model_advanced.free_gpu_memory()
   del model_advanced
+  torch.cuda.empty_cache()
   return run_folder_path,summary_res 
  
 
