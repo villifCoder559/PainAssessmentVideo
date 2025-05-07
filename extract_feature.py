@@ -5,7 +5,7 @@ import custom.helper as helper
 import torch
 from torch.utils.data import DataLoader
 import os
-from transformers import AutoImageProcessor
+# from transformers import AutoImageProcessor
 import custom.tools as tools
 import time
 import pickle
@@ -15,14 +15,15 @@ import pandas as pd
 import torch.multiprocessing
 from pathlib import Path
 import numpy as np
+# import torch.nn as nn
 
-def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_workers,saving_chunk_size=100,  preprocess_align = False,
+def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,batch_size_feat_extraction,n_workers,saving_chunk_size=100,  preprocess_align = False,
          preprocess_crop_detection = False,preprocess_frontalize = True,path_dataset=None,path_labels=None,stride_window=16,clip_length=16,
          log_file_path=None,root_saving_folder_path=None,backbone_type='video',from_=None,to_=None,save_big_feature=False,h_flip=False,
          stride_inside_window=1,float_16=False,color_jitter=False,rotation=False,save_as_safetensors=True
          ):
   model_type = MODEL_TYPE.get_model_type(model_type)    
-  print(f'Pooling_embedding_reduction: {pooling_embedding_reduction.name}')
+  
   pooling_clips_reduction = CLIPS_REDUCTION.NONE
   sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
   
@@ -31,6 +32,8 @@ def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_wor
       os.makedirs(os.path.dirname(log_file_path))
     with open(log_file_path,'a') as f:
       f.write(log_message+'\n')
+
+   
 
   def _extract_features(dataset,batch_size_feat_extraction,n_workers,backbone):
     device = 'cuda'
@@ -57,7 +60,12 @@ def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_wor
       with torch.no_grad():
         feature = backbone.forward_features(x=data) # [1,8,14,14,768]
       if isinstance(backbone,VideoBackbone) and pooling_embedding_reduction != EMBEDDING_REDUCTION.NONE:
-        feature = torch.mean(feature,dim=pooling_embedding_reduction.value,keepdim=True)
+        if adaptive_avg_pool3d_out_shape is not None and pooling_embedding_reduction == EMBEDDING_REDUCTION.ADAPTIVE_POOLING_3D:
+          feature = feature.permute(0,4,1,2,3) # [1,768,8,14,14]
+          feature = torch.nn.functional.adaptive_avg_pool3d(feature,output_size=adaptive_avg_pool3d_out_shape) # [1,768,2,2,2]
+          feature = feature.permute(0,2,3,4,1) # [1,2,2,2,768]
+        else:
+          feature = torch.mean(feature,dim=pooling_embedding_reduction.value,keepdim=True)
       if float_16:
         feature = feature.half()
       print(f'feature shape {feature.shape}')
@@ -72,7 +80,7 @@ def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_wor
         list_sample_id.append(sample_id+helper.get_shift_for_sample_id('rotate'))  
       else:
         list_sample_id.append(sample_id)
-        
+      print(f'sample_id: {list_sample_id[-1]}')
       list_subject_id.append(subject_id)
       list_path.append(path)
       # add list for random cropped part
@@ -220,7 +228,7 @@ def main(model_type,pooling_embedding_reduction,batch_size_feat_extraction,n_wor
   
 
 if __name__ == "__main__":
-  print('Setting sharing strategy')
+  # print('Setting sharing strategy')
   torch.multiprocessing.set_sharing_strategy('file_system')
   
   timestamp = int(time.time())
@@ -228,7 +236,7 @@ if __name__ == "__main__":
   parser.add_argument('--gp', action='store_true', help='Global path')
   parser.add_argument('--model_type', type=str, required=False, default="B")
   parser.add_argument('--saving_after', type=int, required=False, default=8800,help='Number of batch to save in one file')
-  parser.add_argument('--emb_red', type=str, default='spatial', help='Embedding reduction. Can be spatial, temporal, all,none')
+  parser.add_argument('--emb_red', type=str, default='spatial', help='Embedding reduction. Can be spatial, temporal, all, none, adaptive_pooling_3d')
   parser.add_argument('--prep_al', action='store_true', help='Preprocess align') # deprecated not use
   parser.add_argument('--prep_crop', action='store_true', help='Preprocess crop') # deprecated not use
   parser.add_argument('--prep_front', action='store_true', help='Preprocess frontalize') # deprecated not use
@@ -250,10 +258,15 @@ if __name__ == "__main__":
   parser.add_argument('--rotation', action='store_true', help='Apply rotation')
   parser.add_argument('--float_16', action='store_true', help='Use float 16')
   parser.add_argument('--save_as_safetensors', action='store_true', help='Save as safetensors')
+  parser.add_argument('--adaptive_avg_pool3d_out_shape', type=int, nargs='*', default=[2,2,2], help='3d pooling kernel size')
   # CUDA_VISIBLE_DEVICES=0 python3 extract_feature.py --gp --model_type B --saving_after 150 --emb_red spatial --path_dataset partA/video/video_frontalized_new --path_labels partA/starting_point/samples_exc_no_detection.csv --saving_folder_path partA/video/features/samples_16_frontalized_new --backbone_type video --from_ 0 --to_ 1500 --batch_size_feat_extraction 5 --n_workers 5
   # prompt example: python3 extract_feature.py --gp --model_type B --saving_after 5000  --emb_red temporal  --path_dataset partA/video/video_frontalized --path_labels partA/starting_point/samples_exc_no_detection.csv --saving_folder_path partA/video/features/samples_vit_img --log_file_path partA/video/features/samples_vit_img/log_file.txt --backbone_type image 
   args = parser.parse_args()
+  if len(args.adaptive_avg_pool3d_out_shape) != 3:
+    raise ValueError('adaptive_avg_pool3d_out_shape must have 3 integers')
+  adaptive_avg_pool3d_out_shape = args.adaptive_avg_pool3d_out_shape
   args.emb_red = EMBEDDING_REDUCTION.get_embedding_reduction(args.emb_red)
+  print(f'\nEmbedding reduction:\n name:{args.emb_red.name} \n value: {args.emb_red.value}')
   # if args.from_ is not None or args.to_ is not None:
   #   args.saving_folder_path = f'{args.saving_folder_path}_{args.from_}_{args.to_}'
   #   print(f'Saving folder path: {args.saving_folder_path}')
@@ -292,6 +305,7 @@ if __name__ == "__main__":
        stride_inside_window=args.stride_inside_window,
        float_16=args.float_16,
        save_as_safetensors=args.save_as_safetensors,
+       adaptive_avg_pool3d_out_shape=adaptive_avg_pool3d_out_shape
        )
   
   
