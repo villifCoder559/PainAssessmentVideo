@@ -31,12 +31,12 @@ class BaseHead(nn.Module):
     self.model = model
     self.is_classification = is_classification
   
-  def log_performance(self, stage, loss, precision,epoch=-1,num_epochs=-1,list_grad_norm=None,wds=None,lrs=None):
+  def log_performance(self, stage, loss, accuracy,epoch=-1,num_epochs=-1,list_grad_norm=None,wds=None,lrs=None):
       if epoch>-1:
         print(f'Epoch [{epoch}/{num_epochs}]')
       print(f' {stage}')
       print(f'  Loss             : {loss:.4f}')
-      print(f'  Precision        : {precision:.4f}')
+      print(f'  Accuracy         : {accuracy:.4f}')
       if stage == 'Train' and list_grad_norm:
         list_grad_norm = np.array(list_grad_norm)
         print(f'  Grad norm        ')
@@ -303,8 +303,8 @@ class BaseHead(nn.Module):
       dict_log_time['eval'] = dict_log_time.get('eval',0) + time.time()-time_eval
       # print(f'  Evaluation time: {dict_log_time["eval"]:.4f}')
       epoch_log_time = time.time()
-      if epoch == 0 or (dict_eval[key_for_early_stopping] < best_test_loss if key_for_early_stopping == 'val_loss' else dict_eval[key_for_early_stopping] > best_test_loss):
-        best_test_loss = dict_eval[key_for_early_stopping]
+      if epoch == 0 or (dict_eval[key_for_early_stopping] < best_eval_loss if key_for_early_stopping == 'val_loss' else dict_eval[key_for_early_stopping] > best_eval_loss):
+        best_eval_loss = dict_eval[key_for_early_stopping]
         best_model_state = copy.deepcopy(self.model.state_dict())
         best_model_state = {key: value.cpu() for key, value in best_model_state.items()}
         best_model_epoch = epoch
@@ -349,8 +349,8 @@ class BaseHead(nn.Module):
       
       train_confusion_matrix.compute()
       train_dict_precision_recall = tools.get_accuracy_from_confusion_matrix(confusion_matrix=train_confusion_matrix,list_real_classes=train_unique_classes)
-      list_train_macro_accuracy.append(train_dict_precision_recall['macro_precision'])
-      list_val_macro_accuracy.append(dict_eval['val_macro_precision'])
+      list_train_macro_accuracy.append(train_dict_precision_recall['accuracy'])
+      list_val_macro_accuracy.append(dict_eval['val_accuracy'])
       
       if scheduler:
         scheduler.step()
@@ -358,9 +358,17 @@ class BaseHead(nn.Module):
         wd_scheduler.step()
       
       # log performance
-      self.log_performance(stage='Train', num_epochs=num_epochs, loss=list_train_losses[-1], precision=train_dict_precision_recall['macro_precision'],epoch=epoch,list_grad_norm=total_norm_epoch[epoch],
-                           lrs=lrs,wds=wds)
-      self.log_performance(stage='Val', num_epochs=num_epochs, loss=dict_eval['val_loss'], precision=dict_eval['val_macro_precision'])
+      self.log_performance(stage='Train',
+                           num_epochs=num_epochs,
+                           loss=list_train_losses[-1], 
+                           accuracy=train_dict_precision_recall['accuracy'],
+                           epoch=epoch,list_grad_norm=total_norm_epoch[epoch],
+                           lrs=lrs,
+                           wds=wds)
+      self.log_performance(stage='Val',
+                           num_epochs=num_epochs,
+                           loss=dict_eval['val_loss'],
+                           accuracy=dict_eval['val_accuracy'])
         
       if early_stopping(dict_eval[key_for_early_stopping]):
         break
@@ -492,7 +500,7 @@ class BaseHead(nn.Module):
       dict_precision_recall = tools.get_accuracy_from_confusion_matrix(confusion_matrix=val_confusion_matricies,
                                                                        list_real_classes=unique_val_classes)
       if is_test:
-        self.log_performance(stage='Test', loss=val_loss, precision=dict_precision_recall['macro_precision'])
+        self.log_performance(stage='Test', loss=val_loss, accuracy=dict_precision_recall['accuracy'])
         return {
           'test_loss': val_loss,
           'test_loss_per_class': loss_per_class,
@@ -500,6 +508,7 @@ class BaseHead(nn.Module):
           'test_accuracy_per_class': accuracy_per_class,
           'test_accuracy_per_subject': accuracy_per_subject,
           'test_macro_precision': dict_precision_recall["macro_precision"],
+          'test_accuracy': dict_precision_recall["accuracy"],
           'test_confusion_matrix': val_confusion_matricies,
           'test_prediction_confidence_right_mean': np.mean(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
           'test_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
@@ -515,6 +524,7 @@ class BaseHead(nn.Module):
           'val_accuracy_per_class': accuracy_per_class,
           'val_accuracy_per_subject': accuracy_per_subject,
           'val_macro_precision': dict_precision_recall["macro_precision"],
+          'val_accuracy': dict_precision_recall["accuracy"],
           'val_confusion_matrix': val_confusion_matricies,
           'val_prediction_confidence_right_mean': np.mean(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
           'val_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
