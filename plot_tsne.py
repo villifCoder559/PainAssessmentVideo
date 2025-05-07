@@ -1,5 +1,4 @@
 import custom.tools as tools
-import custom.scripts as scripts
 import os
 import numpy as np
 import time
