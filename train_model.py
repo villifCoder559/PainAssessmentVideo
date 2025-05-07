@@ -10,7 +10,7 @@ import custom.scripts as scripts
 import custom.helper as helper
 import platform
 import pandas as pd
-import cProfile, pstats
+# import cProfile, pstats
 import numpy as np
 from pstats import SortKey
 import optuna
@@ -275,50 +275,50 @@ def train_with_jepa_attentive_head(
                               start = time.time()
                               
                               # Run training
-                              with cProfile.Profile() as pr:
-                                run_folder_path = scripts.run_train_test(
-                                  model_type=model_type, 
-                                  concatenate_temp_dim=concatenate_temp_dim,
-                                  pooling_embedding_reduction=pooling_clips_reduction,
-                                  pooling_clips_reduction=pooling_clips_reduction,
-                                  sample_frame_strategy=sample_frame_strategy, 
-                                  path_csv_dataset=path_csv_dataset, 
-                                  path_video_dataset=path_dataset,
-                                  head=HEAD.ATTENTIVE_JEPA,
-                                  stride_window_in_video=stride_window_in_video,
-                                  features_folder_saving_path=feature_folder_saving_path,
-                                  head_params=params,
-                                  k_fold=k_fold,
-                                  global_foder_name=global_foder_name, 
-                                  batch_size_training=batch_train, 
-                                  epochs=epochs, 
-                                  criterion=criterion, 
-                                  optimizer_fn=optim_fn,
-                                  lr=lr,
-                                  seed_random_state=seed_random_state,
-                                  is_plot_dataset_distribution=is_plot_dataset_distribution,
-                                  is_round_output_loss=is_round_output_loss,
-                                  is_shuffle_video_chunks=is_shuffle_video_chunks,
-                                  is_shuffle_training_batch=is_shuffle_training_batch,
-                                  init_network=init_network,
-                                  key_for_early_stopping=key_for_early_stopping,
-                                  regularization_lambda_L1=regularization_lambda_L1,
-                                  regularization_lambda_L2=regularization_lambda_L2,
-                                  clip_length=clip_length,
-                                  target_metric_best_model=target_metric_best_model,
-                                  early_stopping=early_stopping,
-                                  enable_scheduler=enable_scheduler,
-                                  stop_after_kth_fold=stop_after_kth_fold,
-                                  n_workers=n_workers,
-                                  clip_grad_norm=clip_grad_norm,
-                                  label_smooth=label_smooth,
-                                  dict_augmented=dict_augmented
-                                )
+                              # with cProfile.Profile() as pr:
+                              run_folder_path = scripts.run_train_test(
+                                model_type=model_type, 
+                                concatenate_temp_dim=concatenate_temp_dim,
+                                pooling_embedding_reduction=pooling_clips_reduction,
+                                pooling_clips_reduction=pooling_clips_reduction,
+                                sample_frame_strategy=sample_frame_strategy, 
+                                path_csv_dataset=path_csv_dataset, 
+                                path_video_dataset=path_dataset,
+                                head=HEAD.ATTENTIVE_JEPA,
+                                stride_window_in_video=stride_window_in_video,
+                                features_folder_saving_path=feature_folder_saving_path,
+                                head_params=params,
+                                k_fold=k_fold,
+                                global_foder_name=global_foder_name, 
+                                batch_size_training=batch_train, 
+                                epochs=epochs, 
+                                criterion=criterion, 
+                                optimizer_fn=optim_fn,
+                                lr=lr,
+                                seed_random_state=seed_random_state,
+                                is_plot_dataset_distribution=is_plot_dataset_distribution,
+                                is_round_output_loss=is_round_output_loss,
+                                is_shuffle_video_chunks=is_shuffle_video_chunks,
+                                is_shuffle_training_batch=is_shuffle_training_batch,
+                                init_network=init_network,
+                                key_for_early_stopping=key_for_early_stopping,
+                                regularization_lambda_L1=regularization_lambda_L1,
+                                regularization_lambda_L2=regularization_lambda_L2,
+                                clip_length=clip_length,
+                                target_metric_best_model=target_metric_best_model,
+                                early_stopping=early_stopping,
+                                enable_scheduler=enable_scheduler,
+                                stop_after_kth_fold=stop_after_kth_fold,
+                                n_workers=n_workers,
+                                clip_grad_norm=clip_grad_norm,
+                                label_smooth=label_smooth,
+                                dict_augmented=dict_augmented
+                              )
                                 # scrit example: python3 train_model.py --mt B --head ATTENTIVE --lr 0.0001 --ep 500 --opt adamw --batch_train 8700  --stop 3 --num_heads 8 --csv partA/starting_point/samples_exc_no_detection.csv --ffsp partA/video/video_frontalized --global_folder_name history_run_att --path_video_dataset partA/video/video_frontalized  --k_fold 3 
-                                print(f'Time taken for this run: {(time.time()-start)//60} min')
+                              print(f'Time taken for this run: {(time.time()-start)//60} min')
                                 # pr.print_stats(sort=SortKey.CUMULATIVE)
                                 # Save the profiling results to a file
-                                save_stats(pr, os.path.join(run_folder_path, 'profiling_results.txt'))
+                                # save_stats(pr, os.path.join(run_folder_path, 'profiling_results.txt'))
                               
 # def train_with_linear_head(
 #   model_type, pooling_clips_reduction, sample_frame_strategy, concatenate_temp_dim,
