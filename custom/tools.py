@@ -3,12 +3,9 @@ import numpy as np
 from sklearn.model_selection import GroupShuffleSplit
 import os
 import pandas as pd
-from torchmetrics.classification import  MulticlassConfusionMatrix
 from sklearn.decomposition import PCA
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import MaxNLocator, MultipleLocator
 import cv2
-import av
-import torch
 import json
 from openTSNE import TSNE as openTSNE
 import time
@@ -17,9 +14,10 @@ import pickle
 from sklearn.metrics import silhouette_score, davies_bouldin_score
 from scipy.spatial.distance import pdist
 from custom.helper import CUSTOM_DATASET_TYPE,INSTANCE_MODEL_NAME
-import torch.nn as nn
+import av
 import safetensors.torch
-import psutil
+import torch
+from torchmetrics.classification import  MulticlassConfusionMatrix
 
 class NpEncoder(json.JSONEncoder):
   def default(self, obj):
@@ -330,8 +328,85 @@ def plot_accuracy_confusion_matrix(confusion_matricies, type_conf,title='', savi
       
     plt.close()
 
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+def plot_accuracy_per_subject(
+  unique_subject_ids,
+  criterion,
+  accuracy_per_subject,
+  title='',
+  count_subjects=None,
+  saving_path=None,
+  bar_color='blue',
+  y_label=None,
+  list_stoic_subject=None,
+  y_lim=(0, 1),
+  ax=None
+):
+  """Plot Accuracy per participant.
+
+  If `ax` is provided, the plot is drawn on that axes; otherwise, a new figure and axes are created.
+  If `list_stoic_subject` is given, the x-axis labels corresponding to those subject IDs are colored differently.
+  """
+  if y_label is None:
+    y_label = criterion if criterion.lower().startswith('acc') else f'Accuracy ({criterion})'
+
+  # Create a new figure and axis if none is provided
+  if ax is None:
+    fig, ax = plt.subplots(figsize=(15, 5))
+
+  # Apply y-axis limit (default 0–1 for accuracy)
+  if y_lim is not None:
+    ax.set_ylim(*y_lim)
+
+  # Convert subject IDs to strings for the x-axis
+  str_ids = [str(sid) for sid in unique_subject_ids]
+
+  # Plot the bar chart
+  ax.bar(str_ids, accuracy_per_subject, width=0.8,
+    color=bar_color, edgecolor='black')
+
+  # Labels and title
+  ax.set_xlabel('Participant')
+  ax.set_ylabel(y_label)
+  ax.set_title(f'{y_label} per Participant — {title}')
+
+  # Rotate and size the x-ticks
+  ax.tick_params(axis='x', labelsize=11, rotation=45)
+
+  # Highlight stoic subjects if provided
+  if list_stoic_subject is not None:
+    stoic_ids_str = {str(s) for s in list_stoic_subject}
+    for tick in ax.get_xticklabels():
+      tick.set_color('red' if tick.get_text() in stoic_ids_str else 'black')
+
+  # Annotate with counts above bars
+  if count_subjects is not None:
+    for sid, count in count_subjects.items():
+      # find index of this subject
+      idxs = np.where(np.array(unique_subject_ids) == sid)[0]
+      if idxs.size > 0:
+        idx = idxs[0]
+        ax.text(
+          idx,
+          accuracy_per_subject[idx] + 0.01,
+          str(count),
+          ha='center',
+          va='bottom',
+          fontsize=10
+        )
+
+  # Save or show
+  if saving_path is not None:
+    plt.savefig(saving_path)
+  plt.close()
+
+
+
 def plot_error_per_subject(unique_subject_ids, criterion, loss_per_subject,
-  title='', count_subjects=None, saving_path=None,bar_color='green',y_label=None,
+  title='', count_subjects=None, saving_path=None,bar_color='green',y_label=None,step_y_axis=None,
   list_stoic_subject=None, y_lim=None, ax=None):
   """Plot Mean Absolute Error per participant.
   
@@ -347,6 +422,10 @@ def plot_error_per_subject(unique_subject_ids, criterion, loss_per_subject,
   # Set y-axis limit if provided
   if y_lim:
     ax.set_ylim(0, y_lim)
+    # set step to 0.1
+  if step_y_axis:
+    ax.yaxis.set_major_locator(MultipleLocator(step_y_axis))
+    
   
   # Convert subject IDs to strings for the x-axis
   str_unique_subject_ids = [str(id) for id in unique_subject_ids]
@@ -758,7 +837,6 @@ def plot_prediction_chunks_per_subject(predictions, n_chunks,title,saving_path=N
     plt.show()
   plt.close()
 
- 
 def compute_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=False,legend_label='', title = '', perplexity=1, saving_path=None,plot=True,cmap='copper'):
   """
   Plots the t-SNE reduction of the features in 2D with colors based on subject, gt, or predicted class.
@@ -824,75 +902,136 @@ def compute_tsne(X, labels=None, tsne_n_component = 2,apply_pca_before_tsne=Fals
     return np.array(X_tsne)
   # print(f' labels shape: {labels.shape}')
 
+import os
+import numpy as np
+import matplotlib.pyplot as plt
 
-def plot_tsne(X_tsne, labels, cmap='copper',tot_labels = None,legend_label='', title='', cluster_measure='', 
-              saving_path=None, axis_scale=None, last_point_bigger=False, plot_trajectory=False, 
-              stride_windows=None,clip_length=None,list_axis_name=None,ax=False,return_ax=False):
+def plot_tsne(X_tsne,
+  labels,
+  cmap='copper',
+  tot_labels=None,
+  legend_label='',
+  title='',
+  cluster_measure='',
+  saving_path=None,
+  chunk_interval=None,
+  axis_scale=None,
+  last_point_bigger=False,
+  plot_trajectory=False,
+  stride_windows=None,
+  clip_length=None,
+  list_axis_name=None,
+  ax=None,
+  return_ax=False):
+  """
+  Plot a 2D t-SNE embedding, return either:
+    - an RGB array of the rendered plot, or
+    - the Axes object for further in-code modifications, or
+    - save to disk and return the path.
+  """
+
   unique_labels = np.unique(labels)
-  if tot_labels is None:
-    color_map = plt.cm.get_cmap(cmap, len(unique_labels))
-  else:
-    color_map = plt.cm.get_cmap(cmap, tot_labels)
+  n_colors = tot_labels if tot_labels is not None else len(unique_labels)
+  color_map = plt.cm.get_cmap(cmap, n_colors)
   color_dict = {val: color_map(i) for i, val in enumerate(unique_labels)}
-  sizes = None
-  if not return_ax:
-    fig = plt.figure(figsize=(10, 8))
 
-  
-  if not return_ax:
-    ax = fig.add_subplot(111)
+  # decide whether to create a new figure/ax or use the one passed in
+  if ax is None:
+    fig, ax = plt.subplots(figsize=(10, 8))
+  else:
+    fig = ax.figure
+
+  # apply axis bounds if given
   if axis_scale is not None:
     ax.set_xlim(axis_scale['min_x'], axis_scale['max_x'])
     ax.set_ylim(axis_scale['min_y'], axis_scale['max_y'])
+
+  # optionally enlarge just the last point
+  sizes = None
   if last_point_bigger:
-    sizes = [50] * (X_tsne.shape[0] - 1) + [200]
-    sizes = np.array(sizes)
+    sizes = np.full(X_tsne.shape[0], 50)
+    sizes[-1] = 200
+
+  # plot each label
+  i=0
   for val in unique_labels:
-    idx = np.array(labels == val)
+    idx = (labels == val)
+    # special “clip” labeling logic
     if clip_length is not None and legend_label == 'clip':
-      
-      idx_color = 0 if stride_windows*val < 48 else max(color_dict.keys())
-      label = f'{legend_label} [{stride_windows * val}, {clip_length + stride_windows * (val) - 1}] ({cluster_measure[idx_color]:.2f})' if cluster_measure != '' and idx_color < len(cluster_measure) else f'{legend_label} [{stride_windows * val}, {clip_length + stride_windows * (val) - 1}]'
-      ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[idx_color], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
+      idx_color = 0 if stride_windows * val < 48 else max(color_dict.keys())
+      label = (
+        f'{legend_label} [{stride_windows * val}, '
+        f'{clip_length + stride_windows * val - 1}]'
+        + (f' ({cluster_measure[idx_color]:.2f})'
+           if cluster_measure and idx_color < len(cluster_measure) else '')
+      )
+      c = color_dict[idx_color]
     else:
-      label = f'{legend_label} {val} ({cluster_measure[val]:.2f})' if cluster_measure != '' else f'{legend_label} {val}'
-      ax.scatter(X_tsne[idx, 0], X_tsne[idx, 1], color=color_dict[val], label=label, alpha=0.7, s=sizes[idx] if sizes is not None else 50)
+      label = (
+        f'{legend_label} {val}'
+        + (f'{chunk_interval[i]}' if chunk_interval is not None else '')
+        + (f' ({cluster_measure[val]:.2f})' if cluster_measure else '')
+      )
+      i+=1
+      c = color_dict[val]
+
+    ax.scatter(
+      X_tsne[idx, 0],
+      X_tsne[idx, 1],
+      color=c,
+      label=label,
+      alpha=0.7,
+      s=sizes[idx] if sizes is not None else 50
+    )
+
+  # optional trajectory line
   if plot_trajectory:
-    ax.plot(X_tsne[:, 0], X_tsne[:, 1], linestyle='--', color=color_dict[0], label='Trajectory', alpha=0.7)
-  if list_axis_name is not None:
+    ax.plot(
+      X_tsne[:, 0],
+      X_tsne[:, 1],
+      linestyle='--',
+      color=color_dict[0],
+      label='Trajectory',
+      alpha=0.7
+    )
+
+  # axis labels & legend/title
+  if list_axis_name:
     ax.set_xlabel(list_axis_name[0])
     ax.set_ylabel(list_axis_name[1])
   else:
     ax.set_xlabel('t-SNE Component 1')
     ax.set_ylabel('t-SNE Component 2')
-  
+
   ax.legend()
-  # add another legend
-  
   ax.set_title(f'{title} (Colored by {legend_label})')
-  
-  if not return_ax:
-    plt.close(fig)
-  
-  if saving_path is None:
-    # plt.show()
-    if return_ax:
-      return None
-    fig.canvas.draw()
-    rgb_array = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    width, height = fig.canvas.get_width_height()
-    rgb_array = rgb_array.reshape(height, width, 3)
-    return rgb_array
-  else:
-    print(f'Saving plot to {saving_path}')
-    if saving_path[-4:] != '.png':
+
+  # --- OUTPUT BRANCHES ---
+
+  # 1) SAVE TO DISK
+  if saving_path is not None:
+    # ensure .png extension
+    if not saving_path.lower().endswith('.png'):
       os.makedirs(saving_path, exist_ok=True)
-      pth = os.path.join(saving_path, f'{title}_{legend_label}.png')
-    else:
-      pth = saving_path
-    fig.savefig(pth)
-    print(f'Plot saved to {pth}')
-    return pth
+      saving_path = os.path.join(saving_path, f'{title}_{legend_label}.png')
+    fig.savefig(saving_path)
+    if not return_ax:
+      plt.close(fig)
+    return saving_path
+
+  # 2) RETURN AXES FOR FURTHER IN-CODE USE
+  if return_ax:
+    # leave the figure open so the caller can continue to modify or close it
+    return ax
+
+  # 3) RENDER TO RGB ARRAY
+  fig.canvas.draw()
+  w, h = fig.canvas.get_width_height()
+  buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+  img = buf.reshape(h, w, 3)
+  plt.close(fig)
+  return img
+
 
 def get_list_video_path_from_csv(csv_path, cols_csv_idx=[1,5], video_folder_path=None):
   list_samples,_ = get_array_from_csv(csv_path) # subject_id, subject_name, class_id, class_name, sample_id, sample_name
@@ -1523,9 +1662,14 @@ def plot_dataset_distribuition(csv_path,run_folder_path,per_class=True,per_parte
   #                                                   per_class=per_class, 
   #                                                   per_partecipant=per_partecipant, 
   #                                                   saving_path=dataset_folder_path) # 2 plots
+import torch
 
-
-def compute_loss_per_class_(criterion,unique_train_val_classes,batch_y,outputs,class_loss=None,class_accuracy=None):
+def compute_loss_per_class_(criterion,
+                            unique_train_val_classes,
+                            batch_y,
+                            outputs,
+                            class_loss=None,
+                            class_accuracy=None):
   if batch_y.dim() != 1:
     batch_y = torch.argmax(batch_y,1)
   for cls in unique_train_val_classes:
@@ -1533,13 +1677,75 @@ def compute_loss_per_class_(criterion,unique_train_val_classes,batch_y,outputs,c
     if mask.any():
       class_idx = np.where(unique_train_val_classes == cls)[0][0]
       if class_accuracy is not None:
-        predicted = torch.argmax(outputs[mask], 1)
+        predicted = torch.argmax(outputs[mask], 1 if outputs.dim() == 2 else 0)
         correct = (predicted == batch_y[mask]).sum().item() if batch_y.dim()== 1 else (predicted == batch_y[mask].argmax(1)).sum().item()
         total = mask.sum().item()
         class_accuracy[class_idx] += correct / total
       if class_loss is not None:
         loss = criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
         class_loss[class_idx] += loss
+
+import torch.nn.functional as F
+def compute_loss_per_subject_v2_(
+    criterion,
+    unique_train_val_subjects: torch.Tensor,
+    batch_subjects: torch.Tensor,
+    batch_y: torch.Tensor,
+    outputs: torch.Tensor,
+    subject_loss: torch.Tensor = None,
+    subject_accuracy: torch.Tensor = None,
+):
+    """
+    Updates subject_loss and subject_accuracy in place by accumulating
+    loss and accuracy for each subject in unique_train_val_subjects.
+
+    Args:
+      criterion: loss function. If its reduction != 'none', we'll fallback to F.cross_entropy(..., reduction='none').
+      unique_train_val_subjects: 1D tensor of shape (S,) with all subject IDs.
+      batch_subjects: 1D tensor of shape (N,) giving the subject ID for each sample.
+      batch_y:      labels, shape (N,) or one-hot (N, C).
+      outputs:      model logits, shape (N, C).
+      subject_loss:     1D float tensor of shape (S,). Will be incremented by per-sample losses.
+      subject_accuracy: 1D float tensor of shape (S,). Will be incremented by (correct/total) for each subject.
+    """
+    device = outputs.device
+    S = unique_train_val_subjects.shape[0]
+
+    # Build a mapping from subject ID to index [0..S-1]
+    subj_to_idx = {int(s.item()): i for i, s in enumerate(unique_train_val_subjects)}
+    # Map each sample's subject to its index
+    idx = batch_subjects.detach().cpu().apply_(lambda s: subj_to_idx[int(s)]).to(device)  # shape (N,)
+
+    # --- LOSS AGGREGATION ---
+    if subject_loss is not None:
+        # compute per-sample losses
+        if getattr(criterion, 'reduction', None) == 'none':
+            per_sample_losses = criterion(outputs, batch_y)          # (N,)
+        elif (isinstance(criterion, torch.nn.CrossEntropyLoss)):
+            per_sample_losses = F.cross_entropy(outputs, batch_y, reduction='none')
+        elif (isinstance(criterion, torch.nn.MSELoss)):
+            per_sample_losses = F.mse_loss(outputs, batch_y, reduction='none')
+        elif (isinstance(criterion, torch.nn.L1Loss)):
+            per_sample_losses = F.l1_loss(outputs, batch_y, reduction='none')
+        else:
+          raise ValueError(f"Unsupported criterion in loss per subject computation: {criterion}")
+        # sum losses by subject index
+        loss_sum = torch.bincount(idx, weights=per_sample_losses, minlength=S)
+        subject_loss += loss_sum.detach().cpu()
+
+    # --- ACCURACY AGGREGATION ---
+    if subject_accuracy is not None:
+        # predictions
+        _, preds = torch.max(outputs, dim=1 if outputs.dim() == 2 else 0)
+        if batch_y.dim() == 1:
+            correct = (preds == batch_y)
+        else:
+            correct = (preds == batch_y.argmax(dim=1))
+        correct = correct.to(torch.float32)
+
+        correct_sum   = torch.bincount(idx, weights=correct, minlength=S)
+        total_counts  = torch.bincount(idx, minlength=S).to(correct.dtype).clamp(min=1)
+        subject_accuracy += (correct_sum / total_counts).detach().cpu()
       
 def compute_loss_per_subject_(criterion,unique_train_val_subjects,batch_subjects,batch_y,outputs,subject_loss=None,subject_accuracy=None):
   for subj in unique_train_val_subjects:
@@ -1553,6 +1759,27 @@ def compute_loss_per_subject_(criterion,unique_train_val_subjects,batch_subjects
         subject_accuracy[subj_idx] += correct / total
       if subject_loss is not None:
         subject_loss[subj_idx] += criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
+
+def compute_confidence_predictions_(list_prediction_right_mean,list_prediction_wrong_mean,list_prediction_right_std,list_prediction_wrong_std,outputs,gt,pred_before_softmax=True):
+  if pred_before_softmax:
+    outputs = torch.softmax(outputs, dim=1)
+  if not isinstance(gt,torch.Tensor):
+    gt = torch.tensor(gt)
+  if gt.dim() > 1: 
+    gt = torch.argmax(gt, dim=1) # if gt is not one hot encoded
+     
+  prediction_class = torch.argmax(outputs, dim=1)
+  mask_right = (prediction_class == gt).reshape(-1)
+  
+  outputs_right,_ = torch.max(outputs[mask_right],dim=1)
+  outputs_wrong,_ = torch.max(outputs[~mask_right],dim=1)
+  if len(outputs_right) != 0:
+    list_prediction_right_mean.append(torch.mean(outputs_right, dim=0).detach().cpu().numpy())
+    list_prediction_right_std.append(torch.std(outputs_right, dim=0).detach().cpu().numpy() if len(outputs_right) > 1 else 0)
+  if len(outputs_wrong) != 0:
+    list_prediction_wrong_mean.append(torch.mean(outputs_wrong, dim=0).detach().cpu().numpy())
+    list_prediction_wrong_std.append(torch.std(outputs_wrong, dim=0).detach().cpu().numpy() if len(outputs_wrong) > 1 else 0)
+
 
 def generate_new_csv(csv_path,filter):
   df = pd.read_csv(csv_path, sep='\t')
@@ -1663,28 +1890,6 @@ def plot_with_std(ax,x, mean, std,x_label,y_label,title,y_lim=None,legend_label_
     plt.show()
     plt.close(fig)
     
-def compute_confidence_predictions_(list_prediction_right_mean,list_prediction_wrong_mean,list_prediction_right_std,list_prediction_wrong_std,outputs,gt,pred_before_softmax=True):
-  if pred_before_softmax:
-    outputs = torch.softmax(outputs, dim=1)
-  if not isinstance(gt,torch.Tensor):
-    gt = torch.tensor(gt)
-  if gt.dim() > 1: 
-    gt = torch.argmax(gt, dim=1) # if gt is not one hot encoded
-  
-     
-  prediction_class = torch.argmax(outputs, dim=1)
-  mask_right = (prediction_class == gt).reshape(-1)
-  
-  outputs_right,_ = torch.max(outputs[mask_right],dim=1)
-  outputs_wrong,_ = torch.max(outputs[~mask_right],dim=1)
-  if len(outputs_right) != 0:
-    list_prediction_right_mean.append(torch.mean(outputs_right, dim=0).detach().cpu().numpy())
-    list_prediction_right_std.append(torch.std(outputs_right, dim=0).detach().cpu().numpy() if len(outputs_right) > 1 else 0)
-  if len(outputs_wrong) != 0:
-    list_prediction_wrong_mean.append(torch.mean(outputs_wrong, dim=0).detach().cpu().numpy())
-    list_prediction_wrong_std.append(torch.std(outputs_wrong, dim=0).detach().cpu().numpy() if len(outputs_wrong) > 1 else 0)
-
-import cv2
 
 def add_grid_to_video(video_path: str, grid_size: tuple,output_folder):
   """
@@ -1739,8 +1944,6 @@ def add_grid_to_video(video_path: str, grid_size: tuple,output_folder):
   out.release()
   print(f"The video with grid overlay has been saved at {output_video_path}")
   
-import cv2
-import numpy as np
 
 def split_video_with_chunks(video_path: str, chunk_size: int,output_folder, separator_duration: int = None, new_fps: float = None):
   """
@@ -1846,4 +2049,10 @@ def convert_safetensors_dict_to_int32(path):
   safetensors.torch.save_file(dict_data, path)
   print(f"Converted dict saved to {path}")
   
-  
+def check_feats(path):
+  dict_data = load_dict_data(path)
+  for k,v in dict_data.items():
+    print(f'{k}: {v.shape}')
+    if k == 'list_sample_id':
+      print(f'  Maximum sample id: {max(v)}')
+      print(f'  Minimum sample id: {min(v)}')
