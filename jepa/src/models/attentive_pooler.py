@@ -47,11 +47,10 @@ class AttentivePooler(nn.Module):
     ):
         super().__init__()
         self.query_tokens = nn.Parameter(torch.zeros(1, num_queries, embed_dim))
-        self.pos_enc = pos_enc
+        # self.pos_enc = pos_enc
         self.grid_size_pos = grid_size_pos
-        self.total_grid_area = grid_size_pos[1]*grid_size_pos[2]
         self.cross_block_after_transformers = cross_block_after_transformers
-        self.pos_enc_tensor = None
+        # self.pos_enc_tensor = None
         self.complete_block = complete_block
         if complete_block:
             self.cross_attention_block = CrossAttentionBlock(
@@ -122,14 +121,14 @@ class AttentivePooler(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x): # x: [B, T, C]
-        if self.pos_enc:
-            if self.pos_enc_tensor is None or self.pos_enc_tensor.shape[0] != x.size(1):
-                if x.size(1) % self.total_grid_area != 0:
-                    raise ValueError(f'Input length {x.size(1)} is not divisible by batch size {x.size(0)}')
-                self.pos_enc_tensor = pos_embs.get_3d_sincos_pos_embed_torch(embed_dim=x.size(2),
-                                                                             grid_depth=x.size(1)//(self.total_grid_area), # Considering same length for all dimensions!
-                                                                             grid_size=self.grid_size_pos[1]).to(x.device)
-            x = x + self.pos_enc_tensor
+        # if self.pos_enc:
+        #     if self.pos_enc_tensor is None or self.pos_enc_tensor.shape[0] != x.size(1):
+        #         if x.size(1) % self.total_grid_area != 0:
+        #             raise ValueError(f'Input length {x.size(1)} is not divisible by batch size {x.size(0)}')
+        #         self.pos_enc_tensor = pos_embs.get_3d_sincos_pos_embed_torch(embed_dim=x.size(2),
+        #                                                                      grid_depth=x.size(1)//(self.total_grid_area), # Considering same length for all dimensions!
+        #                                                                      grid_size=self.grid_size_pos[1]).to(x.device)
+        #     x = x + self.pos_enc_tensor
         
         if self.cross_block_after_transformers:
             if self.blocks is not None:
@@ -139,6 +138,7 @@ class AttentivePooler(nn.Module):
             q = self.cross_attention_block(q, x)
             return q
         else:
+            # Original implementation
             q = self.query_tokens.repeat(len(x), 1, 1)
             q = self.cross_attention_block(q, x)
             if self.blocks is not None:
@@ -192,9 +192,19 @@ class AttentiveClassifier(nn.Module):
         self.pos_enc = pos_enc
         self.pos_enc_tensor = None
         self.linear = nn.Linear(embed_dim, num_classes, bias=True)
+        self.total_grid_area = grid_size_pos[1]*grid_size_pos[2]
+        self.grid_size_pos = grid_size_pos
         self.linear.reset_parameters()
 
     def forward(self, x, key_padding_mask=None): # x: [B, T, C]
+        if self.pos_enc:
+            if self.pos_enc_tensor is None or self.pos_enc_tensor.shape[0] != x.size(1):
+                if x.size(1) % self.total_grid_area != 0:
+                    raise ValueError(f'Input length {x.size(1)} is not divisible by batch size {x.size(0)}')
+                self.pos_enc_tensor = pos_embs.get_3d_sincos_pos_embed_torch(embed_dim=x.size(2),
+                                                                             grid_depth=x.size(1)//(self.total_grid_area), # Considering same length for all dimensions!
+                                                                             grid_size=self.grid_size_pos[1]).to(x.device)
+            x = x + self.pos_enc_tensor
         x = self.pooler(x).squeeze(1)
         x = self.linear(x)
         return x
