@@ -169,7 +169,7 @@ class customDataset(torch.utils.data.Dataset):
     """Return the number of samples in the dataset"""
     return len(self.video_labels)
 
-  def preprocess_images(self, tensors,to_visualize=False):
+  def preprocess_images(self, tensors,to_visualize=False,get_params=False):
     """
     Preprocess a batch of image tensors.
     
@@ -191,13 +191,23 @@ class customDataset(torch.utils.data.Dataset):
     image_std = [0.229, 0.224, 0.225]
     
     transform = []
+    params = {}
+    
     if self.h_flip:
       transform.append(v2.RandomHorizontalFlip(p=1))
+      params['h_flip'] = True
 
     if self.color_jitter:
-      transform.append(v2.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.05)) # 
+      brightness = (0.7, 1.3)
+      contrast = (0.7, 1.3)
+      saturation = (0.7, 1.3)
+      hue = (-0.05, 0.05)
+      transform.append(v2.ColorJitter(brightness=brightness, contrast=contrast, saturation=saturation, hue=hue)) #
+      params['color_jitter'] = {'brightness': brightness, 'contrast': contrast, 'saturation': saturation, 'hue': hue} 
     if self.rotation:
-      transform.append(v2.RandomRotation(degrees=20))
+      degrees = (-20, 20)
+      transform.append(v2.RandomRotation(degrees=degrees))
+      params['rotation'] = degrees
       
     # Define transform pipeline
     if not to_visualize:
@@ -209,8 +219,12 @@ class customDataset(torch.utils.data.Dataset):
     else:
       transform += [v2.Resize(crop_size)]
     transform = v2.Compose(transform)
-    # Apply transforms to each tensor in batch
-    return transform(tensors)
+    
+    if get_params:
+      return transform(tensors),params
+    else:
+      return transform(tensors)
+  
 
   def generate_video(self, idx,output_folder,fps_out=24):
     """
@@ -233,7 +247,7 @@ class customDataset(torch.utils.data.Dataset):
     list_indices = self.sample_frame_strategy(tot_frames)
     frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames) # [nr_clips, nr_frames, H, W, C]
     # original_shape = frames_list.shape
-    frames_list = self.preprocess_images(frames_list.reshape(-1,*frames_list.shape[2:]).permute(0,3,1,2),to_visualize=True) # [nr_clips, nr_frames, H, W, C] -> [B, C, H, W]
+    frames_list,params = self.preprocess_images(frames_list.reshape(-1,*frames_list.shape[2:]).permute(0,3,1,2),to_visualize=True,get_params=True) # [nr_clips, nr_frames, H, W, C] -> [B, C, H, W]
 
     # frames_list = frames_list.reshape(*original_shape)
     # Save the generated video
@@ -245,7 +259,8 @@ class customDataset(torch.utils.data.Dataset):
     frames_list = frames_list.permute(0,2,3,1) # [B,C,H,W] -> [B,H,W,C]
     tools.generate_video_from_list_frame(list_frame=frames_list,path_video_output=output_path,fps=fps_out)
     # print(f"Video saved at {output_path}")
- 
+    return params
+  
   def __standard_getitem__(self, idx):
     
     csv_array = self.video_labels.iloc[idx]
@@ -822,8 +837,8 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                             collate_fn=fake_collate,
                             batch_size=1,
                             num_workers=n_workers,
-                            persistent_workers=True if n_workers > 0 else False,
-                            pin_memory=True)
+                            persistent_workers= True,
+                            pin_memory=False)
         print(f'Use custom Dataloader with {n_workers} workers!')
       else:
         loader_ = DataLoader(
@@ -836,10 +851,18 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
     except Exception as e:
       print(f'Err: {e}')
       print(f'Use standard DataLoader')
-      loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate,pin_memory=True)
+      loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate,persistent_workers=True)
   else:
     if n_workers > 1:
-      loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=False,collate_fn=dataset_._custom_collate,num_workers=n_workers,pin_memory=True)
+      nr_batches = len(dataset_.df) // batch_size + 1
+      n_workers = min(n_workers, nr_batches)
+      loader_ = DataLoader(dataset=dataset_,
+                           batch_size=batch_size,
+                           shuffle=False,
+                           collate_fn=dataset_._custom_collate,
+                           num_workers=n_workers,
+                           persistent_workers=True,
+                           pin_memory=False)
     else:
       loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=False,collate_fn=dataset_._custom_collate)
   return dataset_,loader_
