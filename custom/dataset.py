@@ -78,6 +78,7 @@ class customDataset(torch.utils.data.Dataset):
         
     if video_labels is not None:
       assert isinstance(video_labels, pd.DataFrame), "video_labels must be a pandas DataFrame."
+      
     assert os.path.exists(path_dataset), f"Dataset path {path_dataset} does not exist."
     assert clip_length > 0, "Clip length must be greater than 0."
     assert stride_window > 0, "Stride window must be greater than 0."
@@ -647,6 +648,8 @@ class customDatasetAggregated(torch.utils.data.Dataset):
     return np.unique(self.df['class_id'],return_counts=True)[1]
   def get_unique_classes(self):
     return np.sort(self.df['class_id'].unique().tolist())
+  def get_all_sample_ids(self):
+    return self.df['sample_id'].tolist()
 
 class customDatasetWhole(torch.utils.data.Dataset):
   def __init__(self,csv_path,root_folder_features,concatenate_temporal,model,smooth_labels):
@@ -708,6 +711,7 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_cla
     if instance_model_name.value == 'AttentiveProbe' or instance_model_name.value == 'AttentiveClassifier':
       max_len = max(lengths)
       key_padding_mask = torch.arange(max_len).expand(len(batch), max_len) >= lengths_tensor.unsqueeze(1)
+      key_padding_mask = ~key_padding_mask # set True for attention, if True means use the token to compute the attention, otherwise don't use it 
       return {'x':features, 'key_padding_mask': key_padding_mask},\
               labels,\
               subject_id,\
