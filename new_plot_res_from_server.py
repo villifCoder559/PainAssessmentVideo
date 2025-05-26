@@ -51,20 +51,29 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
   loss_plots_output_folder = os.path.join(run_output_folder, 'loss_plots')
   os.makedirs(loss_plots_output_folder, exist_ok=True)
   os.makedirs(test_output_folder, exist_ok=True)
+  metric_for_training = "_".join(data['config']['key_for_early_stopping'].split('_')[1:]) # key for early stopping === target_metric_best_model
+  
+  
   for key in data['results'].keys():
     only_losses_folder_per_k = os.path.join(loss_plots_output_folder, f'only_losses_{key.split("_")[0]}_{key.split("_")[-1]}')
     os.makedirs(only_losses_folder_per_k, exist_ok=True)
     # class_subject_loss_folder = os.path.join(run_output_folder, f'class_subject_loss_{key.split("_")[0]}_{key.split("_")[1]}')
     # os.makedirs(class_subject_loss_folder, exist_ok=True)
     if plot_train_loss_val_acc:
-      test_key = 'test_accuracy' if 'test_accuracy' in data['results'][key]['test'] else 'test_macro_precision'
-      
+      # test_key = 'test_accuracy' if 'test_accuracy' in data['results'][key]['test'] else 'test_macro_precision'
+      # test_key = data['results'][key]['test']['dict_precision_recall'][metric_for_training] 
       train_losses = data['results'][key]['train_val'].get('train_losses', [])
-      train_accuracy = data['results'][key]['train_val'].get('list_train_macro_accuracy', [])
       val_loss = data['results'][key]['train_val'].get('val_losses', [])
-      val_accuracy = data['results'][key]['train_val'].get('list_val_macro_accuracy', [])
-      test_accuracy = data['results'][key]['test'].get(test_key, None)
-      test_loss = data['results'][key]['test'].get('test_loss', None)
+      if 'list_train_performance_metric' in data['results'][key]['train_val']:
+        train_accuracy = data['results'][key]['train_val'].get('list_train_performance_metric', [])
+        val_accuracy = data['results'][key]['train_val'].get('list_val_performance_metric', [])
+      elif 'list_train_macro_accuracy' in data['results'][key]['train_val']:
+        train_accuracy = data['results'][key]['train_val'].get('list_train_macro_accuracy', []) # list_train_performance_metric
+        val_accuracy = data['results'][key]['train_val'].get('list_val_macro_accuracy', [])
+      else:
+        raise ValueError('No train accuracy or val accuracy found in the data')
+      test_accuracy = data['results'][key]['test']['dict_precision_recall'][metric_for_training]
+      test_loss = data['results'][key]['test']['test_loss']
       grad_norm_mean = data['results'][key]['train_val']['list_mean_total_norm_epoch']
       grad_norm_std = data['results'][key]['train_val']['list_std_total_norm_epoch']
       if 'list_train_confidence_prediction_right_mean' in data['results'][key]['train_val']:
@@ -84,6 +93,8 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
       if train_losses and val_accuracy:
         dict_to_string = convert_dict_to_string(filter_dict(data['config']))
         dict_to_string = dict_to_string.replace('head_params', data['config']['head'].value)
+            
+        dict_to_string = dict_to_string.replace('criterion_dict',f"{type(data['config']['criterion']).__name__}")
         # add test_id in dict_to_string
         dict_to_string += f'\nTest ID: {test_id}'
         dict_to_string += f'\nfold_subfold: {key.split("_")[0]}_{key.split("_")[-1]}'
@@ -91,7 +102,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
           'list_1':train_losses,
           'list_2':val_accuracy,
           'output_path':None,
-          'title':'Train loss, validation accuracy, test accuracy',
+          'title':f'Train loss, validation {metric_for_training}, test {metric_for_training}',
           'point':{
             'value':test_accuracy,
             'epoch':data['results'][key]['train_val']['best_model_idx']
@@ -99,8 +110,8 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
           'ax':axs[0][0],
           'x_label':'Epochs',
           'y_label_1':'Train loss',
-          'y_label_2':'Validation accuracy',
-          'y_label_3':'Test accuracy',
+          'y_label_2':f'Validation {metric_for_training}',
+          'y_label_3':f'Test {metric_for_training}',
           'y_lim_1':[0, 5],
           'y_lim_2':[0, 1],
           'y_lim_3':[0, 1],
@@ -139,10 +150,10 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         }
         input_dict_accuracy_gap={
           'list_1': np.array(train_accuracy) - np.array(val_accuracy),
-          'title':'Accuracy Gap in Train-Validation',
+          'title':f'{metric_for_training} Gap in Train-Validation',
           'ax':axs[0][1],
           'x_label':'Epochs',
-          'y_label_1':'Accuracy Gap',
+          'y_label_1':f'{metric_for_training} Gap',
           'y_lim_1':[-1, 1],
           'color_1':'tab:orange',
         }
@@ -441,6 +452,91 @@ def plot_gradient_per_module(data, run_output_folder, test_id, additional_info='
       plt.close()
 
 
+def plot_history_model_prediction(data, run_output_folder, test_id, root_csv_path):
+  test_output_folder = os.path.join(run_output_folder, test_id)
+  os.makedirs(test_output_folder, exist_ok=True)
+  list_file_root_csv = os.listdir(root_csv_path)
+  csv_file = [f for f in list_file_root_csv if f.endswith('.csv')][0]
+  df = pd.read_csv(os.path.join(root_csv_path,csv_file),sep='\t')
+  top_k = 20
+  for key in data['results'].keys():
+    if data['results'][key]['train_val']['history_train_sample_predictions'] is None:
+      continue
+    best_epoch = data['results'][key]['train_val']['best_model_idx']
+    num_epochs = len(data['results'][key]['train_val']['train_losses'])
+    train_history_pred = data['results'][key]['train_val']['history_train_sample_predictions']
+    val_history_pred = data['results'][key]['train_val']['history_val_sample_predictions']
+    miss_predictions_train_label,miss_predictions_train_sbj = tools.count_mispredictions(train_history_pred,df,top_k=top_k,return_miss_per_subject=True)
+    miss_predictions_val_label,miss_predictions_val_sbj = tools.count_mispredictions(val_history_pred,df,top_k=top_k,return_miss_per_subject=True)
+    
+    # TOP-K TRAIN and VAL missprediction over epochs
+    fig, ax = plt.subplots(2,1,figsize=(10, 10))
+    tools.plot_bar(data=miss_predictions_train_label,
+                   ax_=ax[0],
+                   title=f'TRAIN Sample misclassification over {num_epochs} epochs {"TOP-"+str(top_k) if top_k else ""} - {key} - {test_id} ',
+                   x_label='Sample ID',
+                   y_label='Number of mispredictions over epochs',
+                   color='red')
+    tools.plot_bar(data=miss_predictions_val_label,
+                   ax_=ax[1],
+                   title=f'VAL Sample misclassification over {num_epochs} epochs {"TOP-"+str(top_k) if top_k else ""} - {key} - {test_id} ',
+                   x_label='Sample ID',
+                   y_label='Number of mispredictions over epochs',
+                   color='red')
+    fig.savefig(os.path.join(test_output_folder, f'{test_id}_missclassification_train_val_epochs_{key}.png'), bbox_inches='tight')
+    plt.close(fig)
+    
+    # TOP-K SUBJECTS MISSPREDICTIONS over epochs TRAIN and VAL
+    fig, ax = plt.subplots(2,1,figsize=(10, 10))
+    tools.plot_bar(data=miss_predictions_train_sbj,
+                   ax_=ax[0],
+                   title=f'TRAIN Subject misclassification over {num_epochs} epochs {"TOP-"+str(top_k) if top_k else ""} - {key} - {test_id} ',
+                   x_label='Subject ID',
+                   y_label='Number of mispredictions over epochs',
+                   list_stoic_subject=helper.stoic_subjects,
+                   color='orange')
+    tools.plot_bar(data=miss_predictions_val_sbj,
+                    ax_=ax[1],
+                    title=f'VAL Subject misclassification over {num_epochs} epochs - {"TOP-"+str(top_k) if top_k else ""} - {key} - {test_id} ',
+                    x_label='Subject ID',
+                    list_stoic_subject=helper.stoic_subjects,
+                    y_label='Number of mispredictions over epochs',
+                    color='orange')
+    fig.savefig(os.path.join(test_output_folder, f'{test_id}_missclassification_train_val_subjects_{key}.png'), bbox_inches='tight')
+    plt.close(fig)
+    
+    # TOP-K TRAIN, VAL and TEST subject missprediction over epochs
+    miss_predictions_train_sbj_best_epoch = {k:v[best_epoch] for k,v in train_history_pred.items()}
+    miss_predictions_val_sbj_best_epoch = {k:v[best_epoch] for k,v in val_history_pred.items()}
+    test_history_pred = data['results'][key]['test']['history_test_sample_predictions']
+    _,miss_predictions_train_sbj = tools.count_mispredictions(miss_predictions_train_sbj_best_epoch,df,top_k=top_k,return_miss_per_subject=True)
+    _,miss_predictions_val_sbj = tools.count_mispredictions(miss_predictions_val_sbj_best_epoch,df,top_k=top_k,return_miss_per_subject=True)
+    _,miss_predictions_test_sbj = tools.count_mispredictions(test_history_pred,df,top_k=top_k,return_miss_per_subject=True)
+    fig, ax = plt.subplots(3,1,figsize=(15, 10))
+    tools.plot_bar(data=miss_predictions_train_sbj,
+                   ax_=ax[0],
+                   title=f'TRAIN Subject misclassification BEST epochs {best_epoch} {"TOP-"+str(top_k) if top_k else ""} - {key} - {test_id} ',
+                   x_label='Subject ID',
+                   y_label='Number of mispredictions',
+                   list_stoic_subject=helper.stoic_subjects,
+                   color='gray')
+    tools.plot_bar(data=miss_predictions_val_sbj,
+                   ax_=ax[1],
+                   title=f'VAL Subject misclassification BEST epochs {best_epoch} {"TOP-"+str(top_k) if top_k else ""} - {key} - {test_id} ',
+                   x_label='Subject ID',
+                   y_label='Number of mispredictions',
+                   list_stoic_subject=helper.stoic_subjects,
+                   color='gray')
+    tools.plot_bar(data=miss_predictions_test_sbj,
+                   ax_=ax[2],
+                   title=f'TEST Subject misclassification BEST epochs {best_epoch} {"TOP-"+str(top_k) if top_k else ""} - {key} - {test_id} ',
+                   x_label='Subject ID',
+                   y_label='Number of mispredictions',
+                   list_stoic_subject=helper.stoic_subjects,
+                   color='gray')
+    fig.savefig(os.path.join(test_output_folder, f'{test_id}_missclassification_train_val_test_subjects_{key}.png'), bbox_inches='tight')
+    plt.close(fig)
+  
 def convert_dict_to_string(d):
   new_d = flatten_dict(d)
   return '\n'.join([f'{k}: {v}' for k, v in new_d.items()])
@@ -449,6 +545,8 @@ def filter_dict(d):
   keys_to_exclude = ['model_type', 'epochs', 'pooling_embedding_reduction', 'pooling_clips_reduction',
                      'shuffle_video_chunks', 'sample_frame_strategy', 'head', 'stride_window_in_video',
                      'plot_dataset_distribution', 'clip_length', 'early_stopping']
+  # 'criterion_dict' if not d['criterion_dict'] else ''
+  
   new_d = {k: v for k, v in d.items() if k not in keys_to_exclude}
   for k,v in new_d.items():
     if 'path' in k:
@@ -475,40 +573,44 @@ def get_range_k_fold(data):
   return count
 
 
-def generate_csv_row(data,config,time_, test_id):
+def generate_csv_row(data,config,time_, test_id): 
 
   list_fold = [int(k.split('_')[0][1:]) for k in data.keys()]
   list_sub_fold = [int(k.split('_')[-1]) for k in data.keys()]
   real_k_fold = max(list_fold) + 1
   real_sub_fold = max(list_sub_fold) + 1
   
-  test_key = 'test_accuracy' if 'test_accuracy' in data[f'k{list_fold[0]}_cross_val_sub_{list_sub_fold[0]}']['test'] else 'test_macro_precision'
-  
-  
+  # test_key = 'test_accuracy' if 'test_accuracy' in data[f'k{list_fold[0]}_cross_val_sub_{list_sub_fold[0]}']['test'] else 'test_macro_precision'
+  metric = config['key_for_early_stopping'].split('_')[1:]
+  test_key = f"test_{'_'.join(metric)}" 
+  key_metric_train = 'list_train_performance_metric' if 'list_train_performance_metric' in data[f'k{list_fold[0]}_cross_val_sub_{list_sub_fold[0]}']['train_val'] else 'list_train_macro_accuracy'
+  key_metric_val = 'list_val_performance_metric' if 'list_val_performance_metric' in data[f'k{list_fold[0]}_cross_val_sub_{list_sub_fold[0]}']['train_val'] else 'list_val_macro_accuracy'
   mean_train_losses_last_epoch = {f'mean_train_loss_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  mean_train_accuracies_last_epoch = {f'mean_train_mac_prec_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_macro_accuracy'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  mean_val_accuracies_last_epoch = {f'mean_val_mac_prec_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_macro_accuracy'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  mean_train_accuracies_last_epoch = {f'mean_train_{metric}_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_train][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  mean_val_accuracies_last_epoch = {f'mean_val_{metric}_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_val][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_val_losses_last_epoch = {f'mean_val_loss_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
     
   mean_train_losses_best_epoch = {f'mean_train_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  mean_train_accuracies_best_epoch = {f'mean_train_mac_prec_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_macro_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  mean_val_accuracies_best_epoch = {f'mean_val_mac_prec_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_macro_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  mean_train_accuracies_best_epoch = {f'mean_train_{metric}_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_train][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  mean_val_accuracies_best_epoch = {f'mean_val_{metric}_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_val][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_val_losses_best_epoch = {f'mean_val_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   
-  mean_test_accuracies = {f'mean_test_mac_precision_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test'][test_key] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  mean_test_accuracies = {f'mean_test_{metric}_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test'][test_key] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_test_losses = {f'mean_test_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_loss'] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   
   total_mean_train_losses_best_epoch = {f'total_mean_train_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-  total_mean_train_accuracy_best_epoch = {f'total_mean_train_mac_prec_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_macro_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-  total_mean_val_accuracy_best_epoch = {f'total_mean_val_mac_prec_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_macro_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
+  total_mean_train_accuracy_best_epoch = {f'total_mean_train_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_train][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
+  total_mean_val_accuracy_best_epoch = {f'total_mean_val_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_val][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_val_losses_best_epoch = {f'total_mean_val_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-  total_mean_test_accuracy_best_epoch = {f'total_mean_test_mac_prec_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test'][test_key] for i in range(real_k_fold) for j in range(real_sub_fold)])}
+  total_mean_test_accuracy_best_epoch = {f'total_mean_test_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test'][test_key] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_test_losses_best_epoch = {f'total_mean_test_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_loss'] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   
   total_mean_train_losses_last_epoch = {f'total_mean_train_loss_last_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][-1] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   head_type = config['head'].name
   clip_grad_norm = config['clip_grad_norm'] if 'clip_grad_norm' in config else 'ND'
   head_params = flatten_dict({f'{head_type}': config['head_params']})
+  criterion_params = flatten_dict({f'{type(config["criterion"]).__name__}': config["criterion_dict"]}) if "criterion_dict" in config else {}
+  
   row_dict = {
     'test_id': test_id,
     'k_fold_(real_k_fold)': f'{config["k_fold"]}_({config["real_k_fold"]})',
@@ -534,6 +636,7 @@ def generate_csv_row(data,config,time_, test_id):
     # 'reg_lambda_L2': config['regularization_lambda_L2'],
     # 'reg_lambda': config['regularization_lambda'],
     # 'reg_loss': config['regularization_loss'],
+    **criterion_params,
     **head_params,
     **total_mean_train_losses_best_epoch,
     **total_mean_val_accuracy_best_epoch,
@@ -621,6 +724,8 @@ def plot_run_details(results_data, output_root,only_csv):
       plot_losses(data, os.path.join(output_root), test_id)
       plot_confusion_matrices(data, os.path.join(output_root), test_id)
       plot_gradient_per_module(data, os.path.join(output_root), test_id)
+      
+      plot_history_model_prediction(data, os.path.join(output_root), test_id,root_csv_path=os.path.dirname(file))
       # except Exception as e:
       #   print(f'Error in {file} - {e}')
   df = pd.DataFrame(list_row_csv)
@@ -629,6 +734,7 @@ def plot_run_details(results_data, output_root,only_csv):
     os.makedirs(output_root, exist_ok=True)
   df.to_csv(os.path.join(output_root, 'summary.csv'), index=False)
   print(f'Summary CSV saved to {output_root}/summary.csv')
+
 
 def plot_filtered_run_details(parent_folder, output_root, filter_dict,only_csv):
   """
@@ -705,8 +811,8 @@ if __name__ == '__main__':
           except ValueError:
             filter_dict_arg[key.strip()] = value.strip() 
       print(f'Applying filter: {filter_dict_arg}')
-      
       plot_filtered_run_details(parent_folder, output_root, filter_dict_arg,only_csv)
+      
     else:
     # Generate the unfiltered plots
       results_files = find_results_files(parent_folder) # get .pkl files
@@ -714,8 +820,3 @@ if __name__ == '__main__':
       # print(f'Loaded {len(results_data)} results files')
       plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv)
 
-
-
-  
-      
-      
