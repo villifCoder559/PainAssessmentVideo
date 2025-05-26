@@ -18,6 +18,8 @@ import av
 import safetensors.torch
 import torch
 from torchmetrics.classification import  MulticlassConfusionMatrix
+import torch.nn.functional as F
+import cdw_cross_entropy_loss.cdw_cross_entropy_loss as cdw
 
 class NpEncoder(json.JSONEncoder):
   def default(self, obj):
@@ -229,7 +231,7 @@ def plot_error_per_class(unique_classes, mae_per_class, criterion, title='', acc
   plt.close()
 
 
-def get_accuracy_from_confusion_matrix(confusion_matrix,list_real_classes=None):
+def evaluate_classification_from_confusion_matrix(confusion_matrix,list_real_classes=None):
   """
   Calculate various accuracy metrics from a given confusion matrix in torch.tensor format.
   Args:
@@ -274,8 +276,8 @@ def get_accuracy_from_confusion_matrix(confusion_matrix,list_real_classes=None):
   # Treats all classes equally
   macro_precision = torch.mean(precision_per_class)
   macro_recall = torch.mean(recall_per_class)
-  
-  accuracy = tp_sum / (tp_sum + fn_sum + fp_sum) if (tp_sum + fn_sum + fp_sum) != 0 else torch.tensor(0.0)
+  all_predictions = torch.sum(confusion_matrix,None)
+  accuracy = tp_sum / all_predictions 
   
   return {
     'precision_per_class': precision_per_class.detach().numpy(),
@@ -298,7 +300,7 @@ def plot_accuracy_confusion_matrix(confusion_matricies, type_conf,title='', savi
   list_acc_confusion_matrix = []
   # list_test_acc_confusion_matrix = []
   for confusion_matrix in confusion_matricies:
-    list_acc_confusion_matrix.append(get_accuracy_from_confusion_matrix(confusion_matrix=confusion_matrix,
+    list_acc_confusion_matrix.append(evaluate_classification_from_confusion_matrix(confusion_matrix=confusion_matrix,
                                                                         list_real_classes=list_real_classes))
   # for test_confusion_matrix in test_confusion_matricies:
   #   list_test_acc_confusion_matrix.append(get_accuracy_from_confusion_matrix(test_confusion_matrix))
@@ -417,7 +419,9 @@ def plot_error_per_subject(unique_subject_ids, criterion, loss_per_subject,
   If `list_stoic_subject` is given, the x-axis labels corresponding to those subject IDs are colored differently.
   """
   if y_label is None:
-    y_label = criterion
+    y_label = str(criterion)
+    if y_label.lower() == 'cdw_celoss()':
+      y_label = 'L1Loss'
   # Create a new figure and axis if none is provided
   if ax is None:
     fig, ax = plt.subplots(figsize=(15, 5))
@@ -1278,7 +1282,7 @@ def generate_video_from_list_frame(list_frame,path_video_output,fps=25):
   Generates a video file from a list of frames.
 
   Args:
-    list_frame (list): Input shape (B, H, W, C) representing a video sequence.
+    list_frame (list): Input shape (B, H, W, C) representing a video sequence in RGB.
     path_video_output (str): The file path where the output video will be saved.
     fps (int, optional): Frames per second for the output video. Defaults to 25.
 
@@ -1327,14 +1331,29 @@ def plot_macro_accuracy(list_train_accuracy,list_val_accurcay, title, x_label, y
     return fig
   plt.close()
   
-def plot_bar(data, title, x_label, y_label, saving_path=None):
-  fig, ax = plt.subplots()
-  ax.bar(data.keys(), data.values(), color='blue', width=0.8, label='Error per Class',edgecolor='black',align='center')
+def plot_bar(data, title, x_label, y_label,color='red',ax_=None, saving_path=None,list_stoic_subject=None):
+  if ax_ is None:
+    fig, ax = plt.subplots()
+  else:
+    ax = ax_
+  keys = [str(i) for i in data.keys()]
+  values = [int(i) for i in data.values()]
+  ax.bar(keys, values, color=color, width=0.8, edgecolor='black',align='center')
   ax.set_xlabel(x_label)
   ax.set_ylabel(y_label)
   ax.set_title(title)
   # plt.xticks(rotation=45)
+  if list_stoic_subject is not None:
+    # Convert list_stoic_subject to string form to compare with tick labels
+    stoic_ids_str = {str(x) for x in list_stoic_subject}
+    for tick in ax.get_xticklabels():
+      if tick.get_text() in stoic_ids_str:
+        tick.set_color('red')
+      else:
+        tick.set_color('black')
   plt.tight_layout()
+  if ax_ is not None:
+    return None
   if saving_path is not None:
     plt.savefig(saving_path)
   else:
@@ -1688,7 +1707,26 @@ def compute_loss_per_class_(criterion,
         loss = criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
         class_loss[class_idx] += loss
 
-import torch.nn.functional as F
+import sys
+def print_dict_size(d):
+  # Measure table alone
+  base = sys.getsizeof(d)  # ~240 bytes
+
+  # Measure every key + value
+  per_items = sum(sys.getsizeof(k) + sys.getsizeof(v) for k, v in d.items())
+
+  # print("Approx bytes:", base + per_items)
+  print("Approx MB:", (base + per_items) / 1024**2)
+
+def log_predictions_per_sample_(dict_log_sample,tensor_predictions,tensor_sample_id,epoch):
+  # Consider both tensors on cpu where:
+  #   tensor_predictions: shape (N,)
+  #   tensor_sample_id: shape (N,)
+  #   dict_log_sample: dict with keys as sample_id and values a tensor 
+  
+  for id,prediction in zip(tensor_sample_id,tensor_predictions):
+    dict_log_sample[id.item()][epoch] = prediction.item() # .type(torch.uint8)
+
 def compute_loss_per_subject_v2_(
     criterion,
     unique_train_val_subjects: torch.Tensor,
@@ -1722,14 +1760,16 @@ def compute_loss_per_subject_v2_(
     # --- LOSS AGGREGATION ---
     if subject_loss is not None:
         # compute per-sample losses
-        if getattr(criterion, 'reduction', None) == 'none':
-            per_sample_losses = criterion(outputs, batch_y)          # (N,)
-        elif (isinstance(criterion, torch.nn.CrossEntropyLoss)):
+        # if getattr(criterion, 'reduction', None) == 'none': # check if the criterion has a reduction attribute
+        #     per_sample_losses = criterion(outputs, batch_y)          # (N,)
+        if (isinstance(criterion, torch.nn.CrossEntropyLoss)):
             per_sample_losses = F.cross_entropy(outputs, batch_y, reduction='none')
         elif (isinstance(criterion, torch.nn.MSELoss)):
             per_sample_losses = F.mse_loss(outputs, batch_y, reduction='none')
         elif (isinstance(criterion, torch.nn.L1Loss)):
             per_sample_losses = F.l1_loss(outputs, batch_y, reduction='none')
+        elif (isinstance(criterion, cdw.CDW_CELoss)): # if chage remeber to change also in new_plot_res_from_server
+            per_sample_losses = F.l1_loss(torch.argmax(outputs,dim=1), batch_y, reduction='none')
         else:
           raise ValueError(f"Unsupported criterion in loss per subject computation: {criterion}")
         # sum losses by subject index
@@ -1749,19 +1789,6 @@ def compute_loss_per_subject_v2_(
         correct_sum   = torch.bincount(idx, weights=correct, minlength=S)
         total_counts  = torch.bincount(idx, minlength=S).to(correct.dtype).clamp(min=1)
         subject_accuracy += (correct_sum / total_counts).detach().cpu()
-      
-def compute_loss_per_subject_(criterion,unique_train_val_subjects,batch_subjects,batch_y,outputs,subject_loss=None,subject_accuracy=None):
-  for subj in unique_train_val_subjects:
-    mask = (batch_subjects == subj).reshape(-1)
-    if mask.any():
-      subj_idx = np.where(unique_train_val_subjects == subj)[0][0]
-      if subject_accuracy is not None:
-        _, predicted = torch.max(outputs[mask], 1)
-        correct = (predicted == batch_y[mask]).sum().item() if batch_y.dim()== 1 else (predicted == batch_y[mask].argmax(1)).sum().item()
-        total = mask.sum().item()
-        subject_accuracy[subj_idx] += correct / total
-      if subject_loss is not None:
-        subject_loss[subj_idx] += criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
 
 def compute_confidence_predictions_(list_prediction_right_mean,list_prediction_wrong_mean,list_prediction_right_std,list_prediction_wrong_std,outputs,gt,pred_before_softmax=True):
   if pred_before_softmax:
@@ -2059,3 +2086,33 @@ def check_feats(path):
     if k == 'list_sample_id':
       print(f'  Maximum sample id: {max(v)}')
       print(f'  Minimum sample id: {min(v)}')
+      
+
+def count_mispredictions(history_pred,df,return_miss_per_subject=None,top_k=None):
+  # Count the number of mispredictions and if top_k is not None, return the top_k mispredictions
+  misspredictions_per_label = {}
+  misspredictions_per_sbj = {}
+  
+  for sample_id,pred_history in history_pred.items():
+    # Get the ground truth class ID for the sample ID and count the number of mispredictions
+    gt = df[df['sample_id'] == sample_id]['class_id'].values[0]
+    count_miss = np.sum(np.array(pred_history) != gt)
+    misspredictions_per_label[sample_id] = count_miss
+    
+    # Get the unique subject ID for the sample ID and get the number of mispredictions
+    if return_miss_per_subject:
+      sbj = df[df['sample_id'] == sample_id]['subject_id'].values[0]
+      if sbj not in misspredictions_per_sbj:
+        misspredictions_per_sbj[sbj] = 0
+      misspredictions_per_sbj[sbj] += count_miss
+    
+  # Sort the dictionary by the number of mispredictions
+  if top_k is not None:
+    misspredictions_per_label = dict(sorted(misspredictions_per_label.items(), key=lambda item: item[1],reverse=True)[:top_k])
+    if return_miss_per_subject:
+      misspredictions_per_sbj = dict(sorted(misspredictions_per_sbj.items(), key=lambda item: item[1],reverse=True)[:top_k])
+  
+  if return_miss_per_subject:
+    return misspredictions_per_label, misspredictions_per_sbj
+  else:
+    return misspredictions_per_label
