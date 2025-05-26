@@ -71,8 +71,11 @@ class VideoBackbone(BackboneBase):
           f"Model not found at {model_path}. "
           )
     
-
-    self.model = self._load_model_finetune(model_type, remove_head=remove_head)
+    if model_type == MODEL_TYPE.VIDEOMAE_v2_G_unl:
+      # Load pretrained model
+      self.model = self._load_model_pretrained(model_type)
+    else:
+      self.model = self._load_model_finetune(model_type, remove_head=remove_head)
       
     # Cache important model parameters for efficient access
     self.tubelet_size = self.model.patch_embed.tubelet_size
@@ -131,11 +134,12 @@ class VideoBackbone(BackboneBase):
     Returns:
       Loaded model
     """
-    if model_type == MODEL_TYPE.VIDEOMAE_v2_G_pt_1200e:
+    if model_type == MODEL_TYPE.VIDEOMAE_v2_G_unl:
       # Load weights
-      checkpoint = torch.load(model_type.value, map_location=self.device)
+      checkpoint = torch.load(model_type.value, map_location='cpu')
       weights = checkpoint['model']
-      
+      # kwargs = {'init_ckpt':model_type.value,
+      #           'pretrained':True}
       # Filter out decoder weights, keeping only encoder weights
       new_weights = {
         key.replace('encoder.', ''): value 
@@ -165,7 +169,8 @@ class VideoBackbone(BackboneBase):
     model_map = {
       MODEL_TYPE.VIDEOMAE_v2_S: (vit_small_patch16_224, {'num_classes': 710}),
       MODEL_TYPE.VIDEOMAE_v2_B: (vit_base_patch16_224, {'num_classes': 710}),
-      MODEL_TYPE.VIDEOMAE_v2_G: (vit_giant_patch14_224, {'num_classes': 710})
+      MODEL_TYPE.VIDEOMAE_v2_G: (vit_giant_patch14_224, {'num_classes': 710}),
+      # MODEL_TYPE.VIDEOMAE_v2_G_unl: (vit_giant_patch14_224, None),
     }
     
     if model_type not in model_map:
@@ -221,6 +226,7 @@ class VideoBackbone(BackboneBase):
     self.model.eval()
     with torch.no_grad():
       # Forward pass
+      print(f'Free GPU memory: {torch.cuda.memory_reserved() / 1e9} GB')
       feat = self.model.forward_features(x, return_embedding=return_embedding)
     
     # Process and reshape features if needed
