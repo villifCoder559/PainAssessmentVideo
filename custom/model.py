@@ -102,6 +102,8 @@ class Model_Advanced: # Scenario_Advanced
                                           pos_enc=head_params['pos_enc'],
                                           grid_size_pos=T_S_S_shape, # [T, S, S]
                                           depth=head_params['depth'],
+                                          num_queries=head_params['num_queries'],
+                                          agg_method=head_params['agg_method'],
                                           use_sdpa=use_sdpa,
                                           complete_block=True,
                                           cross_block_after_transformers=head_params['cross_block_after_transformers'],
@@ -196,7 +198,7 @@ class Model_Advanced: # Scenario_Advanced
     if path_model_weights is not None:
       self.head.load_state_weights()
     else:
-      self.head.model.load_state_dict(state_dict)
+      self.head._model.load_state_dict(state_dict) # TODO: change to self.head.load_state_dict()
     test_dataset, test_loader = get_dataset_and_loader(csv_path=csv_path,
                                                         batch_size=self.batch_size_training,
                                                         concatenate_temporal=concatenate_temporal,
@@ -205,14 +207,26 @@ class Model_Advanced: # Scenario_Advanced
                                                         root_folder_features=self.path_to_extracted_features,
                                                         shuffle_training_batch=False,
                                                         backbone_dict=self.backbone_dict,
-                                                        model=self.head.model,
+                                                        model=self.head._model,
                                                         label_smooth=self.label_smooth,
                                                         n_workers=self.n_workers
                                                                  )
     unique_test_subjects = torch.tensor(test_dataset.get_unique_subjects())
-    unique_classes = torch.tensor(list(range(self.head.model.num_classes)))
-    dict_test = self.head.evaluate(val_loader=test_loader, criterion=criterion, unique_val_subjects=unique_test_subjects,
-                                    unique_val_classes=unique_classes, is_test=is_test)
+    unique_classes = torch.tensor(list(range(self.head.num_classes)))
+    if helper.LOG_HISTORY_SAMPLE and torch.min(unique_classes)>=0 and torch.max(unique_classes)<=255:
+      list_test_sample = test_dataset.get_all_sample_ids()
+      history_test_sample_predictions = {id: torch.zeros(1) for id in list_test_sample}
+    else:
+      history_test_sample_predictions = None
+    dict_test = self.head.evaluate(val_loader=test_loader, 
+                                   criterion=criterion,
+                                   unique_val_subjects=unique_test_subjects,
+                                   unique_val_classes=unique_classes,
+                                   is_test=is_test,
+                                   epoch=0, # to get the right position for history_test_sample_predictions
+                                   history_val_sample_predictions=history_test_sample_predictions)
+    
+    dict_test['history_test_sample_predictions'] = history_test_sample_predictions
     dict_test['test_unique_subject_ids'] = unique_test_subjects.numpy()
     dict_test['test_count_subject_ids'] = test_dataset.get_count_subjects()
     dict_test['test_unique_y'] = unique_classes
@@ -231,7 +245,7 @@ class Model_Advanced: # Scenario_Advanced
             shuffle_training_batch,init_network,
             regularization_lambda_L1,key_for_early_stopping,early_stopping,
             enable_scheduler,concatenate_temporal,clip_grad_norm,regularization_lambda_L2,
-            trial=None
+            enable_optuna_pruning=False,trial=None
             ):
     """
     Train the model using the specified training and testing datasets.
@@ -286,6 +300,7 @@ class Model_Advanced: # Scenario_Advanced
                                           clip_grad_norm=clip_grad_norm,
                                           label_smooth=self.label_smooth,
                                           backbone_dict=self.backbone_dict,
+                                          enable_optuna_pruning=enable_optuna_pruning,
                                           trial=trial)
     
     count_subject_ids_train, count_y_train = tools.get_unique_subjects_and_classes(train_csv_path)
