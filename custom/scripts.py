@@ -5,6 +5,7 @@ from transformers import AutoImageProcessor
 import time
 from custom.tools import NpEncoder
 import custom.tools as tools
+import custom.helper as helper
 from custom.helper import HEAD, MODEL_TYPE, EMBEDDING_REDUCTION, SAMPLE_FRAME_STRATEGY
 import torch.nn as nn
 import torch.optim as optim
@@ -14,6 +15,7 @@ import torch
 import numpy as np
 import time
 import json
+import pickle
 from sklearn.model_selection import StratifiedGroupKFold
 import os
 import random
@@ -255,7 +257,8 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
       early_stopping=early_stopping,
       enable_scheduler=enable_scheduler,
       clip_grad_norm=clip_grad_norm,
-      trial=trial
+      trial=trial,
+      enable_optuna_pruning = True if fold_idx == 0 and sub_idx == 0 else False
     )
     dict_test = test_model(
       model_advanced=model_advanced,
@@ -466,6 +469,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'optimizer_fn': optimizer_fn.__name__,
     'lr': lr,
     'criterion': criterion,
+    'criterion_dict': criterion.get_params() if hasattr(criterion,'get_params') else None,
     'init_network': init_network,
     'regularization_lambda_L1': regularization_lambda_L1,
     'regularization_lambda_L2': regularization_lambda_L2,
@@ -552,6 +556,10 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
 
   # Create the model
   new_csv_path = os.path.join(run_folder_path,'augmented_'+os.path.split(path_csv_dataset)[-1])
+  # if stop_after_kth_fold and stop_after_kth_fold[0] != 1 and stop_after_kth_fold[1] != 1:
+  #   helper.LOG_CROSS_ATTENTION['enable'] = False
+  # else:
+  #   helper.LOG_CROSS_ATTENTION['enable'] = True
   model_advanced = Model_Advanced(model_type=model_type,
                                   path_dataset=path_video_dataset,
                                   embedding_reduction=pooling_embedding_reduction,
@@ -619,6 +627,11 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   summary_res['results'] = fold_results['dict_k_fold_results']
   summary_res['time'] = time.time() - start  
   summary_res['config'] = get_obj_config()                                     
+  if helper.LOG_CROSS_ATTENTION['enable']:
+    summary_res['cross_attention_debug'] = helper.LOG_CROSS_ATTENTION
+    helper.LOG_CROSS_ATTENTION = {'enable':helper.LOG_CROSS_ATTENTION['enable'],
+                                  'state':'train'}
+    
   tools.save_dict_k_fold_results(dict_k_fold_results=summary_res,
                                   folder_path=run_folder_path)
   model_advanced.free_gpu_memory()
