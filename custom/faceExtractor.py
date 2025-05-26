@@ -11,15 +11,49 @@ import matplotlib.pyplot as plt
 from scipy.signal import medfilt
 # from tools_face_elaboration import rigid_transform_3D, plot_landmarks_triangulation, get_frontalized_img
 
+def interpolate_frames_linear(frames, num_interpolations=1):
+  interpolated_frames = []
+  for i in range(len(frames) - 1):
+    frame_a = frames[i]
+    frame_b = frames[i + 1]
+    interpolated_frames.append(frame_a)
+    for j in range(1, num_interpolations + 1):
+      alpha = j / (num_interpolations + 1)
+      beta = 1.0 - alpha
+      interpolated = cv2.addWeighted(frame_a, beta, frame_b, alpha, 0)
+      interpolated_frames.append(interpolated)
+  interpolated_frames.append(frames[-1])
+  return interpolated_frames
+
+def interpolate_frame(A, B, t=0.5):
+    # 1. Optical flow (e.g. Farneback)
+    flow_A2B = cv2.calcOpticalFlowFarneback(cv2.cvtColor(A,cv2.COLOR_BGR2GRAY),
+                                            cv2.cvtColor(B,cv2.COLOR_BGR2GRAY),
+                                            None, 0.5, 3, 15, 3, 5, 1.2, 0)
+    flow_B2A = cv2.calcOpticalFlowFarneback(cv2.cvtColor(B,cv2.COLOR_BGR2GRAY),
+                                            cv2.cvtColor(A,cv2.COLOR_BGR2GRAY),
+                                            None, 0.5, 3, 15, 3, 5, 1.2, 0)
+    h, w = A.shape[:2]
+    # 2. Build remap grids
+    xs, ys = np.meshgrid(np.arange(w), np.arange(h))
+    mapAx = (xs + flow_A2B[...,0] * t).astype(np.float32)
+    mapAy = (ys + flow_A2B[...,1] * t).astype(np.float32)
+    mapBx = (xs + flow_B2A[...,0] * (1-t)).astype(np.float32)
+    mapBy = (ys + flow_B2A[...,1] * (1-t)).astype(np.float32)
+    # 3. Warp with bilinear interpolation
+    warpA = cv2.remap(A, mapAx, mapAy, cv2.INTER_LINEAR)
+    warpB = cv2.remap(B, mapBx, mapBy, cv2.INTER_LINEAR)
+    # 4. Linear blend
+    return cv2.addWeighted(warpA, 1-t, warpB, t, 0)
+  
+
 class FaceExtractor:
   LEFT_CORNER_EYE_INDEXES = [33, 133]  # Example: Left eye corners
   RIGHT_CORNER_EYE_INDEXES = [362, 263]  # Example: Right eye corners
   NOSE_INDEX = 1  # Example: Nose tip
   FACE_OVAL = [(conn.start,conn.end) for conn in FaceLandmarksConnections.FACE_LANDMARKS_FACE_OVAL]
   FACE_TESSELATION = [(conn.start,conn.end) for conn in FaceLandmarksConnections.FACE_LANDMARKS_TESSELATION]
-  
-  # LEFT_EYE_INDEXES = [t[0] for t in FaceLandmarksConnections.FACE_LANDMARKS_LEFT_EYE]
-  # RIGHT_EYE_INDEXES = [t[0] for t in FaceLandmarksConnections.FACE_LANDMARKS_RIGHT_EYE]
+
   FACE_OVAL_INDEXES = [t[0] for t in FACE_OVAL]
   LEFT_EYEBROW_INDEXES = [t.start for t in FaceLandmarksConnections.FACE_LANDMARKS_LEFT_EYEBROW]
   RIGHT_EYEBROW_INDEXES = [t.start for t in FaceLandmarksConnections.FACE_LANDMARKS_RIGHT_EYEBROW]
@@ -88,10 +122,6 @@ class FaceExtractor:
     return face_detector.detect_for_video(mp_frame,int(timestamp))
     
   def crop_face_detection(self,image):
-    # if not isinstance(image,mp.Image):
-    #   image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
-    # detection_result = self.face_detector.detect(image)
-    # image = image.numpy_view()
     detection_result = self.extract_facial_landmarks(frame_list=[(image,0)])
     if detection_result[0] is None or len(detection_result[0].face_landmarks) == 0:
       print("No face detected.")
@@ -102,10 +132,7 @@ class FaceExtractor:
                        int(np.min(landmarks[:, 1]*image.shape[0])))
     bottom_right_corner = (int(np.max(landmarks[:, 0]*image.shape[1])),
                            int(np.max(landmarks[:, 1]*image.shape[0])))
-    # print(detection_result)
-    # top_left_corner = (detection_result.detections[0].bounding_box.origin_x, detection_result.detections[0].bounding_box.origin_y)
-    # bottom_right_corner = (top_left_corner[0] + detection_result.detections[0].bounding_box.width,
-    #                       top_left_corner[1] + detection_result.detections[0].bounding_box.height)
+
     image = image[top_left_corner[1]:bottom_right_corner[1], top_left_corner[0]:bottom_right_corner[0]]
     image = cv2.resize(image, (256, 256))
     image = np.array(image,dtype=np.uint8)
@@ -117,17 +144,6 @@ class FaceExtractor:
     centered_landmarks = [landmark - shift for landmark in ref_landmarks]
     centered_landmarks = np.array(centered_landmarks)
 
-    # black_image = np.zeros((256,256,3),dtype=np.uint8)
-    # tmp = ((centered_landmarks+0.5)*256).astype(np.int32)
-    # orig_landmarks = face_extractor.plot_landmarks_triangulation(black_image,tmp)
-    # fig,ax = plt.subplots(2,1,figsize=(10,10))
-    # ax[0].set_title('Original landmarks')
-    # ax[0].imshow(orig_landmarks)
-    # print('Centered landmarks:',centered_landmarks.shape)
-    # U,S,Vt = np.linalg.svd(centered_landmarks,full_matrices=False)
-    # print('U:',U.shape)
-    # print('S:',S.shape)
-    # print('Vt:',Vt)
     landmarks_3d_norm = np.linalg.norm(centered_landmarks, axis=1,ord=2)
     landmarks_2d_norm = np.linalg.norm(centered_landmarks[:, :2], axis=1, ord=2)
     epsilon = 1e-6
@@ -135,22 +151,8 @@ class FaceExtractor:
     ratio = np.array(landmarks_3d_norm / landmarks_2d_norm, dtype=np.float32).reshape(-1, 1)
     centered_landmarks_2d = centered_landmarks[:, :2] * ratio
     return centered_landmarks_2d
-    # frontalized_landmarks = self.plot_landmarks_triangulation(black_image,((centered_landmarks_2d+0.5)*256).astype(np.int32))
-    # ax[1].set_title('Frontalized landmarks')
-    # ax[1].imshow(frontalized_landmarks)
+
   def align_face(self,image):
-    """
-    Aligns the face in the given MediaPipe image.
-    This method takes a MediaPipe image, checks if it is a valid MediaPipe Image object,
-    and aligns the face in the image using the MediaPipe face aligner. If no face is detected,
-    it returns None.
-    Args:
-      mp_image (mp.Image or numpy.ndarray): The input image. It can be a MediaPipe Image object
-      or a numpy array representing the image data.
-    Returns:
-      numpy.ndarray or None: The aligned face image as a numpy array if a face is detected,
-      otherwise None.
-    """
     #check if is mp image
     if not isinstance(image,mp.Image):
       image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
@@ -165,17 +167,7 @@ class FaceExtractor:
     return aligned_image_np
 
   def _find_coords_point(self,routes_idx, landmarks, img):
-    """
-    Calculate the coordinates of points based on given routes and landmarks.
 
-    Args:
-      routes_idx (list of tuples): A list of tuples where each tuple contains two indices representing the source and target points in the landmarks.
-      landmarks (list): A list of landmark points, where each point has 'x' and 'y' attributes representing its coordinates.
-      img (numpy.ndarray): The image on which the landmarks are to be mapped. The shape of the image is used to calculate the relative coordinates.
-
-    Returns:
-      list: A list of tuples representing the coordinates of the source and target points in the image.
-    """
     routes = []
     for source_idx, target_idx in routes_idx:
       source = landmarks[source_idx]
@@ -188,16 +180,6 @@ class FaceExtractor:
     return routes
 
   def _extract_face_oval_from_img(self,img,routes):
-    """
-    Extracts the face oval from the given image using the specified routes.
-    Args:
-      img (numpy.ndarray): The input image from which the face oval is to be extracted.
-      routes (list): A list of points defining the convex polygon that represents the face oval.
-    Returns:
-      tuple: A tuple containing:
-        - numpy.ndarray: The output image with the face oval extracted.
-        - None: Placeholder for additional return value (currently not used).
-    """
     mask = np.zeros((img.shape[0], img.shape[1]))
     mask = cv2.fillConvexPoly(mask, np.array(routes), 1)
     mask = mask.astype(bool)
@@ -205,54 +187,89 @@ class FaceExtractor:
     out = np.zeros_like(img)
     out[mask] = img[mask]
     return out, mask
-
+  
   def _process_frame(self,detector,frame,timestamp):
     mp_frame = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
     if self.config['visionRunningMode'] == mp.tasks.vision.RunningMode.IMAGE:
       return detector.detect(mp_frame)
     return detector.detect_for_video(mp_frame,int(timestamp))
 
-  def _get_list_frame(self,path_video_input,align=False):
-    """
-    Extracts frames from a video file and returns them as a list along with their timestamps.
-    Args:
-      path_video_input (str): The path to the input video file.
-      align (bool): If True, aligns the faces in the frames using the align_face method. Default is False.
-    Returns:
-      list: A list of tuples, where each tuple contains a frame (as a numpy array) and its corresponding timestamp in milliseconds.
-    Raises:
-      IOError: If the video file cannot be opened.
-    """
+  def apply_video_interpolation(self,frame_list,chunk_size,fps=None,mod='spread_linearly'):
+    new_frame_list = []
+    new_video_frames = (len(frame_list) // chunk_size + 1) * chunk_size
+    frames_to_add = new_video_frames - len(frame_list)
+    if fps is not None:
+      step_timestamp_ms = int(1000 // fps)
+      new_timestamp_list = list(range(0,(len(frame_list)+frames_to_add)*step_timestamp_ms,step_timestamp_ms))
+    
+    # Add linearly interpolated frames according to mod
+    if mod == 'spread_linearly':
+      new_frame_position = np.linspace(1, len(frame_list)-2, num=frames_to_add)
+      count=0
+      for frame in frame_list:
+        new_frame_list.append(frame)
+        if count in new_frame_position:
+          # interpolated_frame = interpolate_frames_linear([frame_list[-1][0],frame], num_interpolations=1)
+          tmp = np.stack([frame_list[-1][0],frame],axis=0,dtype=np.float64)
+          interpolated_frame = [np.mean(tmp,axis=0).astype(np.uint8)]
+          new_frame_list.append(interpolated_frame[0])
+        count += 1 
+    if mod == 'mirror_start_video':
+      mirrored_frames = list(reversed(frame_list.copy()[:frames_to_add]))
+      new_frame_list = mirrored_frames + frame_list
+    else:
+      raise ValueError("Invalid interpolation mode. Choose 'spread_linearly' or 'mirror_start_video'.")
+    
+    # return tuple for face frontalization function
+    return new_frame_list,new_timestamp_list
+
+  def _get_list_frame(self,path_video_input,return_tuple=True,align=False):
     cap = cv2.VideoCapture(path_video_input)
+    FPS = cap.get(cv2.CAP_PROP_FPS)    
+    # video_name = os.path.split(path_video_input)[-1]
+    # if interpolate_every and num_frames % interpolate_every != 0:
+    #   new_video_frames = (num_frames // interpolate_every + 1) * interpolate_every
+    #   frame_to_be_added = new_video_frames - num_frames
+    #   new_frame_position = np.linspace(1, num_frames-2, num=frame_to_be_added)
     frame_list = []
+    timestamp_list = []
     if not cap.isOpened():
       raise IOError(f"Err: Unable to open video file: {path_video_input}")
+    count = 0
+    count_real_frames = 0
     while cap.isOpened():
       ret, frame = cap.read()
       if not ret:
           break
       frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-      timestamp_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
       frame = np.array(frame,dtype=np.uint8)
       if align:
         frame = self.align_face(mp.Image(image_format=mp.ImageFormat.SRGB, data=frame))
-      frame_list.append((frame,timestamp_msec))
-    cap.release()
+      # if count_real_frames in new_frame_position:
+      #   # interpolated_frame = interpolate_frames_linear([frame_list[-1][0],frame], num_interpolations=1)
+      #   tmp = np.stack([frame_list[-1][0],frame],axis=0,dtype=np.float64)
+      #   interpolated_frame = [np.mean(tmp,axis=0).astype(np.uint8)]
+      #   # diff_interpolated_frame_next = np.abs(interpolated_frame[0] - frame,dtype=np.uint32).sum()
+      #   # diff_interpolated_frame_prev = np.abs(interpolated_frame[0] - frame_list[-1][0],dtype=np.uint32).sum()
+      #   # print(f'diff_interpolated_frame_prev: {diff_interpolated_frame_prev} \ndiff_interpolated_frame_next: {diff_interpolated_frame_next}')
+      #   # cv2.imwrite(os.path.join('z_interpolation_results',f'{video_name}_{count-1}.jpg'),cv2.cvtColor(np.copy(frame_list[-1][0]), cv2.COLOR_RGB2BGR))
+      #   # cv2.imwrite(os.path.join('z_interpolation_results',f'{video_name}_{count}.jpg'),cv2.cvtColor(np.copy(interpolated_frame[0]), cv2.COLOR_RGB2BGR))
+      #   # cv2.imwrite(os.path.join('z_interpolation_results',f'{video_name}_{count+1}.jpg'),cv2.cvtColor(np.copy(frame), cv2.COLOR_RGB2BGR))
+      #   frame_list.append((interpolated_frame[0],(count/FPS) * 1000))
+      #   count += 1
+      frame_list.append(frame)
+      timestamp_list.append((count/FPS) * 1000)
+      count += 1
+      count_real_frames += 1
 
-    return frame_list
+    cap.release()
+    if return_tuple:
+      return list(zip(frame_list,timestamp_list))
+    else:
+      return frame_list,timestamp_list,FPS
 
   def extract_facial_landmarks(self,frame_list):
-    """
-    Predicts facial landmarks for a list of frames. It supposes that there is only one face in each frame.
 
-    Args:
-      frame_list (list): A list of tuples, where each tuple contains a frame and its associated data.
-
-    Returns:
-      list: A list of mediapipe NormalizedLandmarks object for each frame in the input list.
-    """
-    # if detector is None:
-    #   detector = vision.FaceLandmarker.create_from_options(self.options)
     detection_result_list = []
     detector = vision.FaceLandmarker.create_from_options(self.options)
     for frame, timestamp in frame_list:
@@ -352,16 +369,7 @@ class FaceExtractor:
     print(f"Video saved at {path_video_output}")
 
   def get_frames_annotated(self,path_video_input,align=False):
-    """
-    Extracts frames from a video, annotates them with facial landmarks, and returns the annotated frames.
 
-    Args:
-      path_video_input (str): The file path to the input video.
-      align (bool, optional): If True, aligns the frames before processing. Defaults to False.
-
-    Returns:
-      list: A list of annotated frames, where each frame is an image with facial landmarks plotted.
-    """
     frame_list = self._get_list_frame(path_video_input,align=align)
     detection_result_list = self.extract_facial_landmarks(frame_list)
     new_video = []
@@ -385,18 +393,7 @@ class FaceExtractor:
     return warped_img
 
   def plot_landmarks(self,image, landmarks, connections=None,list_evidence_landmarks=[]):
-    """
-    Plots facial landmarks on the given image.
-    Args:
-      image (numpy.ndarray): The input image on which landmarks are to be drawn.
-      landmarks (list): A list of landmark objects, each containing x, y, and z coordinates.
-      connections (list, optional): A list of tuples representing connections between landmarks.
-                      Each tuple contains two indices indicating the start and end points of the connection.
-    Returns:
-      tuple: A tuple containing:
-        - annotated_image (numpy.ndarray): The image with landmarks and connections drawn.
-        - landmarks_coords (list): A list of dictionaries containing the x, y, and z coordinates of each landmark.
-    """
+
     if isinstance(landmarks,np.ndarray):
       landmarks = self.convert_from_numpy_to_NormalizedLandmark(landmarks)
     annotated_image = image.copy()
@@ -442,7 +439,7 @@ class FaceExtractor:
     print(f'shift_x: {shift_x}, shift_y: {shift_y}')
     return shift_x,shift_y
   
-  def frontalized_video(self,video_path,ref_landmarks,only_landmarks_crop=False,align_before_front=True,log_path=None,time_logs=False,extra_landmark_smoothing=None):
+  def frontalized_video(self,video_path,ref_landmarks,interpolation_mod_chunk=None,only_landmarks_crop=False,align_before_front=True,log_path=None,time_logs=False,extra_landmark_smoothing=None):
 
     def validate_frame_detection(list_to_validate):
       miss_detection = False
@@ -454,9 +451,18 @@ class FaceExtractor:
       return miss_detection, list_no_detection_idx
 
     # start = time.time()
-    tuple_frames_timestamp = self._get_list_frame(video_path,align=align_before_front)
+    list_frames,list_timestamp,fps = self._get_list_frame(video_path,align=align_before_front,return_tuple=False)
+    if interpolation_mod_chunk is not None:
+      if len(interpolation_mod_chunk) == 2:
+        list_frames,list_timestamp = self.apply_video_interpolation(frame_list=list_frames,
+                                                                mod=interpolation_mod_chunk[0],
+                                                                chunk_size=interpolation_mod_chunk[1],
+                                                                fps=fps,
+                                                                )
+      else:
+        raise ValueError(f'interpolation_mod_chunk must have len == 2, position 0 string for modality (spread_linearly or mirror_start_video), position 1 chunk size')
     # print("Time to get list frame: ",time.time()-start)
-
+    tuple_frames_timestamp = list(zip(list_frames,list_timestamp))
     miss_detection, list_no_detection_idx = validate_frame_detection(tuple_frames_timestamp)
     if miss_detection:
       raise DetectionError("No face detected in some frames during alignment", list_no_detection_idx)
@@ -479,30 +485,29 @@ class FaceExtractor:
         # start = time.time()
         if not only_landmarks_crop:
           for count, (frame, landmarks) in enumerate(zip(list_frames, list_landmarks)):
-            # landmarks = np.array([[lm.x, lm.y, lm.z] for lm in landmarks])
-            # frame,mask = self.extract_frame_oval_from_img(frame,landmarks)
+            # print(f'Frontalizing frame {count}/{len(list_frames)}')
             rotation, translation = self.compute_rigid_transform(landmarks, ref_landmarks)
             frontalized_landmarks = self.apply_rigid_transform(rotation, translation, landmarks).T
-            # rotation_stable, translation_stable = self.compute_rigid_transform(frontalized_landmarks[self.STABLE_POINTS], ref_landmarks[self.STABLE_POINTS])
-            # print(f'Nose coords: {frontalized_landmarks[self.NOSE_INDEX]}')
-            # frontalized_landmarks = self.apply_rigid_transform(rotation_stable, translation_stable, frontalized_landmarks).T
-            # print(f'Nose coords: {frontalized_landmarks[self.NOSE_INDEX]}')
+
             
             frontalized_img_SVD = self._get_frontalized_img(landmarks_2d=landmarks,
                                                             frontalized_landmarks_2d=frontalized_landmarks,
                                                             orig_frame=frame,
-                                                            log_path=log_path)
+                                                            log_path=log_path,
+                                                            nr_frame=count)
 
             top_left_corner = (int(np.min(frontalized_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
                               int(np.min(frontalized_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
             bottom_right_corner = (int(np.max(frontalized_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
                               int(np.max(frontalized_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
-
+            
+            # face_size = bottom_right_corner[0] - top_left_corner[0], bottom_right_corner[1] - top_left_corner[1]
+            # print(f'Face size: {face_size}')
             frontalized_img_SVD = self.post_process_frontalized_img(frontalized_img=frontalized_img_SVD,
-                                                                      top_left_corner=top_left_corner,
-                                                                      bottom_right_corner=bottom_right_corner,
-                                                                      landmarks=frontalized_landmarks,
-                                                                      )
+                                          top_left_corner=top_left_corner,
+                                          bottom_right_corner=bottom_right_corner,
+                                          landmarks=frontalized_landmarks,
+                                          )
             list_frontalized_img.append(frontalized_img_SVD)
             list_frontalized_landmarks.append(frontalized_landmarks)
         else:
@@ -528,35 +533,39 @@ class FaceExtractor:
     if align:
       orig_frame = np.array(self.align_face(frame),dtype=np.uint8)
     else:
-      orig_frame = np.copy(frame)
+      orig_frame = cv2.copyMakeBorder(frame,40,40,40,40,cv2.BORDER_CONSTANT,value=(0,0,0))
+      cv2.imwrite('z_debug_frontalization/tmp.jpg',cv2.cvtColor(orig_frame, cv2.COLOR_RGB2BGR))
+      
 
     landmarks = self.extract_facial_landmarks([(orig_frame, 0)])
     print(f'landmarks: {landmarks}')
     if landmarks[0] is not None: # or len(landmarks[0].face_landmarks) > 0:
       # landmarks = np.array([[lm.x, lm.y, lm.z] for lm in landmarks[0].face_landmarks[0]])
       landmarks = landmarks.squeeze()
+      # print(f'Frontalizing frame {count}/{len(list_frames)}')
       rotation, translation = self.compute_rigid_transform(landmarks, ref_landmarks)
-      rot_trans_landmarks = self.apply_rigid_transform(rotation, translation, landmarks).T
+      frontalized_landmarks = self.apply_rigid_transform(rotation, translation, landmarks).T
+
+      
       frontalized_img_SVD = self._get_frontalized_img(landmarks_2d=landmarks,
-                                                      frontalized_landmarks_2d=rot_trans_landmarks,
-                                                      orig_frame=orig_frame,
-                                                      v2=v2,
-                                                      stop_after=stop_after,
-                                                      log_path=log_path)
-        # print(f'TIme get frontal. img: {time.time()-time_transf:.4f}')
-      top_left_corner = (int(np.min(rot_trans_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
-                        int(np.min(rot_trans_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
-      bottom_right_corner = (int(np.max(rot_trans_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
-                        int(np.max(rot_trans_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
+                                                      frontalized_landmarks_2d=frontalized_landmarks,
+                                                      orig_frame=frame,
+                                                      log_path=log_path,
+                                                      nr_frame=0)
+
+      top_left_corner = (int(np.min(frontalized_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
+                        int(np.min(frontalized_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
+      bottom_right_corner = (int(np.max(frontalized_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
+                        int(np.max(frontalized_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
 
       frontalized_img_SVD = self.post_process_frontalized_img(frontalized_img=frontalized_img_SVD,
                                                                 top_left_corner=top_left_corner,
                                                                 bottom_right_corner=bottom_right_corner,
-                                                                landmarks=rot_trans_landmarks,
+                                                                landmarks=frontalized_landmarks,
                                                                 )
       return{
         'frontalized_img': frontalized_img_SVD,
-        'frontalized_norm_landmarks': rot_trans_landmarks,
+        # 'frontalized_norm_landmarks': rot_trans_landmarks,
       } 
     else:
       print("No face detected")
@@ -597,13 +606,13 @@ class FaceExtractor:
           # mirror the pixel
           mirror_x = center_pixel[0] - (x - center_pixel[0])
           frontalized_img[y,x] = frontalized_img[y,mirror_x]
+    
     frontalized_img = frontalized_img[top_left_corner[1]:bottom_right_corner[1],top_left_corner[0]:bottom_right_corner[0]]
     frontalized_img=cv2.resize(frontalized_img,(224,224))
 
     return frontalized_img
 
   def rigid_transform_3D(self,A, B):
-    print(f"rigid_transform_3D: A.shape: {A.shape}, B.shape: {B.shape}")
     assert A.shape == B.shape
 
     num_rows, num_cols = A.shape
@@ -627,10 +636,6 @@ class FaceExtractor:
     Bm = B - centroid_B
 
     H = Am @ np.transpose(Bm)
-
-    # sanity check
-    #if linalg.matrix_rank(H) < 3:
-    #    raise ValueError("rank of H = {}, expecting 3".format(linalg.matrix_rank(H)))
 
     # find rotation
     U, S, Vt = np.linalg.svd(H)
@@ -659,7 +664,7 @@ class FaceExtractor:
       cv2.line(frame, tuple(points[i]), tuple(points[(i + 1) % 3]), (0, 255, 0), 1)
     return frame    
 
-  def apply_delaunay_triangulation_v2(self, original_image, frontalized_landmarks, original_landmarks, stop_after=-1,log_path=None):
+  def apply_delaunay_triangulation_v2(self, original_image, frontalized_landmarks, original_landmarks, stop_after=-1,log_path=None,nr_frame=None):
     # Pre-compute image dimensions scaling factors
     # h_orig, w_orig = original_image.shape[:2] - (1,1)
     h_orig, w_orig = original_image.shape[:2]
@@ -689,13 +694,31 @@ class FaceExtractor:
       normalized_frontalized_triangle = frontalized_triangle - [x_front, y_front] + [delta,delta]
       # print(f'normalized_frontalized_triangle: \n{normalized_frontalized_triangle}')
       normalized_original_triangle = original_triangle - [x_orig_rect, y_orig_rect] + [delta,delta]
-
-      img_orig_cut = original_image[y_orig_rect-delta:y_orig_rect + h_orig_rect+delta, x_orig_rect-delta:x_orig_rect + w_orig_rect+delta]
-      
+      start_row = y_orig_rect - delta
+      end_row = y_orig_rect + h_orig_rect + delta
+      start_col = x_orig_rect - delta
+      end_col = x_orig_rect + w_orig_rect + delta
+      if end_row > h_orig or end_col > w_orig or start_row < 0 or start_col < 0:
+        bottom_border = max(0,end_row - h_orig)
+        right_border = max(0,end_col - w_orig)
+        left_border = abs(min(start_col,0))
+        top_border = abs(min(start_row,0))
+        bordered_image = cv2.copyMakeBorder(original_image,top_border,bottom_border,left_border,right_border,cv2.BORDER_CONSTANT,value=(0,0,0))
+        img_orig_cut = bordered_image[start_row+top_border:end_row+top_border, start_col+left_border:end_col+left_border]
+      else:
+        img_orig_cut = original_image[start_row:end_row, start_col:end_col]
       affine_transform_norm = cv2.getAffineTransform(np.array(normalized_original_triangle,dtype=np.float32),
                                                      np.array(normalized_frontalized_triangle,dtype=np.float32))
-      
+      # try:
       wrp_region = cv2.warpAffine(img_orig_cut, affine_transform_norm, (w_front+delta, h_front+delta))
+      # except Exception as e:
+      #   print(f'Error in cv2.warpAffine: {e}')
+      #   print(f'img_orig_cut shape: {img_orig_cut.shape}')
+      #   print(f'frontalized_triangle: {frontalized_triangle}')
+      #   print(f'original_triangle: {original_triangle}')
+      #   print(f'normalized_frontalized_triangle: {normalized_frontalized_triangle}')
+      #   print(f'normalized_original_triangle: {normalized_original_triangle}')
+      #   raise e
       wrp_region = wrp_region[delta:delta+h_front,delta:delta+w_front]
       
       rect_mask = np.zeros((h_front, w_front), dtype=np.uint8)
@@ -711,7 +734,9 @@ class FaceExtractor:
                                     :frontalized_image_x[1] - frontalized_image_x[0]]
       wrp_region = wrp_region[:frontalized_image_y[1] - frontalized_image_y[0],
                                     :frontalized_image_x[1] - frontalized_image_x[0]]
-
+      if frontalized_image_y[0] < 0 or frontalized_image_x[0] < 0:
+        print(f'frontalized_image_y: {frontalized_image_y}, frontalized_image_x: {frontalized_image_x}')
+        raise ValueError("Invalid bounding box for the triangle.")
       # adapt the mask to the frontalized image
       frontalized_image[frontalized_image_y[0]: frontalized_image_y[1], 
                         frontalized_image_x[0]: frontalized_image_x[1]] = (
@@ -768,46 +793,7 @@ class FaceExtractor:
         break
     return frontalized_image, original_image
 
-  def apply_delaunay_triangulation(self,original_image, frontalized_landmarks, original_landmarks, log_path=None,stop_after=-1):
-    # Step 1: Compute Delaunay triangulation for the original landmarks
-    tri = Delaunay(frontalized_landmarks)
-    # Initialize the frontalized image
-    frontalized_image = np.zeros_like(original_image)
-
-    # Step 2: Iterate through each triangle
-    start = time.time()
-    count = 0
-    for simplex in tri.simplices:
-      # print(f'simplex: {simplex}')  
-      # Get the vertex coordinates of the triangle in the original image
-      original_triangle = np.float32(original_landmarks[simplex])*np.float32([original_image.shape[1], original_image.shape[0]]) # shape(3,2)
-      # Get the vertex coordinates of the triangle in the frontalized image
-      frontalized_triangle = np.float32(frontalized_landmarks[simplex])*np.float32([frontalized_image.shape[1], frontalized_image.shape[0]]) # shape(3,2)
-      # Compute the bounding rectangle for the frontalized triangle
-      triangle_mask = np.zeros_like(original_image)
-      tmp = time.time()
-      affine_transform = cv2.getAffineTransform(original_triangle, frontalized_triangle)
-      # print(f'affine_transform gt: {affine_transform}')
-      cv2.fillConvexPoly(triangle_mask, np.int32(frontalized_triangle), (255, 255, 255))
-      # plt.imshow(triangle_mask)
-      # Warp the region and copy it to the frontalized image
-      # original_image = self.plot_triangles_points(original_image, original_triangle)
-      warped_region = cv2.warpAffine(
-        original_image, affine_transform,
-        (frontalized_image.shape[1], frontalized_image.shape[0]),
-        # flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT
-      )
-
-      frontalized_image = cv2.bitwise_and(frontalized_image, cv2.bitwise_not(triangle_mask))
-      frontalized_image = cv2.bitwise_or(frontalized_image, cv2.bitwise_and(warped_region, triangle_mask))
-      count += 1
-      if count == stop_after:
-        break
-    # print(f'results: {results}')
-    
-    return frontalized_image,original_image
-
-  def _get_frontalized_img(self,frontalized_landmarks_2d, landmarks_2d, orig_frame, v2=False,stop_after=-1,log_path=None):
+  def _get_frontalized_img(self,frontalized_landmarks_2d, landmarks_2d, orig_frame, v2=False,stop_after=-1,log_path=None,nr_frame=None):
     if frontalized_landmarks_2d.shape[1] < 2 or landmarks_2d.shape[1] < 2:
       raise ValueError("Invalid landmarks shape. Must be (n,2) or (n,3).")  
     if frontalized_landmarks_2d.shape[1] != 2:
@@ -819,7 +805,8 @@ class FaceExtractor:
                                                   frontalized_landmarks=frontalized_landmarks_2d,
                                                   original_landmarks=landmarks_2d,
                                                   stop_after=stop_after,
-                                                  log_path=log_path)
+                                                  log_path=log_path,
+                                                  nr_frame=nr_frame)
     return frontalized_img
 
   def plot_landmarks_triangulation(self,image,landmarks,tri_simplices=None,fill_triangle_idx=None,padding=10):
@@ -842,14 +829,10 @@ class FaceExtractor:
       if fill_triangle_idx is not None:
         if np.intersect1d(triangle,fill_triangle_idx).shape[0] == 3:
           cv2.fillConvexPoly(img, np.int32([p1,p2,p3]), (255, 0, 0))
-        
-      # cv2.circle(img, tuple(p1), 2, (255, 0, 0), -1)
-      # cv2.circle(img, tuple(p2), 2, (255, 0, 0), -1)
-      # cv2.circle(img, tuple(p3), 2, (255, 0, 0), -1)
+
     top_left_corner = (np.min(landmarks[:, 0])-padding, np.min(landmarks[:, 1])-padding)
     bottom_right_corner = (np.max(landmarks[:, 0])+padding, np.max(landmarks[:, 1])+padding)
-    # top_left_corner = (top_left_corner[0] - padding, top_left_corner[1] - padding)
-    # bottom_right_corner = (bottom_right_corner[0] + padding, bottom_right_corner[1] + padding)
+
     return img,top_left_corner,bottom_right_corner
     # return img
     
