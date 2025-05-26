@@ -121,13 +121,16 @@ class PretrainVisionTransformerEncoder(nn.Module):
         self.head = nn.Linear(
             self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-    def forward_features(self, x, mask):
+    def forward_features(self, x, mask=None,return_embedding=None):
         x = self.patch_embed(x)
 
         x = x + self.pos_embed.type_as(x).to(x.device).clone().detach()
 
         B, _, C = x.shape
-        x_vis = x[~mask].reshape(B, -1, C)  # ~mask means visible
+        if mask is None:
+            x_vis = x
+        else:
+            x_vis = x[~mask].reshape(B, -1, C)  # ~mask means visible
 
         for blk in self.blocks:
             if self.with_cp:
