@@ -9,6 +9,13 @@ dict_data = None
 
 LOG_GRADIENT_PER_MODULE = False
 LOG_PER_CLASS_AND_SUBJECT = True
+LOG_HISTORY_SAMPLE = False
+QUERIES_AGG_METHOD = ['mean','max']
+LOG_LOSS_ACCURACY = False
+LOG_CROSS_ATTENTION = {
+  'enable': False,
+  'state':'train'
+}
 
 def get_shift_for_sample_id(folder_feature):
   if 'hflip' in folder_feature:
@@ -26,11 +33,14 @@ class SAMPLE_FRAME_STRATEGY(Enum):
   RANDOM_SAMPLING = 'random_sampling' 
   
 class MODEL_TYPE(Enum):
+  VIDEOMAE_v2_G_unl = os.path.join("VideoMAEv2","pretrained","vit_g_hybrid_pt_1200e.pth")
   VIDEOMAE_v2_S = os.path.join('VideoMAEv2','pretrained',"vit_s_k710_dl_from_giant.pth")
   VIDEOMAE_v2_B = os.path.join('VideoMAEv2','pretrained',"vit_b_k710_dl_from_giant.pth")
   # VIDEOMAE_v2_G_pt_1200e = os.path.join('VideoMAEv2','pretrained',"vit_g_hybrid_pt_1200e.pth")
   VIDEOMAE_v2_G = os.path.join('VideoMAEv2','pretrained',"vit_g_hybrid_pt_1200e_k710_ft.pth")
+
   ViT_image = 'ViT_image'
+  
   def get_model_type(type):
     """
     Retrieves the corresponding model type based on the provided type identifier.
@@ -55,6 +65,8 @@ class MODEL_TYPE(Enum):
       return MODEL_TYPE.VIDEOMAE_v2_B
     elif type == 'G':
       return MODEL_TYPE.VIDEOMAE_v2_G
+    elif type == 'G_unl':
+      return MODEL_TYPE.VIDEOMAE_v2_G_unl
     elif type == 'ViT_image':
       return MODEL_TYPE.ViT_image
     else:
