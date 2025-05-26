@@ -20,17 +20,16 @@ from jepa.evals.video_classification_frozen import eval as jepa_eval
 from jepa.src.models.utils import pos_embs
 from optuna.exceptions import TrialPruned
 import pickle
-import torchmetrics
-
+import matplotlib.pyplot as plt
 # import tracemalloc
 # import wandb
 
 class BaseHead(nn.Module):
   def __init__(self, model,is_classification):
     super(BaseHead, self).__init__()
-    self.model = model
+    # self.model = model
     self.is_classification = is_classification
-  
+      
   def log_performance(self, stage, loss, accuracy,epoch=-1,num_epochs=-1,list_grad_norm=None,wds=None,lrs=None):
       if epoch>-1:
         print(f'Epoch [{epoch}/{num_epochs}]')
@@ -61,11 +60,11 @@ class BaseHead(nn.Module):
   def start_train(self, num_epochs, criterion, optimizer,lr, saving_path, train_csv_path, val_csv_path ,batch_size,dataset_type,
                   round_output_loss, shuffle_training_batch, regularization_lambda_L1,concatenate_temp_dim,clip_grad_norm,
                   early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,backbone_dict,n_workers,label_smooth,
-                  regularization_lambda_L2,trial):
+                  regularization_lambda_L2,trial,enable_optuna_pruning):
     device = 'cuda'
-    self.model.to(device)
+    self._model.to(device)
     if init_network:
-      self.model._initialize_weights(init_type=init_network)
+      self._initialize_weights(init_type=init_network)
     
     train_dataset, train_loader = get_dataset_and_loader(batch_size=batch_size,
                                                               csv_path=train_csv_path,
@@ -75,7 +74,7 @@ class BaseHead(nn.Module):
                                                               concatenate_temporal=concatenate_temp_dim,
                                                               dataset_type=dataset_type,
                                                               backbone_dict=backbone_dict,
-                                                              model=self.model,
+                                                              model=self._model, # TODO: USE self and not self._model
                                                               label_smooth=label_smooth,
                                                               n_workers=n_workers)
     val_dataset, val_loader = get_dataset_and_loader(batch_size=batch_size,
@@ -86,13 +85,13 @@ class BaseHead(nn.Module):
                                                           concatenate_temporal=concatenate_temp_dim,
                                                           dataset_type=dataset_type,
                                                           backbone_dict=backbone_dict,
-                                                          model=self.model,
+                                                          model=self._model, # TODO: USE self and not self._model
                                                           label_smooth=label_smooth,
                                                           n_workers=n_workers)
     
-    if isinstance(self.model,AttentiveClassifierJEPA) and enable_scheduler:
-      optimizer, _, scheduler, wd_scheduler = jepa_eval.init_opt(
-          classifier=self.model,
+    if isinstance(self._model,AttentiveClassifierJEPA) and enable_scheduler: # TODO: USE self and not self._model
+      optimizer, _, scheduler, wd_scheduler = jepa_eval.init_opt( # TODO: USE self and not self._model
+          classifier=self._model,
           start_lr=lr,
           ref_lr=lr,
           iterations_per_epoch=1, # 1 because I update the optimizer every epoch
@@ -102,21 +101,12 @@ class BaseHead(nn.Module):
           num_epochs=num_epochs, 
           use_bfloat16=False)
     else:
-      optimizer = optimizer(self.model.parameters(), lr=lr, weight_decay=regularization_lambda_L2)
+      optimizer = optimizer(self._model.parameters(), lr=lr, weight_decay=regularization_lambda_L2) # TODO: USE self and not self._model
       if enable_scheduler:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer,
                                                                T_max=num_epochs,
                                                                eta_min=1e-7,
                                                                last_epoch=-1)
-        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau( optimizer=optimizer, 
-        #                                                         mode='min' if key_for_early_stopping == 'val_loss' else 'max',
-        #                                                         cooldown=5,
-        #                                                         patience=10,
-        #                                                         factor=0.1,
-        #                                                         verbose=True,
-        #                                                         threshold=1e-4,
-        #                                                         threshold_mode='abs',
-        #                                                         min_lr=1e-7)
         wd_scheduler = None
       else:
         scheduler = None
@@ -128,6 +118,20 @@ class BaseHead(nn.Module):
     # val_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
     val_unique_classes = torch.tensor(val_dataset.get_unique_classes())
     val_unique_subjects = torch.tensor(val_dataset.get_unique_subjects())
+    if helper.LOG_HISTORY_SAMPLE and torch.min(train_unique_classes)>=0 and torch.max(train_unique_classes)<=255 and torch.min(val_unique_classes)>=0 and torch.max(val_unique_classes)<=255:
+      list_train_sample = train_dataset.get_all_sample_ids()
+      list_val_sample = val_dataset.get_all_sample_ids()
+      history_train_sample_predictions = {id: torch.zeros(num_epochs, dtype=torch.uint8) for id in list_train_sample}
+      history_val_sample_predictions = {id: torch.zeros(num_epochs, dtype=torch.uint8) for id in list_val_sample}
+      print('Size history_train_sample_predictions:')
+      tools.print_dict_size(history_train_sample_predictions)
+    else:
+      if helper.LOG_HISTORY_SAMPLE:
+        print(f'\nWarning: The model will not save the predictions of the samples in the dataset because the classes are not in the range [0,255]\n')
+      else:
+        print(f'\nWarning: The model will not save the predictions of the samples in the dataset because LOG_HISTORY_SAMPLE is set to False\n')
+      history_train_sample_predictions = None
+      history_val_sample_predictions = None
     list_train_losses = []
     list_train_losses_per_class = []
     list_train_accuracy_per_class = []
@@ -140,8 +144,8 @@ class BaseHead(nn.Module):
     list_val_losses_per_subject = []
     list_val_accuracy_per_subject = []
     list_val_confusion_matricies = []
-    list_train_macro_accuracy = []
-    list_val_macro_accuracy = []
+    list_train_performance_metric = []
+    list_val_performance_metric = []
     total_norm_epoch = []
     list_lrs = []
     list_wds = []
@@ -163,10 +167,11 @@ class BaseHead(nn.Module):
     # list_memory_snap.append(tracemalloc.take_snapshot())
     # accuracy_metric = torchmetrics.Accuracy(task='multiclass',num_classes=self.model.num_classes,average='none').to(device)
     # precision_metric = torchmetrics.Precision(task='multiclass',num_classes=self.model.num_classes,average='none').to(device)
-    print(f'\nStart to train model with:\n Number of parameters: {((sum(p.numel() for p in self.model.parameters() if p.requires_grad))/1e6):.2f} M\n')
+    print(f'\nStart to train model with:\n Number of parameters: {((sum(p.numel() for p in self._model.parameters() if p.requires_grad))/1e6):.2f} M\n')
+    metric_for_stopping = "_".join(key_for_early_stopping.split('_')[1:]) # ex: val_accuracy -> accuracy. the second part must be metric from tools.evaluate_classification_from_confusion_matrix
     for epoch in range(num_epochs):
       start_epoch = time.time()
-      self.model.train()
+      self._model.train() # TODO: USE self and not self._model
       lrs, wds = tools.get_lr_and_weight_decay(optimizer)
       list_lrs.append(lrs)
       list_wds.append(wds)
@@ -187,6 +192,8 @@ class BaseHead(nn.Module):
       batch_train_confidence_prediction_wrong_std = []
       batch_dict_gradient_per_module = {}
       dict_log_time = {}
+      
+      
       # start_load = time.time()
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
         # dict_log_time['load'] = dict_log_time.get('load',0) + time.time()-start_load
@@ -198,12 +205,15 @@ class BaseHead(nn.Module):
         # list_y.append(batch_y)
         # [list_samples.append(sample.item()) for sample in sample_id]
         # [list_y.append(y.item()) for y in batch_y]
+        start_forward = time.time()
         batch_y = batch_y.to(device)
         dict_batch_X = {key: value.to(device) for key, value in dict_batch_X.items()}
-
-        start_forward = time.time()
         optimizer.zero_grad()
-        outputs = self.model(**dict_batch_X) # input [batch, seq_len, emb_dim]
+        
+        helper.LOG_CROSS_ATTENTION['state'] = 'train'
+        dict_batch_X['list_sample_id'] = sample_id
+        
+        outputs = self(**dict_batch_X) # input [batch, seq_len, emb_dim]
         dict_log_time['forward'] = dict_log_time.get('forward',0) + time.time()-start_forward
         # print(f'  Forward time: {dict_log_time["forward"]:.4f}')
         if round_output_loss:
@@ -212,7 +222,7 @@ class BaseHead(nn.Module):
         loss = criterion(outputs, batch_y)
         if regularization_lambda_L1 > 0:
           # Sum absolute values of all trainable parameters except biases
-          l1_norm = sum(param.abs().sum() for name,param in self.model.named_parameters() if param.requires_grad and 'bias' not in name)
+          l1_norm = sum(param.abs().sum() for name,param in self._model.named_parameters() if param.requires_grad and 'bias' not in name) # TODO: USE self and not self._model
           l1_penalty = regularization_lambda_L1 * l1_norm
           loss = loss + l1_penalty 
         # if regularization_lambda_L2 > 0:
@@ -228,10 +238,10 @@ class BaseHead(nn.Module):
         # precision_metric.update(outputs, batch_y)  
 
         if clip_grad_norm:
-          total_norm=torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad_norm).detach().cpu() #  torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)
+          total_norm=torch.nn.utils.clip_grad_norm_(self._model.parameters(), clip_grad_norm).detach().cpu() #  torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)
           # total_norm = torch.tensor(total_norm)
         else:
-          total_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 100).detach().cpu()
+          total_norm = torch.nn.utils.clip_grad_norm_(self._model.parameters(), 500).detach().cpu() # TODO: USE self and not self._model
         
         total_norm_epoch[epoch].append(total_norm.item())
         dict_log_time['backward'] = dict_log_time.get('backward',0) + time.time()-start_back
@@ -279,12 +289,18 @@ class BaseHead(nn.Module):
         else:
           predictions = torch.ceil(outputs).detach().cpu() 
           mask = torch.isin(predictions, train_unique_classes)
-          predictions[~mask] = self.model.num_classes # put prediction in the last class (bad_classified)
+          predictions[~mask] = self.num_classes # put prediction in the last class (bad_classified)
           
         batch_y = batch_y.detach().cpu()
         if batch_y.dim() > 1:
           batch_y = torch.argmax(batch_y, dim=1).reshape(-1)
         train_confusion_matrix.update(predictions, batch_y)
+        
+        if history_train_sample_predictions is not None: # add possibility to avoid this log
+          tools.log_predictions_per_sample_(dict_log_sample=history_train_sample_predictions,
+                                            tensor_sample_id=sample_id,
+                                            tensor_predictions=predictions,
+                                            epoch=epoch)
         # list_memory_snap.append(tracemalloc.take_snapshot())
         dict_log_time['batch_logs'] = dict_log_time.get('logs',0) + time.time()-start_logs 
         
@@ -299,13 +315,15 @@ class BaseHead(nn.Module):
       dict_eval = self.evaluate(criterion=criterion,is_test=False,
                                 unique_val_classes=val_unique_classes,
                                 unique_val_subjects=val_unique_subjects,
-                                val_loader=val_loader)
+                                val_loader=val_loader,
+                                epoch=epoch,
+                                history_val_sample_predictions=history_val_sample_predictions)
       dict_log_time['eval'] = dict_log_time.get('eval',0) + time.time()-time_eval
       # print(f'  Evaluation time: {dict_log_time["eval"]:.4f}')
       epoch_log_time = time.time()
       if epoch == 0 or (dict_eval[key_for_early_stopping] < best_eval_loss if key_for_early_stopping == 'val_loss' else dict_eval[key_for_early_stopping] > best_eval_loss):
         best_eval_loss = dict_eval[key_for_early_stopping]
-        best_model_state = copy.deepcopy(self.model.state_dict())
+        best_model_state = copy.deepcopy(self._model.state_dict())
         best_model_state = {key: value.cpu() for key, value in best_model_state.items()}
         best_model_epoch = epoch
         best_epoch = True
@@ -345,12 +363,13 @@ class BaseHead(nn.Module):
         list_val_confidence_prediction_wrong_mean.append(dict_eval['val_prediction_confidence_wrong_mean'])
         list_val_confidence_prediction_right_std.append(dict_eval['val_prediction_confidence_right_std'])
         list_val_confidence_prediction_wrong_std.append(dict_eval['val_prediction_confidence_wrong_std'])
+        
       list_val_confusion_matricies.append(dict_eval['val_confusion_matrix'])
       
       train_confusion_matrix.compute()
-      train_dict_precision_recall = tools.get_accuracy_from_confusion_matrix(confusion_matrix=train_confusion_matrix,list_real_classes=train_unique_classes)
-      list_train_macro_accuracy.append(train_dict_precision_recall['accuracy'])
-      list_val_macro_accuracy.append(dict_eval['val_accuracy'])
+      train_dict_precision_recall = tools.evaluate_classification_from_confusion_matrix(confusion_matrix=train_confusion_matrix,list_real_classes=train_unique_classes)
+      list_train_performance_metric.append(train_dict_precision_recall[metric_for_stopping])
+      list_val_performance_metric.append(dict_eval[key_for_early_stopping])
       
       if scheduler:
         scheduler.step()
@@ -361,22 +380,53 @@ class BaseHead(nn.Module):
       self.log_performance(stage='Train',
                            num_epochs=num_epochs,
                            loss=list_train_losses[-1], 
-                           accuracy=train_dict_precision_recall['accuracy'],
-                           epoch=epoch,list_grad_norm=total_norm_epoch[epoch],
+                           accuracy=train_dict_precision_recall[metric_for_stopping],
+                           epoch=epoch,
+                           list_grad_norm=total_norm_epoch[epoch],
                            lrs=lrs,
                            wds=wds)
       self.log_performance(stage='Val',
                            num_epochs=num_epochs,
                            loss=dict_eval['val_loss'],
-                           accuracy=dict_eval['val_accuracy'])
+                           accuracy=dict_eval[key_for_early_stopping])
+      
+      if helper.LOG_LOSS_ACCURACY and epoch > 0 and epoch % (helper.saving_rate_training_logs*2) == 0:
+        fig,ax = plt.subplots(1,1,figsize=(10,10))
+        input_dict_loss_acc= {
+          'list_1':list_train_losses,
+          'list_2':list_train_performance_metric,
+          'output_path':None,
+          'title':f'Train loss, validation {metric_for_stopping}, test {key_for_early_stopping}',
+          'point':None,
+          'ax':ax,
+          'x_label':'Epochs',
+          'y_label_1':'Train loss',
+          'y_label_2':f'Validation {metric_for_stopping}',
+          'y_label_3':None,
+          'y_lim_1':[0, 5],
+          'y_lim_2':[0, 1],
+          'y_lim_3':None,
+          'step_ylim_1':0.25,
+          'step_ylim_2':0.1,
+          'step_ylim_3':None,
+          'dict_to_string':None,
+          'color_1':'tab:red',
+          'color_2':'tab:blue',
+          'color_3':None,
+        }
+        tools.plot_losses_and_test_new(**input_dict_loss_acc)
+        fig.savefig(os.path.join(saving_path, f'loss_acc_epoch_.png'), dpi=300)
+        plt.close(fig)
         
       if early_stopping(dict_eval[key_for_early_stopping]):
         break
       
-      
-      trial.report(dict_eval[key_for_early_stopping], epoch)
-      if trial is not None and trial.should_prune():
-        raise TrialPruned()
+      if enable_optuna_pruning:
+        trial.report(dict_eval[key_for_early_stopping], epoch)
+        # trial.report(list_train_losses[-1], epoch)
+        
+        if trial is not None and trial.should_prune():
+          raise TrialPruned()
       dict_log_time['log_epoch'] = dict_log_time.get('log_epoch',0) + time.time()-epoch_log_time
       dict_log_time['epoch'] = dict_log_time.get('epoch',0) + time.time()-start_epoch
 
@@ -384,6 +434,9 @@ class BaseHead(nn.Module):
       for k,v in dict_log_time.items():
         print(f'  {k} time: {v:.4f} s')
 
+      if np.mean(total_norm_epoch[epoch]) < 1e-5 and epoch % 5 == 0:
+        print(f'Gradient norm is too small (< 1e-5). Stopping training.')
+        break
     # if saving_path:
     #     print('Load and save best model for next steps...')
     #     torch.save(best_model_state, os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth'))
@@ -417,14 +470,19 @@ class BaseHead(nn.Module):
       'list_val_confidence_prediction_right_std': list_val_confidence_prediction_right_std,
       'list_val_confidence_prediction_wrong_std': list_val_confidence_prediction_wrong_std,
       'epochs_gradient_per_module': epochs_gradient_per_module,
+      'history_train_sample_predictions': history_train_sample_predictions,
+      'history_val_sample_predictions': history_val_sample_predictions,
       # 'train_accuracy_per_class': train_accuracy_per_class,
       # 'test_accuracy_per_class': test_accuracy_per_class,
       'train_confusion_matricies': list_train_confusion_matricies,
       'val_confusion_matricies': list_val_confusion_matricies,
       'best_model_idx': best_model_epoch,
       'best_model_state': best_model_state,
-      'list_train_macro_accuracy': list_train_macro_accuracy,
-      'list_val_macro_accuracy': list_val_macro_accuracy,
+      'metric_for_stopping': metric_for_stopping,
+      # 'list_train_macro_accuracy': list_train_performance_metric,
+      'list_train_performance_metric': list_train_performance_metric,
+      'list_val_performance_metric': list_val_performance_metric,
+      # 'list_val_macro_accuracy': list_val_performance_metric,
       'epochs': epoch,
       'list_mean_total_norm_epoch': np.array(total_norm_epoch).mean(axis=1) ,
       'list_std_total_norm_epoch': np.array(total_norm_epoch).std(axis=1),
@@ -439,30 +497,32 @@ class BaseHead(nn.Module):
       # 'list_y': list_list_y
     }
 
-  def evaluate(self, val_loader, criterion, unique_val_subjects, unique_val_classes, is_test,save_log=True):
+  def evaluate(self, val_loader, criterion, unique_val_subjects, unique_val_classes, is_test,epoch,history_val_sample_predictions=None,save_log=True):
     # unique_train_val_classes is only for eval but kept the name for compatibility
     device = 'cuda'
     count = 0
-    self.model.to(device)
-    self.model.eval()
+    self._model.to(device) # TODO: USE self and not self._model
+    self._model.eval() # TODO: USE self and not self._model
     with torch.no_grad():
       val_loss = 0.0
-      loss_per_class = torch.zeros(self.model.num_classes)
-      accuracy_per_class = torch.zeros(self.model.num_classes)
+      loss_per_class = torch.zeros(self.num_classes)
+      accuracy_per_class = torch.zeros(self.num_classes)
       subject_loss = torch.zeros(unique_val_subjects.shape[0])
       accuracy_per_subject = torch.zeros(unique_val_subjects.shape[0])
       subject_batch_count = torch.zeros(unique_val_subjects.shape[0])
-      val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=self.model.num_classes+1) # last class is for bad_classified in regression
+      val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=self._model.num_classes+1) # last class is for bad_classified in regression
       batch_confidence_prediction_right_mean = []
       batch_confidence_prediction_wrong_mean = []
       batch_confidence_prediction_right_std = []
       batch_confidence_prediction_wrong_std = []
-      for dict_batch_X, batch_y, batch_subjects,_ in tqdm.tqdm(val_loader,total=len(val_loader),desc='Validation' if not is_test else 'Test'):
+      for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(val_loader,total=len(val_loader),desc='Validation' if not is_test else 'Test'):
         tmp = torch.isin(unique_val_subjects,batch_subjects)
         dict_batch_X = {key: value.to(device) for key, value in dict_batch_X.items()}
         batch_y = batch_y.to(device)
         subject_batch_count[tmp] += 1
-        outputs = self.model(**dict_batch_X)
+        helper.LOG_CROSS_ATTENTION['state'] = 'test' if is_test else 'val'
+        dict_batch_X['list_sample_id'] = sample_id
+        outputs = self(**dict_batch_X)
         loss = criterion(outputs, batch_y)
         val_loss += loss.item()
         if save_log and helper.LOG_PER_CLASS_AND_SUBJECT:
@@ -481,12 +541,18 @@ class BaseHead(nn.Module):
         else:
           predictions = torch.ceil(outputs).detach().cpu() 
           mask = torch.isin(predictions, unique_val_classes)
-          predictions[~mask] = self.model.num_classes # put prediction in the last class (bad_classified)
+          predictions[~mask] = self.num_classes # put prediction in the last class (bad_classified)
           
         batch_y = batch_y.detach().cpu()
         if batch_y.dim() > 1:
           batch_y = torch.argmax(batch_y, dim=1).reshape(-1)
         val_confusion_matricies.update(predictions, batch_y)
+        
+        if history_val_sample_predictions is not None:
+          tools.log_predictions_per_sample_(dict_log_sample=history_val_sample_predictions,
+                                            tensor_sample_id=sample_id,
+                                            tensor_predictions=predictions,
+                                            epoch=epoch)
         count += 1
       
       val_confusion_matricies.compute()
@@ -497,7 +563,7 @@ class BaseHead(nn.Module):
         subject_loss = subject_loss / subject_batch_count
         accuracy_per_subject = accuracy_per_subject / subject_batch_count
         
-      dict_precision_recall = tools.get_accuracy_from_confusion_matrix(confusion_matrix=val_confusion_matricies,
+      dict_precision_recall = tools.evaluate_classification_from_confusion_matrix(confusion_matrix=val_confusion_matricies,
                                                                        list_real_classes=unique_val_classes)
       if is_test:
         self.log_performance(stage='Test', loss=val_loss, accuracy=dict_precision_recall['accuracy'])
@@ -514,7 +580,7 @@ class BaseHead(nn.Module):
           'test_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
           'test_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
           'test_prediction_confidence_wrong_std': np.std(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
-          'dict_precision_recall': dict_precision_recall
+          'dict_precision_recall': dict_precision_recall,
         }
       else:
         return {
@@ -558,11 +624,11 @@ class BaseHead(nn.Module):
         pickle.dump(gradients, f)
 
   def load_state_weights(self, path):
-    self.model.load_state_dict(torch.load(path,weights_only=True))
+    self._model.load_state_dict(torch.load(path,weights_only=True))
     print(f'Model weights loaded from {path}')
     
   def log_gradient_per_module(self,dict_gradient_per_module):
-    for name, param in self.model.named_parameters():
+    for name, param in self._model.named_parameters():
       if param.grad is not None:
         if name not in dict_gradient_per_module:
           dict_gradient_per_module[name] = []
@@ -571,7 +637,7 @@ class BaseHead(nn.Module):
    
   def calculate_frobenius_norm(self):
     norm = 0.0
-    for _, param in self.model.named_parameters():
+    for _, param in self._model.named_parameters():
       if param.grad is not None:
         norm += torch.linalg.vector_norm(param.grad, ord=2)
         # norm += torch.norm(param.grad, p='fro').item()
@@ -580,9 +646,11 @@ class BaseHead(nn.Module):
   
 class LinearHead(BaseHead):
   def __init__(self, input_dim, num_classes, dim_reduction):
-    model = LinearProbe(input_dim=input_dim, num_classes=num_classes,dim_reduction=dim_reduction)
+    super().__init__(self,is_classification)
+    self._model = LinearProbe(input_dim=input_dim, num_classes=num_classes,dim_reduction=dim_reduction)
     is_classification = True if num_classes > 1 else False
-    super().__init__(model,is_classification)
+    self.is_classification = is_classification
+    self.num_classes = num_classes
   # def get_dataset_and_loader(self, csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal):
   #   return super().get_dataset_and_loader(csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal, False)
  
@@ -600,30 +668,55 @@ class AttentiveHeadJEPA(BaseHead):
       residual_dropout=0.0,
       attn_dropout=0.0,
       num_classes=5,
+      num_queries=1,
+      agg_method='mean',
       pos_enc=False,
       use_sdpa=False,
       grid_size_pos=None,
       cross_block_after_transformers=True,
       complete_block=True):
-    model = AttentiveClassifierJEPA(embed_dim=embed_dim,
-                                              num_heads=num_heads,
-                                              num_cross_heads=num_cross_heads,
-                                              mlp_ratio=mlp_ratio,
-                                              depth=depth,
-                                              norm_layer=norm_layer,
-                                              init_std=init_std,
-                                              qkv_bias=qkv_bias,
-                                              num_classes=num_classes,
-                                              dropout_mlp=dropout,
-                                              attn_dropout=attn_dropout,
-                                              residual_dropout=residual_dropout,
-                                              pos_enc=pos_enc,
-                                              use_sdpa=use_sdpa,
-                                              grid_size_pos=grid_size_pos,
-                                              cross_block_after_transformers=cross_block_after_transformers,
-                                              complete_block=complete_block)
-    super().__init__(model,is_classification=True)
+    super().__init__(self,is_classification=True if num_classes > 1 else False)
+    # self.is_classification = True if num_classes > 1 else False
+    self._model = AttentiveClassifierJEPA(embed_dim=embed_dim,
+                                    num_heads=num_heads,
+                                    num_cross_heads=num_cross_heads,
+                                    mlp_ratio=mlp_ratio,
+                                    depth=depth,
+                                    norm_layer=norm_layer,
+                                    num_queries=num_queries,
+                                    init_std=init_std,
+                                    qkv_bias=qkv_bias,
+                                    num_classes=num_classes,
+                                    dropout_mlp=dropout,
+                                    attn_dropout=attn_dropout,
+                                    residual_dropout=residual_dropout,
+                                    pos_enc=pos_enc,
+                                    agg_method=agg_method,
+                                    use_sdpa=use_sdpa,
+                                    grid_size_pos=grid_size_pos,
+                                    cross_block_after_transformers=cross_block_after_transformers,
+                                    complete_block=complete_block)
+    self.num_classes = num_classes
+    
+  def forward(self, x, key_padding_mask=None, **kwargs):
+    # compute logits
+    logits, xattn = self._model(x=x, 
+                                key_padding_mask=key_padding_mask,
+                                return_xattn=helper.LOG_CROSS_ATTENTION['enable'])
+    if xattn is not None:
+      xattn = xattn.detach().cpu().numpy()
+    # LOG CROSS ATTENTION if enabled
+    if helper.LOG_CROSS_ATTENTION['enable']:
+      if f"debug_xattn_{helper.LOG_CROSS_ATTENTION['state']}" not in helper.LOG_CROSS_ATTENTION:
+          helper.LOG_CROSS_ATTENTION[f"debug_xattn_{helper.LOG_CROSS_ATTENTION['state']}"] = []
+      list_sample_id = kwargs['list_sample_id'].numpy().astype(np.uint16) # problem if use torch.uint16 -> no problem when save results.pkl using np.uint16
+      
+      helper.LOG_CROSS_ATTENTION[f"debug_xattn_{helper.LOG_CROSS_ATTENTION['state']}"].append((list_sample_id,xattn))
+    
+    return logits
   
+  def _initialize_weights(self,init_type='default'):
+    self._model._initialize_weights(init_type=init_type)
 
       
 class AttentiveHead(BaseHead):
@@ -631,16 +724,18 @@ class AttentiveHead(BaseHead):
     model = AttentiveProbe(input_dim=input_dim,num_classes=num_classes,num_heads=num_heads,dropout=dropout,pos_enc=pos_enc)
     is_classification = True if num_classes > 1 else False
     super().__init__(model,is_classification)
-  # def get_dataset_and_loader(self, csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal):
-  #   return super().get_dataset_and_loader(csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal, True)
-
+  
 class GRUHead(BaseHead):
   def __init__(self, input_dim, hidden_size, num_layers, dropout, output_size,layer_norm):
-    model = GRUProbe(input_size=input_dim, hidden_size=hidden_size, num_layers=num_layers, dropout=dropout, output_size=output_size,layer_norm=layer_norm)
-    is_classification = True if output_size > 1 else False
-    super().__init__(model,is_classification)
-  # def get_dataset_and_loader(self, csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal):
-  #   return super().get_dataset_and_loader(csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal, False)
+    super().__init__(self,True if output_size > 1 else False)
+    self._model = GRUProbe(input_size=input_dim, hidden_size=hidden_size, num_layers=num_layers, dropout=dropout, output_size=output_size,layer_norm=layer_norm)
+    self._is_classification = True if output_size > 1 else False
+  
+  def forward(self, x, **kwargs): # x is already packed
+    return self._model(x)
+  
+  def _initialize_weights(self,init_type):
+    self._model._initialize_weights(init_type=init_type)
     
 class GRUProbe(nn.Module):
   def __init__(self, input_size, hidden_size, num_layers, dropout, output_size,layer_norm,pred_only_last_time_step=True):
