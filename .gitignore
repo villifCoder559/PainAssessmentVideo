@@ -181,3 +181,4 @@ debug_new_res_plot_folder/*
 new_image/*
 optuna_*
 pr
+VideoMAEv2/pretrained/vit_g_hybrid_pt_1200e.pth
