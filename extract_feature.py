@@ -15,9 +15,10 @@ import pandas as pd
 import torch.multiprocessing
 from pathlib import Path
 import numpy as np
+import tqdm
 # import torch.nn as nn
 
-def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,batch_size_feat_extraction,n_workers,saving_chunk_size=100,  preprocess_align = False,
+def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,enable_batch_extraction,batch_size_feat_extraction,n_workers,saving_chunk_size=100,  preprocess_align = False,
          preprocess_crop_detection = False,preprocess_frontalize = True,path_dataset=None,path_labels=None,stride_window=16,clip_length=16,
          log_file_path=None,root_saving_folder_path=None,backbone_type='video',from_=None,to_=None,save_big_feature=False,h_flip=False,
          stride_inside_window=1,float_16=False,color_jitter=False,rotation=False,save_as_safetensors=True
@@ -34,7 +35,26 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,ba
       f.write(log_message+'\n')
 
    
-
+  def batch_extraction(data,device,backbone):
+    list_batch_data = []
+    for batch_data in tqdm.tqdm(data,desc='Extracting features'):
+      batch_data = batch_data.unsqueeze(0)
+      batch_data = batch_data.to(device)
+      with torch.no_grad():
+        feature = backbone.forward_features(x=batch_data) # [1,8,14,14,768]
+      if isinstance(backbone,VideoBackbone) and pooling_embedding_reduction != EMBEDDING_REDUCTION.NONE:
+        if adaptive_avg_pool3d_out_shape is not None and pooling_embedding_reduction == EMBEDDING_REDUCTION.ADAPTIVE_POOLING_3D:
+          feature = feature.permute(0,4,1,2,3) # [1,768,8,14,14]
+          feature = torch.nn.functional.adaptive_avg_pool3d(feature,output_size=adaptive_avg_pool3d_out_shape) # [1,768,2,2,2]
+          feature = feature.permute(0,2,3,4,1) # [1,2,2,2,768]
+        else:
+          feature = torch.mean(feature,dim=pooling_embedding_reduction.value,keepdim=True)
+      if float_16:
+        feature = feature.half()
+      list_batch_data.append(feature.detach().cpu())
+    feature = torch.cat(list_batch_data,dim=0)
+    return feature
+      
   def _extract_features(dataset,batch_size_feat_extraction,n_workers,backbone):
     device = 'cuda'
     print(f"extracting features using.... {device}")
@@ -55,20 +75,24 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,ba
     count = 0
     start = time.time()
     for data, labels, subject_id,sample_id, path, list_sampled_frames in dataloader:
-      data = data.to(device)
-      print(f'extracting features from {path[0]}')
-      with torch.no_grad():
-        feature = backbone.forward_features(x=data) # [1,8,14,14,768]
-      if isinstance(backbone,VideoBackbone) and pooling_embedding_reduction != EMBEDDING_REDUCTION.NONE:
-        if adaptive_avg_pool3d_out_shape is not None and pooling_embedding_reduction == EMBEDDING_REDUCTION.ADAPTIVE_POOLING_3D:
-          feature = feature.permute(0,4,1,2,3) # [1,768,8,14,14]
-          feature = torch.nn.functional.adaptive_avg_pool3d(feature,output_size=adaptive_avg_pool3d_out_shape) # [1,768,2,2,2]
-          feature = feature.permute(0,2,3,4,1) # [1,2,2,2,768]
-        else:
-          feature = torch.mean(feature,dim=pooling_embedding_reduction.value,keepdim=True)
-      if float_16:
-        feature = feature.half()
-      print(f'feature shape {feature.shape}')
+      if enable_batch_extraction:
+        feature = batch_extraction(data=data,device=device,backbone=backbone)
+      else:
+        print(f'extracting features from {path[0]}')
+        data = data.to(device)
+        print(f'extracting features from {path[0]}')
+        with torch.no_grad():
+          feature = backbone.forward_features(x=data) # [1,8,14,14,768]
+        if isinstance(backbone,VideoBackbone) and pooling_embedding_reduction != EMBEDDING_REDUCTION.NONE:
+          if adaptive_avg_pool3d_out_shape is not None and pooling_embedding_reduction == EMBEDDING_REDUCTION.ADAPTIVE_POOLING_3D:
+            feature = feature.permute(0,4,1,2,3) # [1,768,8,14,14]
+            feature = torch.nn.functional.adaptive_avg_pool3d(feature,output_size=adaptive_avg_pool3d_out_shape) # [1,768,2,2,2]
+            feature = feature.permute(0,2,3,4,1) # [1,2,2,2,768]
+          else:
+            feature = torch.mean(feature,dim=pooling_embedding_reduction.value,keepdim=True)
+        if float_16:
+          feature = feature.half()
+      print(f'batch feature shape {feature.shape}')
       list_frames.append(list_sampled_frames)
       list_features.append(feature.detach().cpu())
       list_labels.append(labels) 
@@ -147,7 +171,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,ba
             'list_frames': torch.cat(list_frames,dim=0).to(torch.int32)
           }
       tools.save_dict_data(dict_data=dict_data,save_as_safetensors=save_as_safetensors,
-                           saving_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)))
+                           saving_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)) if not save_as_safetensors else root_saving_folder_path)
       _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(root_saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} \n')
   
   print('Model type:',model_type)
@@ -259,6 +283,7 @@ if __name__ == "__main__":
   parser.add_argument('--float_16', action='store_true', help='Use float 16')
   parser.add_argument('--save_as_safetensors', action='store_true', help='Save as safetensors')
   parser.add_argument('--adaptive_avg_pool3d_out_shape', type=int, nargs='*', default=[2,2,2], help='3d pooling kernel size')
+  parser.add_argument('--enable_batch_extraction', action='store_true', help='Enable batch extraction')
   # CUDA_VISIBLE_DEVICES=0 python3 extract_feature.py --gp --model_type B --saving_after 150 --emb_red spatial --path_dataset partA/video/video_frontalized_new --path_labels partA/starting_point/samples_exc_no_detection.csv --saving_folder_path partA/video/features/samples_16_frontalized_new --backbone_type video --from_ 0 --to_ 1500 --batch_size_feat_extraction 5 --n_workers 5
   # prompt example: python3 extract_feature.py --gp --model_type B --saving_after 5000  --emb_red temporal  --path_dataset partA/video/video_frontalized --path_labels partA/starting_point/samples_exc_no_detection.csv --saving_folder_path partA/video/features/samples_vit_img --log_file_path partA/video/features/samples_vit_img/log_file.txt --backbone_type image 
   args = parser.parse_args()
@@ -305,7 +330,8 @@ if __name__ == "__main__":
        stride_inside_window=args.stride_inside_window,
        float_16=args.float_16,
        save_as_safetensors=args.save_as_safetensors,
-       adaptive_avg_pool3d_out_shape=adaptive_avg_pool3d_out_shape
+       adaptive_avg_pool3d_out_shape=adaptive_avg_pool3d_out_shape,
+       enable_batch_extraction=args.enable_batch_extraction,
        )
   
   
