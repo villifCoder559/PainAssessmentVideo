@@ -456,6 +456,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    clip_grad_norm,
                    label_smooth,
                    dict_augmented,
+                   prefetch_factor,
                    trial=None
                   ):
  
@@ -569,6 +570,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   path_labels=path_csv_dataset,
                                   batch_size_training=batch_size_training,
                                   head=head.value,
+                                  prefetch_factor=prefetch_factor,
                                   head_params=head_params,
                                   features_folder_saving_path= features_folder_saving_path,
                                   clip_length=clip_length,
