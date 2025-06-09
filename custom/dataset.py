@@ -6,6 +6,7 @@ import math
 import numpy as np
 import torch
 import cv2
+import time
 import torch.nn as nn
 import torch.utils
 from custom.backbone import BackboneBase
@@ -13,17 +14,19 @@ from custom.helper import CUSTOM_DATASET_TYPE, SAMPLE_FRAME_STRATEGY
 import custom.helper as helper
 import custom.tools as tools
 from sklearn.model_selection import StratifiedKFold
-from torch.utils.data import  Sampler
+# from torch.utils.data import  Sampler
 from torchvision.transforms import v2
-import torchvision.transforms.functional as F
-import torchvision.transforms as T
-import custom.faceExtractor as extractor
+from concurrent.futures import ThreadPoolExecutor
+# import torchvision.transforms.functional as F
+# import torchvision.transforms as T
+# import custom.faceExtractor as extractor
 import pickle
 from torch.utils.data import DataLoader
 from custom.helper import INSTANCE_MODEL_NAME,get_shift_for_sample_id
 import custom.helper as helper
 from pathlib import Path 
 from torchvision import tv_tensors
+from torch.utils.data import BatchSampler
 
 class customDataset(torch.utils.data.Dataset):
   """
@@ -665,24 +668,33 @@ class customDatasetWhole(torch.utils.data.Dataset):
   def __len__(self):
     return len(self.df)
     
+  def _load_element(self,idx):
+    csv_row = self.df.iloc[idx]
+    folder_path = os.path.join(self.root_folder_features,csv_row['subject_name'],f"{csv_row['sample_name']}.safetensors")
+    # load_start = time.time()
+    features = tools.load_dict_data(folder_path)
+    # load_end = time.time()
+    # print(f"Element {idx} loading time: {load_end - load_start:.2f} seconds")
+    return _get_element(dict_data=features,df=self.df,idx=idx)
+  
   def __getitem__(self,idx):
-    def _load_element(idx=idx):
-      csv_row = self.df.iloc[idx]
-      folder_path = os.path.join(self.root_folder_features,csv_row['subject_name'],csv_row['sample_name'])
-      features = tools.load_dict_data(folder_path)
-      return _get_element(dict_data=features,df=self.df,idx=idx)
-    
     if isinstance(idx,int):
-      return _load_element(idx=idx)
+      el = self._load_element(idx=idx)
+      return el
     else:
-      batch = [_load_element(idx=idx) for idx in idx]
+      raise NotImplementedError("Batch loading is not implemented for customDatasetWhole")
+      batch_time_start = time.time()
+      # batch = [_load_element(idx=idx) for idx in idx]
+      with ThreadPoolExecutor(max_workers=len(idx)) as executor:
+        batch = list(executor.map(self._load_element, idx))
+      batch_time_end = time.time()
+      print(f"Batch {idx} loading time: {batch_time_end - batch_time_start:.2f} seconds")
       batch = self._custom_collate(batch)
       return batch
 
   def _custom_collate(self,batch):
     return _custom_collate(batch,self.instance_model_name,self.concatenate_temporal,self.model,self.num_classes,self.smooth_labels)  
-      
-  
+
   def get_unique_subjects(self):
     return np.sort(self.df['subject_id'].unique().tolist())
   def get_count_subjects(self):
@@ -691,6 +703,8 @@ class customDatasetWhole(torch.utils.data.Dataset):
     return np.unique(self.df['class_id'],return_counts=True)[1]
   def get_unique_classes(self):
     return np.sort(self.df['class_id'].unique().tolist())
+  def get_all_sample_ids(self):
+    return self.df['sample_id'].tolist()
 
 def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_classes,smooth_labels):
   # Pre-flatten features: reshape each sample to (sequence_length, emb_dim)
@@ -735,7 +749,7 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_cla
 def fake_collate(batch): # to avoid strange error when use customSampler
   return batch[0]  
 
-class customSampler(Sampler):
+class customBatchSampler(BatchSampler):
   def __init__(self, batch_size, shuffle,path_cvs_dataset=None, random_state=42,df=None):
     if df is None:
       csv_array,_ = tools.get_array_from_csv(path_cvs_dataset)
@@ -763,7 +777,7 @@ class customSampler(Sampler):
     
   def __iter__(self):
     for _,test in self.skf.split(np.zeros(self.y_labels.shape[0]), self.y_labels):
-      yield test
+      yield test.astype(np.int32).tolist() 
     self.random_state += 13
     self.initialize()
       
@@ -799,16 +813,24 @@ def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: f
 
  
 def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_training_batch,is_training,dataset_type,concatenate_temporal,model,
-                           label_smooth,n_workers=None,backbone_dict=None):
+                           label_smooth,n_workers=None,backbone_dict=None,prefetch_factor=None):
   if dataset_type.value == CUSTOM_DATASET_TYPE.WHOLE.value:
-    dataset_ = customDatasetWhole(csv_path,root_folder_features=root_folder_features,concatenate_temporal=concatenate_temporal,
+    dataset_ = customDatasetWhole(csv_path,root_folder_features=root_folder_features,
+                                  concatenate_temporal=concatenate_temporal,
                                   model=model,smooth_labels=label_smooth)
+    pin_memory = True
+    persistent_workers = True
+    prefetch_factor = 10 if prefetch_factor is None else prefetch_factor
   elif dataset_type.value == CUSTOM_DATASET_TYPE.AGGREGATED.value:
     dataset_ = customDatasetAggregated(csv_path=csv_path,
                                         root_folder_features=root_folder_features,
                                         concatenate_temporal=concatenate_temporal,
                                         is_train=is_training,
                                         model=model,smooth_labels=label_smooth)
+    pin_memory = False
+    persistent_workers = True
+    prefetch_factor = 2 if prefetch_factor is None else prefetch_factor
+    
   elif dataset_type.value == CUSTOM_DATASET_TYPE.BASE.value:
     if backbone_dict is not None:
       dataset_ = customDataset(path_dataset=root_folder_features,
@@ -824,6 +846,9 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                               video_labels=None,
                               backbone_dict=backbone_dict,
                               smooth_labels=label_smooth)
+      pin_memory = False
+      persistent_workers = True
+      prefetch_factor = 5 if prefetch_factor is None else prefetch_factor
     else:
       raise ValueError(f'backbone_dict must be provided for dataset_type: {dataset_type}')
   else:
@@ -831,25 +856,26 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
 
   if is_training:
     try:
-      customSampler_train = customSampler(df=dataset_.df, 
+      customBatchSampler_train = customBatchSampler(df=dataset_.df, 
                                           batch_size=batch_size,
                                           shuffle=shuffle_training_batch)
       if n_workers > 1:
         loader_ = DataLoader(
                             dataset=dataset_,
-                            sampler=customSampler_train,
-                            collate_fn=fake_collate,
-                            batch_size=1,
+                            batch_sampler=customBatchSampler_train,
+                            collate_fn=dataset_._custom_collate,
+                            # batch_size=1,
                             num_workers=n_workers,
-                            persistent_workers= True,
-                            pin_memory=False)
-        print(f'Use custom Dataloader with {n_workers} workers!')
+                            persistent_workers= persistent_workers,
+                            prefetch_factor=prefetch_factor,
+                            pin_memory=pin_memory)
+        print(f'Use custom Dataloader with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
       else:
         loader_ = DataLoader(
                             dataset=dataset_,
-                            sampler=customSampler_train,
-                            collate_fn=fake_collate,
-                            batch_size=1,
+                            batch_sampler=customBatchSampler_train,
+                            collate_fn=dataset_._custom_collate,
+                            # batch_size=1,
                             pin_memory=True)
         print(f'Use custom Dataloader!')
     except Exception as e:
@@ -865,8 +891,9 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                            shuffle=False,
                            collate_fn=dataset_._custom_collate,
                            num_workers=n_workers,
-                           persistent_workers=True,
-                           pin_memory=False)
+                           prefetch_factor=prefetch_factor,
+                           persistent_workers=persistent_workers,
+                           pin_memory=pin_memory)
     else:
       loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=False,collate_fn=dataset_._custom_collate)
   return dataset_,loader_
