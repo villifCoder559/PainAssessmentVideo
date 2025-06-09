@@ -242,7 +242,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'jitter': color_jitter,
       'rotation': rotation
     },
-    trial=trial
+    trial=trial,
+    prefetch_factor=kwargs['prefetch_factor']
   )
     # save_stats(pr, os.path.join(run_folder_path, 'profiling_results.txt'))
     # pr.dump_stats(os.path.join(run_folder_path, 'profiling_results.prof'))
@@ -483,6 +484,8 @@ if __name__ == '__main__':
   parser.add_argument('--mt', type=str, default='B', help='Model type: B (Base), S (Small), or I (Image)')
   parser.add_argument('--head', type=str, default='ATTENTIVE_JEPA', help='Head type: GRU, ATTENTIVE, LINEAR, ATTENTIVE_JEPA')
   parser.add_argument('--n_workers', type=int, default=1, help='Number of workers for data loading. Default is 1')
+  parser.add_argument('--prefetch_factor', type=int, default=2, help='Prefetch factor for data loading. Default is 2')
+  
   
   # Path configuration
   parser.add_argument('--gp', action='store_true', help='Use global path prefix for file paths')
