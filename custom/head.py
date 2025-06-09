@@ -10,7 +10,7 @@ import os
 from custom.helper import CUSTOM_DATASET_TYPE
 import torch.nn.init as init
 import custom.helper as helper
-from custom.dataset import customSampler
+from custom.dataset import customBatchSampler
 from torch.nn.utils.rnn import pack_padded_sequence,pack_padded_sequence
 from custom.dataset import get_dataset_and_loader
 import tqdm
@@ -23,6 +23,8 @@ import pickle
 import matplotlib.pyplot as plt
 # import tracemalloc
 # import wandb
+import threading
+
 
 class BaseHead(nn.Module):
   def __init__(self, model,is_classification):
@@ -60,7 +62,18 @@ class BaseHead(nn.Module):
   def start_train(self, num_epochs, criterion, optimizer,lr, saving_path, train_csv_path, val_csv_path ,batch_size,dataset_type,
                   round_output_loss, shuffle_training_batch, regularization_lambda_L1,concatenate_temp_dim,clip_grad_norm,
                   early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,backbone_dict,n_workers,label_smooth,
-                  regularization_lambda_L2,trial,enable_optuna_pruning):
+                  regularization_lambda_L2,trial,enable_optuna_pruning,prefetch_factor):
+    
+    # Generate Thread for smooth stopping 
+    stop_event = threading.Event()
+    def _wait_for_s():
+      cmd = input(">>> Type 's' + Enter to stop after this epoch: ")
+      if cmd.strip().lower() == 's':
+        stop_event.set()
+        print("Stopping training after this epoch...")
+    threading.Thread(target=_wait_for_s, daemon=True).start()
+    
+    # Start training 
     device = 'cuda'
     self._model.to(device)
     if init_network:
@@ -73,6 +86,7 @@ class BaseHead(nn.Module):
                                                               is_training=True,
                                                               concatenate_temporal=concatenate_temp_dim,
                                                               dataset_type=dataset_type,
+                                                              prefetch_factor=prefetch_factor,
                                                               backbone_dict=backbone_dict,
                                                               model=self._model, # TODO: USE self and not self._model
                                                               label_smooth=label_smooth,
@@ -84,6 +98,7 @@ class BaseHead(nn.Module):
                                                           is_training=False,
                                                           concatenate_temporal=concatenate_temp_dim,
                                                           dataset_type=dataset_type,
+                                                          prefetch_factor=prefetch_factor,
                                                           backbone_dict=backbone_dict,
                                                           model=self._model, # TODO: USE self and not self._model
                                                           label_smooth=label_smooth,
@@ -197,6 +212,9 @@ class BaseHead(nn.Module):
       # start_load = time.time()
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
         # dict_log_time['load'] = dict_log_time.get('load',0) + time.time()-start_load
+        # print(f'x pinned ->{dict_batch_X["x"].is_pinned()}')
+        # print(f'key_padding_mask pinned ->{dict_batch_X["key_padding_mask"].is_pinned()}')
+        
         start_batch = time.time()
         # list_memory_snap.append(tracemalloc.take_snapshot())
         tmp = torch.isin(train_unique_subjects,batch_subjects)
@@ -436,6 +454,10 @@ class BaseHead(nn.Module):
 
       if np.mean(total_norm_epoch[epoch]) < 1e-5 and epoch % 5 == 0:
         print(f'Gradient norm is too small (< 1e-5). Stopping training.')
+        break
+      
+      if stop_event.is_set():
+        print(f'Stop event is set. Stopping training.')
         break
     # if saving_path:
     #     print('Load and save best model for next steps...')
