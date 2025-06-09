@@ -170,7 +170,7 @@ class Attention(nn.Module):
         self.proj = nn.Linear(all_head_dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, return_attn=False):
         
         B, N, C = x.shape
         qkv_bias = None
@@ -183,7 +183,7 @@ class Attention(nn.Module):
         qkv = qkv.reshape(B, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[
             2]  # make torchscript happy (cannot use tensor as tuple)
-        if hasattr(torch.nn.functional,"scaled_dot_product_attention"):
+        if hasattr(torch.nn.functional,"scaled_dot_product_attention") and not return_attn:
             x = F.scaled_dot_product_attention(q, k, v, 
                                                dropout_p=self.att_drop_val if self.training else 0.0,
                                                scale=self.scale).transpose(1, 2).reshape(B, N, -1)
@@ -195,7 +195,10 @@ class Attention(nn.Module):
             x = (attn @ v).transpose(1, 2).reshape(B, N, -1)
         x = self.proj(x)
         x = self.proj_drop(x)
-        return x
+        if return_attn:
+            return x, attn
+        else:
+            return x
 
 
 class Block(nn.Module):
@@ -253,14 +256,25 @@ class Block(nn.Module):
         else:
             self.gamma_1, self.gamma_2 = None, None
 
-    def forward(self, x):
-        if self.gamma_1 is None:
-            x = x + self.drop_path(self.attn(self.norm1(x)))
-            x = x + self.drop_path(self.mlp(self.norm2(x)))
+    def forward(self, x, return_attn=False):
+        if not return_attn:
+            if self.gamma_1 is None:
+                x = x + self.drop_path(self.attn(self.norm1(x)))
+                x = x + self.drop_path(self.mlp(self.norm2(x)))
+            else:
+                x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x)))
+                x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
+            return x
         else:
-            x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x)))
-            x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
-        return x
+            if self.gamma_1 is None:
+                x_attn,attn = self.attn(self.norm1(x), return_attn=True)
+                x = x + self.drop_path(x_attn)
+                x = x + self.drop_path(self.mlp(self.norm2(x)))
+            else:
+                x_attn,attn = self.attn(self.norm1(x), return_attn=True)
+                x = x + self.drop_path(self.gamma_1 * x_attn)
+                x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
+            return x, attn
 
 
 class PatchEmbed(nn.Module):
@@ -429,7 +443,7 @@ class VisionTransformer(nn.Module):
         self.head = nn.Linear(
             self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-    def forward_features(self, x, return_embedding=False):
+    def forward_features(self, x, return_embedding=False, return_attn=False):
         B = x.size(0)
 
         x = self.patch_embed(x)
@@ -438,12 +452,19 @@ class VisionTransformer(nn.Module):
             x = x + self.pos_embed.expand(B, -1, -1).type_as(x).to(
                 x.device).clone().detach()
         x = self.pos_drop(x)
-
+        if return_attn:
+            blk_attns = []
         for blk in self.blocks:
             if self.with_cp:
                 x = cp.checkpoint(blk, x)
             else:
-                x = blk(x)
+                if return_attn:
+                    x, attn = blk(x, return_attn=True)
+                    blk_attns.append(attn.detach().cpu())
+                else:
+                    x = blk(x)
+        if return_attn:
+            return x, torch.stack(blk_attns,dim=0)
         if return_embedding:
             return x
         if self.fc_norm is not None:
