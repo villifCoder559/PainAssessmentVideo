@@ -205,7 +205,7 @@ class VideoBackbone(BackboneBase):
         # print(f"Removed {layer_name} layer from model")
   
   @torch.no_grad()
-  def forward_features(self, x: torch.Tensor, return_embedding: bool = True) -> torch.Tensor:
+  def forward_features(self, x: torch.Tensor, return_embedding: bool = True,return_attn: bool = True) -> torch.Tensor:
     """Extract features from video input.
     
     Args:
@@ -227,7 +227,9 @@ class VideoBackbone(BackboneBase):
     with torch.no_grad():
       # Forward pass
       print(f'Free GPU memory: {torch.cuda.memory_reserved() / 1e9} GB')
-      feat = self.model.forward_features(x, return_embedding=return_embedding)
+      feat = self.model.forward_features(x,
+                                         return_embedding=return_embedding,
+                                         return_attn=return_attn)
     
     # Process and reshape features if needed
     if return_embedding:
