@@ -126,14 +126,14 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
             'list_labels': torch.cat(list_labels,dim=0).to(torch.int32),
             'list_subject_id': torch.cat(list_subject_id).squeeze().to(torch.int32),
             'list_sample_id': torch.cat(list_sample_id).to(torch.int32),
-            'list_path': np.concatenate(list_path),
+            'list_path': np.concatenate(list_path), # not saved in .safetensors
             'list_frames': torch.cat(list_frames,dim=0).to(torch.int32)
           }
-          dict_data_size = dict_data["features"].element_size()*dict_data["features"].nelement()/1024/1024
+          # dict_data_size = dict_data["features"].element_size()*dict_data["features"].nelement()/1024/1024
           tools.save_dict_data(dict_data=dict_data,
                                save_as_safetensors=save_as_safetensors,
                                saving_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)))
-          _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(root_saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} with size {dict_data_size:.2f} MB \n time elapsed: {((end - start)//60//60):.0f} h {(((end - start)//60%60)):.0f} m {(((end - start)%60)):.0f} s\n')
+          _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(root_saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} \n time elapsed: {((end - start)//60//60):.0f} h {(((end - start)//60%60)):.0f} m {(((end - start)%60)):.0f} s\n')
         else:
           
           dict_data = {
@@ -144,7 +144,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
             'list_path': np.concatenate(list_path),
             'list_frames': torch.cat(list_frames,dim=0).to(torch.int32)
           }
-          dict_data_size = dict_data["features"].element_size()*dict_data["features"].nelement()/1024/1024
+          # dict_data_size = dict_data["features"].element_size()*dict_data["features"].nelement()/1024/1024
           path = Path(list_path[0][0])
           person_id = path.parts[-2]
           sample_id = path.parts[-1][:-4]
@@ -170,7 +170,8 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
             'list_path': np.concatenate(list_path),
             'list_frames': torch.cat(list_frames,dim=0).to(torch.int32)
           }
-      tools.save_dict_data(dict_data=dict_data,save_as_safetensors=save_as_safetensors,
+      tools.save_dict_data(dict_data=dict_data,
+                           save_as_safetensors=save_as_safetensors,
                            saving_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)) if not save_as_safetensors else root_saving_folder_path)
       _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(root_saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} \n')
   
@@ -305,7 +306,8 @@ if __name__ == "__main__":
     print(f'log_file_path: {args.log_file_path}')
     print(f'saving_folder_path: {args.saving_folder_path}')
   print(args)
-  
+  if args.save_big_feature:
+    args.saving_after = 1
   main(model_type=args.model_type,
        saving_chunk_size=args.saving_after,
        preprocess_align=args.prep_al,
