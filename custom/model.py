@@ -14,7 +14,7 @@ import custom.helper as helper
 class Model_Advanced: # Scenario_Advanced
   def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,
               path_labels, sample_frame_strategy, head, head_params,
-              batch_size_training,stride_window,clip_length,dict_augmented,
+              batch_size_training,stride_window,clip_length,dict_augmented,prefetch_factor,
               features_folder_saving_path,concatenate_temporal,label_smooth=0.0,n_workers=1,new_csv_path=None):
     """
     Initialize the custom model. 
@@ -55,6 +55,7 @@ class Model_Advanced: # Scenario_Advanced
     self.path_to_extracted_features = features_folder_saving_path
     self.dataset_type = tools.get_dataset_type(self.path_to_extracted_features)
     self.label_smooth = label_smooth
+    self.prefetch_factor = prefetch_factor
     if self.dataset_type == CUSTOM_DATASET_TYPE.BASE:
       self.backbone_dict = {
         'backbone': self.backbone,
@@ -83,11 +84,13 @@ class Model_Advanced: # Scenario_Advanced
       else:
         use_sdpa = False
         print('SDPA not available. Using standard attention.')
-
-      T_S_S_shape = np.array(helper.dict_data['features'][0].shape[:3])
-      if embedding_reduction.value is not None:
-        T_S_S_shape = np.mean(helper.dict_data['features'][0].shape,axis=embedding_reduction.value)[:3]
-        # T_S_S_shape = T_S_S_shape.squeeze()
+      if self.dataset_type == CUSTOM_DATASET_TYPE.AGGREGATED:
+        T_S_S_shape = np.array(helper.dict_data['features'][0].shape[:3])
+        if embedding_reduction.value is not None:
+          T_S_S_shape = np.mean(helper.dict_data['features'][0].shape,axis=embedding_reduction.value)[:3]
+          # T_S_S_shape = T_S_S_shape.squeeze()
+      elif self.dataset_type == CUSTOM_DATASET_TYPE.WHOLE:
+        T_S_S_shape = [8,16,16] if head_params['input_dim'] == 1408 else [8,14,14] # 1408 giant model
       print(f"Shape of T_S_S_shape: {T_S_S_shape}\n")
         # dim_pos_enc = 
       print(f'\n num_heads: {head_params["num_heads"]},\n num_cross_heads: {head_params["num_cross_heads"]}\n')
@@ -208,6 +211,7 @@ class Model_Advanced: # Scenario_Advanced
                                                         shuffle_training_batch=False,
                                                         backbone_dict=self.backbone_dict,
                                                         model=self.head._model,
+                                                        prefetch_factor=self.prefetch_factor,
                                                         label_smooth=self.label_smooth,
                                                         n_workers=self.n_workers
                                                                  )
@@ -296,6 +300,7 @@ class Model_Advanced: # Scenario_Advanced
                                           round_output_loss=round_output_loss,
                                           shuffle_training_batch=shuffle_training_batch,
                                           val_csv_path=val_csv_path,
+                                          prefetch_factor=self.prefetch_factor,
                                           n_workers=self.n_workers,
                                           clip_grad_norm=clip_grad_norm,
                                           label_smooth=self.label_smooth,
