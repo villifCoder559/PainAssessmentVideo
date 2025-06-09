@@ -66,15 +66,17 @@ def save_dict_data(dict_data, saving_folder_path,save_as_safetensors=False):
     dict_data (dict): Dictionary containing the data to be saved.
     saving_path (str): Path to save the dictionary data.
   """
-  if not os.path.exists(saving_folder_path):
-    os.makedirs(saving_folder_path)
   print(f'Saving dictionary data to {saving_folder_path}...')
   if save_as_safetensors:
+    if not os.path.exists(os.path.dirname(saving_folder_path)):
+      os.makedirs(os.path.dirname(saving_folder_path))
     # Save the dictionary as a .safetensors file
     dict_data = {k:v for k,v in dict_data.items() if isinstance(v,torch.Tensor)} 
     safetensors.torch.save_file(dict_data, saving_folder_path+'.safetensors')
     print(f'Safetensors data saved to {saving_folder_path}')
   else:
+    if not os.path.exists(saving_folder_path):
+      os.makedirs(saving_folder_path)
     for key, value in tqdm(dict_data.items(), desc="Saving files"):
       if isinstance(value, torch.Tensor):
         torch.save(value, os.path.join(saving_folder_path, f"{key}.pt"))
@@ -102,12 +104,16 @@ def is_whole_data(folder_path):
         folder_path = os.path.join(folder_path, subject, folder_feature)
         if not os.path.isdir(folder_path) and folder_feature.endswith('.mp4'):
           return False
-        folder_files = os.listdir(folder_path)
-        for video_feature in folder_files:
-          if video_feature.endswith('.pt') or video_feature.endswith('.npy'):
-            return True
-          else:
-            raise ValueError(f"Unsupported file format: {video_feature}")
+        if not '.safetensors' in folder_path:
+          folder_files = os.listdir(folder_path)
+          for video_feature in folder_files:
+            if video_feature.endswith('.pt') or video_feature.endswith('.npy') or 'safetensors' in video_feature:
+              return True
+            else:
+              raise ValueError(f"Unsupported file format: {video_feature}")
+        else:
+          # if the folder contains a safetensors file, it is considered whole data
+          return True
           
 def is_dict_data(folder_path):
   """
@@ -156,13 +162,8 @@ def load_dict_data(saving_folder_path):
       else:
         print(f"Unsupported file format: {file}")
   else:
-    dict_data = safetensors.torch.load_file(saving_folder_path, device='cpu').copy()
-    # copy data in RAM
-    # if psutil.virtual_memory().available > os.path.getsize(saving_folder_path):
-    #   for k,v in tqdm(dict_data.items(),desc="Copying data"):
-    #     dict_data[k] = v
-    # else:
-    #   print(f"Not enough RAM available to copy data from {saving_folder_path}.")
+    dict_data = safetensors.torch.load_file(saving_folder_path, device='cpu')
+
   return dict_data
 
 def plot_error_per_class(unique_classes, mae_per_class, criterion, title='', accuracy_per_class=None,y_label=None,
@@ -920,6 +921,7 @@ def plot_tsne(X_tsne,
   legend_label='',
   title='',
   cluster_measure='',
+  list_additiona_desc_legend=None,
   saving_path=None,
   chunk_interval=None,
   axis_scale=None,
@@ -979,6 +981,8 @@ def plot_tsne(X_tsne,
         + (f'{chunk_interval[i]}' if chunk_interval is not None else '')
         + (f' ({cluster_measure[val]:.2f})' if cluster_measure else '')
       )
+      if list_additiona_desc_legend is not None:
+        label += f' {list_additiona_desc_legend[i]}' if i < len(list_additiona_desc_legend) else ''
       i+=1
       c = color_dict[val]
 
@@ -1266,7 +1270,7 @@ def generate_video_from_list_video_path(list_video_path, list_frames, list_subje
       # cv2.putText(frame, f'Clip num.  : {clip} ', (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
       # cv2.putText(frame, f'Frame range: [{frames[0]},{frames[-1]}] ', (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2, cv2.LINE_AA)
       out.write(frame)
-    count+=1
+    count+=1 
     if count % 10 == 0:
       print(f'Processed {count}/{list_video_path.shape[0]} videos')
     # black_frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
