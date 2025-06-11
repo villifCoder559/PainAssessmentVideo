@@ -514,7 +514,7 @@ def generate_video_from_list_video_path(video_path, list_clip_ranges, sample_id,
   for frame in combined_frame:
     for i, text in enumerate(overlay_text):
       cv2.putText(frame, text, (50, 50 + i * 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    cv2.putText(frame, f'Chunk: {count//16}', (50, 50 + (i+1) * 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    cv2.putText(frame, f'Chunk: {(count//16)+1}', (50, 50 + (i+1) * 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
     cv2.putText(frame, f'Frame: {count}', (50, 50 + (i+2) * 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
     
     count += 1
