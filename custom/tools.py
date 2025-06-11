@@ -1808,11 +1808,11 @@ def compute_confidence_predictions_(list_prediction_right_mean,list_prediction_w
   outputs_right,_ = torch.max(outputs[mask_right],dim=1)
   outputs_wrong,_ = torch.max(outputs[~mask_right],dim=1)
   if len(outputs_right) != 0:
-    list_prediction_right_mean.append(torch.mean(outputs_right, dim=0).detach().cpu().numpy())
-    list_prediction_right_std.append(torch.std(outputs_right, dim=0).detach().cpu().numpy() if len(outputs_right) > 1 else 0)
+    list_prediction_right_mean.append(torch.mean(outputs_right, dim=0).detach().cpu().float().numpy())
+    list_prediction_right_std.append(torch.std(outputs_right, dim=0).detach().cpu().float().numpy() if len(outputs_right) > 1 else 0)
   if len(outputs_wrong) != 0:
-    list_prediction_wrong_mean.append(torch.mean(outputs_wrong, dim=0).detach().cpu().numpy())
-    list_prediction_wrong_std.append(torch.std(outputs_wrong, dim=0).detach().cpu().numpy() if len(outputs_wrong) > 1 else 0)
+    list_prediction_wrong_mean.append(torch.mean(outputs_wrong, dim=0).detach().cpu().float().numpy())
+    list_prediction_wrong_std.append(torch.std(outputs_wrong, dim=0).detach().cpu().float().numpy() if len(outputs_wrong) > 1 else 0)
 
 
 def generate_new_csv(csv_path,filter):
