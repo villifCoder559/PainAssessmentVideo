@@ -108,7 +108,7 @@ class Model_Advanced: # Scenario_Advanced
                                           num_queries=head_params['num_queries'],
                                           agg_method=head_params['agg_method'],
                                           use_sdpa=use_sdpa,
-                                          complete_block=True,
+                                          complete_block=head_params['complete_block'],
                                           cross_block_after_transformers=head_params['cross_block_after_transformers'],
                                           )
     elif head == 'LINEAR':

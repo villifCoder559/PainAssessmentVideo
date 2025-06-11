@@ -182,6 +182,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'cross_block_after_transformers': cross_block_after_transformers,
       'num_queries': num_queries,
       'agg_method': queries_agg_method,
+      'complete_block': trial.suggest_categorical('complete_block', kwargs['complete_block'])
     }
     head_enum = HEAD.ATTENTIVE_JEPA
 
@@ -526,6 +527,8 @@ if __name__ == '__main__':
                     help='Use cross block after transformers for Jepa Attentive head')
   parser.add_argument('--num_queries', type=int, nargs='*', default=[1], help='Number of queries for Attentive head. Default is 1')
   parser.add_argument('--queries_agg_method',type=str, nargs='*',default=['mean'], help=f'Aggregation method for queries: {[print(agg_method) for agg_method in helper.QUERIES_AGG_METHOD]} . Default is mean')
+  parser.add_argument('--complete_block', type=int, nargs='*', default=[1],
+                    help='Use complete block for Attentive head (after cross-attn there is MLP). Default is 1 (complete block), if 0 remove the MLP block after cross-attention')
   
   # Linear parameters
   parser.add_argument('--linear_dim_reduction', type=str, default='spatial', help=f'Dimension reduction for Linear head. Can be {[d.name.lower() for d in EMBEDDING_REDUCTION]}')
