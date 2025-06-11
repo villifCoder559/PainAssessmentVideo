@@ -216,9 +216,10 @@ def _generic_plot_binary(
       title = f"subjectid_{dict_args['subject_id']}_PA{dict_args['pain_levels']}_{name}_{tsne_label}_{X.shape[:-1]}_sil_{sil:.4f}_threshold_{dict_args['thresh_binary']}"
     
     list_additional_desc_legend = []
-    for idx in range(2):
-      list_additional_desc_legend.append(f' ({idx*dict_args["stride_dataset"]/dict_args["fps_dataset"]*dict_args["thresh_binary"]}, {(idx+1)*dict_args["stride_dataset"]/25*dict_args["thresh_binary"]}) sec')
-      
+    # for idx in range(2):
+    list_additional_desc_legend.append(f' (0, {dict_args["stride_dataset"]/dict_args["fps_dataset"]*dict_args["thresh_binary"]}) sec')
+    list_additional_desc_legend.append(f' ({dict_args["stride_dataset"]/dict_args["fps_dataset"]*dict_args["thresh_binary"]}, {(X.shape[0])*dict_args["stride_dataset"]/dict_args["fps_dataset"]:.2f}) sec')
+    
     if dict_args['plot_results']:
       img = tsne_tools.plot_tsne(
         X_tsne=X.reshape(-1, 2),
@@ -316,6 +317,9 @@ def get_parser() -> argparse.ArgumentParser:
   parser.add_argument('--stride_dataset', type=int, default=None, help='Stride of the dataset in frames')
   parser.add_argument('--fps_dataset', type=int, default=25, help='Frames per second of the dataset (default: 25)')
   parser.add_argument('--gp', action='store_true', help='Use global path for saving plots and csv files')  
+  
+  parser.add_argument('--sample_id_tsne_source',type=int,nargs='*',default=None,help="TSNE embedding space source sample id.")
+  parser.add_argument('--sample_id_target',type=int,nargs='*',default=None,help="target transformation sample id.")
   return parser
 
 
