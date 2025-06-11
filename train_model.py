@@ -479,14 +479,12 @@ if __name__ == '__main__':
   # Set up argument parser
   parser = argparse.ArgumentParser(description='Train video analysis model with various configurations')
   
-  
   # Model configuration
   parser.add_argument('--mt', type=str, default='B', help='Model type: B (Base), S (Small), or I (Image)')
   parser.add_argument('--head', type=str, default='ATTENTIVE_JEPA', help='Head type: GRU, ATTENTIVE, LINEAR, ATTENTIVE_JEPA')
   parser.add_argument('--n_workers', type=int, default=1, help='Number of workers for data loading. Default is 1')
   parser.add_argument('--prefetch_factor', type=int, default=2, help='Prefetch factor for data loading. Default is 2')
-  
-  
+    
   # Path configuration
   parser.add_argument('--gp', action='store_true', help='Use global path prefix for file paths')
   parser.add_argument('--csv', type=str, default=os.path.join('partA','starting_point','samples_exc_no_detection.csv'), 
@@ -499,6 +497,8 @@ if __name__ == '__main__':
                     help='Path to video dataset')
   
   # Training parameters
+  parser.add_argument('--train_amp_enabled', action='store_true', help='Enable AMP training')
+  parser.add_argument('--train_amp_dtype', type=str, default='float16', help='AMP training data type: bfloat16 or float16. Default is float16')
   parser.add_argument('--lr', type=float, nargs='*', default=[0.0001], help='Learning rate(s)')
   parser.add_argument('--ep', type=int, default=50, help='Number of epochs')
   parser.add_argument('--k_fold', type=int, default=3, help='Number of k-fold cross validation splits')
@@ -589,7 +589,11 @@ if __name__ == '__main__':
   
   if dict_args['log_history_sample']:
     helper.LOG_HISTORY_SAMPLE = True
-    
+  
+  if dict_args['train_amp_enabled']:
+    helper.AMP_ENABLED = True
+    helper.AMP_DTYPE = dict_args['train_amp_dtype'].lower()
+  
   for method in dict_args['queries_agg_method']:
     if method not in helper.QUERIES_AGG_METHOD:
       raise ValueError(f"Invalid queries aggregation method: {method}. Must be one of {[m for m in helper.QUERIES_AGG_METHOD]}")
