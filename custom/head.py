@@ -23,6 +23,7 @@ import pickle
 import matplotlib.pyplot as plt
 # import tracemalloc
 # import wandb
+from torch.amp import GradScaler, autocast
 import threading
 
 
@@ -184,6 +185,9 @@ class BaseHead(nn.Module):
     # precision_metric = torchmetrics.Precision(task='multiclass',num_classes=self.model.num_classes,average='none').to(device)
     print(f'\nStart to train model with:\n Number of parameters: {((sum(p.numel() for p in self._model.parameters() if p.requires_grad))/1e6):.2f} M\n')
     metric_for_stopping = "_".join(key_for_early_stopping.split('_')[1:]) # ex: val_accuracy -> accuracy. the second part must be metric from tools.evaluate_classification_from_confusion_matrix
+    
+    amp_dtype = torch.float16 if helper.AMP_DTYPE == 'float16' else torch.bfloat16
+    scaler = GradScaler(device=device, enabled=helper.AMP_ENABLED and amp_dtype in [torch.float16]) # Use GradScaler for mixed precision training
     for epoch in range(num_epochs):
       start_epoch = time.time()
       self._model.train() # TODO: USE self and not self._model
@@ -211,19 +215,10 @@ class BaseHead(nn.Module):
       
       # start_load = time.time()
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
-        # dict_log_time['load'] = dict_log_time.get('load',0) + time.time()-start_load
-        # print(f'x pinned ->{dict_batch_X["x"].is_pinned()}')
-        # print(f'key_padding_mask pinned ->{dict_batch_X["key_padding_mask"].is_pinned()}')
-        
         start_batch = time.time()
         # list_memory_snap.append(tracemalloc.take_snapshot())
         tmp = torch.isin(train_unique_subjects,batch_subjects)
         subject_count_batch[tmp] += 1
-        # list_samples.append(sample_id)
-        # list_y.append(batch_y)
-        # [list_samples.append(sample.item()) for sample in sample_id]
-        # [list_y.append(y.item()) for y in batch_y]
-        start_forward = time.time()
         batch_y = batch_y.to(device)
         dict_batch_X = {key: value.to(device) for key, value in dict_batch_X.items()}
         optimizer.zero_grad()
@@ -231,50 +226,38 @@ class BaseHead(nn.Module):
         helper.LOG_CROSS_ATTENTION['state'] = 'train'
         dict_batch_X['list_sample_id'] = sample_id
         
-        outputs = self(**dict_batch_X) # input [batch, seq_len, emb_dim]
+        start_forward = time.time()
+        with autocast(device_type=device, dtype=amp_dtype, enabled=helper.AMP_ENABLED):
+          outputs = self(**dict_batch_X) # input [batch, seq_len, emb_dim]
+          loss = criterion(outputs, batch_y)
+          # print(f'  Forward time: {dict_log_time["forward"]:.4f}')
+          # if round_output_loss:
+          #   outputs = torch.round(outputs)
+          if regularization_lambda_L1 > 0:
+            # Sum absolute values of all trainable parameters except biases
+            l1_norm = sum(param.abs().sum() for name,param in self._model.named_parameters() if param.requires_grad and 'bias' not in name) # TODO: USE self and not self._model
+            loss = loss + regularization_lambda_L1 * l1_norm 
+        
         dict_log_time['forward'] = dict_log_time.get('forward',0) + time.time()-start_forward
-        # print(f'  Forward time: {dict_log_time["forward"]:.4f}')
-        if round_output_loss:
-          outputs = torch.round(outputs)
-        start_loss = time.time()
-        loss = criterion(outputs, batch_y)
-        if regularization_lambda_L1 > 0:
-          # Sum absolute values of all trainable parameters except biases
-          l1_norm = sum(param.abs().sum() for name,param in self._model.named_parameters() if param.requires_grad and 'bias' not in name) # TODO: USE self and not self._model
-          l1_penalty = regularization_lambda_L1 * l1_norm
-          loss = loss + l1_penalty 
-        # if regularization_lambda_L2 > 0:
-        #   l2_norm = sum(param.pow(2).sum() for name,param in self.model.named_parameters() if param.requires_grad and 'bias' not in name)
-        #   l2_penalty = regularization_lambda_L2 * l2_norm
-
-        dict_log_time['loss'] = dict_log_time.get('loss',0) + time.time()-start_loss
+        # dict_log_time['loss'] = dict_log_time.get('loss',0) + time.time()-start_loss
         # print(f'  Loss time: {dict_log_time['loss']-start_loss:.4f}')
         start_back = time.time()
-        loss.backward()     
+        scaler.scale(loss).backward() # Use scaler for mixed precision training
+        # loss.backward()     
+        dict_log_time['backward'] = dict_log_time.get('backward',0) + time.time()-start_back
         
-        # accuracy_metric.update(outputs, batch_y)
-        # precision_metric.update(outputs, batch_y)  
-
+        scaler.unscale_(optimizer)  # Unscale gradients before clipping
         if clip_grad_norm:
           total_norm=torch.nn.utils.clip_grad_norm_(self._model.parameters(), clip_grad_norm).detach().cpu() #  torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)
-          # total_norm = torch.tensor(total_norm)
         else:
           total_norm = torch.nn.utils.clip_grad_norm_(self._model.parameters(), 500).detach().cpu() # TODO: USE self and not self._model
         
         total_norm_epoch[epoch].append(total_norm.item())
-        dict_log_time['backward'] = dict_log_time.get('backward',0) + time.time()-start_back
-        # print(f'  Backward time: {dict_log_time['backward']:.4f}')
         start_optimizer = time.time()
-        # remove dict_batch_X from GPU
-        optimizer.step()
+        scaler.step(optimizer)  # Use scaler to step the optimizer
+        scaler.update()
         dict_log_time['optimizer'] = dict_log_time.get('optimizer',0) + time.time()-start_optimizer
-        # print(f'  Optimizer time: {dict_log_time["optimizer"]:.4f}')
-        # outputs = torch.argmax(outputs, dim=1)
         train_loss += loss.item() 
-        # + (l2_penalty.item() if regularization_lambda_L2 > 0 else 0) 
- 
-        # Compute loss per class and subject
-        # if epoch % helper.saving_rate_training_logs == 0:
         start_logs = time.time()
         if helper.LOG_PER_CLASS_AND_SUBJECT:
           tools.compute_loss_per_class_(batch_y=batch_y,
@@ -324,11 +307,6 @@ class BaseHead(nn.Module):
         
       dict_log_time['batch'] = dict_log_time.get('batch',0) + time.time()-start_batch
 
-      # print(f'  Batch time: {dict_log_time['batch']:.4f}')
-      # tools.check_sample_id_y_from_csv(list_samples,list_y,train_csv_path)
-      # list_list_samples.append(list_samples)
-      # list_list_y.append(list_y)
-      # frobenius_norm = self.calculate_frobenius_norm()
       time_eval = time.time()
       dict_eval = self.evaluate(criterion=criterion,is_test=False,
                                 unique_val_classes=val_unique_classes,
@@ -453,11 +431,11 @@ class BaseHead(nn.Module):
         print(f'  {k} time: {v:.4f} s')
 
       if np.mean(total_norm_epoch[epoch]) < 1e-5 and epoch % 5 == 0:
-        print(f'Gradient norm is too small (< 1e-5). Stopping training.')
+        print(f'Gradient norm is too small (< 1e-5). Stopping training...')
         break
       
       if stop_event.is_set():
-        print(f'Stop event is set. Stopping training.')
+        print(f'Stop event is set. Stopping training...')
         break
     # if saving_path:
     #     print('Load and save best model for next steps...')

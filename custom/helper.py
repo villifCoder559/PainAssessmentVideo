@@ -7,6 +7,9 @@ saving_rate_training_logs = 3
 step_shift = 8700
 dict_data = None
 
+
+AMP_ENABLED = False
+AMP_DTYPE = None
 LOG_GRADIENT_PER_MODULE = False
 LOG_PER_CLASS_AND_SUBJECT = True
 LOG_HISTORY_SAMPLE = False
