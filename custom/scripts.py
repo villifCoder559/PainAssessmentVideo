@@ -457,7 +457,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    label_smooth,
                    dict_augmented,
                    prefetch_factor,
-                   trial=None
+                   soft_labels,
+                   trial=None,
                   ):
  
 
@@ -499,6 +500,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'n_workers': n_workers,
     'clip_grad_norm': clip_grad_norm,
     'label_smooth': label_smooth,
+    'soft_labels': soft_labels,
     **dict_augmented,
     'type_regul': 'elastic' if regularization_lambda_L1 > 0 and regularization_lambda_L2 > 0 else 'L1' if regularization_lambda_L1 > 0 else 'L2' if regularization_lambda_L2 > 0 else 'none'
     }
@@ -531,6 +533,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'clip_length': clip_length,
     'target_metric_best_model': target_metric_best_model,
     'early_stopping': str(early_stopping),
+    'soft_labels': soft_labels,
     'regularization_lambda_L2': regularization_lambda_L2,
     }
   ###############################
@@ -570,6 +573,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   path_labels=path_csv_dataset,
                                   batch_size_training=batch_size_training,
                                   head=head.value,
+                                  soft_labels=soft_labels,
                                   prefetch_factor=prefetch_factor,
                                   head_params=head_params,
                                   features_folder_saving_path= features_folder_saving_path,
