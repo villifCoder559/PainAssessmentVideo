@@ -43,12 +43,12 @@ class AttentivePooler(nn.Module):
         complete_block=True,
         use_sdpa=False,
         cross_block_after_transformers=False,
-        grid_size_pos=None # [T, S, S] -> S depends on the model (Base,Giant,etc), while T is input dependent
+        # grid_size_pos=None # [T, S, S] -> S depends on the model (Base,Giant,etc), while T is input dependent
     ):
         super().__init__()
         self.query_tokens = nn.Parameter(torch.zeros(1, num_queries, embed_dim))
         # self.pos_enc = pos_enc
-        self.grid_size_pos = grid_size_pos
+        # self.grid_size_pos = grid_size_pos
         self.cross_block_after_transformers = cross_block_after_transformers
         # self.pos_enc_tensor = None
         self.complete_block = complete_block
@@ -162,8 +162,6 @@ class AttentiveClassifier(nn.Module):
         agg_method='mean'
     ):
         super().__init__()
-        self.num_classes = num_classes
-        self.num_queries = num_queries
         self.pooler = AttentivePooler(
             num_queries=num_queries,
             embed_dim=embed_dim,
@@ -182,21 +180,17 @@ class AttentiveClassifier(nn.Module):
             grid_size_pos=grid_size_pos,
             cross_block_after_transformers=cross_block_after_transformers
         )
+        self.num_classes = num_classes
+        self.num_queries = num_queries
         self.pos_enc = pos_enc
         self.pos_enc_tensor = None
-        self.linear = nn.Linear(embed_dim, num_classes, bias=True)
         self.total_grid_area = grid_size_pos[1]*grid_size_pos[2]
         self.grid_size_pos = grid_size_pos
-        if num_queries == 1:
-            self.aggregator = nn.Identity() 
-        else:
-            if agg_method == 'max' or agg_method == 'mean':
-                self.aggregator = MeanMaxAggregator(method=agg_method,num_query_tokens=num_queries)
-            else:
-                raise NotImplementedError(f'Unknown aggregation method {agg_method}')
+        self.linear = nn.Linear(embed_dim, num_classes, bias=True)
         self.linear.reset_parameters()
 
     def forward(self, x, key_padding_mask=None,return_xattn=False): # x: [B, T, C], key_padding_mask: [B, T] (use for attention mask)
+        raise NotImplementedError('AttentiveClassifier is changed. Use AttentiveHeadJEPA instead.')
         if self.pos_enc:
             if self.pos_enc_tensor is None or self.pos_enc_tensor.shape[0] != x.size(1):
                 if x.size(1) % self.total_grid_area != 0:
@@ -209,7 +203,6 @@ class AttentiveClassifier(nn.Module):
             x = x + self.pos_enc_tensor
         x,xattn = self.pooler(x,key_padding_mask,return_xattn) 
         x = x.squeeze(1) # # [B, num_queries=1, C] -> [B, C]
-        x = self.aggregator(x)
         x = self.linear(x)
         return x, xattn
     
@@ -222,28 +215,3 @@ class AttentiveClassifier(nn.Module):
         else:
             raise NotImplementedError(f'Initialization method {init_type} not implemented')
 
-
-class MeanMaxAggregator(nn.Module):
-    """
-    Aggregator that either mean-pools or max-pools over Q CLS tokens.
-    - mean: averages and divides by sqrt(Q) to stabilize magnitude.
-    - max: takes element-wise maximum.
-    """
-    def __init__(self, num_query_tokens: int = 1, method: str = 'mean'):
-        super().__init__()
-        assert method in ['mean', 'max'], "method must be 'mean' or 'max'"
-        self.method = method
-        self.sqrt_Q = math.sqrt(num_query_tokens)
-
-    def forward(self, pooled_feats: torch.Tensor) -> torch.Tensor:
-        """
-        pooled_feats: [B, Q, C]
-        returns:    [B, C]
-        """
-        if self.method == 'mean':
-            # compute average then normalize by sqrt(Q)
-            mean = pooled_feats.mean(dim=1)          # [B, C]
-            return mean  / self.sqrt_Q  # [B, C]
-        else:  # 'max'
-            # elementwise max
-            return pooled_feats.max(dim=1)[0]  # [B, C]
