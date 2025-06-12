@@ -1772,10 +1772,11 @@ def compute_loss_per_subject_v2_(
             per_sample_losses = F.mse_loss(outputs, batch_y, reduction='none')
         elif (isinstance(criterion, torch.nn.L1Loss)):
             per_sample_losses = F.l1_loss(outputs, batch_y, reduction='none')
-        elif (isinstance(criterion, cdw.CDW_CELoss)): # if chage remeber to change also in new_plot_res_from_server
-            per_sample_losses = F.l1_loss(torch.argmax(outputs,dim=1), batch_y, reduction='none')
+        # elif (isinstance(criterion, cdw.CDW_CELoss)): # if chage remeber to change also in new_plot_res_from_server
         else:
-          raise ValueError(f"Unsupported criterion in loss per subject computation: {criterion}")
+          per_sample_losses = F.l1_loss(torch.argmax(outputs,dim=1), batch_y, reduction='none')
+        # else:
+        #   raise ValueError(f"Unsupported criterion in loss per subject computation: {criterion}")
         # sum losses by subject index
         loss_sum = torch.bincount(idx, weights=per_sample_losses, minlength=S)
         subject_loss += loss_sum.detach().cpu()
