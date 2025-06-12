@@ -25,7 +25,8 @@ import matplotlib.pyplot as plt
 # import wandb
 from torch.amp import GradScaler, autocast
 import threading
-
+import jepa.src.models.attentive_pooler as jepa_attentive_pooler
+from jepa.src.utils.tensors import trunc_normal_
 
 class BaseHead(nn.Module):
   def __init__(self, model,is_classification):
@@ -63,7 +64,7 @@ class BaseHead(nn.Module):
   def start_train(self, num_epochs, criterion, optimizer,lr, saving_path, train_csv_path, val_csv_path ,batch_size,dataset_type,
                   round_output_loss, shuffle_training_batch, regularization_lambda_L1,concatenate_temp_dim,clip_grad_norm,
                   early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,backbone_dict,n_workers,label_smooth,
-                  regularization_lambda_L2,trial,enable_optuna_pruning,prefetch_factor):
+                  regularization_lambda_L2,trial,enable_optuna_pruning,prefetch_factor,soft_labels):
     
     # Generate Thread for smooth stopping 
     stop_event = threading.Event()
@@ -76,7 +77,7 @@ class BaseHead(nn.Module):
     
     # Start training 
     device = 'cuda'
-    self._model.to(device)
+    self.to(device)
     if init_network:
       self._initialize_weights(init_type=init_network)
     
@@ -89,7 +90,8 @@ class BaseHead(nn.Module):
                                                               dataset_type=dataset_type,
                                                               prefetch_factor=prefetch_factor,
                                                               backbone_dict=backbone_dict,
-                                                              model=self._model, # TODO: USE self and not self._model
+                                                              model=self,
+                                                              soft_labels=soft_labels,
                                                               label_smooth=label_smooth,
                                                               n_workers=n_workers)
     val_dataset, val_loader = get_dataset_and_loader(batch_size=batch_size,
@@ -101,13 +103,14 @@ class BaseHead(nn.Module):
                                                           dataset_type=dataset_type,
                                                           prefetch_factor=prefetch_factor,
                                                           backbone_dict=backbone_dict,
-                                                          model=self._model, # TODO: USE self and not self._model
+                                                          model=self, 
+                                                          soft_labels=soft_labels,
                                                           label_smooth=label_smooth,
                                                           n_workers=n_workers)
     
-    if isinstance(self._model,AttentiveClassifierJEPA) and enable_scheduler: # TODO: USE self and not self._model
-      optimizer, _, scheduler, wd_scheduler = jepa_eval.init_opt( # TODO: USE self and not self._model
-          classifier=self._model,
+    if isinstance(self,AttentiveClassifierJEPA) and enable_scheduler: 
+      optimizer, _, scheduler, wd_scheduler = jepa_eval.init_opt( 
+          classifier=self,
           start_lr=lr,
           ref_lr=lr,
           iterations_per_epoch=1, # 1 because I update the optimizer every epoch
@@ -117,7 +120,7 @@ class BaseHead(nn.Module):
           num_epochs=num_epochs, 
           use_bfloat16=False)
     else:
-      optimizer = optimizer(self._model.parameters(), lr=lr, weight_decay=regularization_lambda_L2) # TODO: USE self and not self._model
+      optimizer = optimizer(self.parameters(), lr=lr, weight_decay=regularization_lambda_L2) 
       if enable_scheduler:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer,
                                                                T_max=num_epochs,
@@ -183,14 +186,14 @@ class BaseHead(nn.Module):
     # list_memory_snap.append(tracemalloc.take_snapshot())
     # accuracy_metric = torchmetrics.Accuracy(task='multiclass',num_classes=self.model.num_classes,average='none').to(device)
     # precision_metric = torchmetrics.Precision(task='multiclass',num_classes=self.model.num_classes,average='none').to(device)
-    print(f'\nStart to train model with:\n Number of parameters: {((sum(p.numel() for p in self._model.parameters() if p.requires_grad))/1e6):.2f} M\n')
+    print(f'\nStart to train model with:\n Number of parameters: {((sum(p.numel() for p in self.parameters() if p.requires_grad))/1e6):.2f} M\n')
     metric_for_stopping = "_".join(key_for_early_stopping.split('_')[1:]) # ex: val_accuracy -> accuracy. the second part must be metric from tools.evaluate_classification_from_confusion_matrix
     
     amp_dtype = torch.float16 if helper.AMP_DTYPE == 'float16' else torch.bfloat16
     scaler = GradScaler(device=device, enabled=helper.AMP_ENABLED and amp_dtype in [torch.float16]) # Use GradScaler for mixed precision training
     for epoch in range(num_epochs):
       start_epoch = time.time()
-      self._model.train() # TODO: USE self and not self._model
+      self.train() 
       lrs, wds = tools.get_lr_and_weight_decay(optimizer)
       list_lrs.append(lrs)
       list_wds.append(wds)
@@ -235,7 +238,7 @@ class BaseHead(nn.Module):
           #   outputs = torch.round(outputs)
           if regularization_lambda_L1 > 0:
             # Sum absolute values of all trainable parameters except biases
-            l1_norm = sum(param.abs().sum() for name,param in self._model.named_parameters() if param.requires_grad and 'bias' not in name) # TODO: USE self and not self._model
+            l1_norm = sum(param.abs().sum() for name,param in self.named_parameters() if param.requires_grad and 'bias' not in name) 
             loss = loss + regularization_lambda_L1 * l1_norm 
         
         dict_log_time['forward'] = dict_log_time.get('forward',0) + time.time()-start_forward
@@ -248,9 +251,9 @@ class BaseHead(nn.Module):
         
         scaler.unscale_(optimizer)  # Unscale gradients before clipping
         if clip_grad_norm:
-          total_norm=torch.nn.utils.clip_grad_norm_(self._model.parameters(), clip_grad_norm).detach().cpu() #  torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)
+          total_norm=torch.nn.utils.clip_grad_norm_(self.parameters(), clip_grad_norm).detach().cpu() #  torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)
         else:
-          total_norm = torch.nn.utils.clip_grad_norm_(self._model.parameters(), 500).detach().cpu() # TODO: USE self and not self._model
+          total_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), 500).detach().cpu() 
         
         total_norm_epoch[epoch].append(total_norm.item())
         start_optimizer = time.time()
@@ -319,7 +322,7 @@ class BaseHead(nn.Module):
       epoch_log_time = time.time()
       if epoch == 0 or (dict_eval[key_for_early_stopping] < best_eval_loss if key_for_early_stopping == 'val_loss' else dict_eval[key_for_early_stopping] > best_eval_loss):
         best_eval_loss = dict_eval[key_for_early_stopping]
-        best_model_state = copy.deepcopy(self._model.state_dict())
+        best_model_state = copy.deepcopy(self.state_dict())
         best_model_state = {key: value.cpu() for key, value in best_model_state.items()}
         best_model_epoch = epoch
         best_epoch = True
@@ -501,8 +504,8 @@ class BaseHead(nn.Module):
     # unique_train_val_classes is only for eval but kept the name for compatibility
     device = 'cuda'
     count = 0
-    self._model.to(device) # TODO: USE self and not self._model
-    self._model.eval() # TODO: USE self and not self._model
+    self.to(device) 
+    self.eval() 
     with torch.no_grad():
       val_loss = 0.0
       loss_per_class = torch.zeros(self.num_classes)
@@ -510,7 +513,7 @@ class BaseHead(nn.Module):
       subject_loss = torch.zeros(unique_val_subjects.shape[0])
       accuracy_per_subject = torch.zeros(unique_val_subjects.shape[0])
       subject_batch_count = torch.zeros(unique_val_subjects.shape[0])
-      val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=self._model.num_classes+1) # last class is for bad_classified in regression
+      val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=self.num_classes+1) # last class is for bad_classified in regression
       batch_confidence_prediction_right_mean = []
       batch_confidence_prediction_wrong_mean = []
       batch_confidence_prediction_right_std = []
@@ -624,11 +627,11 @@ class BaseHead(nn.Module):
         pickle.dump(gradients, f)
 
   def load_state_weights(self, path):
-    self._model.load_state_dict(torch.load(path,weights_only=True))
+    self.load_state_dict(torch.load(path,weights_only=True))
     print(f'Model weights loaded from {path}')
     
   def log_gradient_per_module(self,dict_gradient_per_module):
-    for name, param in self._model.named_parameters():
+    for name, param in self.named_parameters():
       if param.grad is not None:
         if name not in dict_gradient_per_module:
           dict_gradient_per_module[name] = []
@@ -637,7 +640,7 @@ class BaseHead(nn.Module):
    
   def calculate_frobenius_norm(self):
     norm = 0.0
-    for _, param in self._model.named_parameters():
+    for _, param in self.named_parameters():
       if param.grad is not None:
         norm += torch.linalg.vector_norm(param.grad, ord=2)
         # norm += torch.norm(param.grad, p='fro').item()
@@ -676,48 +679,77 @@ class AttentiveHeadJEPA(BaseHead):
       cross_block_after_transformers=True,
       complete_block=True):
     super().__init__(self,is_classification=True if num_classes > 1 else False)
-    # self.is_classification = True if num_classes > 1 else False
-    self._model = AttentiveClassifierJEPA(embed_dim=embed_dim,
-                                    num_heads=num_heads,
-                                    num_cross_heads=num_cross_heads,
-                                    mlp_ratio=mlp_ratio,
-                                    depth=depth,
-                                    norm_layer=norm_layer,
-                                    num_queries=num_queries,
-                                    init_std=init_std,
-                                    qkv_bias=qkv_bias,
-                                    num_classes=num_classes,
-                                    dropout_mlp=dropout,
-                                    attn_dropout=attn_dropout,
-                                    residual_dropout=residual_dropout,
-                                    pos_enc=pos_enc,
-                                    agg_method=agg_method,
-                                    use_sdpa=use_sdpa,
-                                    grid_size_pos=grid_size_pos,
-                                    cross_block_after_transformers=cross_block_after_transformers,
-                                    complete_block=complete_block)
+    self.pooler = jepa_attentive_pooler.AttentivePooler(
+            num_queries=num_queries,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            num_cross_heads=num_cross_heads,
+            mlp_ratio=mlp_ratio,
+            depth=depth,
+            mlp_dropout=dropout,
+            attn_dropout=attn_dropout,
+            residual_dropout=residual_dropout,
+            norm_layer=norm_layer,
+            init_std=init_std,
+            qkv_bias=qkv_bias,
+            complete_block=complete_block,
+            use_sdpa=use_sdpa,
+            cross_block_after_transformers=cross_block_after_transformers
+        )
     self.num_classes = num_classes
+    self.num_queries = num_queries
+    self.pos_enc = pos_enc
+    self.pos_enc_tensor = None
+    self.total_grid_area = grid_size_pos[1]*grid_size_pos[2]
+    self.grid_size_pos = grid_size_pos
+    self.linear = nn.Linear(embed_dim, num_classes, bias=True)
+    self.linear.reset_parameters()
     
+    if num_queries == 1:
+      self.aggregator = nn.Identity() 
+    else:
+      if agg_method == 'max' or agg_method == 'mean':
+        self.aggregator = MeanMaxAggregator(method=agg_method,num_query_tokens=num_queries)
+      else:
+        raise NotImplementedError(f'Unknown aggregation method {agg_method}')
+
   def forward(self, x, key_padding_mask=None, **kwargs):
-    # compute logits
-    logits, xattn = self._model(x=x, 
-                                key_padding_mask=key_padding_mask,
-                                return_xattn=helper.LOG_CROSS_ATTENTION['enable'])
-    if xattn is not None:
-      xattn = xattn.detach().cpu().numpy()
+    # FORWARD PASS
+    if self.pos_enc:
+      if self.pos_enc_tensor is None or self.pos_enc_tensor.shape[0] != x.size(1):
+        if x.size(1) % self.total_grid_area != 0:
+          raise ValueError(f'Input length {x.size(1)} is not divisible by batch size {x.size(0)}')
+        self.pos_enc_tensor = pos_embs.get_1d_sincos_pos_embed_torch(embed_dim=x.size(2),
+                                                                    grid_size=x.size(1)//self.total_grid_area).to(x.device)
+          # self.pos_enc_tensor = pos_embs.get_3d_sincos_pos_embed_torch(embed_dim=x.size(2),
+          #                                                              grid_depth=x.size(1)//(self.total_grid_area), # Considering same length for all dimensions!
+          #                                                              grid_size=self.grid_size_pos[1]).to(x.device)
+      x = x + self.pos_enc_tensor
+    x,xattn = self.pooler(x,key_padding_mask,helper.LOG_CROSS_ATTENTION['enable']) 
+    x = x.squeeze(1) # # [B, num_queries=1, C] -> [B, C]
+    x = self.aggregator(x)
+    x = self.linear(x)
+    
     # LOG CROSS ATTENTION if enabled
     if helper.LOG_CROSS_ATTENTION['enable']:
+      if xattn is not None:
+        xattn = xattn.detach().cpu().numpy()
       if f"debug_xattn_{helper.LOG_CROSS_ATTENTION['state']}" not in helper.LOG_CROSS_ATTENTION:
           helper.LOG_CROSS_ATTENTION[f"debug_xattn_{helper.LOG_CROSS_ATTENTION['state']}"] = []
       list_sample_id = kwargs['list_sample_id'].numpy().astype(np.uint16) # problem if use torch.uint16 -> no problem when save results.pkl using np.uint16
       
       helper.LOG_CROSS_ATTENTION[f"debug_xattn_{helper.LOG_CROSS_ATTENTION['state']}"].append((list_sample_id,xattn))
     
-    return logits
+    return x
   
   def _initialize_weights(self,init_type='default'):
-    self._model._initialize_weights(init_type=init_type)
-
+    if init_type == 'default':
+      trunc_normal_(self.pooler.query_tokens, std=self.pooler.init_std)
+      self.pooler.apply(self.pooler._init_weights)
+      self.pooler._rescale_blocks()
+      self.linear.reset_parameters()
+    else:
+      raise NotImplementedError(f'Initialization method {init_type} not implemented')
       
 class AttentiveHead(BaseHead):
   def __init__(self,input_dim,num_classes,num_heads,dropout,pos_enc):
@@ -976,3 +1008,28 @@ class earlyStoppingLoss(EarlyStopping):
     return f'{self.__class__.__name__}: {self.counter}|{self.patience} (counter|patience) '
   
   
+
+class MeanMaxAggregator(nn.Module):
+  """
+  Aggregator that either mean-pools or max-pools over Q CLS tokens.
+  - mean: averages and divides by sqrt(Q) to stabilize magnitude.
+  - max: takes element-wise maximum.
+  """
+  def __init__(self, num_query_tokens: int = 1, method: str = 'mean'):
+    super().__init__()
+    assert method in ['mean', 'max'], "method must be 'mean' or 'max'"
+    self.method = method
+    self.sqrt_Q = math.sqrt(num_query_tokens)
+
+  def forward(self, pooled_feats: torch.Tensor) -> torch.Tensor:
+    """
+    pooled_feats: [B, Q, C]
+    returns:    [B, C]
+    """
+    if self.method == 'mean':
+      # compute average then normalize by sqrt(Q)
+      mean = pooled_feats.mean(dim=1)          # [B, C]
+      return mean  / self.sqrt_Q  # [B, C]
+    else:  # 'max'
+      # elementwise max
+      return pooled_feats.max(dim=1)[0]  # [B, C]
