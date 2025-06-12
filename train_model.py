@@ -21,6 +21,8 @@ from copy import deepcopy
 import pickle
 from cdw_cross_entropy_loss import cdw_cross_entropy_loss
 import optunahub
+from sim_loss.age_estimation.loss import SimLoss # type: ignore
+
 
 # ------------ Helper Functions ------------
 
@@ -46,6 +48,9 @@ def get_loss(loss,dict_args=None):
     'cdw_ce': cdw_cross_entropy_loss.CDW_CELoss(num_classes=dict_args['num_classes'],
                                                 alpha=dict_args['alpha'],
                                                 transform=dict_args['transform']),
+    'sim_loss':SimLoss(number_of_classes=dict_args['num_classes'], 
+                       reduction_factor=dict_args['sim_loss_reduction'],
+                       device='cuda')
   }
   loss = loss.lower()
   if loss not in losses:
@@ -120,6 +125,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   loss = trial.suggest_categorical('loss', kwargs['loss'])
   cdw_ce_alpha = _suggest(trial, 'cdw_ce_alpha', kwargs['cdw_ce_alpha'], kwargs['optuna_categorical'])
   cdw_ce_power_transform = trial.suggest_categorical('cdw_ce_power_transform', kwargs['cdw_ce_transform'])
+  soft_labels = _suggest(trial, 'soft_labels', kwargs['soft_labels'], kwargs['optuna_categorical'])
+  sim_loss_reduction = _suggest(trial, 'sim_loss_reduction', kwargs['sim_loss_reduction'], kwargs['optuna_categorical'])
   if loss == 'cdw_ce' and label_smooth > 0:
     raise ValueError('Label smoothing not supported for CDW loss. Use label_smooth=0.')
   
@@ -200,10 +207,12 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     raise ValueError('Loss function not supported for regression. Use l1 or l2 loss.')
   dict_args_loss = {'num_classes': num_classes, 
                     'alpha': cdw_ce_alpha, 
+                    'sim_loss_reduction': sim_loss_reduction,
                     'transform': cdw_ce_power_transform}
   
   run_folder_path, results = scripts.run_train_test(
     model_type=model_type,
+    soft_labels=soft_labels,
     criterion=get_loss(loss, dict_args=dict_args_loss),
     concatenate_temp_dim=concatenate_temp_dim,
     pooling_embedding_reduction=kwargs['pooling_clips_reduction'],
@@ -262,154 +271,6 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   # return metric
   mean_val_accuracy = get_mean_val_accuracy(results)
   return mean_val_accuracy
-
-# def hyper_search_gru(kwargs):
-#   """Hyperparameter search for GRU head using Optuna."""
-#   study = optuna.create_study(
-#     direction='maximize',
-#     storage=f"sqlite:///{os.path.join(kwargs['global_folder_name'], 'optuna_gru_study.db')}",
-#     study_name=f"GRU_{os.path.basename(kwargs['global_folder_name'])}",
-#     pruner=optuna.pruners.ThresholdPruner(
-#       lower=kwargs['--pruner_n_warmup_steps'],
-#       n_warmup_steps=30,
-#       interval_steps=2
-#     )
-#   )
-#   study.optimize(lambda trial: objective(trial, kwargs), n_trials=kwargs['n_trials'], timeout=kwargs['timeout'])
-
-#   # save study
-#   optuna_path = os.path.join(kwargs['global_folder_name'], 'optuna_gru_study.pkl')
-#   with open(optuna_path, 'wb') as f:
-#     pickle.dump(study, f)
-#     print(f'Study saved to {optuna_path}')
-
-#   print('Best hyperparameters:')
-#   print(study.best_params)
-#   print('Best accuracy:', study.best_value)
-
-# def objective(trial:optuna.trial.Trial, original_kwargs):
-#   """Objective function for Optuna hyperparameter optimization."""
-#   kwargs = deepcopy(original_kwargs)
-  
-#   # Define the hyperparameters to be optimized
-#   model_type = MODEL_TYPE.get_model_type(kwargs['mt'])
-#   epochs = kwargs['ep']
-  
-#   # NOT SUPPORTED BY OPTUNA. TODO: find workaround
-#   # if nr_blocks == 1: # if nr_blocks == 1, there is only the cross-attention block
-#   #   kwargs['num_heads'] = [0]
-#   #   kwargs['cross_block_after_transformers'] = [0]
-  
-#   # Training params  
-  
-#   nr_blocks = _suggest(trial, 'nr_blocks', kwargs['nr_blocks'], kwargs['optuna_categorical'])
-#   lr = _suggest(trial, 'lr', kwargs['lr'], kwargs['optuna_categorical'])
-#   opt = trial.suggest_categorical('opt', kwargs['opt'])
-#   optimizer_fn = get_optimizer(opt)
-#   init_network = trial.suggest_categorical('init_network', kwargs['init_network'])
-#   batch_train = _suggest(trial, 'batch_train', kwargs['batch_train'], kwargs['optuna_categorical'])
-#   regulariz_lambda_L1 = _suggest(trial, 'regulariz_lambda_L1', kwargs['regulariz_lambda_L1'], kwargs['optuna_categorical'])
-#   regulariz_lambda_L2 = _suggest(trial, 'regulariz_lambda_L2', kwargs['regulariz_lambda_L2'], kwargs['optuna_categorical'])
-#   label_smooth = _suggest(trial, 'label_smooth', kwargs['label_smooth'], kwargs['optuna_categorical'])
-  
-#   concatenate_temp_dim=trial.suggest_categorical('concatenate_temp_dim',kwargs['concatenate_temp_dim'])
-  
-#   # augmentation
-#   hflip = _suggest(trial, 'hflip', kwargs['hflip'], kwargs['optuna_categorical'])
-#   color_jitter = _suggest(trial, 'color_jitter', kwargs['jitter'], kwargs['optuna_categorical'])
-#   rotation = _suggest(trial, 'rotation', kwargs['rotation'], kwargs['optuna_categorical'])
-  
-#   # jepa_attentive params
-#   num_heads = _suggest(trial, 'num_heads', kwargs['num_heads'], kwargs['optuna_categorical'])
-#   num_cross_head = _suggest(trial, 'num_cross_head', kwargs['num_cross_head'], kwargs['optuna_categorical'])
-#   model_dropout = _suggest(trial, 'model_dropout', kwargs['model_dropout'], kwargs['optuna_categorical'])
-#   drop_attn = _suggest(trial, 'drop_attn', kwargs['drop_attn'], kwargs['optuna_categorical'])
-#   drop_residual = _suggest(trial, 'drop_residual', kwargs['drop_residual'], kwargs['optuna_categorical'])
-#   mlp_ratio = _suggest(trial, 'mlp_ratio', kwargs['mlp_ratio'], kwargs['optuna_categorical'])
-#   pos_enc = trial.suggest_categorical('pos_enc', kwargs['pos_enc'])
-#   cross_block_after_transformers = trial.suggest_categorical('cross_block_after_transformers', kwargs['cross_block_after_transformers'])
-  
-#   emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
-#   num_classes = pd.read_csv(kwargs['csv'],sep='\t')['class_id'].unique().shape[0]  
-#   params = {
-#     'input_dim': emb_dim * 8 if concatenate_temp_dim else emb_dim,
-#     'num_classes': num_classes,
-#     'num_cross_heads': num_cross_head,
-#     'num_heads': num_heads if num_heads is not None else num_cross_head,
-#     'dropout': model_dropout,
-#     'attn_dropout': drop_attn,
-#     'residual_dropout': drop_residual,
-#     'mlp_ratio': mlp_ratio,
-#     'pos_enc': pos_enc,
-#     'depth': nr_blocks,
-#     'cross_block_after_transformers': cross_block_after_transformers}
-  
-#   # Check if the hyperparameters have been tried before
-#   for past in trial.study.trials:
-#     if past.state != optuna.trial.TrialState.COMPLETE and past.state != optuna.trial.TrialState.PRUNED:
-#       continue
-#     if past.params == trial.params:
-#       return past.value
-    
-#   # Call the training function with the suggested hyperparameters
-#   with cProfile.Profile() as pr:
-#     run_folder_path,results = scripts.run_train_test(
-#                                     model_type=model_type, 
-#                                     criterion=get_loss('CE'), 
-#                                     concatenate_temp_dim=concatenate_temp_dim,
-#                                     pooling_embedding_reduction=kwargs['pooling_clips_reduction'],
-#                                     pooling_clips_reduction=kwargs['pooling_clips_reduction'],
-#                                     sample_frame_strategy=kwargs['sample_frame_strategy'], 
-#                                     path_csv_dataset=kwargs['csv'], 
-#                                     path_video_dataset=kwargs['path_video_dataset'],
-#                                     head=HEAD.ATTENTIVE_JEPA,
-#                                     stride_window_in_video=kwargs['stride_window_in_video'],
-#                                     features_folder_saving_path=kwargs['ffsp'],
-#                                     head_params=params,
-#                                     k_fold=kwargs['k_fold'],
-#                                     global_foder_name=kwargs['global_folder_name'], 
-#                                     batch_size_training=batch_train, 
-#                                     epochs=epochs, 
-#                                     optimizer_fn=optimizer_fn,
-#                                     lr=lr,
-#                                     seed_random_state=seed_random_state,
-#                                     is_plot_dataset_distribution=False,
-#                                     is_round_output_loss=kwargs['is_round_output_loss'],
-#                                     is_shuffle_video_chunks=False,
-#                                     is_shuffle_training_batch=True,
-#                                     init_network=init_network,
-#                                     key_for_early_stopping=kwargs['key_early_stopping'],
-#                                     regularization_lambda_L1=regulariz_lambda_L1,
-#                                     regularization_lambda_L2=regulariz_lambda_L2,
-#                                     clip_length=clip_length,
-#                                     target_metric_best_model=target_metric_best_model,
-#                                     early_stopping=early_stopping,
-#                                     enable_scheduler=kwargs['enable_scheduler'],
-#                                     stop_after_kth_fold=kwargs['stop'],
-#                                     n_workers=kwargs['n_workers'],
-#                                     clip_grad_norm=kwargs['clip_grad_norm'],
-#                                     label_smooth=label_smooth,
-#                                     dict_augmented={'hflip': hflip,
-#                                                     'jitter': color_jitter,
-#                                                     'rotation': rotation},
-#                                     trial=trial
-#                                   )
-#     save_stats(pr, os.path.join(run_folder_path, 'profiling_results.txt'))
-#     pr.dump_stats(os.path.join(run_folder_path, 'profiling_results.prof'))
-    
-#   id_test = os.path.split(run_folder_path)[-1].split('_')[0]
-#   trial.set_user_attr('id_test', id_test)
-#   # Just to record this data
-#   trial.set_user_attr('head', [kwargs['head']])
-#   trial.set_user_attr('csv', [kwargs['csv']])
-#   trial.set_user_attr('ffsp', [kwargs['ffsp']])
-#   trial.set_user_attr('k_fold', [kwargs['k_fold']])
-#   trial.set_user_attr('stop', kwargs['stop'])
-#   trial.set_user_attr('n_workers', [kwargs['n_workers']])
-  
-#   # Extract the validation accuracy from the results
-#   mean_val_accuracy = get_mean_val_accuracy(results)
-#   return mean_val_accuracy
 
 def get_mean_val_accuracy(results):
   list_val_accuracy = []
@@ -510,9 +371,10 @@ if __name__ == '__main__':
   parser.add_argument('--clip_grad_norm', type=float, default=None, help='Clip gradient norm. Default is None (not applied)')
   parser.add_argument('--concatenate_temp_dim', type=int, nargs='*', default=[0],
                     help='Concatenate temporal dimension in input to the model. (ex: the embeddind is [temporal*emb_dim]=6144 if model base)')
-  parser.add_argument('--loss', type=str, nargs='*', default='ce', help='Loss function: l1, l2, ce, cdw_ce')
+  parser.add_argument('--loss', type=str, nargs='*', default='ce', help='Loss function: l1, l2, ce, cdw_ce,sim_loss')
   parser.add_argument('--cdw_ce_alpha', type=float, nargs='*', default=[2], help='Alpha parameter for CDW loss.') 
   parser.add_argument('--cdw_ce_transform', type=str, nargs='*', default=['power'], help='Transform for CDW loss. Default is power, can Be also "huber" or "log"')
+  parser.add_argument('--sim_loss_reduction', type=float, nargs='*', default=[0.0], help='Reduction factor for sim loss. Default is 0.0 (no reduction)')
   
   # Attention parameters
   parser.add_argument('--num_heads', type=int, nargs='*',default=[8], help='Number of heads for attention in transformer (when nr_blocks >1). Default is 8')
@@ -544,12 +406,13 @@ if __name__ == '__main__':
   parser.add_argument('--GRU_round_output_loss', type=int, default=[0],nargs='*',
                     help='Round output from regression before computing loss')
   
-  # Network initialization
+  # Network regularization
   parser.add_argument('--init_network', type=str, nargs='*', default=['default'], 
                     help='Network initialization: xavier, default, uniform. Default init. is "default"')
   parser.add_argument('--regulariz_lambda_L1', type=float, nargs='*', default=[0], help='Regularization strength(s) L1')
   parser.add_argument('--regulariz_lambda_L2', type=float, nargs='*', default=[0], help='Regularization strength(s) L2')
   parser.add_argument('--label_smooth', type=float, nargs='*',default=[0.0], help='Label smoothing factor. Default is 0.0 (no smoothing)')
+  parser.add_argument('--soft_labels', type=float, nargs='*', default=[0.0], help='Soft labels factor. Default is 0.0 (no soft labels), otherwise it will be use as hardness factor for the labels')
   parser.add_argument('--loss_regression', type=str, default='L1', help='Regression loss function: L1 or L2. Default is L1')
   
   # Network augmentation
@@ -600,6 +463,13 @@ if __name__ == '__main__':
   for method in dict_args['queries_agg_method']:
     if method not in helper.QUERIES_AGG_METHOD:
       raise ValueError(f"Invalid queries aggregation method: {method}. Must be one of {[m for m in helper.QUERIES_AGG_METHOD]}")
+  
+  if dict_args['label_smooth'] and dict_args['soft_labels']:
+    if sum(dict_args['label_smooth']) > 0 and sum(dict_args['soft_labels']) > 0:
+      raise ValueError("Label smoothing and soft labels cannot be used together. Choose one.")
+    
+  if dict_args['loss'] != 'ce' and (sum(dict_args['label_smooth']) > 0 or sum(dict_args['soft_labels']) > 0):
+    raise ValueError("Label smoothing and soft labels are only supported for 'ce' loss. Set them to 0 for other losses.")
   
   pooling_clips_reduction = CLIPS_REDUCTION.NONE
   sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
