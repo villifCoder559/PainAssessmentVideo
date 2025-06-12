@@ -14,8 +14,8 @@ import custom.helper as helper
 class Model_Advanced: # Scenario_Advanced
   def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,
               path_labels, sample_frame_strategy, head, head_params,
-              batch_size_training,stride_window,clip_length,dict_augmented,prefetch_factor,
-              features_folder_saving_path,concatenate_temporal,label_smooth=0.0,n_workers=1,new_csv_path=None):
+              batch_size_training,stride_window,clip_length,dict_augmented,prefetch_factor,soft_labels,
+              features_folder_saving_path,concatenate_temporal,label_smooth,n_workers,new_csv_path):
     """
     Initialize the custom model. 
     Parameters:
@@ -55,6 +55,7 @@ class Model_Advanced: # Scenario_Advanced
     self.path_to_extracted_features = features_folder_saving_path
     self.dataset_type = tools.get_dataset_type(self.path_to_extracted_features)
     self.label_smooth = label_smooth
+    self.soft_labels = soft_labels 
     self.prefetch_factor = prefetch_factor
     if self.dataset_type == CUSTOM_DATASET_TYPE.BASE:
       self.backbone_dict = {
@@ -201,7 +202,7 @@ class Model_Advanced: # Scenario_Advanced
     if path_model_weights is not None:
       self.head.load_state_weights()
     else:
-      self.head._model.load_state_dict(state_dict) # TODO: change to self.head.load_state_dict()
+      self.head.load_state_dict(state_dict) # TODO: change to self.head.load_state_dict()
     test_dataset, test_loader = get_dataset_and_loader(csv_path=csv_path,
                                                         batch_size=self.batch_size_training,
                                                         concatenate_temporal=concatenate_temporal,
@@ -210,7 +211,8 @@ class Model_Advanced: # Scenario_Advanced
                                                         root_folder_features=self.path_to_extracted_features,
                                                         shuffle_training_batch=False,
                                                         backbone_dict=self.backbone_dict,
-                                                        model=self.head._model,
+                                                        model=self.head,
+                                                        soft_labels=self.soft_labels,
                                                         prefetch_factor=self.prefetch_factor,
                                                         label_smooth=self.label_smooth,
                                                         n_workers=self.n_workers
@@ -285,6 +287,7 @@ class Model_Advanced: # Scenario_Advanced
                                           criterion=criterion,
                                           optimizer=optimizer_fn,
                                           lr=lr,
+                                          soft_labels=self.soft_labels,
                                           concatenate_temp_dim=concatenate_temporal,
                                           early_stopping=early_stopping,
                                           key_for_early_stopping=key_for_early_stopping,
