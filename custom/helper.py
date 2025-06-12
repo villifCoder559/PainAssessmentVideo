@@ -132,7 +132,7 @@ class INSTANCE_MODEL_NAME(Enum): # model.__class__.__name__
   LINEARPROBE = 'LinearProbe'
   GRUPROBE = 'GRUProbe'
   ATTENTIVEPROBE = 'AttentiveProbe'
-  AttentiveClassifier = 'AttentiveClassifier' # JEPA implementation
+  AttentiveClassifier = 'AttentiveHeadJEPA' # JEPA implementation
   
 class CLIPS_REDUCTION(Enum): 
   # [B,t,p,p,emb] -> [1,t,p,p,emb] ex: [3,8,14,14,768] -> [1,8,14,14,768]
