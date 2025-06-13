@@ -1796,7 +1796,7 @@ def compute_loss_per_subject_v2_(
         subject_accuracy += (correct_sum / total_counts).detach().cpu()
 
 def compute_confidence_predictions_(list_prediction_right_mean,list_prediction_wrong_mean,list_prediction_right_std,list_prediction_wrong_std,outputs,gt,pred_before_softmax=True):
-  if pred_before_softmax:
+  if pred_before_softmax and outputs.dim() == 2:
     outputs = torch.softmax(outputs, dim=1)
   if not isinstance(gt,torch.Tensor):
     gt = torch.tensor(gt)

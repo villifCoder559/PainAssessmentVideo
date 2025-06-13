@@ -109,6 +109,7 @@ class Model_Advanced: # Scenario_Advanced
                                           num_queries=head_params['num_queries'],
                                           agg_method=head_params['agg_method'],
                                           use_sdpa=use_sdpa,
+                                          coral_loss=head_params['coral_loss'],
                                           complete_block=head_params['complete_block'],
                                           cross_block_after_transformers=head_params['cross_block_after_transformers'],
                                           )
@@ -212,11 +213,12 @@ class Model_Advanced: # Scenario_Advanced
                                                         shuffle_training_batch=False,
                                                         backbone_dict=self.backbone_dict,
                                                         model=self.head,
+                                                        is_coral_loss=True if criterion.__name__ == 'coral_loss' else False,
                                                         soft_labels=self.soft_labels,
                                                         prefetch_factor=self.prefetch_factor,
                                                         label_smooth=self.label_smooth,
                                                         n_workers=self.n_workers
-                                                                 )
+                                                        )
     unique_test_subjects = torch.tensor(test_dataset.get_unique_subjects())
     unique_classes = torch.tensor(list(range(self.head.num_classes)))
     if helper.LOG_HISTORY_SAMPLE and torch.min(unique_classes)>=0 and torch.max(unique_classes)<=255:
@@ -229,6 +231,7 @@ class Model_Advanced: # Scenario_Advanced
                                    unique_val_subjects=unique_test_subjects,
                                    unique_val_classes=unique_classes,
                                    is_test=is_test,
+                                   is_coral_loss=True if criterion.__name__ == 'coral_loss' else False,
                                    epoch=0, # to get the right position for history_test_sample_predictions
                                    history_val_sample_predictions=history_test_sample_predictions)
     
@@ -296,6 +299,7 @@ class Model_Advanced: # Scenario_Advanced
                                           init_network=init_network,
                                           dataset_type=self.dataset_type,
                                           num_epochs=num_epochs,
+                                          is_coral_loss=True if criterion.__name__ == 'coral_loss' else False,
                                           train_csv_path=train_csv_path,
                                           regularization_lambda_L1=regularization_lambda_L1,
                                           regularization_lambda_L2=regularization_lambda_L2,

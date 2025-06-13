@@ -28,6 +28,7 @@ from pathlib import Path
 from torchvision import tv_tensors
 from torch.utils.data import BatchSampler
 from making_better_mistakes.better_mistakes.model import labels as soft_labels_generator
+from coral_pytorch.dataset import levels_from_labelbatch
 
 
 
@@ -561,7 +562,7 @@ class customDataset(torch.utils.data.Dataset):
 
 
 class customDatasetAggregated(torch.utils.data.Dataset):
-  def __init__(self,root_folder_features,concatenate_temporal,model,is_train,csv_path,smooth_labels,soft_labels):
+  def __init__(self,root_folder_features,concatenate_temporal,model,is_train,csv_path,smooth_labels,soft_labels,coral_loss):
     self.root_folder_feature = root_folder_features
     self.csv_path = csv_path
     self.concatenate_temporal = concatenate_temporal
@@ -591,6 +592,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
       )
     else:
       self.soft_labels = None
+    self.coral_loss = coral_loss
   
 
       
@@ -654,7 +656,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
       return batch
   
   def _custom_collate(self,batch):
-    return _custom_collate(batch,self.instance_model_name,self.concatenate_temporal,self.model,self.num_classes,self.smooth_labels,self.soft_labels)
+    return _custom_collate(batch,self.instance_model_name,self.concatenate_temporal,self.model,self.num_classes,self.smooth_labels,self.soft_labels,self.coral_loss)
   
   def get_unique_subjects(self):
     return np.sort(self.df['subject_id'].unique().tolist())
@@ -668,7 +670,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
     return self.df['sample_id'].tolist()
 
 class customDatasetWhole(torch.utils.data.Dataset):
-  def __init__(self,csv_path,root_folder_features,concatenate_temporal,model,smooth_labels,soft_labels):
+  def __init__(self,csv_path,root_folder_features,concatenate_temporal,model,smooth_labels,soft_labels,coral_loss):
     self.csv_path = csv_path
     self.root_folder_features = root_folder_features
     self.df = pd.read_csv(csv_path,sep='\t') # subject_id, subject_name, class_id, class_name, sample_id, sample_name
@@ -687,6 +689,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
       )
     else:
       self.soft_labels = None
+    self.coral_loss = coral_loss
     
   def __len__(self):
     return len(self.df)
@@ -716,7 +719,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
       return batch
 
   def _custom_collate(self,batch):
-    return _custom_collate(batch,self.instance_model_name,self.concatenate_temporal,self.model,self.num_classes,self.smooth_labels,self.soft_labels)  
+    return _custom_collate(batch,self.instance_model_name,self.concatenate_temporal,self.model,self.num_classes,self.smooth_labels,self.soft_labels,self.coral_loss)  
 
   def get_unique_subjects(self):
     return np.sort(self.df['subject_id'].unique().tolist())
@@ -729,7 +732,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
   def get_all_sample_ids(self):
     return self.df['sample_id'].tolist()
 
-def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_classes,smooth_labels, soft_labels_mat):
+def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_classes,smooth_labels, soft_labels_mat,coral_loss):
   # Pre-flatten features: reshape each sample to (sequence_length, emb_dim)
   if instance_model_name != helper.INSTANCE_MODEL_NAME.LINEARPROBE:
     if not concatenate_temporal:
@@ -740,11 +743,13 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_cla
     lengths = [feat.size(0) for feat in features]
     features = torch.nn.utils.rnn.pad_sequence(features,batch_first=True) # [batch_size,seq_len,emb_dim]
     lengths_tensor = torch.tensor(lengths)  
-    labels = torch.tensor([sample['labels'][0] for sample in batch],dtype=torch.long)
+    labels = torch.tensor([sample['labels'][0] for sample in batch],dtype=torch.int32)
     if smooth_labels > 0.0: # and model.output_size > 1:
       labels = smooth_labels_batch(gt_classes=labels, num_classes=num_classes, smoothing=smooth_labels)
-    if soft_labels_mat is not None:
+    elif soft_labels_mat is not None:
       labels = soft_labels_mat[labels].to(torch.float32) # soft labels
+    elif coral_loss:
+      labels = levels_from_labelbatch(labels, num_classes, dtype=torch.float32)
     subject_id = torch.tensor([sample['subject_id'][0] for sample in batch])
     sample_id = torch.tensor([sample['sample_id'] for sample in batch])
     if instance_model_name == helper.INSTANCE_MODEL_NAME.AttentiveClassifier or instance_model_name == helper.INSTANCE_MODEL_NAME.ATTENTIVEPROBE:
@@ -841,12 +846,13 @@ def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: f
 
  
 def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_training_batch,is_training,dataset_type,concatenate_temporal,model,
-                           label_smooth,soft_labels,n_workers=None,backbone_dict=None,prefetch_factor=None):
+                           label_smooth,soft_labels,is_coral_loss,n_workers=None,backbone_dict=None,prefetch_factor=None):
   if dataset_type.value == CUSTOM_DATASET_TYPE.WHOLE.value:
     dataset_ = customDatasetWhole(csv_path,root_folder_features=root_folder_features,
                                   concatenate_temporal=concatenate_temporal,
                                   model=model,smooth_labels=label_smooth,
-                                  soft_labels=soft_labels)
+                                  soft_labels=soft_labels,
+                                  coral_loss=is_coral_loss)
     pin_memory = True
     persistent_workers = True
     prefetch_factor = 10 if prefetch_factor is None else prefetch_factor
@@ -857,6 +863,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                         is_train=is_training,
                                         model=model,
                                         smooth_labels=label_smooth,
+                                        coral_loss=is_coral_loss,
                                         soft_labels=soft_labels)
     pin_memory = False
     persistent_workers = True

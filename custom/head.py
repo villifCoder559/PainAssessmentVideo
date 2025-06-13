@@ -27,6 +27,9 @@ from torch.amp import GradScaler, autocast
 import threading
 import jepa.src.models.attentive_pooler as jepa_attentive_pooler
 from jepa.src.utils.tensors import trunc_normal_
+from coral_pytorch.layers import CoralLayer
+from coral_pytorch.dataset import proba_to_label
+
 
 class BaseHead(nn.Module):
   def __init__(self, model,is_classification):
@@ -64,7 +67,7 @@ class BaseHead(nn.Module):
   def start_train(self, num_epochs, criterion, optimizer,lr, saving_path, train_csv_path, val_csv_path ,batch_size,dataset_type,
                   round_output_loss, shuffle_training_batch, regularization_lambda_L1,concatenate_temp_dim,clip_grad_norm,
                   early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,backbone_dict,n_workers,label_smooth,
-                  regularization_lambda_L2,trial,enable_optuna_pruning,prefetch_factor,soft_labels):
+                  regularization_lambda_L2,trial,enable_optuna_pruning,prefetch_factor,soft_labels,is_coral_loss):
     
     # Generate Thread for smooth stopping 
     stop_event = threading.Event()
@@ -91,6 +94,7 @@ class BaseHead(nn.Module):
                                                               prefetch_factor=prefetch_factor,
                                                               backbone_dict=backbone_dict,
                                                               model=self,
+                                                              is_coral_loss=is_coral_loss,
                                                               soft_labels=soft_labels,
                                                               label_smooth=label_smooth,
                                                               n_workers=n_workers)
@@ -104,6 +108,7 @@ class BaseHead(nn.Module):
                                                           prefetch_factor=prefetch_factor,
                                                           backbone_dict=backbone_dict,
                                                           model=self, 
+                                                          is_coral_loss=is_coral_loss,
                                                           soft_labels=soft_labels,
                                                           label_smooth=label_smooth,
                                                           n_workers=n_workers)
@@ -190,7 +195,19 @@ class BaseHead(nn.Module):
     metric_for_stopping = "_".join(key_for_early_stopping.split('_')[1:]) # ex: val_accuracy -> accuracy. the second part must be metric from tools.evaluate_classification_from_confusion_matrix
     
     amp_dtype = torch.float16 if helper.AMP_DTYPE == 'float16' else torch.bfloat16
-    scaler = GradScaler(device=device, enabled=helper.AMP_ENABLED and amp_dtype in [torch.float16]) # Use GradScaler for mixed precision training
+    enable_autocast = helper.AMP_ENABLED or amp_dtype == torch.bfloat16 # Use autocast for mixed precision training
+    enable_scaler = helper.AMP_ENABLED and amp_dtype in [torch.float16] # Use GradScaler for mixed precision training
+    scaler = GradScaler(device=device, enabled=enable_scaler)
+    
+    if enable_scaler:
+      print(f'Using GradScaler for mixed precision training')
+    else:
+      print(f'Using standard precision training without GradScaler')
+    if enable_autocast:
+      print(f'Using autocast for mixed precision training with {amp_dtype} dtype')
+    else:
+      print(f'Using standard precision training without autocast')
+      
     for epoch in range(num_epochs):
       start_epoch = time.time()
       self.train() 
@@ -230,9 +247,12 @@ class BaseHead(nn.Module):
         dict_batch_X['list_sample_id'] = sample_id
         
         start_forward = time.time()
-        with autocast(device_type=device, dtype=amp_dtype, enabled=helper.AMP_ENABLED):
+        with autocast(device_type=device, dtype=amp_dtype, enabled=enable_autocast): # Use autocast for mixed precision training
           outputs = self(**dict_batch_X) # input [batch, seq_len, emb_dim]
           loss = criterion(outputs, batch_y)
+          # if torch.isnan(loss) or torch.isinf(loss):
+          #   print(f'Loss is NaN or Inf. Skipping batch {count_batch} in epoch {epoch}.')
+          #   continue
           # print(f'  Forward time: {dict_log_time["forward"]:.4f}')
           # if round_output_loss:
           #   outputs = torch.round(outputs)
@@ -263,8 +283,11 @@ class BaseHead(nn.Module):
         train_loss += loss.item() 
         start_logs = time.time()
         if helper.LOG_PER_CLASS_AND_SUBJECT:
+          if is_coral_loss:
+            outputs = proba_to_label(torch.sigmoid(outputs)) # convert probabilities to labels for coral loss
+            batch_y = torch.sum(batch_y, dim=1) # convert levels to labels for coral loss
           tools.compute_loss_per_class_(batch_y=batch_y,
-                                      class_loss=class_loss,
+                                      class_loss=class_loss if not is_coral_loss else None,
                                       unique_train_val_classes=train_unique_classes,
                                       outputs=outputs,
                                       class_accuracy=class_accuracy,
@@ -273,10 +296,10 @@ class BaseHead(nn.Module):
                                         criterion=criterion,
                                         batch_y=batch_y,
                                         outputs=outputs,
-                                        subject_loss=subject_loss,
+                                        subject_loss=subject_loss if not is_coral_loss else None,
                                         subject_accuracy=subject_accuracy,
                                         unique_train_val_subjects=train_unique_subjects)
-          if not isinstance(criterion,torch.nn.L1Loss):
+          if not isinstance(criterion,torch.nn.L1Loss) and not is_coral_loss:
             tools.compute_confidence_predictions_(list_prediction_right_mean=batch_train_confidence_prediction_right_mean,
                                                   list_prediction_right_std=batch_train_confidence_prediction_right_std,
                                                   list_prediction_wrong_mean=batch_train_confidence_prediction_wrong_mean,
@@ -289,7 +312,10 @@ class BaseHead(nn.Module):
         
         count_batch+=1
         if self.is_classification:
-          predictions = torch.argmax(outputs, dim=1).detach().cpu().reshape(-1)
+          if is_coral_loss:
+            predictions = outputs.detach().cpu() # outputs are already labels for coral loss
+          else:
+            predictions = torch.argmax(outputs, dim=1).detach().cpu().reshape(-1)
         else:
           predictions = torch.ceil(outputs).detach().cpu() 
           mask = torch.isin(predictions, train_unique_classes)
@@ -315,6 +341,7 @@ class BaseHead(nn.Module):
                                 unique_val_classes=val_unique_classes,
                                 unique_val_subjects=val_unique_subjects,
                                 val_loader=val_loader,
+                                is_coral_loss=is_coral_loss,
                                 epoch=epoch,
                                 history_val_sample_predictions=history_val_sample_predictions)
       dict_log_time['eval'] = dict_log_time.get('eval',0) + time.time()-time_eval
@@ -500,7 +527,7 @@ class BaseHead(nn.Module):
       # 'list_y': list_list_y
     }
 
-  def evaluate(self, val_loader, criterion, unique_val_subjects, unique_val_classes, is_test,epoch,history_val_sample_predictions=None,save_log=True):
+  def evaluate(self, val_loader, criterion, unique_val_subjects, unique_val_classes, is_test,is_coral_loss,epoch,history_val_sample_predictions=None,save_log=True):
     # unique_train_val_classes is only for eval but kept the name for compatibility
     device = 'cuda'
     count = 0
@@ -528,19 +555,36 @@ class BaseHead(nn.Module):
         outputs = self(**dict_batch_X)
         loss = criterion(outputs, batch_y)
         val_loss += loss.item()
+        
+        if is_coral_loss:
+          outputs = proba_to_label(torch.sigmoid(outputs)) # convert probabilities to labels for coral loss
+          batch_y = torch.sum(batch_y, dim=1) # convert levels to labels for coral loss
+        
         if save_log and helper.LOG_PER_CLASS_AND_SUBJECT:
-          tools.compute_loss_per_class_(batch_y=batch_y, class_loss=loss_per_class, unique_train_val_classes=unique_val_classes,
-                                      outputs=outputs, criterion=criterion,class_accuracy=accuracy_per_class)
-          tools.compute_loss_per_subject_v2_(batch_subjects=batch_subjects, criterion=criterion, batch_y=batch_y, outputs=outputs,
-                                        subject_loss=subject_loss, unique_train_val_subjects=unique_val_subjects,subject_accuracy=accuracy_per_subject)
-          if not isinstance(criterion,torch.nn.L1Loss):
+          tools.compute_loss_per_class_(batch_y=batch_y, 
+                                        class_loss=loss_per_class if not is_coral_loss else None,
+                                        unique_train_val_classes=unique_val_classes,
+                                        outputs=outputs,
+                                        criterion=criterion,
+                                        class_accuracy=accuracy_per_class)
+          tools.compute_loss_per_subject_v2_(batch_subjects=batch_subjects, 
+                                             criterion=criterion,
+                                             batch_y=batch_y,
+                                             outputs=outputs,
+                                             subject_loss=subject_loss if not is_coral_loss else None,
+                                             unique_train_val_subjects=unique_val_subjects,
+                                             subject_accuracy=accuracy_per_subject)
+          if not isinstance(criterion,torch.nn.L1Loss) and not is_coral_loss:
             tools.compute_confidence_predictions_(list_prediction_right_mean=batch_confidence_prediction_right_mean,
                                                   list_prediction_wrong_mean=batch_confidence_prediction_wrong_mean,
                                                   list_prediction_right_std=batch_confidence_prediction_right_std,
                                                   list_prediction_wrong_std=batch_confidence_prediction_wrong_std,
                                                   gt=batch_y, outputs=outputs)
         if self.is_classification:
-          predictions = torch.argmax(outputs, dim=1).detach().cpu().reshape(-1)
+          if is_coral_loss:
+            predictions = outputs.detach().cpu() # outputs are already labels for coral loss
+          else:
+            predictions = torch.argmax(outputs, dim=1).detach().cpu().reshape(-1)
         else:
           predictions = torch.ceil(outputs).detach().cpu() 
           mask = torch.isin(predictions, unique_val_classes)
@@ -677,6 +721,7 @@ class AttentiveHeadJEPA(BaseHead):
       use_sdpa=False,
       grid_size_pos=None,
       cross_block_after_transformers=True,
+      coral_loss=False,
       complete_block=True):
     super().__init__(self,is_classification=True if num_classes > 1 else False)
     self.pooler = jepa_attentive_pooler.AttentivePooler(
@@ -702,8 +747,12 @@ class AttentiveHeadJEPA(BaseHead):
     self.pos_enc_tensor = None
     self.total_grid_area = grid_size_pos[1]*grid_size_pos[2]
     self.grid_size_pos = grid_size_pos
-    self.linear = nn.Linear(embed_dim, num_classes, bias=True)
-    self.linear.reset_parameters()
+    self.coral_loss = coral_loss
+    if coral_loss:
+      self.linear = CoralLayer(embed_dim, num_classes)
+    else:
+      self.linear = nn.Linear(embed_dim, num_classes, bias=True)
+      self.linear.reset_parameters()
     
     if num_queries == 1:
       self.aggregator = nn.Identity() 
@@ -728,6 +777,7 @@ class AttentiveHeadJEPA(BaseHead):
     x,xattn = self.pooler(x,key_padding_mask,helper.LOG_CROSS_ATTENTION['enable']) 
     x = x.squeeze(1) # # [B, num_queries=1, C] -> [B, C]
     x = self.aggregator(x)
+    # if self.coral_loss:
     x = self.linear(x)
     
     # LOG CROSS ATTENTION if enabled
@@ -747,7 +797,10 @@ class AttentiveHeadJEPA(BaseHead):
       trunc_normal_(self.pooler.query_tokens, std=self.pooler.init_std)
       self.pooler.apply(self.pooler._init_weights)
       self.pooler._rescale_blocks()
-      self.linear.reset_parameters()
+      if self.coral_loss:
+        self.linear.coral_weights.reset_parameters()
+      else:
+        self.linear.reset_parameters()
     else:
       raise NotImplementedError(f'Initialization method {init_type} not implemented')
       
