@@ -22,6 +22,7 @@ import pickle
 from cdw_cross_entropy_loss import cdw_cross_entropy_loss
 import optunahub
 from sim_loss.age_estimation.loss import SimLoss # type: ignore
+from coral_pytorch.losses import coral_loss
 
 
 # ------------ Helper Functions ------------
@@ -39,24 +40,35 @@ def get_optimizer(opt):
     raise ValueError(f'Optimizer not found: {opt}. Valid options: {list(optimizers.keys())}')
   return optimizers[opt]
   
-def get_loss(loss,dict_args=None):
-  """Get loss function from string name."""
-  losses = {
-    'l1': nn.L1Loss(),
-    'l2': nn.MSELoss(),
-    'ce': nn.CrossEntropyLoss(),
-    'cdw_ce': cdw_cross_entropy_loss.CDW_CELoss(num_classes=dict_args['num_classes'],
-                                                alpha=dict_args['alpha'],
-                                                transform=dict_args['transform']),
-    'sim_loss':SimLoss(number_of_classes=dict_args['num_classes'], 
-                       reduction_factor=dict_args['sim_loss_reduction'],
-                       device='cuda')
-  }
+def get_loss(loss, dict_args=None):
+  """Get loss function from string name using if/elif."""
   loss = loss.lower()
-  if loss not in losses:
-    raise ValueError(f'Loss not found: {loss}. Valid options: {list(losses.keys())}')
-  return losses[loss]
-
+  if loss == 'l1':
+    return nn.L1Loss()
+  elif loss == 'l2':
+    return nn.MSELoss()
+  elif loss == 'ce':
+    return nn.CrossEntropyLoss()
+  elif loss == 'cdw_ce':
+    if dict_args is None:
+      raise ValueError("dict_args is required for 'cdw_ce' loss.")
+    return cdw_cross_entropy_loss.CDW_CELoss(
+      num_classes=dict_args['num_classes'],
+      alpha=dict_args['alpha'],
+      transform=dict_args['transform']
+    )
+  elif loss == 'sim_loss':
+    if dict_args is None:
+      raise ValueError("dict_args is required for 'sim_loss'.")
+    return SimLoss(
+      number_of_classes=dict_args['num_classes'],
+      reduction_factor=dict_args['sim_loss_reduction'],
+      device='cuda'
+    )
+  elif loss == 'coral':
+    return coral_loss
+  else:
+    raise ValueError(f'Loss not found: {loss}. Valid options: l1, l2, ce, cdw_ce, sim_loss, coral')
 
 
 def get_head(head_name):
@@ -185,6 +197,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'residual_dropout': drop_residual,
       'mlp_ratio': mlp_ratio,
       'pos_enc': pos_enc,
+      'coral_loss': True if loss == 'coral' else False,
       'depth': nr_blocks,
       'cross_block_after_transformers': cross_block_after_transformers,
       'num_queries': num_queries,
@@ -360,7 +373,7 @@ if __name__ == '__main__':
   
   # Training parameters
   parser.add_argument('--train_amp_enabled', action='store_true', help='Enable AMP training')
-  parser.add_argument('--train_amp_dtype', type=str, default='float16', help='AMP training data type: bfloat16 or float16. Default is float16')
+  parser.add_argument('--train_amp_dtype', type=str, default=None, help='AMP training data type: bfloat16 or float16. Default is float16')
   parser.add_argument('--lr', type=float, nargs='*', default=[0.0001], help='Learning rate(s)')
   parser.add_argument('--ep', type=int, default=50, help='Number of epochs')
   parser.add_argument('--k_fold', type=int, default=3, help='Number of k-fold cross validation splits')
@@ -468,8 +481,15 @@ if __name__ == '__main__':
     if sum(dict_args['label_smooth']) > 0 and sum(dict_args['soft_labels']) > 0:
       raise ValueError("Label smoothing and soft labels cannot be used together. Choose one.")
     
+  if sum(dict_args['sim_loss_reduction']) != 0. and dict_args['loss'] != 'sim_loss':
+    raise ValueError("Sim loss reduction is only supported for 'sim_loss'. Set it to 0 for other losses.")
+  
   if dict_args['loss'] != 'ce' and (sum(dict_args['label_smooth']) > 0 or sum(dict_args['soft_labels']) > 0):
     raise ValueError("Label smoothing and soft labels are only supported for 'ce' loss. Set them to 0 for other losses.")
+  
+  if dict_args['loss'] not in ['l1', 'l2', 'ce'] and (dict_args['train_amp_dtype'] == 'float16'):
+    raise ValueError("AMP training with float16 is only supported for 'l1', 'l2', or 'ce' loss.")
+  
   
   pooling_clips_reduction = CLIPS_REDUCTION.NONE
   sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
