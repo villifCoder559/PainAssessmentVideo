@@ -194,8 +194,9 @@ class BaseHead(nn.Module):
     print(f'\nStart to train model with:\n Number of parameters: {((sum(p.numel() for p in self.parameters() if p.requires_grad))/1e6):.2f} M\n')
     metric_for_stopping = "_".join(key_for_early_stopping.split('_')[1:]) # ex: val_accuracy -> accuracy. the second part must be metric from tools.evaluate_classification_from_confusion_matrix
     
-    amp_dtype = torch.float16 if helper.AMP_DTYPE == 'float16' else torch.bfloat16
-    enable_autocast = helper.AMP_ENABLED or amp_dtype == torch.bfloat16 # Use autocast for mixed precision training
+
+    amp_dtype = torch.bfloat16 if helper.AMP_DTYPE == 'bfloat16' else torch.float16
+    enable_autocast = helper.AMP_ENABLED and amp_dtype == torch.bfloat16 # Use autocast for mixed precision training
     enable_scaler = helper.AMP_ENABLED and amp_dtype in [torch.float16] # Use GradScaler for mixed precision training
     scaler = GradScaler(device=device, enabled=enable_scaler)
     
@@ -249,6 +250,8 @@ class BaseHead(nn.Module):
         start_forward = time.time()
         with autocast(device_type=device, dtype=amp_dtype, enabled=enable_autocast): # Use autocast for mixed precision training
           outputs = self(**dict_batch_X) # input [batch, seq_len, emb_dim]
+          if outputs.shape[1] == 1: # if regression I don't need to keep dim 1 
+            outputs = outputs.squeeze(1)
           loss = criterion(outputs, batch_y)
           # if torch.isnan(loss) or torch.isinf(loss):
           #   print(f'Loss is NaN or Inf. Skipping batch {count_batch} in epoch {epoch}.')
@@ -317,7 +320,7 @@ class BaseHead(nn.Module):
           else:
             predictions = torch.argmax(outputs, dim=1).detach().cpu().reshape(-1)
         else:
-          predictions = torch.ceil(outputs).detach().cpu() 
+          predictions = torch.copysign(torch.floor(torch.abs(outputs) + 0.5), outputs).detach().cpu() # to avoid the banker's rounding implemented as IEEE standard
           mask = torch.isin(predictions, train_unique_classes)
           predictions[~mask] = self.num_classes # put prediction in the last class (bad_classified)
           
@@ -535,12 +538,12 @@ class BaseHead(nn.Module):
     self.eval() 
     with torch.no_grad():
       val_loss = 0.0
-      loss_per_class = torch.zeros(self.num_classes)
-      accuracy_per_class = torch.zeros(self.num_classes)
+      loss_per_class = torch.zeros(len(val_loader.dataset.get_unique_classes()))
+      accuracy_per_class = torch.zeros(len(val_loader.dataset.get_unique_classes()))
       subject_loss = torch.zeros(unique_val_subjects.shape[0])
       accuracy_per_subject = torch.zeros(unique_val_subjects.shape[0])
       subject_batch_count = torch.zeros(unique_val_subjects.shape[0])
-      val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=self.num_classes+1) # last class is for bad_classified in regression
+      val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=loss_per_class.shape[0]+1) # last class is for bad_classified in regression
       batch_confidence_prediction_right_mean = []
       batch_confidence_prediction_wrong_mean = []
       batch_confidence_prediction_right_std = []
@@ -553,6 +556,8 @@ class BaseHead(nn.Module):
         helper.LOG_CROSS_ATTENTION['state'] = 'test' if is_test else 'val'
         dict_batch_X['list_sample_id'] = sample_id
         outputs = self(**dict_batch_X)
+        if outputs.shape[1] == 1: # if regression I don't need to keep dim 1 
+          outputs = outputs.squeeze(1)
         loss = criterion(outputs, batch_y)
         val_loss += loss.item()
         
@@ -586,7 +591,7 @@ class BaseHead(nn.Module):
           else:
             predictions = torch.argmax(outputs, dim=1).detach().cpu().reshape(-1)
         else:
-          predictions = torch.ceil(outputs).detach().cpu() 
+          predictions = torch.copysign(torch.floor(torch.abs(outputs) + 0.5), outputs).detach().cpu() # to avoid the banker's rounding implemented as IEEE standard
           mask = torch.isin(predictions, unique_val_classes)
           predictions[~mask] = self.num_classes # put prediction in the last class (bad_classified)
           

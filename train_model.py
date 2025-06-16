@@ -186,7 +186,12 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'cross_block_after_transformers', kwargs['cross_block_after_transformers'])
 
     emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
-    num_classes = pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique()
+    
+    if loss == 'l1' or loss == 'l2':
+      num_classes = 1
+      print(f"\nRegression task detected. Setting num_classes to 1 for {loss} loss.")
+    else:
+      num_classes = pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique()
     params = {
       'input_dim': emb_dim * 8 if concatenate_temp_dim else emb_dim,
       'num_classes': num_classes,

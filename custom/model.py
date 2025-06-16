@@ -57,6 +57,7 @@ class Model_Advanced: # Scenario_Advanced
     self.label_smooth = label_smooth
     self.soft_labels = soft_labels 
     self.prefetch_factor = prefetch_factor
+    
     if self.dataset_type == CUSTOM_DATASET_TYPE.BASE:
       self.backbone_dict = {
         'backbone': self.backbone,
@@ -204,6 +205,14 @@ class Model_Advanced: # Scenario_Advanced
       self.head.load_state_weights()
     else:
       self.head.load_state_dict(state_dict) # TODO: change to self.head.load_state_dict()
+    
+    # CHeck if the criterion is coral_loss
+    try:
+      is_coral_loss = True if criterion.__name__ == 'coral_loss' else False
+    except AttributeError:
+      is_coral_loss = False
+      print('No coral loss. Using standard loss function.')
+    
     test_dataset, test_loader = get_dataset_and_loader(csv_path=csv_path,
                                                         batch_size=self.batch_size_training,
                                                         concatenate_temporal=concatenate_temporal,
@@ -213,25 +222,35 @@ class Model_Advanced: # Scenario_Advanced
                                                         shuffle_training_batch=False,
                                                         backbone_dict=self.backbone_dict,
                                                         model=self.head,
-                                                        is_coral_loss=True if criterion.__name__ == 'coral_loss' else False,
+                                                        is_coral_loss=is_coral_loss,
                                                         soft_labels=self.soft_labels,
                                                         prefetch_factor=self.prefetch_factor,
                                                         label_smooth=self.label_smooth,
                                                         n_workers=self.n_workers
                                                         )
     unique_test_subjects = torch.tensor(test_dataset.get_unique_subjects())
-    unique_classes = torch.tensor(list(range(self.head.num_classes)))
+    unique_classes = torch.tensor(test_dataset.get_unique_classes())
+    
+    # LOG HISTORY SAMPLE -> check is is possible to use npint
     if helper.LOG_HISTORY_SAMPLE and torch.min(unique_classes)>=0 and torch.max(unique_classes)<=255:
       list_test_sample = test_dataset.get_all_sample_ids()
       history_test_sample_predictions = {id: torch.zeros(1) for id in list_test_sample}
     else:
       history_test_sample_predictions = None
+    
+    # Check if is coral_loss
+    try:
+      is_coral_loss = True if criterion.__name__ == 'coral_loss' else False
+    except AttributeError:
+      is_coral_loss = False
+      print('No coral loss. Using standard loss function.')
+    
     dict_test = self.head.evaluate(val_loader=test_loader, 
                                    criterion=criterion,
                                    unique_val_subjects=unique_test_subjects,
                                    unique_val_classes=unique_classes,
                                    is_test=is_test,
-                                   is_coral_loss=True if criterion.__name__ == 'coral_loss' else False,
+                                   is_coral_loss=is_coral_loss,
                                    epoch=0, # to get the right position for history_test_sample_predictions
                                    history_val_sample_predictions=history_test_sample_predictions)
     
@@ -286,6 +305,13 @@ class Model_Advanced: # Scenario_Advanced
       - 'count_subject_ids_train': Count of unique subject IDs in the training set.
       - 'count_subject_ids_test': Count of unique subject IDs in the testing set.
     """
+        # CHeck if the criterion is coral_loss
+    try:
+      is_coral_loss = True if criterion.__name__ == 'coral_loss' else False
+    except AttributeError:
+      is_coral_loss = False
+      print('No coral loss. Using standard loss function.')
+      
     dict_results = self.head.start_train(batch_size=self.batch_size_training,
                                           criterion=criterion,
                                           optimizer=optimizer_fn,
@@ -299,7 +325,7 @@ class Model_Advanced: # Scenario_Advanced
                                           init_network=init_network,
                                           dataset_type=self.dataset_type,
                                           num_epochs=num_epochs,
-                                          is_coral_loss=True if criterion.__name__ == 'coral_loss' else False,
+                                          is_coral_loss=is_coral_loss,
                                           train_csv_path=train_csv_path,
                                           regularization_lambda_L1=regularization_lambda_L1,
                                           regularization_lambda_L2=regularization_lambda_L2,
