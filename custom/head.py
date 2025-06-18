@@ -232,16 +232,17 @@ class BaseHead(nn.Module):
       batch_train_confidence_prediction_wrong_std = []
       batch_dict_gradient_per_module = {}
       dict_log_time = {}
-      
-      
-      # start_load = time.time()
+      start_load_batch = time.time()
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
-        start_batch = time.time()
+        end_load_batch = time.time()
+        dict_log_time['load_batch'] = dict_log_time.get('load_batch',0) + end_load_batch - start_load_batch
         # list_memory_snap.append(tracemalloc.take_snapshot())
         tmp = torch.isin(train_unique_subjects,batch_subjects)
         subject_count_batch[tmp] += 1
+        transfer_to_device = time.time() 
         batch_y = batch_y.to(device)
         dict_batch_X = {key: value.to(device) for key, value in dict_batch_X.items()}
+        dict_log_time['transfer_to_device'] = dict_log_time.get('transfer_to_device',0) + time.time() - transfer_to_device
         optimizer.zero_grad()
         
         helper.LOG_CROSS_ATTENTION['state'] = 'train'
@@ -253,12 +254,6 @@ class BaseHead(nn.Module):
           if outputs.shape[1] == 1: # if regression I don't need to keep dim 1 
             outputs = outputs.squeeze(1)
           loss = criterion(outputs, batch_y)
-          # if torch.isnan(loss) or torch.isinf(loss):
-          #   print(f'Loss is NaN or Inf. Skipping batch {count_batch} in epoch {epoch}.')
-          #   continue
-          # print(f'  Forward time: {dict_log_time["forward"]:.4f}')
-          # if round_output_loss:
-          #   outputs = torch.round(outputs)
           if regularization_lambda_L1 > 0:
             # Sum absolute values of all trainable parameters except biases
             l1_norm = sum(param.abs().sum() for name,param in self.named_parameters() if param.requires_grad and 'bias' not in name) 
@@ -335,9 +330,10 @@ class BaseHead(nn.Module):
                                             tensor_predictions=predictions,
                                             epoch=epoch)
         # list_memory_snap.append(tracemalloc.take_snapshot())
-        dict_log_time['batch_logs'] = dict_log_time.get('logs',0) + time.time()-start_logs 
-        
-      dict_log_time['batch'] = dict_log_time.get('batch',0) + time.time()-start_batch
+        dict_log_time['batch_logs'] = dict_log_time.get('batch_logs',0) + time.time()-start_logs 
+        # dict_log_time['batch'] = dict_log_time.get('batch',0) + time.time()-end_load_batch
+        start_load_batch = time.time()
+
 
       time_eval = time.time()
       dict_eval = self.evaluate(criterion=criterion,is_test=False,
@@ -457,7 +453,7 @@ class BaseHead(nn.Module):
         if trial is not None and trial.should_prune():
           raise TrialPruned()
       dict_log_time['log_epoch'] = dict_log_time.get('log_epoch',0) + time.time()-epoch_log_time
-      dict_log_time['epoch'] = dict_log_time.get('epoch',0) + time.time()-start_epoch
+      dict_log_time['epoch'] = time.time()-start_epoch
 
       print(f'TIME LOGS:')
       for k,v in dict_log_time.items():
