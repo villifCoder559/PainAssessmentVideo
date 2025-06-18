@@ -205,8 +205,8 @@ class VideoBackbone(BackboneBase):
         # print(f"Removed {layer_name} layer from model")
   
   @torch.no_grad()
-  def forward_features(self, x: torch.Tensor, return_embedding: bool = True,return_attn: bool = True) -> torch.Tensor:
-    """Extract features from video input.
+  def forward_features(self, x: torch.Tensor, return_embedding: bool = True,return_attn: bool = False) -> torch.Tensor:
+    """Extract features from video input. No preprocessing is applied, but the input tensor must be in the correct format.
     
     Args:
       x: Input tensor of shape [batch_size, channels, frames, height, width]
@@ -227,7 +227,7 @@ class VideoBackbone(BackboneBase):
     with torch.no_grad():
       # Forward pass
       print(f'Free GPU memory: {torch.cuda.memory_reserved() / 1e9} GB')
-      feat = self.model.forward_features(x,
+      feat,attn = self.model.forward_features(x,
                                          return_embedding=return_embedding,
                                          return_attn=return_attn)
     
@@ -242,7 +242,11 @@ class VideoBackbone(BackboneBase):
       feat = feat.reshape(B, T, S, S, self.embed_dim)# [B, T, S, S, embed_dim], e.g. [1, 8, 14, 14, 768]
     feat = feat.to('cpu')
     # self.model.to('cpu') # Only for local testing
-    return feat  # Return raw features
+    if return_attn:
+      attn = attn.to('cpu')
+      return feat, attn  # Return both features and attention maps
+    else:
+      return feat  # Return raw features
 
 
 class VitImageBackbone(BackboneBase):
