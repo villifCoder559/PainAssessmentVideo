@@ -176,8 +176,9 @@ class customDataset(torch.utils.data.Dataset):
   def __len__(self):
     """Return the number of samples in the dataset"""
     return len(self.video_labels)
-
-  def preprocess_images(self, tensors,to_visualize=False,get_params=False):
+  
+  @staticmethod
+  def preprocess_images(tensors,to_visualize=False,get_params=False,h_flip=False,color_jitter=False,rotation=False):
     """
     Preprocess a batch of image tensors.
     
@@ -201,18 +202,18 @@ class customDataset(torch.utils.data.Dataset):
     transform = []
     params = {}
     
-    if self.h_flip:
+    if h_flip:
       transform.append(v2.RandomHorizontalFlip(p=1))
       params['h_flip'] = True
 
-    if self.color_jitter:
+    if color_jitter:
       brightness = (0.7, 1.3)
       contrast = (0.7, 1.3)
       saturation = (0.7, 1.3)
       hue = (-0.05, 0.05)
       transform.append(v2.ColorJitter(brightness=brightness, contrast=contrast, saturation=saturation, hue=hue)) #
       params['color_jitter'] = {'brightness': brightness, 'contrast': contrast, 'saturation': saturation, 'hue': hue} 
-    if self.rotation:
+    if rotation:
       degrees = (-20, 20)
       transform.append(v2.RandomRotation(degrees=degrees))
       params['rotation'] = degrees
@@ -255,7 +256,12 @@ class customDataset(torch.utils.data.Dataset):
     list_indices = self.sample_frame_strategy(tot_frames)
     frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames) # [nr_clips, nr_frames, H, W, C]
     # original_shape = frames_list.shape
-    frames_list,params = self.preprocess_images(frames_list.reshape(-1,*frames_list.shape[2:]).permute(0,3,1,2),to_visualize=True,get_params=True) # [nr_clips, nr_frames, H, W, C] -> [B, C, H, W]
+    frames_list,params = self.preprocess_images(frames_list.reshape(-1,*frames_list.shape[2:]).permute(0,3,1,2),
+                                                to_visualize=True,
+                                                get_params=True,
+                                                color_jitter=self.color_jitter,
+                                                h_flip=self.h_flip,
+                                                rotation=self.rotation) # [nr_clips, nr_frames, H, W, C] -> [B, C, H, W]
 
     # frames_list = frames_list.reshape(*original_shape)
     # Save the generated video
@@ -297,7 +303,11 @@ class customDataset(torch.utils.data.Dataset):
     # Preprocess frames (considering only 1 video at time)
     # [nr_clips, nr_frames, H, W, C] -> [nr_clips * nr_frames, H, W, C] -> [B,C,H,W]
     frames_list = frames_list.reshape(-1, *frames_list.shape[2:]).permute(0, 3, 1, 2) 
-    preprocessed_tensors = self.preprocess_images(frames_list) # [B,C,H,W]
+    preprocessed_tensors = self.preprocess_images(frames_list, 
+                                                  color_jitter=self.color_jitter,
+                                                  h_flip=self.h_flip,
+                                                  rotation=self.rotation) # [B,C,H,W]
+    
     preprocessed_tensors = preprocessed_tensors.reshape(nr_clips, nr_frames, *preprocessed_tensors.shape[1:]) # [nr_clips, nr_frames, C, H, W]
     preprocessed_tensors = preprocessed_tensors.permute(0,2,1,3,4) # [B=nr_clips, T=nr_frames, C, H, W] -> [B, C, T, H, W]
     
@@ -736,9 +746,9 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_cla
   # Pre-flatten features: reshape each sample to (sequence_length, emb_dim)
   if instance_model_name != helper.INSTANCE_MODEL_NAME.LINEARPROBE:
     if not concatenate_temporal:
-      features = [sample['features'].reshape(-1,sample['features'].shape[-1]).to(torch.float32) for sample in batch]
+      features = [sample['features'].reshape(-1,sample['features'].shape[-1]).to(torch.float32) for sample in batch] # [chunks,T,S,S,C] -> [chunks*T*S*S,C]
     else:
-      features = [sample['features'].reshape(-1,sample['features'].shape[-1]*sample['features'].shape[-4]).to(torch.float32) for sample in batch]
+      features = [sample['features'].permute(0,2,3,1,4).reshape(-1,sample['features'].shape[-1]*sample['features'].shape[-2]).to(torch.float32) for sample in batch] # [chunks,T,S,S,C] ->[chunks,S,S,T,C]-> [chunks*S*S,C*T]
     # features -> [seq_len,emb_dim]
     lengths = [feat.size(0) for feat in features]
     features = torch.nn.utils.rnn.pad_sequence(features,batch_first=True) # [batch_size,seq_len,emb_dim]
