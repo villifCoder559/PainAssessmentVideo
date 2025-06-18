@@ -440,7 +440,7 @@ if __name__ == '__main__':
   
   # Early stopping parameters
   parser.add_argument('--key_early_stopping', type=str, default='val_accuracy', 
-                    help='Metric for early stopping: val_loss or val_accuracy. Default is val_accuracy')
+                    help='Metric for early stopping: val_accuracy. Default is val_accuracy')
   parser.add_argument('--p_early_stop', type=int, default=2000, help='Patience for early stopping. Default is 2000')
   parser.add_argument('--min_delta', type=float, default=0.001, help='Minimum delta for early stopping. Default is 0.001')
   parser.add_argument('--threshold_mode', type=str, default='abs', help='Early stopping threshold mode: abs or rel. Default is abs')
@@ -485,7 +485,10 @@ if __name__ == '__main__':
   if dict_args['label_smooth'] and dict_args['soft_labels']:
     if sum(dict_args['label_smooth']) > 0 and sum(dict_args['soft_labels']) > 0:
       raise ValueError("Label smoothing and soft labels cannot be used together. Choose one.")
-    
+  
+  if dict_args['loss'] in ['l1', 'l2'] and (sum(dict_args['label_smooth']) > 0 or sum(dict_args['soft_labels']) > 0):
+    raise ValueError("Label smoothing and soft labels are not supported for 'l1' or 'l2' loss. Set them to 0.")
+  
   if sum(dict_args['sim_loss_reduction']) != 0. and dict_args['loss'] != 'sim_loss':
     raise ValueError("Sim loss reduction is only supported for 'sim_loss'. Set it to 0 for other losses.")
   
@@ -495,6 +498,8 @@ if __name__ == '__main__':
   if dict_args['loss'] not in ['l1', 'l2', 'ce'] and (dict_args['train_amp_dtype'] == 'float16'):
     raise ValueError("AMP training with float16 is only supported for 'l1', 'l2', or 'ce' loss.")
   
+  if dict_args['key_early_stopping'] not in ['val_accuracy']:
+    raise ValueError(f"Invalid key for early stopping: {dict_args['key_early_stopping']}. Must be 'val_accuracy'.")
   
   pooling_clips_reduction = CLIPS_REDUCTION.NONE
   sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
