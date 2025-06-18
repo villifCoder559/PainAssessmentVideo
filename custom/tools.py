@@ -20,6 +20,7 @@ import torch
 from torchmetrics.classification import  MulticlassConfusionMatrix
 import torch.nn.functional as F
 import cdw_cross_entropy_loss.cdw_cross_entropy_loss as cdw
+import sys
 
 class NpEncoder(json.JSONEncoder):
   def default(self, obj):
@@ -1315,6 +1316,7 @@ def get_list_frame_from_video_path(video_path):
       break
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     frame_list.append(frame)
+  frame_list = np.array(frame_list, dtype=np.uint8)
   return frame_list
 
 def plot_macro_accuracy(list_train_accuracy,list_val_accurcay, title, x_label, y_label, saving_path=None):
@@ -1688,7 +1690,6 @@ def plot_dataset_distribuition(csv_path,run_folder_path,per_class=True,per_parte
   #                                                   per_class=per_class, 
   #                                                   per_partecipant=per_partecipant, 
   #                                                   saving_path=dataset_folder_path) # 2 plots
-import torch
 
 def compute_loss_per_class_(criterion,
                             unique_train_val_classes,
@@ -1703,7 +1704,10 @@ def compute_loss_per_class_(criterion,
     if mask.any():
       class_idx = np.where(unique_train_val_classes == cls)[0][0]
       if class_accuracy is not None:
-        predicted = torch.argmax(outputs[mask], 1 if outputs.dim() == 2 else 0)
+        if isinstance(criterion, torch.nn.L1Loss) or isinstance(criterion, torch.nn.MSELoss):
+          predicted = torch.copysign(torch.floor(torch.abs(outputs[mask]) + 0.5), outputs[mask])  # round to nearest integer
+        else:
+          predicted = torch.argmax(outputs[mask], 1 if outputs.dim() == 2 else 0)
         correct = (predicted == batch_y[mask]).sum().item() if batch_y.dim()== 1 else (predicted == batch_y[mask].argmax(1)).sum().item()
         total = mask.sum().item()
         class_accuracy[class_idx] += correct / total
@@ -1711,7 +1715,6 @@ def compute_loss_per_class_(criterion,
         loss = criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
         class_loss[class_idx] += loss
 
-import sys
 def print_dict_size(d):
   # Measure table alone
   base = sys.getsizeof(d)  # ~240 bytes
