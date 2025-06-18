@@ -466,7 +466,7 @@ class VisionTransformer(nn.Module):
         if return_attn:
             return x, torch.stack(blk_attns,dim=0)
         if return_embedding:
-            return x
+            return x, None
         if self.fc_norm is not None:
             return self.fc_norm(x.mean(1))
         else:
