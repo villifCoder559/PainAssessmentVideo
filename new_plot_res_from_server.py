@@ -706,6 +706,56 @@ def get_best_result(data):
                       'config': config}
   return dict_best_result
 
+def plot_accuray_per_class_across_epochs(data, run_output_folder, test_id, additional_info=''):
+  # Assuming val_accuracy and val_loss are already stacked arrays of shape (n_epochs, n_classes)
+  val_accuracy = np.stack(data['results']['k0_cross_val_sub_0']['train_val']['list_val_accuracy_per_class'])
+  val_loss = np.stack(data['results']['k0_cross_val_sub_0']['train_val']['val_loss_per_class'])
+
+  n_epochs, n_classes = val_accuracy.shape
+
+  # Set up the subplot grid
+  n_cols = 3
+  n_rows = int(np.ceil(n_classes / n_cols))
+
+  fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 8, n_rows * 5))
+  axes = axes.flatten()
+
+  for class_idx in range(n_classes):
+    ax1 = axes[class_idx]  # Main axis for loss
+    ax2 = ax1.twinx()      # Twin axis for accuracy
+
+    # Plot loss
+    line1, = ax1.plot(val_loss[:, class_idx], color='tab:red', linestyle='--', label='Loss')
+    ax1.set_ylim(0, 3)
+    ax1.set_ylabel('Loss', color='tab:red')
+    ax1.tick_params(axis='y', labelcolor='tab:red')
+
+    # Plot accuracy
+    line2, = ax2.plot(val_accuracy[:, class_idx], color='tab:blue', label='Accuracy')
+    ax2.set_ylim(0, 1)
+    ax2.set_ylabel('Accuracy', color='tab:blue')
+    ax2.tick_params(axis='y', labelcolor='tab:blue')
+
+    # Combine legends (top right position)
+    lines = [line1, line2]
+    labels = [line.get_label() for line in lines]
+    ax1.legend(lines, labels, loc='upper right', fontsize='small')
+
+    ax1.set_title(f'Class {class_idx}')
+    ax1.set_xlabel('Epoch')
+    ax1.grid(True)
+
+  # Hide any unused subplots
+  for i in range(n_classes, len(axes)):
+    fig.delaxes(axes[i])
+
+  fig.suptitle('Validation Loss and Accuracy per Class Across Epochs', fontsize=16)
+  fig.savefig(os.path.join(run_output_folder,test_id, f'{test_id}{additional_info}_val_accuracy_loss_per_class_across_epochs.png'), bbox_inches='tight')
+  plt.close(fig)
+  # fig.tight_layout(rect=[0, 0, 1, 0.97])
+  
+  # plt.show()
+
 
 def plot_run_details(results_data, output_root,only_csv):
   list_row_csv = []
@@ -724,7 +774,7 @@ def plot_run_details(results_data, output_root,only_csv):
       plot_losses(data, os.path.join(output_root), test_id)
       plot_confusion_matrices(data, os.path.join(output_root), test_id)
       plot_gradient_per_module(data, os.path.join(output_root), test_id)
-      
+      plot_accuray_per_class_across_epochs(data, os.path.join(output_root), test_id)
       plot_history_model_prediction(data, os.path.join(output_root), test_id,root_csv_path=os.path.dirname(file))
       # except Exception as e:
       #   print(f'Error in {file} - {e}')
