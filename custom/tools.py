@@ -1691,29 +1691,6 @@ def plot_dataset_distribuition(csv_path,run_folder_path,per_class=True,per_parte
   #                                                   per_partecipant=per_partecipant, 
   #                                                   saving_path=dataset_folder_path) # 2 plots
 
-def compute_loss_per_class_(criterion,
-                            unique_train_val_classes,
-                            batch_y,
-                            outputs,
-                            class_loss=None,
-                            class_accuracy=None):
-  if batch_y.dim() != 1:
-    batch_y = torch.argmax(batch_y,1)
-  for cls in unique_train_val_classes:
-    mask = (batch_y == cls).reshape(-1)
-    if mask.any():
-      class_idx = np.where(unique_train_val_classes == cls)[0][0]
-      if class_accuracy is not None:
-        if isinstance(criterion, torch.nn.L1Loss) or isinstance(criterion, torch.nn.MSELoss):
-          predicted = torch.copysign(torch.floor(torch.abs(outputs[mask]) + 0.5), outputs[mask])  # round to nearest integer
-        else:
-          predicted = torch.argmax(outputs[mask], 1 if outputs.dim() == 2 else 0)
-        correct = (predicted == batch_y[mask]).sum().item() if batch_y.dim()== 1 else (predicted == batch_y[mask].argmax(1)).sum().item()
-        total = mask.sum().item()
-        class_accuracy[class_idx] += correct / total
-      if class_loss is not None:
-        loss = criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
-        class_loss[class_idx] += loss
 
 def print_dict_size(d):
   # Measure table alone
@@ -1733,6 +1710,43 @@ def log_predictions_per_sample_(dict_log_sample,tensor_predictions,tensor_sample
   
   for id,prediction in zip(tensor_sample_id,tensor_predictions):
     dict_log_sample[id.item()][epoch] = prediction.item() # .type(torch.uint8)
+
+def compute_loss_per_class_(criterion,
+                            unique_train_val_classes,
+                            batch_y,
+                            outputs,
+                            class_loss=None,
+                            class_accuracy=None):
+  if batch_y.dim() != 1:
+    batch_y = torch.argmax(batch_y,1)
+  for cls in unique_train_val_classes:
+    mask = (batch_y == cls).reshape(-1)
+    if mask.any():
+      class_idx = np.where(unique_train_val_classes == cls)[0][0]
+      if class_accuracy is not None:
+        if isinstance(criterion, torch.nn.L1Loss) or isinstance(criterion, torch.nn.MSELoss):
+          predicted = torch.copysign(torch.floor(torch.abs(outputs[mask]) + 0.5), outputs[mask])  # round to nearest integer
+        else:
+          predicted = torch.argmax(outputs[mask], 1 if outputs.dim() == 2 else 0)
+        correct = (predicted == batch_y[mask]).sum().item() if batch_y.dim()== 1 else (predicted == batch_y[mask].argmax(1)).sum().item()
+        total = mask.sum().item()
+        class_accuracy[0,class_idx] += correct
+        class_accuracy[1,class_idx] += total 
+      if class_loss is not None:
+        # loss = criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
+        if isinstance(criterion, torch.nn.CrossEntropyLoss):
+          loss = F.cross_entropy(outputs[mask], batch_y[mask], reduction='sum').detach().cpu().item()
+        elif isinstance(criterion, torch.nn.MSELoss):
+          loss = F.mse_loss(outputs[mask], batch_y[mask], reduction='sum').detach().cpu().item()
+        elif isinstance(criterion, torch.nn.L1Loss):
+          loss = F.l1_loss(outputs[mask], batch_y[mask], reduction='sum').detach().cpu().item()
+        elif isinstance(criterion, torch.nn.HuberLoss):
+          loss = F.l1_loss(outputs[mask], batch_y[mask], reduction='sum').detach().cpu().item()
+        else:
+          loss = F.l1_loss(torch.argmax(outputs[mask],dim=1), batch_y[mask], reduction='sum').detach().cpu().item()
+
+        class_loss[0,class_idx] += loss
+        class_loss[1,class_idx] += mask.sum().item()
 
 def compute_loss_per_subject_v2_(
     criterion,
@@ -1775,6 +1789,8 @@ def compute_loss_per_subject_v2_(
             per_sample_losses = F.mse_loss(outputs, batch_y, reduction='none')
         elif (isinstance(criterion, torch.nn.L1Loss)):
             per_sample_losses = F.l1_loss(outputs, batch_y, reduction='none')
+        elif isinstance(criterion, torch.nn.HuberLoss):
+            per_sample_losses = F.l1_loss(outputs, batch_y, reduction='none')
         # elif (isinstance(criterion, cdw.CDW_CELoss)): # if chage remeber to change also in new_plot_res_from_server
         else:
           per_sample_losses = F.l1_loss(torch.argmax(outputs,dim=1), batch_y, reduction='none')
@@ -1786,8 +1802,11 @@ def compute_loss_per_subject_v2_(
 
     # --- ACCURACY AGGREGATION ---
     if subject_accuracy is not None:
-        # predictions
-        _, preds = torch.max(outputs, dim=1 if outputs.dim() == 2 else 0)
+        if isinstance(criterion, torch.nn.MSELoss) or isinstance(criterion, torch.nn.L1Loss) or isinstance(criterion, torch.nn.HuberLoss):
+            # For regression tasks, round the predictions to the nearest integer
+            preds = torch.copysign(torch.floor(torch.abs(outputs) + 0.5), outputs)
+        else:
+          _, preds = torch.max(outputs, dim=1 if outputs.dim() == 2 else 0)
         if batch_y.dim() == 1:
             correct = (preds == batch_y)
         else:
@@ -1796,7 +1815,7 @@ def compute_loss_per_subject_v2_(
 
         correct_sum   = torch.bincount(idx, weights=correct, minlength=S)
         total_counts  = torch.bincount(idx, minlength=S).to(correct.dtype).clamp(min=1)
-        subject_accuracy += (correct_sum / total_counts).detach().cpu()
+        subject_accuracy += (correct_sum).detach().cpu()
 
 def compute_confidence_predictions_(list_prediction_right_mean,list_prediction_wrong_mean,list_prediction_right_std,list_prediction_wrong_std,outputs,gt,pred_before_softmax=True):
   if pred_before_softmax and outputs.dim() == 2:
