@@ -45,6 +45,8 @@ def get_loss(loss, dict_args=None):
   loss = loss.lower()
   if loss == 'l1':
     return nn.L1Loss()
+  elif loss == 'huber':
+    return nn.HuberLoss(delta=dict_args['delta_huber'])
   elif loss == 'l2':
     return nn.MSELoss()
   elif loss == 'ce':
@@ -139,6 +141,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   cdw_ce_power_transform = trial.suggest_categorical('cdw_ce_power_transform', kwargs['cdw_ce_transform'])
   soft_labels = _suggest(trial, 'soft_labels', kwargs['soft_labels'], kwargs['optuna_categorical'])
   sim_loss_reduction = _suggest(trial, 'sim_loss_reduction', kwargs['sim_loss_reduction'], kwargs['optuna_categorical'])
+  delta_huber = _suggest(trial, 'delta_huber', kwargs['delta_huber'], kwargs['optuna_categorical'])
   if loss == 'cdw_ce' and label_smooth > 0:
     raise ValueError('Label smoothing not supported for CDW loss. Use label_smooth=0.')
   
@@ -187,7 +190,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
 
     emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
     
-    if loss == 'l1' or loss == 'l2':
+    if loss in ['l1', 'l2', 'huber']:
       num_classes = 1
       print(f"\nRegression task detected. Setting num_classes to 1 for {loss} loss.")
     else:
@@ -226,6 +229,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   dict_args_loss = {'num_classes': num_classes, 
                     'alpha': cdw_ce_alpha, 
                     'sim_loss_reduction': sim_loss_reduction,
+                    'delta_huber': delta_huber,
                     'transform': cdw_ce_power_transform}
   
   run_folder_path, results = scripts.run_train_test(
@@ -389,10 +393,11 @@ if __name__ == '__main__':
   parser.add_argument('--clip_grad_norm', type=float, default=None, help='Clip gradient norm. Default is None (not applied)')
   parser.add_argument('--concatenate_temp_dim', type=int, nargs='*', default=[0],
                     help='Concatenate temporal dimension in input to the model. (ex: the embeddind is [temporal*emb_dim]=6144 if model base)')
-  parser.add_argument('--loss', type=str, nargs='*', default='ce', help='Loss function: l1, l2, ce, cdw_ce,sim_loss')
+  parser.add_argument('--loss', type=str, nargs='*', default='ce', help='Loss function: l1, l2, ce, cdw_ce,sim_loss,huber, coral. Default is ce')
   parser.add_argument('--cdw_ce_alpha', type=float, nargs='*', default=[2], help='Alpha parameter for CDW loss.') 
   parser.add_argument('--cdw_ce_transform', type=str, nargs='*', default=['power'], help='Transform for CDW loss. Default is power, can Be also "huber" or "log"')
   parser.add_argument('--sim_loss_reduction', type=float, nargs='*', default=[0.0], help='Reduction factor for sim loss. Default is 0.0 (no reduction)')
+  parser.add_argument('--delta_huber', type=float, nargs='*',default=[None], help='Delta parameter for Huber loss.')
   
   # Attention parameters
   parser.add_argument('--num_heads', type=int, nargs='*',default=[8], help='Number of heads for attention in transformer (when nr_blocks >1). Default is 8')
@@ -482,6 +487,15 @@ if __name__ == '__main__':
     if method not in helper.QUERIES_AGG_METHOD:
       raise ValueError(f"Invalid queries aggregation method: {method}. Must be one of {[m for m in helper.QUERIES_AGG_METHOD]}")
   
+  if not None in dict_args['delta_huber'] and 'huber' not in dict_args['loss']:
+    raise ValueError("delta_huber is set but loss is not 'huber'. Set loss to 'huber' to use delta_huber.")
+  
+  if None in dict_args['delta_huber'] and 'huber' in dict_args['loss']:
+    raise ValueError("delta_huber is not set but loss is 'huber'. Set delta_huber to use Huber loss.")
+  
+  if dict_args['train_amp_dtype'] is not None and dict_args['train_amp_enabled'] is False:
+    raise ValueError("train_amp_dtype is set but train_amp_enabled is False. Set train_amp_enabled to use AMP training.")
+  
   if dict_args['label_smooth'] and dict_args['soft_labels']:
     if sum(dict_args['label_smooth']) > 0 and sum(dict_args['soft_labels']) > 0:
       raise ValueError("Label smoothing and soft labels cannot be used together. Choose one.")
@@ -492,7 +506,7 @@ if __name__ == '__main__':
   if sum(dict_args['sim_loss_reduction']) != 0. and dict_args['loss'] != 'sim_loss':
     raise ValueError("Sim loss reduction is only supported for 'sim_loss'. Set it to 0 for other losses.")
   
-  if dict_args['loss'] != 'ce' and (sum(dict_args['label_smooth']) > 0 or sum(dict_args['soft_labels']) > 0):
+  if ('ce' not in dict_args['loss']) and (sum(dict_args['label_smooth']) > 0 or sum(dict_args['soft_labels']) > 0):
     raise ValueError("Label smoothing and soft labels are only supported for 'ce' loss. Set them to 0 for other losses.")
   
   if dict_args['loss'] not in ['l1', 'l2', 'ce'] and (dict_args['train_amp_dtype'] == 'float16'):
