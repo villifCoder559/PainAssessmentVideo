@@ -709,6 +709,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
     folder_path = os.path.join(self.root_folder_features,csv_row['subject_name'],f"{csv_row['sample_name']}.safetensors")
     # load_start = time.time()
     features = tools.load_dict_data(folder_path)
+    features['list_labels'].fill_(csv_row['class_id']) # fill the labels with the class_id from csv
     # load_end = time.time()
     # print(f"Element {idx} loading time: {load_end - load_start:.2f} seconds")
     return _get_element(dict_data=features,df=self.df,idx=idx)
@@ -956,7 +957,6 @@ def _get_element(dict_data,df,idx):
   if mask.sum() == 0:
     print(f"Sample ID {sample_id} not found in the dataset.")
   features = dict_data['features'][mask]
-  
   labels = dict_data['list_labels'][mask]
   subject_id = dict_data['list_subject_id'][mask]
   return {
