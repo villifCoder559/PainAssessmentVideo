@@ -162,7 +162,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     GRU_round_output_loss = trial.suggest_categorical('GRU_round_output_loss', kwargs['GRU_round_output_loss'])
     # Build head parameters
     emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
-    params = {
+    head_params = {
       'input_dim': emb_dim * 8 if concatenate_temp_dim else emb_dim,
       'hidden_size': GRU_hidden_size,
       'num_layers': GRU_num_layers,
@@ -189,13 +189,14 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'cross_block_after_transformers', kwargs['cross_block_after_transformers'])
 
     emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
+    custom_mlp = trial.suggest_categorical('custom_mlp', kwargs['custom_mlp'])
     
     if loss in ['l1', 'l2', 'huber']:
       num_classes = 1
       print(f"\nRegression task detected. Setting num_classes to 1 for {loss} loss.")
     else:
       num_classes = pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique()
-    params = {
+    head_params = {
       'input_dim': emb_dim * 8 if concatenate_temp_dim else emb_dim,
       'num_classes': num_classes,
       'num_cross_heads': num_cross_head,
@@ -204,6 +205,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'attn_dropout': drop_attn,
       'residual_dropout': drop_residual,
       'mlp_ratio': mlp_ratio,
+      'custom_mlp': custom_mlp,
       'pos_enc': pos_enc,
       'coral_loss': True if loss == 'coral' else False,
       'depth': nr_blocks,
@@ -245,7 +247,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     head=head_enum,
     stride_window_in_video=kwargs['stride_window_in_video'],
     features_folder_saving_path=kwargs['ffsp'],
-    head_params=params,
+    head_params=head_params,
     k_fold=kwargs['k_fold'],
     global_foder_name=kwargs['global_folder_name'],
     batch_size_training=batch_train,
@@ -381,6 +383,8 @@ if __name__ == '__main__':
                     help='Path to video dataset')
   
   # Training parameters
+  parser.add_argument('--save_best_model', action='store_true', help='Save the best model')
+  parser.add_argument('--save_last_epoch_model', action='store_true', help='Save the last epoch model')
   parser.add_argument('--train_amp_enabled', action='store_true', help='Enable AMP training')
   parser.add_argument('--train_amp_dtype', type=str, default=None, help='AMP training data type: bfloat16 or float16. Default is float16')
   parser.add_argument('--lr', type=float, nargs='*', default=[0.0001], help='Learning rate(s)')
@@ -406,6 +410,8 @@ if __name__ == '__main__':
   parser.add_argument('--drop_attn', type=float, nargs='*', default=[0.0], help='Attention dropout rate(s)')
   parser.add_argument('--drop_residual', type=float, nargs='*', default=[0.0], help='Residual dropout rate(s)')
   parser.add_argument('--mlp_ratio', type=float, nargs='*', default=[2.0], help='MLP ratio(s) for AttentiveJepa')
+  parser.add_argument('--custom_mlp', type=int, nargs='*', default=[0],
+                    help='Use custom MLP for AttentiveJepa head. Default is 0 (no custom MLP)')
   parser.add_argument('--pos_enc', type=int,nargs='*',default=[0], help='Use positional encoding for Attentive head')
   parser.add_argument('--nr_blocks',type=int,nargs='*',default=[1], help='Number of blocks for Jepa Attentive head. Default is 1 (only cross-attention)')
   parser.add_argument('--cross_block_after_transformers', type=int,nargs='*', default=[0],
@@ -478,6 +484,9 @@ if __name__ == '__main__':
   
   if dict_args['log_history_sample']:
     helper.LOG_HISTORY_SAMPLE = True
+  
+  if dict_args['save_last_epoch_model']:
+    helper.SAVE_LAST_EPOCH_MODEL = True
   
   if dict_args['train_amp_enabled']:
     helper.AMP_ENABLED = True
