@@ -56,7 +56,8 @@ class customDataset(torch.utils.data.Dataset):
       color_jitter=None,
       rotation=None,
       backbone_dict=None,
-      smooth_labels= 0.0
+      smooth_labels= 0.0,
+      video_extension = '.mp4'
   ):
     """
     Initialize the dataset with specified parameters.
@@ -92,6 +93,7 @@ class customDataset(torch.utils.data.Dataset):
     assert sample_frame_strategy in SAMPLE_FRAME_STRATEGY, f"Sample frame strategy must be one of {SAMPLE_FRAME_STRATEGY}."
     
     # Initialize instance variables
+    self.video_extension = video_extension
     self.path_dataset = path_dataset
     self.path_labels = path_labels
     self.type_sample_frame_strategy = sample_frame_strategy
@@ -246,13 +248,13 @@ class customDataset(torch.utils.data.Dataset):
         None
     """
     csv_array = self.video_labels.iloc[idx]
-    video_path = os.path.join(self.path_dataset, csv_array.iloc[1], csv_array.iloc[5] + '.mp4')
+    video_path = os.path.join(self.path_dataset, csv_array.iloc[1], csv_array.iloc[5] + self.video_extension)
     container = cv2.VideoCapture(video_path)
     tot_frames = int(container.get(cv2.CAP_PROP_FRAME_COUNT))
     # Set frame dimensions based on preprocessing requirements
     width_frames = int(container.get(cv2.CAP_PROP_FRAME_WIDTH))
     height_frames = int(container.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
+    # if tot_frames == 0:
     list_indices = self.sample_frame_strategy(tot_frames)
     frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames) # [nr_clips, nr_frames, H, W, C]
     # original_shape = frames_list.shape
@@ -266,10 +268,10 @@ class customDataset(torch.utils.data.Dataset):
     # frames_list = frames_list.reshape(*original_shape)
     # Save the generated video
     if output_folder is None:
-      output_path = os.path.join(self.saving_folder_path_extracted_video, f'{csv_array.iloc[5]}_inside_{self.stride_inside_window}_stride_{self.stride_window}_fps_{fps_out}.mp4')
+      output_path = os.path.join(self.saving_folder_path_extracted_video, f'{csv_array.iloc[5]}_inside_{self.stride_inside_window}_stride_{self.stride_window}_fps_{fps_out}{self.video_extension}')
     else:
       os.makedirs(output_folder, exist_ok=True)
-      output_path = os.path.join(output_folder, f'{csv_array.iloc[5]}_inside_{self.stride_inside_window}_stride_{self.stride_window}_fps_{fps_out}.mp4')
+      output_path = os.path.join(output_folder, f'{csv_array.iloc[5]}_inside_{self.stride_inside_window}_stride_{self.stride_window}_fps_{fps_out}{self.video_extension}')
     frames_list = frames_list.permute(0,2,3,1) # [B,C,H,W] -> [B,H,W,C]
     tools.generate_video_from_list_frame(list_frame=frames_list,path_video_output=output_path,fps=fps_out)
     # print(f"Video saved at {output_path}")
@@ -278,7 +280,7 @@ class customDataset(torch.utils.data.Dataset):
   def __standard_getitem__(self, idx):
     
     csv_array = self.video_labels.iloc[idx]
-    video_path = os.path.join(self.path_dataset, csv_array.iloc[1], csv_array.iloc[5] + '.mp4')
+    video_path = os.path.join(self.path_dataset, csv_array.iloc[1], csv_array.iloc[5] + self.video_extension)
 
     # Open video and get properties
     container = cv2.VideoCapture(video_path)
@@ -290,7 +292,9 @@ class customDataset(torch.utils.data.Dataset):
     # else:
     width_frames = int(container.get(cv2.CAP_PROP_FRAME_WIDTH))
     height_frames = int(container.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
+    print(f"Video {video_path} has {tot_frames} frames")
+    if tot_frames == 0:
+      raise ValueError(f"Video {video_path} has no frames. Please check the video file.")
     # Get frame indices based on sampling strategy
     list_indices = self.sample_frame_strategy(tot_frames)
 
@@ -555,6 +559,13 @@ class customDataset(torch.utils.data.Dataset):
               Each row corresponds to a window and contains the indices
               of the frames within that window.
     """
+    upper_bound = video_len - self.clip_length * self.stride_inside_window + 1
+    if upper_bound <= 0:
+      raise ValueError(
+        f"Video length {video_len} is too short for the specified clip length {self.clip_length} "
+        f"and stride inside window {self.stride_inside_window}. "
+        f"Please adjust these parameters."
+      )
     indices = torch.arange(0, video_len - self.clip_length * self.stride_inside_window + 1, self.stride_window)
     list_indices = torch.stack([torch.arange(start_idx, start_idx + self.clip_length * self.stride_inside_window, self.stride_inside_window) for start_idx in indices])
     # print('Sliding shape', list_indices.shape)
@@ -588,7 +599,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
       self.df.to_csv(csv_path,sep='\t',index=False)
       print(f"Filtered DataFrame saved to {csv_path}")
     # Save mask to use to filter helper.dict_data
-    self.mask = np.isin(helper.dict_data['list_sample_id'],self.df['sample_id'].to_list())
+    # self.mask = np.isin(helper.dict_data['list_sample_id'],self.df['sample_id'].to_list())
     self.model = model
     self.instance_model_name = tools.get_instace_model_name(model)
     self.smooth_labels = smooth_labels
