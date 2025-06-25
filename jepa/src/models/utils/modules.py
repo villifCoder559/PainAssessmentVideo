@@ -34,6 +34,34 @@ class MLP(nn.Module):
         x = self.fc2(x)
         x = self.drop(x)
         return x
+    
+class MLP_custom(nn.Module):
+    def __init__(
+        self,
+        in_features,
+        # hidden_features=None,
+        # out_features=None,
+        reduction_ratio,
+        act_layer=nn.GELU,
+        drop=0.,
+        
+    ):
+        super().__init__()
+        # self.in_features = in_features
+        # self.reduction_ratio = reduction_ratio
+        self.fc1 = nn.Linear(in_features, int(in_features * reduction_ratio))
+        self.act = act_layer()
+        self.fc2 = nn.Linear(int(in_features * reduction_ratio), int(in_features * (reduction_ratio**2)))
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        return x
+
 
 
 class Attention(nn.Module):
@@ -191,6 +219,7 @@ class CrossAttentionBlock(nn.Module):
         qkv_bias=False,
         act_layer=nn.GELU,
         norm_layer=nn.LayerNorm,
+        custom_mlp=False,
         use_sdpa=False
     ):
         super().__init__()
@@ -203,11 +232,19 @@ class CrossAttentionBlock(nn.Module):
                                     proj_drop=drop)
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = MLP(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+        if not custom_mlp:
+            self.mlp = MLP(in_features=dim, 
+                           hidden_features=mlp_hidden_dim, 
+                           act_layer=act_layer, drop=drop)
+        else:
+            self.mlp = MLP_custom(in_features=dim, 
+                                  reduction_ratio=mlp_ratio, 
+                                  act_layer=act_layer, 
+                                  drop=drop)
         self.residual_drop = nn.Dropout(residual_drop)
 
     def forward(self, q, x, mask=None, return_xattn=False):
         y,xattn = self.xattn(q, self.norm1(x), mask=mask, return_xattn=return_xattn)
         q = self.residual_drop(q) + y
-        q = self.residual_drop(q) + self.mlp(self.norm2(q))
-        return q,xattn
+        q = self.mlp(self.norm2(q))
+        return q, xattn
