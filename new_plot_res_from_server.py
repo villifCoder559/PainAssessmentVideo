@@ -725,7 +725,7 @@ def plot_accuray_per_class_across_epochs(data, run_output_folder, test_id, addit
     ax2 = ax1.twinx()      # Twin axis for accuracy
 
     # Plot loss
-    line1, = ax1.plot(val_loss[:, class_idx], color='tab:purple', linestyle='--', label='Loss')
+    line1, = ax1.plot(val_loss[:, class_idx], color='tab:purple', label='Loss')
     ax1.set_ylim(0, 3)
     ax1.set_ylabel('Loss', color='tab:purple')
     ax1.tick_params(axis='y', labelcolor='tab:purple')
