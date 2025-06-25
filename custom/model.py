@@ -5,7 +5,7 @@ import numpy as np
 import os
 import custom.tools as tools
 from custom.dataset import get_dataset_and_loader
-from custom.head import LinearHead, GRUHead, AttentiveHead, AttentiveHeadJEPA
+from custom.head import LinearHead, GRUHead, AttentiveHeadJEPA
 from custom.helper import CUSTOM_DATASET_TYPE, MODEL_TYPE, get_shift_for_sample_id
 import pandas as pd
 import custom.helper as helper
@@ -57,6 +57,7 @@ class Model_Advanced: # Scenario_Advanced
     self.label_smooth = label_smooth
     self.soft_labels = soft_labels 
     self.prefetch_factor = prefetch_factor
+    self.T_S_S_shape = None
     
     if self.dataset_type == CUSTOM_DATASET_TYPE.BASE:
       self.backbone_dict = {
@@ -72,13 +73,13 @@ class Model_Advanced: # Scenario_Advanced
       self.set_global_dict_data_from_hdd_(complete_df=complete_df)
       # Set label according to the csv (ex: binary classification instead of multiclass)
       self._set_real_label_from_csv_(complete_df=complete_df)
-      
+    
     if head == 'GRU':
       if model_type != MODEL_TYPE.ViT_image:
         assert self.backbone.frame_size % self.backbone.tubelet_size == 0, "Frame size must be divisible by tubelet size."
       self.head = GRUHead(**head_params)
-    elif head == 'ATTENTIVE':
-      self.head = AttentiveHead(**head_params)
+    # elif head == 'ATTENTIVE':
+    #   self.head = AttentiveHead(**head_params)
     elif head == 'ATTENTIVE_JEPA':
       if hasattr(torch.nn.functional,"scaled_dot_product_attention"):
         use_sdpa = True
@@ -96,6 +97,7 @@ class Model_Advanced: # Scenario_Advanced
       print(f"Shape of T_S_S_shape: {T_S_S_shape}\n")
         # dim_pos_enc = 
       print(f'\n num_heads: {head_params["num_heads"]},\n num_cross_heads: {head_params["num_cross_heads"]}\n')
+      self.T_S_S_shape = T_S_S_shape
       self.head = AttentiveHeadJEPA(embed_dim=head_params['input_dim'],
                                           num_classes=head_params['num_classes'],
                                           num_heads=head_params['num_heads'],
@@ -105,6 +107,7 @@ class Model_Advanced: # Scenario_Advanced
                                           residual_dropout=head_params['residual_dropout'],
                                           mlp_ratio=head_params['mlp_ratio'],
                                           pos_enc=head_params['pos_enc'],
+                                          custom_mlp=head_params['custom_mlp'],
                                           grid_size_pos=T_S_S_shape, # [T, S, S]
                                           depth=head_params['depth'],
                                           num_queries=head_params['num_queries'],
