@@ -21,7 +21,7 @@ import tqdm
 def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,enable_batch_extraction,batch_size_feat_extraction,n_workers,saving_chunk_size=100,  preprocess_align = False,
          preprocess_crop_detection = False,preprocess_frontalize = True,path_dataset=None,path_labels=None,stride_window=16,clip_length=16,
          log_file_path=None,root_saving_folder_path=None,backbone_type='video',from_=None,to_=None,save_big_feature=False,h_flip=False,
-         stride_inside_window=1,float_16=False,color_jitter=False,rotation=False,save_as_safetensors=True
+         stride_inside_window=1,float_16=False,color_jitter=False,rotation=False,save_as_safetensors=True,video_extension='.mp4'
          ):
   model_type = MODEL_TYPE.get_model_type(model_type)    
   
@@ -201,6 +201,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
                 flip_horizontal=h_flip,
                 color_jitter=color_jitter,
                 rotation=rotation,
+                video_extension=video_extension,
                 preprocess_align=preprocess_align,
                 preprocess_frontalize=preprocess_frontalize,
                 stride_inside_window=stride_inside_window,
@@ -231,7 +232,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
     'h_flip': h_flip,
     'stride_inside_window': stride_inside_window,
     'float_16': float_16,
-    
+    'video_extension': video_extension,
     # 'backbone_model': backbone_model,
   }
   if not os.path.exists(root_saving_folder_path):
@@ -285,6 +286,7 @@ if __name__ == "__main__":
   parser.add_argument('--save_as_safetensors', action='store_true', help='Save as safetensors')
   parser.add_argument('--adaptive_avg_pool3d_out_shape', type=int, nargs='*', default=[2,2,2], help='3d pooling kernel size')
   parser.add_argument('--enable_batch_extraction', action='store_true', help='Enable batch extraction')
+  parser.add_argument('--video_extension', type=str, default='.mp4', help='Video extension to use for dataset')
   # CUDA_VISIBLE_DEVICES=0 python3 extract_feature.py --gp --model_type B --saving_after 150 --emb_red spatial --path_dataset partA/video/video_frontalized_new --path_labels partA/starting_point/samples_exc_no_detection.csv --saving_folder_path partA/video/features/samples_16_frontalized_new --backbone_type video --from_ 0 --to_ 1500 --batch_size_feat_extraction 5 --n_workers 5
   # prompt example: python3 extract_feature.py --gp --model_type B --saving_after 5000  --emb_red temporal  --path_dataset partA/video/video_frontalized --path_labels partA/starting_point/samples_exc_no_detection.csv --saving_folder_path partA/video/features/samples_vit_img --log_file_path partA/video/features/samples_vit_img/log_file.txt --backbone_type image 
   args = parser.parse_args()
@@ -334,6 +336,7 @@ if __name__ == "__main__":
        save_as_safetensors=args.save_as_safetensors,
        adaptive_avg_pool3d_out_shape=adaptive_avg_pool3d_out_shape,
        enable_batch_extraction=args.enable_batch_extraction,
+       video_extension=args.video_extension
        )
   
   
