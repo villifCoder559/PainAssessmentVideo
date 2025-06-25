@@ -26,6 +26,7 @@ import matplotlib.pyplot as plt
 from torch.amp import GradScaler, autocast
 import threading
 import jepa.src.models.attentive_pooler as jepa_attentive_pooler
+import jepa.src.models.utils.modules as jepa_modules
 from jepa.src.utils.tensors import trunc_normal_
 from coral_pytorch.layers import CoralLayer
 from coral_pytorch.dataset import proba_to_label
@@ -253,6 +254,8 @@ class BaseHead(nn.Module):
           # HuberLoss requires float32 inputs
         if isinstance(criterion, torch.nn.HuberLoss):
           batch_y = batch_y.float()
+        elif isinstance(criterion, torch.nn.CrossEntropyLoss):
+          batch_y = batch_y.long()
         batch_y = batch_y.to(device)
         dict_batch_X = {key: value.to(device) for key, value in dict_batch_X.items()}
         dict_log_time['transfer_to_device'] = dict_log_time.get('transfer_to_device',0) + time.time() - transfer_to_device
@@ -357,7 +360,7 @@ class BaseHead(nn.Module):
       dict_log_time['eval'] = dict_log_time.get('eval',0) + time.time()-time_eval
       # print(f'  Evaluation time: {dict_log_time["eval"]:.4f}')
       epoch_log_time = time.time()
-      if epoch == 0 or (dict_eval[key_for_early_stopping] < best_eval_loss if key_for_early_stopping == 'val_loss' else dict_eval[key_for_early_stopping] > best_eval_loss):
+      if epoch == 0 or helper.SAVE_LAST_EPOCH_MODEL or (dict_eval[key_for_early_stopping] < best_eval_loss if key_for_early_stopping == 'val_loss' else dict_eval[key_for_early_stopping] > best_eval_loss):
         best_eval_loss = dict_eval[key_for_early_stopping]
         best_model_state = copy.deepcopy(self.state_dict())
         best_model_state = {key: value.cpu() for key, value in best_model_state.items()}
@@ -479,10 +482,11 @@ class BaseHead(nn.Module):
       if stop_event.is_set():
         print(f'Stop event is set. Stopping training...')
         break
-    # if saving_path:
-    #     print('Load and save best model for next steps...')
-    #     torch.save(best_model_state, os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth'))
-    #     print(f"Best model weights saved to {os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth')}")
+      
+    if saving_path and (helper.SAVE_PTH_MODEL or helper.SAVE_LAST_EPOCH_MODEL):
+      print('Load and save best model for next steps...')
+      torch.save(best_model_state, os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth'))
+      print(f"Best model weights saved to {os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth')}")
 
     return {
       'train_losses': list_train_losses,
@@ -563,14 +567,20 @@ class BaseHead(nn.Module):
       
       amp_dtype = torch.bfloat16 if helper.AMP_DTYPE == 'bfloat16' else torch.float16
       enable_autocast = helper.AMP_ENABLED and amp_dtype == torch.bfloat16
-      for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(val_loader,total=len(val_loader),desc=f'{("Validation" if not is_test else "Test") + f"_autocast" if enable_autocast else ""}'):
+      for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(val_loader,total=len(val_loader),desc=f'{("Validation" if not is_test else "Test")}'):
         list_batch_size.append(len(batch_y))
         nr_samples += len(batch_y)
         tmp = torch.isin(unique_val_subjects,batch_subjects)
         _,count_sample_per_subject = torch.unique(batch_subjects, return_counts=True)
         sample_per_subject_count[tmp] += count_sample_per_subject
+        if isinstance(criterion, torch.nn.HuberLoss):
+          batch_y = batch_y.float()
+        elif isinstance(criterion, torch.nn.CrossEntropyLoss):
+          batch_y = batch_y.long()
+        
         dict_batch_X = {key: value.to(device) for key, value in dict_batch_X.items()}
         batch_y = batch_y.to(device)
+        
         # subject_batch_count[tmp] += 1
         helper.LOG_CROSS_ATTENTION['state'] = 'test' if is_test else 'val'
         dict_batch_X['list_sample_id'] = sample_id
@@ -727,7 +737,35 @@ class LinearHead(BaseHead):
     self.num_classes = num_classes
   # def get_dataset_and_loader(self, csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal):
   #   return super().get_dataset_and_loader(csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal, False)
- 
+
+
+# class CrossAttentionBlock(nn.Module):
+#     def __init__(
+#         self,
+#         dim,
+#         num_heads,
+#         mlp_ratio=4.,
+#         drop=0.0,
+#         attn_drop=0.0,
+#         residual_drop=0.0,
+#         qkv_bias=False,
+#         act_layer=nn.GELU,
+#         norm_layer=nn.LayerNorm,
+#         use_sdpa=False
+#     ):
+#         super().__init__()
+#         self.norm1 = norm_layer(dim)
+#         self.xattn = CrossAttention(dim, 
+#                                     num_heads=num_heads,
+#                                     qkv_bias=qkv_bias,
+#                                     use_sdpa=use_sdpa,
+#                                     attn_drop=attn_drop,
+#                                     proj_drop=drop)
+#         self.norm2 = norm_layer(dim)
+#         mlp_hidden_dim = int(dim * mlp_ratio)
+#         self.mlp = MLP(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+#         self.residual_drop = nn.Dropout(residual_drop)
+  
 class AttentiveHeadJEPA(BaseHead):
   def __init__(self,
       embed_dim=768,
@@ -745,10 +783,11 @@ class AttentiveHeadJEPA(BaseHead):
       num_queries=1,
       agg_method='mean',
       pos_enc=False,
-      use_sdpa=False,
+      use_sdpa=True,
       grid_size_pos=None,
       cross_block_after_transformers=True,
       coral_loss=False,
+      custom_mlp=False,
       complete_block=True):
     super().__init__(self,is_classification=True if num_classes > 1 else False)
     self.pooler = jepa_attentive_pooler.AttentivePooler(
@@ -764,10 +803,12 @@ class AttentiveHeadJEPA(BaseHead):
             norm_layer=norm_layer,
             init_std=init_std,
             qkv_bias=qkv_bias,
+            custom_mlp=custom_mlp,
             complete_block=complete_block,
             use_sdpa=use_sdpa,
             cross_block_after_transformers=cross_block_after_transformers
         )
+    self.custom_mlp = custom_mlp
     self.num_classes = num_classes
     self.num_queries = num_queries
     self.pos_enc = pos_enc
@@ -778,7 +819,10 @@ class AttentiveHeadJEPA(BaseHead):
     if coral_loss:
       self.linear = CoralLayer(embed_dim, num_classes)
     else:
-      self.linear = nn.Linear(embed_dim, num_classes, bias=True)
+      if self.custom_mlp:
+        self.linear = nn.Linear(int(embed_dim * (mlp_ratio**2)), num_classes, bias=True) 
+      else:
+        self.linear = nn.Linear(embed_dim, num_classes, bias=True)
       # self.linear.reset_parameters()
     
     # Init weights
@@ -792,7 +836,7 @@ class AttentiveHeadJEPA(BaseHead):
       else:
         raise NotImplementedError(f'Unknown aggregation method {agg_method}')
 
-  def forward(self, x, key_padding_mask=None, **kwargs):
+  def forward(self, x, key_padding_mask=None, return_video_emb=False,**kwargs):
     # FORWARD PASS
     if self.pos_enc:
       if self.pos_enc_tensor is None or self.pos_enc_tensor.shape[0] != x.size(1):
@@ -811,8 +855,10 @@ class AttentiveHeadJEPA(BaseHead):
     x,xattn = self.pooler(x,key_padding_mask,helper.LOG_CROSS_ATTENTION['enable']) 
     x = x.squeeze(1) # # [B, num_queries=1, C] -> [B, C]
     x = self.aggregator(x)
-    # if self.coral_loss:
-    x = self.linear(x)
+    if return_video_emb:
+      return x, self.linear(x)
+    else:
+      x = self.linear(x)
     
     # LOG CROSS ATTENTION if enabled
     if helper.LOG_CROSS_ATTENTION['enable']:
@@ -840,11 +886,11 @@ class AttentiveHeadJEPA(BaseHead):
     else:
       raise NotImplementedError(f'Initialization method {init_type} not implemented')
       
-class AttentiveHead(BaseHead):
-  def __init__(self,input_dim,num_classes,num_heads,dropout,pos_enc):
-    model = AttentiveProbe(input_dim=input_dim,num_classes=num_classes,num_heads=num_heads,dropout=dropout,pos_enc=pos_enc)
-    is_classification = True if num_classes > 1 else False
-    super().__init__(model,is_classification)
+# class AttentiveHead(BaseHead):
+#   def __init__(self,input_dim,num_classes,num_heads,dropout,pos_enc):
+#     model = AttentiveProbe(input_dim=input_dim,num_classes=num_classes,num_heads=num_heads,dropout=dropout,pos_enc=pos_enc)
+#     is_classification = True if num_classes > 1 else False
+#     super().__init__(model,is_classification)
   
 class GRUHead(BaseHead):
   def __init__(self, input_dim, hidden_size, num_layers, dropout, output_size,layer_norm):
@@ -998,6 +1044,7 @@ class LinearProbe(nn.Module):
       self.linear.reset_parameters()
     else:
       raise ValueError(f"Unknown initialization type: {init_type}. Can be 'default'")
+
   
 class EarlyStopping:
   def __init__(self, best, patience=5, min_delta=0,threshold_mode='rel'):
