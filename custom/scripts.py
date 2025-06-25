@@ -465,45 +465,45 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
 
   def get_obj_config():
     return{
-    'k_fold': k_fold,
-    'model_type': model_type,
-    'epochs': epochs,
-    'optimizer_fn': optimizer_fn.__name__,
-    'lr': lr,
-    'criterion': criterion,
-    'criterion_dict': criterion.get_params() if hasattr(criterion,'get_params') else None,
-    'init_network': init_network,
-    'regularization_lambda_L1': regularization_lambda_L1,
-    'regularization_lambda_L2': regularization_lambda_L2,
-    'batch_size_training': batch_size_training,
-    'pooling_embedding_reduction': pooling_embedding_reduction,
-    'pooling_clips_reduction': pooling_clips_reduction,
-    'sample_frame_strategy': sample_frame_strategy,
-    'path_csv_dataset': path_csv_dataset.split('/')[-3:], # get the last 3 folders
-    'path_video_dataset': path_video_dataset.split('/')[-3:], # get the last 3 folders
-    'features_folder_saving_path': features_folder_saving_path.split('/')[-3:], # get the last 3 folders
-    'head': head,
-    'key_for_early_stopping': key_for_early_stopping,
-    # 'stride_window_in_video': stride_window_in_video,
-    'head_params': head_params,
-    'random_state': seed_random_state,
-    'plot_dataset_distribution': is_plot_dataset_distribution,
-    'round_output_loss': is_round_output_loss,
-    'shuffle_video_chunks': is_shuffle_video_chunks,
-    'shuffle_training_batch':is_shuffle_training_batch,
-    'clip_length': clip_length,
-    'target_metric_best_model': target_metric_best_model,
-    'early_stopping': early_stopping,
-    'enable_scheduler': enable_scheduler,
-    'concatenate_temp_dim': concatenate_temp_dim,
-    'stop_after_kth_fold': stop_after_kth_fold,
-    'n_workers': n_workers,
-    'clip_grad_norm': clip_grad_norm,
-    'label_smooth': label_smooth,
-    'soft_labels': soft_labels,
-    **dict_augmented,
-    'type_regul': 'elastic' if regularization_lambda_L1 > 0 and regularization_lambda_L2 > 0 else 'L1' if regularization_lambda_L1 > 0 else 'L2' if regularization_lambda_L2 > 0 else 'none'
-    }
+      'k_fold': k_fold,
+      'model_type': model_type,
+      'epochs': epochs,
+      'optimizer_fn': optimizer_fn.__name__,
+      'lr': lr,
+      'criterion': criterion,
+      'criterion_dict': criterion.get_params() if hasattr(criterion,'get_params') else None,
+      'init_network': init_network,
+      'regularization_lambda_L1': regularization_lambda_L1,
+      'regularization_lambda_L2': regularization_lambda_L2,
+      'batch_size_training': batch_size_training,
+      'pooling_embedding_reduction': pooling_embedding_reduction,
+      'pooling_clips_reduction': pooling_clips_reduction,
+      'sample_frame_strategy': sample_frame_strategy,
+      'path_csv_dataset': path_csv_dataset.split('/')[-3:], # get the last 3 folders
+      'path_video_dataset': path_video_dataset.split('/')[-3:], # get the last 3 folders
+      'features_folder_saving_path': features_folder_saving_path.split('/')[-3:], # get the last 3 folders
+      'head': head,
+      'key_for_early_stopping': key_for_early_stopping,
+      # 'stride_window_in_video': stride_window_in_video,
+      'head_params': head_params,
+      'random_state': seed_random_state,
+      'plot_dataset_distribution': is_plot_dataset_distribution,
+      'round_output_loss': is_round_output_loss,
+      'shuffle_video_chunks': is_shuffle_video_chunks,
+      'shuffle_training_batch':is_shuffle_training_batch,
+      'clip_length': clip_length,
+      'target_metric_best_model': target_metric_best_model,
+      'early_stopping': early_stopping,
+      'enable_scheduler': enable_scheduler,
+      'concatenate_temp_dim': concatenate_temp_dim,
+      'stop_after_kth_fold': stop_after_kth_fold,
+      'n_workers': n_workers,
+      'clip_grad_norm': clip_grad_norm,
+      'label_smooth': label_smooth,
+      'soft_labels': soft_labels,
+      **dict_augmented,
+      'type_regul': 'elastic' if regularization_lambda_L1 > 0 and regularization_lambda_L2 > 0 else 'L1' if regularization_lambda_L1 > 0 else 'L2' if regularization_lambda_L2 > 0 else 'none'
+      }
   def get_json_config():
     return {
     'k_fold': k_fold,
@@ -632,7 +632,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   summary_res = {}
   summary_res['results'] = fold_results['dict_k_fold_results']
   summary_res['time'] = time.time() - start  
-  summary_res['config'] = get_obj_config()                                     
+  summary_res['config'] = get_obj_config()
+  summary_res['config']['head_params']['T_S_S_shape'] = model_advanced.T_S_S_shape                                   
   if helper.LOG_CROSS_ATTENTION['enable']:
     summary_res['cross_attention_debug'] = helper.LOG_CROSS_ATTENTION
     helper.LOG_CROSS_ATTENTION = {'enable':helper.LOG_CROSS_ATTENTION['enable'],
