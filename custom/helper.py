@@ -15,6 +15,8 @@ LOG_PER_CLASS_AND_SUBJECT = True
 LOG_HISTORY_SAMPLE = False
 QUERIES_AGG_METHOD = ['mean','max']
 LOG_LOSS_ACCURACY = False
+SAVE_LAST_EPOCH_MODEL = False
+SAVE_PTH_MODEL = False
 LOG_CROSS_ATTENTION = {
   'enable': False,
   'state':'train'
