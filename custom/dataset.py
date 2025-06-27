@@ -816,12 +816,12 @@ class customBatchSampler(BatchSampler):
     self.shuffle = shuffle
     _, count = np.unique(self.y_labels, return_counts=True)
     min_member = np.min(count)
-    max_member = np.max(count)
+    # max_member = np.max(count)
     self.initialize()
-    if max_member < self.skf.get_n_splits():
-      raise ValueError(f"Impossible to split the dataset in {self.skf.get_n_splits()} splits. The maximum number of samples per class is {max_member}")
+    # if max_member < self.skf.get_n_splits():
+    #   raise ValueError(f"Impossible to split the dataset in {self.skf.get_n_splits()} splits. The maximum number of samples per class is {max_member}")
     if min_member < self.skf.get_n_splits():
-      raise ValueError(f"Impossible to split the dataset in {self.skf.get_n_splits()} splits. The minimum number of samples per class is {min_member}")
+      raise ValueError(f"Impossible to split the dataset in {self.skf.get_n_splits()} splits. The minimum number of samples per class is {min_member} and the batch size is {self.n_batch_size}. ")
     # -(-a//b) is the same as math.ceil(a/b)
 
     
@@ -833,6 +833,7 @@ class customBatchSampler(BatchSampler):
   def __iter__(self):
     for _,test in self.skf.split(np.zeros(self.y_labels.shape[0]), self.y_labels):
       yield test.astype(np.int32).tolist() 
+    
     self.random_state += 13
     self.initialize()
       
@@ -915,33 +916,34 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
     raise ValueError(f'Unknown dataset type: {dataset_type}. Choose one of {CUSTOM_DATASET_TYPE}')
 
   if is_training:
-    try:
-      customBatchSampler_train = customBatchSampler(df=dataset_.df, 
-                                          batch_size=batch_size,
-                                          shuffle=shuffle_training_batch)
-      if n_workers > 1:
-        loader_ = DataLoader(
-                            dataset=dataset_,
-                            batch_sampler=customBatchSampler_train,
-                            collate_fn=dataset_._custom_collate,
-                            # batch_size=1,
-                            num_workers=n_workers,
-                            persistent_workers= persistent_workers,
-                            prefetch_factor=prefetch_factor,
-                            pin_memory=pin_memory)
-        print(f'Use custom Dataloader with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
-      else:
-        loader_ = DataLoader(
-                            dataset=dataset_,
-                            batch_sampler=customBatchSampler_train,
-                            collate_fn=dataset_._custom_collate,
-                            # batch_size=1,
-                            pin_memory=True)
-        print(f'Use custom Dataloader!')
-    except Exception as e:
-      print(f'Err: {e}')
-      print(f'Use standard DataLoader')
-      loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate,persistent_workers=True)
+    # try:
+    customBatchSampler_train = customBatchSampler(df=dataset_.df, 
+                                        batch_size=batch_size,
+                                        shuffle=shuffle_training_batch)
+    if n_workers > 1:
+      loader_ = DataLoader(
+                          dataset=dataset_,
+                          batch_sampler=customBatchSampler_train,
+                          collate_fn=dataset_._custom_collate,
+                          # batch_size=1,
+                          num_workers=n_workers,
+                          persistent_workers= persistent_workers,
+                          prefetch_factor=prefetch_factor,
+                          pin_memory=pin_memory)
+      print(f'Use custom Dataloader with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
+    else:
+      loader_ = DataLoader(
+                          dataset=dataset_,
+                          batch_sampler=customBatchSampler_train,
+                          collate_fn=dataset_._custom_collate,
+                          # batch_size=1,
+                          pin_memory=True)
+      print(f'Use custom Dataloader!')
+    # except Exception as e:
+    #   raise ValueError(f'Error in customBatchSampler: {e}') from e
+    #   print(f'Err: {e}')
+    #   print(f'Use standard DataLoader')
+    #   loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate,persistent_workers=True)
   else:
     if n_workers > 1:
       nr_batches = len(dataset_.df) // batch_size + 1
