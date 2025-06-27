@@ -203,6 +203,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'num_heads': num_heads or num_cross_head,
       'dropout': model_dropout,
       'attn_dropout': drop_attn,
+      'head_init_path': kwargs['head_init_path'],
       'residual_dropout': drop_residual,
       'mlp_ratio': mlp_ratio,
       'custom_mlp': custom_mlp,
@@ -443,6 +444,7 @@ if __name__ == '__main__':
   parser.add_argument('--label_smooth', type=float, nargs='*',default=[0.0], help='Label smoothing factor. Default is 0.0 (no smoothing)')
   parser.add_argument('--soft_labels', type=float, nargs='*', default=[0.0], help='Soft labels factor. Default is 0.0 (no soft labels), otherwise it will be use as hardness factor for the labels')
   parser.add_argument('--loss_regression', type=str, default='L1', help='Regression loss function: L1 or L2. Default is L1')
+  parser.add_argument('--head_init_path', type=str, default=None, help='Path to pre-trained head weights. Default is None (no pre-trained weights)')
   
   # Network augmentation
   parser.add_argument('--hflip', type=float,nargs='*', default=[0.0], help='Horizontal flip augmentation probability. Default is 0.0')
