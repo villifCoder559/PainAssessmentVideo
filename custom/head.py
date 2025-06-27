@@ -195,10 +195,11 @@ class BaseHead(nn.Module):
     # list_memory_snap.append(tracemalloc.take_snapshot())
     # accuracy_metric = torchmetrics.Accuracy(task='multiclass',num_classes=self.model.num_classes,average='none').to(device)
     # precision_metric = torchmetrics.Precision(task='multiclass',num_classes=self.model.num_classes,average='none').to(device)
-    print(f'\nStart to train model with:\n Number of parameters: {((sum(p.numel() for p in self.parameters() if p.requires_grad))/1e6):.2f} M\n')
-    metric_for_stopping = "_".join(key_for_early_stopping.split('_')[1:]) # ex: val_accuracy -> accuracy. the second part must be metric from tools.evaluate_classification_from_confusion_matrix
+    print(f'\nNumber of parameters for this head:')
+    print(f'  Trainable: {((sum(p.numel() for p in self.parameters() if p.requires_grad))/1e6):.4f} M')
+    print(f'  Total    : {sum(p.numel() for p in self.parameters())/1e6:.4f} M')
     
-
+    metric_for_stopping = "_".join(key_for_early_stopping.split('_')[1:]) # ex: val_accuracy -> accuracy. the second part must be metric from tools.evaluate_classification_from_confusion_matrix
     amp_dtype = torch.bfloat16 if helper.AMP_DTYPE == 'bfloat16' else torch.float16
     enable_autocast = helper.AMP_ENABLED and amp_dtype == torch.bfloat16 # Use autocast for mixed precision training
     enable_scaler = helper.AMP_ENABLED and amp_dtype in [torch.float16] # Use GradScaler for mixed precision training
@@ -475,8 +476,8 @@ class BaseHead(nn.Module):
       for k,v in dict_log_time.items():
         print(f'  {k} time: {v:.4f} s')
 
-      if np.mean(total_norm_epoch[epoch]) < 1e-5 and epoch % 5 == 0:
-        print(f'Gradient norm is too small (< 1e-5). Stopping training...')
+      if helper.LOG_GRADIENT_PER_MODULE and np.mean(total_norm_epoch[epoch]) < 1e-2:
+        print(f'Gradient norm is small (< 1e-1). Stopping training...')
         break
       
       if stop_event.is_set():
@@ -788,6 +789,7 @@ class AttentiveHeadJEPA(BaseHead):
       cross_block_after_transformers=True,
       coral_loss=False,
       custom_mlp=False,
+      head_init_path=None,
       complete_block=True):
     super().__init__(self,is_classification=True if num_classes > 1 else False)
     self.pooler = jepa_attentive_pooler.AttentivePooler(
@@ -815,6 +817,7 @@ class AttentiveHeadJEPA(BaseHead):
     self.pos_enc_tensor = None
     self.total_grid_area = grid_size_pos[1]*grid_size_pos[2]
     self.grid_size_pos = grid_size_pos
+    self.head_init_path = head_init_path
     self.coral_loss = coral_loss
     if coral_loss:
       self.linear = CoralLayer(embed_dim, num_classes)
@@ -825,9 +828,6 @@ class AttentiveHeadJEPA(BaseHead):
         self.linear = nn.Linear(embed_dim, num_classes, bias=True)
       # self.linear.reset_parameters()
     
-    # Init weights
-    self._initialize_weights()
-    
     if num_queries == 1:
       self.aggregator = nn.Identity() 
     else:
@@ -835,6 +835,25 @@ class AttentiveHeadJEPA(BaseHead):
         self.aggregator = MeanMaxAggregator(method=agg_method,num_query_tokens=num_queries)
       else:
         raise NotImplementedError(f'Unknown aggregation method {agg_method}')
+    
+    # Load pooler weights if needed 
+    if head_init_path is not None:
+      state_dict = torch.load(head_init_path, weights_only=True)
+      # Remove final linear layer for classification/regression 
+      layers = list(state_dict.keys())
+      for layer_name in layers:
+        if layer_name.startswith('linear.'):
+          del state_dict[layer_name]
+      state_dict = {k.replace('pooler.',''): v for k, v in state_dict.items() if k.startswith('pooler.')}  
+      self.pooler.load_state_dict(state_dict)
+      for param in self.pooler.parameters():
+        param.requires_grad = False
+      print(f'FROZEN Head weights loaded from {head_init_path}')
+    
+    # Init weights
+    self._initialize_weights()
+    
+    
 
   def forward(self, x, key_padding_mask=None, return_video_emb=False,**kwargs):
     # FORWARD PASS
@@ -874,9 +893,10 @@ class AttentiveHeadJEPA(BaseHead):
   
   def _initialize_weights(self,init_type='default'):
     if init_type == 'default':
-      trunc_normal_(self.pooler.query_tokens, std=self.pooler.init_std)
-      self.pooler.apply(self.pooler._init_weights)
-      self.pooler._rescale_blocks()
+      if self.head_init_path is None:
+        trunc_normal_(self.pooler.query_tokens, std=self.pooler.init_std)
+        self.pooler.apply(self.pooler._init_weights)
+        self.pooler._rescale_blocks()
       if self.coral_loss:
         self.linear.coral_weights.reset_parameters()
       else:
