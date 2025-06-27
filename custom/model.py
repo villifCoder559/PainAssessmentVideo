@@ -110,6 +110,7 @@ class Model_Advanced: # Scenario_Advanced
                                           custom_mlp=head_params['custom_mlp'],
                                           grid_size_pos=T_S_S_shape, # [T, S, S]
                                           depth=head_params['depth'],
+                                          head_init_path=head_params['head_init_path'],
                                           num_queries=head_params['num_queries'],
                                           agg_method=head_params['agg_method'],
                                           use_sdpa=use_sdpa,
