@@ -40,7 +40,7 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
                           lr, epochs, optimizer_fn, round_output_loss, shuffle_training_batch, criterion,
                           early_stopping, enable_scheduler, concatenate_temp_dim, init_network,
                           regularization_lambda_L1, key_for_early_stopping, target_metric_best_model,stop_after_kth_fold,
-                          clip_grad_norm,regularization_lambda_L2,trial):
+                          clip_grad_norm,regularization_lambda_L2,trial,summary_res,run_folder_path):
   """
   Perform k-fold cross-validation on the dataset and train the model.
   
@@ -71,14 +71,15 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
   # check_intersection_splits(k_fold, subject_ids, list_splits_idxs)
   
   # Initialize result containers
-  list_test_results = []
-  list_best_model_idx = []
-  best_results_state_dict = []
-  dict_results_model_weights = {}
-  dict_k_fold_results = {}
+  # list_test_results = []
+  # list_best_model_idx = []
+  # best_results_state_dict = []
+  # dict_results_model_weights = {}
+  # dict_k_fold_results = {}
   
   # Perform k-fold cross-validation
   for i in range(k_fold):
+    start = time.time()
     fold_results = run_single_fold(
       i, k_fold, list_splits_idxs, csv_array, cols, sample_ids, subject_ids,
       train_folder_path, model_advanced, lr, epochs, optimizer_fn, 
@@ -93,27 +94,22 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
     # list_test_results.append(fold_results['dict_test'])
     # list_best_model_idx.append(fold_results['best_model_epoch'])
     # best_results_state_dict.append(fold_results['best_model_state'])
-    dict_k_fold_results.update(fold_results['fold_results'])
-    # dict_results_model_weights[f'{i}'] = {
-    #   'sub': fold_results['best_model_subfolder_idx'],
-    #   'epoch': fold_results['best_model_epoch']
-    # }
+    summary_res['results'].update(fold_results['fold_results'])
+    summary_res['time'] += time.time() - start  
+    tools.save_dict_k_fold_results(dict_k_fold_results=summary_res,
+                                folder_path=run_folder_path)
     
     # stop to make the tests faster
     if stop_after_kth_fold is not None and i == stop_after_kth_fold[0] - 1:
       break
-    # Clean up extra model weights to save space
-    # cleanup_extra_models(train_folder_path, i, k_fold, dict_results_model_weights)
-    
-  # Create result summary plots
-  # compile_test_loss_plots(list_test_results)
   
-  return {
-    # 'list_test_results': list_test_results,
-    'best_results_idx': list_best_model_idx,
-    'best_results_state_dict': best_results_state_dict,
-    'dict_k_fold_results': dict_k_fold_results
-  }
+  # return summary_res
+  # return {
+  #   # 'list_test_results': list_test_results,
+  #   'best_results_idx': list_best_model_idx,
+  #   'best_results_state_dict': best_results_state_dict,
+  #   'dict_k_fold_results': dict_k_fold_results
+  # }
 
 def create_stratified_splits(k_fold, seed_random_state, y_labels, subject_ids):
   """Create stratified group k-fold splits"""
@@ -605,9 +601,15 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   if not os.path.exists(train_folder_path):
     os.makedirs(train_folder_path)
   
+  # Debugging for the training phase
+  summary_res = {}
+  summary_res['results'] = {} # fold_results['dict_k_fold_results']
+  summary_res['config'] = get_obj_config()
+  summary_res['config']['head_params']['T_S_S_shape'] = model_advanced.T_S_S_shape                                   
+  summary_res['time'] = 0 # for duration of the training phase
+  
   # Train the model
-  start = time.time()
-  fold_results = k_fold_cross_validation(path_csv_dataset=new_csv_path if dict_augmented is not None else new_csv_path,
+  k_fold_cross_validation(path_csv_dataset=new_csv_path if dict_augmented is not None else new_csv_path,
                                           train_folder_path=train_folder_path,
                                           model_advanced=model_advanced,
                                           k_fold=k_fold,
@@ -628,19 +630,15 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                           clip_grad_norm=clip_grad_norm,
                                           target_metric_best_model=target_metric_best_model,
                                           stop_after_kth_fold=stop_after_kth_fold,
-                                          trial=trial)
-  summary_res = {}
-  summary_res['results'] = fold_results['dict_k_fold_results']
-  summary_res['time'] = time.time() - start  
-  summary_res['config'] = get_obj_config()
-  summary_res['config']['head_params']['T_S_S_shape'] = model_advanced.T_S_S_shape                                   
+                                          trial=trial,
+                                          summary_res=summary_res,
+                                          run_folder_path=run_folder_path
+                                          )
   if helper.LOG_CROSS_ATTENTION['enable']:
     summary_res['cross_attention_debug'] = helper.LOG_CROSS_ATTENTION
     helper.LOG_CROSS_ATTENTION = {'enable':helper.LOG_CROSS_ATTENTION['enable'],
                                   'state':'train'}
-    
-  tools.save_dict_k_fold_results(dict_k_fold_results=summary_res,
-                                  folder_path=run_folder_path)
+
   model_advanced.free_gpu_memory()
   del model_advanced
   torch.cuda.empty_cache()
