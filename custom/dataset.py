@@ -56,6 +56,8 @@ class customDataset(torch.utils.data.Dataset):
       color_jitter=None,
       rotation=None,
       backbone_dict=None,
+      image_resize_w=224,
+      image_resize_h=224,
       smooth_labels= 0.0,
       video_extension = '.mp4'
   ):
@@ -115,8 +117,8 @@ class customDataset(torch.utils.data.Dataset):
     # if rotation is not None:
     #   warnings.warn('The rotation is not implemented yet')
     # Image dimensions and channels
-    self.image_resize_w = 224
-    self.image_resize_h = 224
+    self.image_resize_w = image_resize_w
+    self.image_resize_h = image_resize_h
     self.image_channels = 3
     
     # Set sampling strategy method based on parameter
@@ -180,7 +182,7 @@ class customDataset(torch.utils.data.Dataset):
     return len(self.video_labels)
   
   @staticmethod
-  def preprocess_images(tensors,to_visualize=False,get_params=False,h_flip=False,color_jitter=False,rotation=False):
+  def preprocess_images(tensors,crop_size=(224,224),to_visualize=False,get_params=False,h_flip=False,color_jitter=False,rotation=False):
     """
     Preprocess a batch of image tensors.
     
@@ -196,7 +198,7 @@ class customDataset(torch.utils.data.Dataset):
     """
     tensors = tv_tensors.Video(tensors)
     # Define preprocessing constants
-    crop_size = (224, 224)
+    # crop_size = (224, 224)
     rescale_factor = 1/255  
     image_mean = [0.485, 0.456, 0.406]
     image_std = [0.229, 0.224, 0.225]
@@ -306,11 +308,12 @@ class customDataset(torch.utils.data.Dataset):
     nr_clips, nr_frames = frames_list.shape[:2]
     # Preprocess frames (considering only 1 video at time)
     # [nr_clips, nr_frames, H, W, C] -> [nr_clips * nr_frames, H, W, C] -> [B,C,H,W]
-    frames_list = frames_list.reshape(-1, *frames_list.shape[2:]).permute(0, 3, 1, 2) 
+    frames_list = frames_list.reshape(-1, *frames_list.shape[2:]).permute(0, 3, 1, 2)
     preprocessed_tensors = self.preprocess_images(frames_list, 
-                                                  color_jitter=self.color_jitter,
-                                                  h_flip=self.h_flip,
-                                                  rotation=self.rotation) # [B,C,H,W]
+                                                  crop_size=(self.image_resize_h, self.image_resize_w),
+                                                  color_jitter = self.color_jitter,
+                                                  h_flip = self.h_flip,
+                                                  rotation = self.rotation) # [B,C,H,W]
     
     preprocessed_tensors = preprocessed_tensors.reshape(nr_clips, nr_frames, *preprocessed_tensors.shape[1:]) # [nr_clips, nr_frames, C, H, W]
     preprocessed_tensors = preprocessed_tensors.permute(0,2,1,3,4) # [B=nr_clips, T=nr_frames, C, H, W] -> [B, C, T, H, W]
@@ -458,11 +461,12 @@ class customDataset(torch.utils.data.Dataset):
         tuple: A tuple containing processed batch data
     """
     # Combine preprocessed tensors from all samples
-    data = torch.cat([item['preprocess'].squeeze().transpose(1, 2) for item in batch], dim=0) 
-    data = data.reshape(
-      -1, self.image_channels, self.clip_length, 
-      self.image_resize_h, self.image_resize_w
-    ) 
+    data = torch.cat([item['preprocess'].squeeze() for item in batch], dim=0) # [chunks, C, clip_length, H, W]
+    # data = data.permute()
+    # data = data.reshape(
+    #   -1, self.image_channels, self.clip_length, 
+    #   self.image_resize_h, self.image_resize_w
+    # )  # 
     # Combine metadata from all samples
     labels = torch.cat([item['labels'] for item in batch], dim=0)
     path = np.concatenate([item['path'] for item in batch])
@@ -652,7 +656,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
           mask = dict_data['list_sample_id'] == sample_id # torch tensor
           nr_values = mask.sum().item()
           if nr_values == 0:
-            print(f"Sample ID {sample_id} not found in the dataset.")
+            print(f"Sample ID {sample_id} not found in the dataset. populate_feature_dict will not work properly.")
           # create a tensor with the same label
           csv_labels = torch.full((nr_values,),real_csv_label,dtype=dict_data['list_labels'].dtype) 
           dict_data['list_labels'][mask] = csv_labels
@@ -721,6 +725,10 @@ class customDatasetWhole(torch.utils.data.Dataset):
     # load_start = time.time()
     features = tools.load_dict_data(folder_path)
     features['list_labels'].fill_(csv_row['class_id']) # fill the labels with the class_id from csv
+    # if features['features'].shape[0] > 4:
+    #   for k,v in features.items():
+    #     features[k] = v[4:] # 3 chunks -> 1.92 secat the begin
+
     # load_end = time.time()
     # print(f"Element {idx} loading time: {load_end - load_start:.2f} seconds")
     return _get_element(dict_data=features,df=self.df,idx=idx)
@@ -966,12 +974,29 @@ def _get_element(dict_data,df,idx):
   sample_id = csv_row['sample_id']
   # if 'hflip' in self.root_folder_feature:
   #   sample_id = sample_id + 8700
-  mask = dict_data['list_sample_id'] == sample_id
+  if sample_id > helper.step_shift * 4 and sample_id <= helper.step_shift * 6: # latent augm.
+    mask = dict_data['list_sample_id'] == ((sample_id - 1) % helper.step_shift + 1) # to get the real sample_id
+  else:
+    mask = dict_data['list_sample_id'] == sample_id
   if mask.sum() == 0:
     print(f"Sample ID {sample_id} not found in the dataset.")
   features = dict_data['features'][mask]
   labels = dict_data['list_labels'][mask]
   subject_id = dict_data['list_subject_id'][mask]
+  
+  # polarity inversion + gaussian noise
+  if sample_id > helper.step_shift * 4 and sample_id <= helper.step_shift * 5: 
+    gaussian_noise = torch.randn_like(features) * 0.1
+    features = (-1 * features) + gaussian_noise 
+  
+  # random masking patches
+  elif sample_id > helper.step_shift * 5 and sample_id <= helper.step_shift * 6:
+    B,T,S,S,C = features.shape
+    mask_grid = torch.rand(S,S) < 0.1 # 10% of the grid
+    mask_grid = mask_grid.unsqueeze(0).unsqueeze(0).unsqueeze(-1)
+    mask_grid = mask_grid.expand(B,T,S,S,C) # [B,T,S,S,C]
+    features = features.masked_fill(mask_grid, 0.0) # set to zero the masked values
+  
   return {
       'features': features,     # [8,8,1,1,768]-> [seq_len,Temporal,Space,Space,Emb]
       'labels': labels,         # [8]
