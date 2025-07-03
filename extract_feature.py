@@ -12,7 +12,7 @@ import pickle
 import gc
 import argparse
 import pandas as pd
-import torch.multiprocessing
+# import torch.multiprocessing
 from pathlib import Path
 import numpy as np
 import tqdm
@@ -80,7 +80,6 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
       else:
         print(f'extracting features from {path[0]}')
         data = data.to(device)
-        print(f'extracting features from {path[0]}')
         with torch.no_grad():
           feature = backbone.forward_features(x=data) # [1,8,14,14,768]
         if isinstance(backbone,VideoBackbone) and pooling_embedding_reduction != EMBEDDING_REDUCTION.NONE:
@@ -195,6 +194,8 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
   custom_ds = customDataset(path_dataset=path_dataset,
                 path_labels=path_labels,
                 sample_frame_strategy=sample_frame_strategy,
+                image_resize_w=backbone_model.img_size,
+                image_resize_h=backbone_model.img_size,
                 stride_window=stride_window,
                 clip_length=clip_length,
                 video_labels=video_labels,
@@ -255,7 +256,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
 
 if __name__ == "__main__":
   # print('Setting sharing strategy')
-  torch.multiprocessing.set_sharing_strategy('file_system')
+  # torch.multiprocessing.set_sharing_strategy('file_system')
   
   timestamp = int(time.time())
   parser = argparse.ArgumentParser(description='Extract features from video dataset.')
