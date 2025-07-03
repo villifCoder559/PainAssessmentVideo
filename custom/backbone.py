@@ -1,10 +1,9 @@
 import os
 import torch
-import requests
-
+import sys
+import yaml
 from enum import Enum
 from pathlib import Path
-from tqdm import tqdm
 
 from VideoMAEv2.models.modeling_finetune import (
   vit_small_patch16_224,
@@ -63,68 +62,58 @@ class VideoBackbone(BackboneBase):
     # Check if model exists or needs downloading
     model_path = Path(model_type.value)
     if not model_path.exists():
-      if download_if_unavailable:
-        print(f"Model not found at {model_path}. Downloading...")
-        self._download_model(model_type)
+      # if download_if_unavailable:
+      #   print(f"Model not found at {model_path}. Downloading...")
+      #   self._download_model(model_type)
+      # else:
+      raise FileNotFoundError(
+        f"Model not found at {model_path}. "
+        )
+    if model_type in [MODEL_TYPE.VIDEOMAE_v2_B, MODEL_TYPE.VIDEOMAE_v2_G, MODEL_TYPE.VIDEOMAE_v2_G_unl, MODEL_TYPE.VIDEOMAE_v2_S]:
+      if model_type == MODEL_TYPE.VIDEOMAE_v2_G_unl:
+        # Load pretrained model
+        self.model = self._load_model_pretrained(model_type)
       else:
-        raise FileNotFoundError(
-          f"Model not found at {model_path}. "
-          )
-    
-    if model_type == MODEL_TYPE.VIDEOMAE_v2_G_unl:
-      # Load pretrained model
-      self.model = self._load_model_pretrained(model_type)
-    else:
-      self.model = self._load_model_finetune(model_type, remove_head=remove_head)
+        self.model = self._load_model_finetune(model_type, remove_head=remove_head)
+        
+      # Cache important model parameters for efficient access
+      self.tubelet_size = self.model.patch_embed.tubelet_size
+      self.img_size = self.model.patch_embed.img_size[0]  # [224, 224]
+      self.patch_size = self.model.patch_embed.patch_size[0]  # 16
+      self.out_spatial_size = self.img_size // self.patch_size  # 224/16 = 14
+      self.embed_dim = self.model.embed_dim
+      self.frame_size = 16  # Default frame size
       
-    # Cache important model parameters for efficient access
-    self.tubelet_size = self.model.patch_embed.tubelet_size
-    self.img_size = self.model.patch_embed.img_size[0]  # [224, 224]
-    self.patch_size = self.model.patch_embed.patch_size[0]  # 16
-    self.out_spatial_size = self.img_size // self.patch_size  # 224/16 = 14
-    self.embed_dim = self.model.embed_dim
-    self.frame_size = 16  # Default frame size
-        
+    elif model_type in [MODEL_TYPE.VJEPA2_G_384]:
+      # IMPORT THE LIBRARY
+      config_path = "vjepa2/configs/train/vitg16/cooldown-384px-64f.yaml"
+      sys.path.insert(0, os.path.abspath('vjepa2'))
+      with open (config_path,"r") as f:
+        config = yaml.safe_load(f)
+      import vjepa2.src.hub.backbones as backbones
+      
+      # Create model and weights for the encoder
+      jepa_model = backbones.vjepa2_vit_giant_384(pretrained=False,**config)
+      state_dict = torch.load(model_type.value, map_location='cpu', weights_only=True)
+      del state_dict['predictor']
+      encoder_state_dict = backbones._clean_backbone_key(state_dict["encoder"])
+      res = jepa_model[0].load_state_dict(encoder_state_dict, strict=False)  # state_dict has pos_embed but we use RoPE
+      print(res)
+      self.model = jepa_model[0]
+      
+      # Cache important model parameters for efficient access
+      self.tubelet_size = self.model.tubelet_size
+      self.img_size = self.model.img_height  # height == widths
+      self.patch_size = self.model.patch_size  # 16
+      self.out_spatial_size = self.img_size // self.patch_size  # 224/16 = 14
+      self.embed_dim = self.model.embed_dim
+      self.frame_size = self.model.num_frames  # Default frame size
+    
     self.model_type = model_type
-  
-  def _download_model(self, model_type: Enum) -> None:
-    """Download model weights from HuggingFace repository.
     
-    Args:
-      model_type: Type of model to download
-    """
-    url = "https://huggingface.co/OpenGVLab/VideoMAE2/resolve/main/"
-    model_name = os.path.split(model_type.value)[-1]
+      
     
-    # Determine correct URL based on model type
-    if model_type in (MODEL_TYPE.VIDEOMAE_v2_S, MODEL_TYPE.VIDEOMAE_v2_B):
-      url += f"distill/{model_name}"
-    else:
-      url += f"mae-g/{model_name}"
-        
-    print(f"Downloading model from: {url}")
-    
-    # Create directory if it doesn't exist
-    weights_dir = Path('VideoMAEv2/pretrained')
-    weights_dir.mkdir(parents=True, exist_ok=True)
-    weights_path = weights_dir / model_name
-    
-    # Download with progress bar
-    response = requests.get(url, stream=True)
-    response.raise_for_status()  # Raise exception for HTTP errors
-    
-    total_size = int(response.headers.get('content-length', 0))
-    block_size = 8192
-    
-    with tqdm(total=total_size, unit='B', unit_scale=True, desc=f"Downloading {model_name}") as pbar:
-      with open(weights_path, 'wb') as f:
-        for chunk in response.iter_content(chunk_size=block_size):
-          if chunk:
-            f.write(chunk)
-            pbar.update(len(chunk))
-    
-    print(f"Model downloaded successfully to {weights_path}")
-  
+
   def _load_model_pretrained(self, model_type: Enum):
     """Load a pretrained model.
     

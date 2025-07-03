@@ -4,7 +4,6 @@ from pathlib import Path
 
 stoic_subjects = [27,28,32,33,34,35,36,39,40,41,42,44,51,53,55,56,61,64,74,87]
 saving_rate_training_logs = 3
-step_shift = 8700
 dict_data = None
 
 
@@ -22,13 +21,21 @@ LOG_CROSS_ATTENTION = {
   'state':'train'
 }
 
+step_shift = 8700 # nr of samples in Biovid video dataset
+
 def get_shift_for_sample_id(folder_feature):
+  # step_shift * 4 => gaussian_noise in feats space
+  # step_shift * 5 => masking in feats space
   if 'hflip' in folder_feature:
     return step_shift * 1
   elif 'jitter' in folder_feature:
     return step_shift * 2
   elif 'rotation' in folder_feature:
     return step_shift * 3
+  elif 'latent_basic' in folder_feature:
+    return step_shift * 4
+  elif 'latent_masking' in folder_feature:
+    return step_shift * 5
   return 0
   
 class SAMPLE_FRAME_STRATEGY(Enum):
@@ -38,12 +45,16 @@ class SAMPLE_FRAME_STRATEGY(Enum):
   RANDOM_SAMPLING = 'random_sampling' 
   
 class MODEL_TYPE(Enum):
+  # VideoMAEv2
   VIDEOMAE_v2_G_unl = os.path.join("VideoMAEv2","pretrained","vit_g_hybrid_pt_1200e.pth")
   VIDEOMAE_v2_S = os.path.join('VideoMAEv2','pretrained',"vit_s_k710_dl_from_giant.pth")
   VIDEOMAE_v2_B = os.path.join('VideoMAEv2','pretrained',"vit_b_k710_dl_from_giant.pth")
-  # VIDEOMAE_v2_G_pt_1200e = os.path.join('VideoMAEv2','pretrained',"vit_g_hybrid_pt_1200e.pth")
   VIDEOMAE_v2_G = os.path.join('VideoMAEv2','pretrained',"vit_g_hybrid_pt_1200e_k710_ft.pth")
-
+  
+  # V-Jepa 2
+  VJEPA2_G_384 = os.path.join('vjepa2','pretrained','vitg-384.pt')
+  
+  # standard ViT
   ViT_image = 'ViT_image'
   
   def get_model_type(type):
@@ -72,6 +83,8 @@ class MODEL_TYPE(Enum):
       return MODEL_TYPE.VIDEOMAE_v2_G
     elif type == 'G_unl':
       return MODEL_TYPE.VIDEOMAE_v2_G_unl
+    elif type == 'VJEPA2_G_384':
+      return MODEL_TYPE.VJEPA2_G_384
     elif type == 'ViT_image':
       return MODEL_TYPE.ViT_image
     else:
