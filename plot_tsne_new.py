@@ -13,7 +13,8 @@ import pickle
 
 def main(dict_args):
   
-  dict_data = tools.load_dict_data(saving_folder_path=dict_args['path_tsne_feat'])
+  dict_data = tools.load_dict_data(saving_folder_path=dict_args['path_tsne_feat']) # 'features' [nr_chunks, T, S, S, 2], 'labels' [nr_chunks]
+  
   # Use the last dimension of the features as the number of channels
   if len(dict_data['features'].shape) == 3: # [nr_chunks, T, 2]
     # nr_chunks = dict_data['features'].shape[0]
@@ -46,7 +47,29 @@ def main(dict_args):
     else:
       print('Plotting per subject binary not possible. Please check the filter_class argument.')
 
-      
+def plot_per_label(dict_data,dict_args):
+  # Filter the data based on the csv file
+  df = pd.read_csv(dict_args['csv_path'],sep='\t')
+  list_sample_id = df['sample_id'].values
+  mask_sample_id = np.isin(dict_data['list_sample_id'], list_sample_id)
+  features = dict_data['features'][mask_sample_id].reshape(-1,2) # [nr_chunks * T * S * S, 2]
+  labels = dict_data['list_labels'][mask_sample_id]
+  
+  # Reshape features for the t-SNE plot
+  feat_shape = features.shape[1:4] # [T, S, S]
+  labels = np.broadcast_to(labels, shape=[labels.shape[-1], *feat_shape]) # [nr_chunks, T, S, S]
+  labels = labels.reshape(-1) # [nr_chunks, T, S, S]
+  
+  tools.plot_tsne(X_tsne=features,
+                  labels=labels,
+                  saving_path=dict_args['path_save_plot'],
+                  title='Plot_all_classes_all_videos',
+                  legend_label='Pain Level',
+                  cmap='tab10')
+  print(f'Plots saved in {dict_args["path_save_plot"]}')
+  
+
+  
 def plot_per_subject(dict_data,dict_args,ax=None):
   dict_args['path_save_plot'] = dict_args['path_save_plot'] + '_sbj' + dict_args['labels_key'] + '_max_' + str(dict_args['max_elements_per_plot'])
   X_tsne = dict_data['features'] # [nr_chunks, T, S, S, 2] 
@@ -148,6 +171,7 @@ def save_config_file(dict_args):
     f.write("Arguments used for t-SNE:\n")
     for key, value in dict_args.items():
       f.write(f"{key}: {value}\n")
+      
   with open(os.path.join(dict_args['path_save_plot'], '_config.pkl'), 'wb') as f:
     pickle.dump(dict_args, f)
   print(f"Saved configuration file to {dict_args['path_save_plot']}_config.txt and _config.pkl")
@@ -161,7 +185,7 @@ if __name__ == '__main__':
   parser.add_argument('--labels_key', type=str, choices=['list_labels','list_subject_id'],default='list_labels', help='Key to use for labels in the dictionary')
   parser.add_argument('--max_elements_per_plot', type=int, default=20, help='Maximum number of elements per plot')
   parser.add_argument('--thresh_binary',type=int, default=4, help='Threshold chunks for binary classification. Index starting from 0')
-  parser.add_argument('--plot_type', type=str, nargs='*', choices=['sbj','sbj_bin','sam_bin'], default=['sbj'], help='Type of plot to generate')
+  parser.add_argument('--plot_type', type=str, nargs='*', choices=['sbj','sbj_bin','sam_bin','label'], default=['sbj'], help='Type of plot to generate')
   parser.add_argument('--csv_path', type=str, default="partA/starting_point/samples.csv", help='Path to save the csv file with the t-SNE coordinates')
   parser.add_argument('--stride_dataset', type=int, default=None, help='Stride of the dataset in frames')
   parser.add_argument('--fps_dataset', type=int, default=25, help='Frames per second of the dataset (default: 25)')
