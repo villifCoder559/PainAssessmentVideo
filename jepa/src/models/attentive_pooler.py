@@ -30,6 +30,7 @@ class AttentivePooler(nn.Module):
         self,
         num_queries=1,
         embed_dim=768,
+        q_k_v_dim=768,  # This is the dimension of the query, key, and value vectors
         num_heads=12,
         num_cross_heads=12,
         mlp_ratio=4.0,
@@ -57,6 +58,7 @@ class AttentivePooler(nn.Module):
             self.cross_attention_block = CrossAttentionBlock(
                 dim=embed_dim,
                 num_heads=num_cross_heads,
+                q_k_v_dim=q_k_v_dim,
                 mlp_ratio=mlp_ratio,
                 qkv_bias=qkv_bias,
                 drop=mlp_dropout,
@@ -70,6 +72,7 @@ class AttentivePooler(nn.Module):
                 dim=embed_dim,
                 num_heads=num_cross_heads,
                 attn_drop=attn_dropout,
+                q_k_v_dim=q_k_v_dim,
                 proj_drop=mlp_dropout,
                 use_sdpa=use_sdpa,
                 qkv_bias=qkv_bias)

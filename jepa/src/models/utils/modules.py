@@ -161,6 +161,7 @@ class CrossAttention(nn.Module):
         self,
         dim,
         num_heads,
+        q_k_v_dim=None,
         qkv_bias=False,
         attn_drop=0.,
         proj_drop=0.,
@@ -170,19 +171,20 @@ class CrossAttention(nn.Module):
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim ** -0.5
-        self.q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.kv = nn.Linear(dim, int(dim*2), bias=qkv_bias)
+        self.q = nn.Linear(dim, dim if q_k_v_dim is None else q_k_v_dim, bias=qkv_bias)
+        self.kv = nn.Linear(dim, int((dim if q_k_v_dim is None else q_k_v_dim) *2), bias=qkv_bias)
+        self.q_k_v_dim = q_k_v_dim if q_k_v_dim is not None else dim
         self.attn_drop = nn.Dropout(attn_drop)
         self.attn_drop_value = attn_drop
-        self.proj = nn.Linear(dim, dim)
+        self.proj = nn.Linear(dim if q_k_v_dim is None else q_k_v_dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
         self.use_sdpa = use_sdpa
 
     def forward(self, q, x,mask=None,return_xattn=False): # q: [B, n, C], x: [B, N, C], mask: [B, N]
         B, n, C = q.shape
-        q = self.q(q).reshape(B, n, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3) # (batch_size, num_heads, query_len, feature_dim_per_head)
+        q = self.q(q).reshape(B, n, self.num_heads, self.q_k_v_dim // self.num_heads).permute(0, 2, 1, 3) # (batch_size, num_heads, query_len, feature_dim_per_head)
         B, N, C = x.shape
-        kv = self.kv(x).reshape(B, N, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        kv = self.kv(x).reshape(B, N, 2, self.num_heads, self.q_k_v_dim // self.num_heads).permute(2, 0, 3, 1, 4)
         k, v = kv[0], kv[1]  # (batch_size, num_heads, seq_len, feature_dim_per_head)
         if mask is not None:
             if mask.ndim == 2:
@@ -201,7 +203,7 @@ class CrossAttention(nn.Module):
             xattn = xattn.softmax(dim=-1)  # (batch_size, num_heads, query_len, seq_len)
             xattn = self.attn_drop(xattn)
             q = (xattn @ v)
-        q = q.transpose(1, 2).reshape(B, n, C)
+        q = q.transpose(1, 2).reshape(B, n, self.q_k_v_dim)  # (batch_size, query_len, feature_dim)
         q = self.proj(q)
         q = self.proj_drop(q)
         return q, xattn
@@ -212,6 +214,7 @@ class CrossAttentionBlock(nn.Module):
         self,
         dim,
         num_heads,
+        q_k_v_dim=None,
         mlp_ratio=4.,
         drop=0.0,
         attn_drop=0.0,
@@ -227,6 +230,7 @@ class CrossAttentionBlock(nn.Module):
         self.xattn = CrossAttention(dim, 
                                     num_heads=num_heads,
                                     qkv_bias=qkv_bias,
+                                    q_k_v_dim=q_k_v_dim,
                                     use_sdpa=use_sdpa,
                                     attn_drop=attn_drop,
                                     proj_drop=drop)
