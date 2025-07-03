@@ -149,7 +149,10 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   hflip = _suggest(trial, 'hflip', kwargs['hflip'], kwargs['optuna_categorical'])
   color_jitter = _suggest(trial, 'color_jitter', kwargs['jitter'], kwargs['optuna_categorical'])
   rotation = _suggest(trial, 'rotation', kwargs['rotation'], kwargs['optuna_categorical'])
-
+  latent_basic = _suggest(trial, 'latent_basic', kwargs['latent_basic'], kwargs['optuna_categorical'])  
+  latent_masking = _suggest(trial, 'latent_masking', kwargs['latent_masking'], kwargs['optuna_categorical'])
+  
+  
   # choose head-specific hyperparameters
   head_name = kwargs['head']
   if head_name.upper() == 'GRU':
@@ -185,9 +188,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     pos_enc = trial.suggest_categorical('pos_enc', kwargs['pos_enc'])
     num_queries = _suggest(trial, 'num_queries', kwargs['num_queries'], kwargs['optuna_categorical'])
     queries_agg_method = trial.suggest_categorical('queries_agg_method', kwargs['queries_agg_method'])
-    cross_block_after_transformers = trial.suggest_categorical(
-      'cross_block_after_transformers', kwargs['cross_block_after_transformers'])
-
+    cross_block_after_transformers = trial.suggest_categorical('cross_block_after_transformers', kwargs['cross_block_after_transformers'])
+    q_k_v_dim = trial.suggest_categorical('q_k_v_dim', kwargs['q_k_v_dim'])
     emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
     custom_mlp = trial.suggest_categorical('custom_mlp', kwargs['custom_mlp'])
     
@@ -198,6 +200,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       num_classes = pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique()
     head_params = {
       'input_dim': emb_dim * 8 if concatenate_temp_dim else emb_dim,
+      'q_k_v_dim': q_k_v_dim if q_k_v_dim is not None else emb_dim,
       'num_classes': num_classes,
       'num_cross_heads': num_cross_head,
       'num_heads': num_heads or num_cross_head,
@@ -234,6 +237,13 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
                     'sim_loss_reduction': sim_loss_reduction,
                     'delta_huber': delta_huber,
                     'transform': cdw_ce_power_transform}
+  dict_augmented={
+      'hflip': hflip,
+      'jitter': color_jitter,
+      'rotation': rotation,
+      'latent_basic': latent_basic,
+      'latent_masking': latent_masking
+    }
   
   run_folder_path, results = scripts.run_train_test(
     model_type=model_type,
@@ -272,11 +282,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     n_workers=kwargs['n_workers'],
     clip_grad_norm=kwargs['clip_grad_norm'],
     label_smooth=label_smooth,
-    dict_augmented={
-      'hflip': hflip,
-      'jitter': color_jitter,
-      'rotation': rotation
-    },
+    dict_augmented=dict_augmented,
     trial=trial,
     prefetch_factor=kwargs['prefetch_factor']
   )
@@ -421,6 +427,8 @@ if __name__ == '__main__':
   parser.add_argument('--queries_agg_method',type=str, nargs='*',default=['mean'], help=f'Aggregation method for queries: {[print(agg_method) for agg_method in helper.QUERIES_AGG_METHOD]} . Default is mean')
   parser.add_argument('--complete_block', type=int, nargs='*', default=[1],
                     help='Use complete block for Attentive head (after cross-attn there is MLP). Default is 1 (complete block), if 0 remove the MLP block after cross-attention')
+  parser.add_argument('--q_k_v_dim', type=int, nargs='*', default=[None],
+                    help='Dimension of query, key, value for Attentive head. Default is None (use input_dim)')
   
   # Linear parameters
   parser.add_argument('--linear_dim_reduction', type=str, default='spatial', help=f'Dimension reduction for Linear head. Can be {[d.name.lower() for d in EMBEDDING_REDUCTION]}')
@@ -450,6 +458,8 @@ if __name__ == '__main__':
   parser.add_argument('--hflip', type=float,nargs='*', default=[0.0], help='Horizontal flip augmentation probability. Default is 0.0')
   parser.add_argument('--jitter', type=float,nargs='*',default=[0.0], help='Jitter augmentation probability. Default is 0.0')
   parser.add_argument('--rotation', type=float, nargs='*',default=[0.0], help='Rotation augmentation probability. Default is 0.0')
+  parser.add_argument('--latent_basic', type=float, nargs='*', default=[0.0], help='Latent basic augmentation probability. Default is 0.0')
+  parser.add_argument('--latent_masking', type=float, nargs='*', default=[0.0], help='Latent masking augmentation probability. Default is 0.0')
   
   # Early stopping parameters
   parser.add_argument('--key_early_stopping', type=str, default='val_accuracy', 
