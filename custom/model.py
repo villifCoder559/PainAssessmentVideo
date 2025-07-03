@@ -46,7 +46,6 @@ class Model_Advanced: # Scenario_Advanced
     
     self.n_workers = n_workers
     self.dict_augmented = dict_augmented
-    # if dict_augmented is not None:
     complete_df = self.generate_csv_augmented(original_csv_path=path_labels,
                                 dict_augmentation=dict_augmented,
                                 out_csv_path=new_csv_path)
@@ -101,6 +100,7 @@ class Model_Advanced: # Scenario_Advanced
       self.head = AttentiveHeadJEPA(embed_dim=head_params['input_dim'],
                                           num_classes=head_params['num_classes'],
                                           num_heads=head_params['num_heads'],
+                                          q_k_v_dim=head_params['q_k_v_dim'] if 'q_k_v_dim' in head_params else None,
                                           num_cross_heads=head_params['num_cross_heads'],
                                           dropout=head_params['dropout'],
                                           attn_dropout=head_params['attn_dropout'],
@@ -121,8 +121,6 @@ class Model_Advanced: # Scenario_Advanced
     elif head == 'LINEAR':
       self.head = LinearHead(**head_params)
 
-    
-  
   def set_global_dict_data_from_hdd_(self,complete_df):
     list_sample_id = complete_df['sample_id'].tolist()
     dict_data_original = tools.load_dict_data(saving_folder_path=self.path_to_extracted_features)
@@ -136,7 +134,7 @@ class Model_Advanced: # Scenario_Advanced
         dict_data_original[k] = v[mask_keep_data]
       
     for type_augm, p in self.dict_augmented.items():
-      if p > 0 and p<= 1:
+      if p > 0 and p<= 1 and not 'latent' in type_augm:
         dict_data_augm = tools.load_dict_data(saving_folder_path=os.path.splitext(self.path_to_extracted_features)[0]+f'_{type_augm}'+
                                               ('.safetensors' if "safetensors" in self.path_to_extracted_features else ''))
         mask_keep_data = np.isin(dict_data_augm['list_sample_id'],list_sample_id)
@@ -157,10 +155,14 @@ class Model_Advanced: # Scenario_Advanced
     for sample_id in tensor_sample_id:
       # get the real label from csv
       real_csv_label = complete_df[complete_df['sample_id'] == sample_id.item()]['class_id'].values[0] 
-      mask = helper.dict_data['list_sample_id'] == sample_id # torch tensor
+      if sample_id > helper.step_shift * 4 and sample_id <= helper.step_shift * 6: # latent augm.
+        mask = helper.dict_data['list_sample_id'] == ((sample_id - 1) % helper.step_shift + 1) # to get the real sample_id
+      else:
+        mask = helper.dict_data['list_sample_id'] == sample_id
       nr_values = mask.sum().item()
+      
       if nr_values == 0:
-        print(f"Sample ID {sample_id} not found in the dataset.")
+        print(f"Sample ID {sample_id} not found in the dataset. set_real_label_from_csv will not work properly.")
       # create a tensor with the same label
       csv_labels = torch.full((nr_values,),real_csv_label,dtype=helper.dict_data['list_labels'].dtype) 
       helper.dict_data['list_labels'][mask] = csv_labels
@@ -173,6 +175,10 @@ class Model_Advanced: # Scenario_Advanced
         return 53
       elif type_augm == 'rotation':
         return 63
+      elif type_augm == 'latent_basic':
+        return 73
+      elif type_augm == 'latent_masking':
+        return 83
       else:
         raise ValueError(f'Unknown augmentation type: {type_augm}')
     list_df = []
