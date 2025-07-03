@@ -789,12 +789,14 @@ class AttentiveHeadJEPA(BaseHead):
       cross_block_after_transformers=True,
       coral_loss=False,
       custom_mlp=False,
+      q_k_v_dim=None,
       head_init_path=None,
       complete_block=True):
     super().__init__(self,is_classification=True if num_classes > 1 else False)
     self.pooler = jepa_attentive_pooler.AttentivePooler(
             num_queries=num_queries,
             embed_dim=embed_dim,
+            q_k_v_dim=q_k_v_dim if q_k_v_dim is not None else embed_dim,
             num_heads=num_heads,
             num_cross_heads=num_cross_heads,
             mlp_ratio=mlp_ratio,
