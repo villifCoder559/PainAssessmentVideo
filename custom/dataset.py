@@ -10,7 +10,7 @@ import time
 import torch.nn as nn
 import torch.utils
 from custom.backbone import BackboneBase
-from custom.helper import CUSTOM_DATASET_TYPE, SAMPLE_FRAME_STRATEGY
+from custom.helper import CUSTOM_DATASET_TYPE, SAMPLE_FRAME_STRATEGY, EMBEDDING_REDUCTION
 import custom.helper as helper
 import custom.tools as tools
 from sklearn.model_selection import StratifiedKFold
@@ -59,6 +59,8 @@ class customDataset(torch.utils.data.Dataset):
       image_resize_w=224,
       image_resize_h=224,
       smooth_labels= 0.0,
+      coral_loss=None,
+      soft_labels=None,
       video_extension = '.mp4'
   ):
     """
@@ -137,6 +139,18 @@ class customDataset(torch.utils.data.Dataset):
     # Initialize face processing components
     self.face_extractor = None # TODO: None for testing more workers during training, REAL => extractor.FaceExtractor()
     self._load_reference_landmarks()
+    
+    if soft_labels:
+      classes = list(range(self.num_classes))
+      distances = {(i, j): abs(i - j) for i in classes for j in classes}
+      self.soft_labels = soft_labels_generator.make_all_soft_labels(
+        classes=classes,
+        distances=distances,
+        hardness=soft_labels
+      )
+    else:
+      self.soft_labels = None
+    self.coral_loss = coral_loss
   
   def _set_sampling_strategy(self, strategy):
     """
@@ -218,7 +232,7 @@ class customDataset(torch.utils.data.Dataset):
       transform.append(v2.ColorJitter(brightness=brightness, contrast=contrast, saturation=saturation, hue=hue)) #
       params['color_jitter'] = {'brightness': brightness, 'contrast': contrast, 'saturation': saturation, 'hue': hue} 
     if rotation:
-      degrees = (-20, 20)
+      degrees = (-10, 10)
       transform.append(v2.RandomRotation(degrees=degrees))
       params['rotation'] = degrees
       
@@ -279,7 +293,7 @@ class customDataset(torch.utils.data.Dataset):
     # print(f"Video saved at {output_path}")
     return params
   
-  def __standard_getitem__(self, idx):
+  def __standard_getitem__(self, idx, is_training):
     
     csv_array = self.video_labels.iloc[idx]
     video_path = os.path.join(self.path_dataset, csv_array.iloc[1], csv_array.iloc[5] + self.video_extension)
@@ -289,12 +303,9 @@ class customDataset(torch.utils.data.Dataset):
     tot_frames = int(container.get(cv2.CAP_PROP_FRAME_COUNT))
     
     # Set frame dimensions based on preprocessing requirements
-    # if self.preprocess_align or self.preprocess_frontalize or self.preprocess_crop_detection:
-    #   width_frames = height_frames = 256
-    # else:
     width_frames = int(container.get(cv2.CAP_PROP_FRAME_WIDTH))
     height_frames = int(container.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"Video {video_path} has {tot_frames} frames")
+
     if tot_frames == 0:
       raise ValueError(f"Video {video_path} has no frames. Please check the video file.")
     # Get frame indices based on sampling strategy
@@ -309,12 +320,23 @@ class customDataset(torch.utils.data.Dataset):
     # Preprocess frames (considering only 1 video at time)
     # [nr_clips, nr_frames, H, W, C] -> [nr_clips * nr_frames, H, W, C] -> [B,C,H,W]
     frames_list = frames_list.reshape(-1, *frames_list.shape[2:]).permute(0, 3, 1, 2)
-    preprocessed_tensors = self.preprocess_images(frames_list, 
-                                                  crop_size=(self.image_resize_h, self.image_resize_w),
-                                                  color_jitter = self.color_jitter,
-                                                  h_flip = self.h_flip,
-                                                  rotation = self.rotation) # [B,C,H,W]
-    
+    if not is_training:
+      preprocessed_tensors = self.preprocess_images(frames_list, 
+                                                    crop_size=(self.image_resize_h, self.image_resize_w),
+                                                    color_jitter = self.color_jitter,
+                                                    h_flip = self.h_flip,
+                                                    rotation = self.rotation) # [B,C,H,W]
+    else:
+      # latent based augm. approaches are applied in _get_element function (at the end of file) 
+      sample_id = csv_array.iloc[4]
+      color_jitter = helper.is_color_jitter_augmentation(sample_id)
+      h_flip = helper.is_hflip_augmentation(sample_id)
+      rotation = helper.is_rotation_augmentation(sample_id)
+      preprocessed_tensors = self.preprocess_images(frames_list, 
+                                                    crop_size=(self.image_resize_h, self.image_resize_w),
+                                                    color_jitter=color_jitter,
+                                                    h_flip=h_flip,
+                                                    rotation=rotation)
     preprocessed_tensors = preprocessed_tensors.reshape(nr_clips, nr_frames, *preprocessed_tensors.shape[1:]) # [nr_clips, nr_frames, C, H, W]
     preprocessed_tensors = preprocessed_tensors.permute(0,2,1,3,4) # [B=nr_clips, T=nr_frames, C, H, W] -> [B, C, T, H, W]
     
@@ -345,20 +367,25 @@ class customDataset(torch.utils.data.Dataset):
     """
     if isinstance(idx, int):
       if self.backbone_dict is None:
-        return self.__standard_getitem__(idx)
+        # extract_feature.py path
+        return self.__standard_getitem__(idx, is_training=False)
       else:
-        dict_data = self.__standard_getitem__(idx)
+        # Training path
+        dict_data = self.__standard_getitem__(idx,is_training=True)
         features = self.backbone_dict['backbone'].forward_features(dict_data['preprocess'])
-        # logging.info(f'Features shape: {features.shape}')
+        
+        # Apply pooling if specified in backbone_dict
+        if self.backbone_dict['embedding_reduction'] is not EMBEDDING_REDUCTION.NONE:
+          features = torch.mean(features,dim=self.backbone_dict['embedding_reduction'].value,keepdim=True)
         dict_data = {
           'features': features,
           'list_labels': dict_data['labels'],
           'list_sample_id': dict_data['sample_id'],
           'list_subject_id': dict_data['subject_id'],
         }
-        dict_data = _get_element(dict_data=dict_data,df=self.video_labels,idx=idx)
-        return dict_data
+        return _get_element(dict_data=dict_data,df=self.video_labels,idx=idx,dataset_type=CUSTOM_DATASET_TYPE.BASE)
     else: # list case
+      raise NotImplementedError("Batch processing is not implemented yet in this dataset class.")
       if self.backbone_dict is None:
         batch_preprocess = [self.__standard_getitem__(i) for i in idx]
         return self._custom_collate_fn_extraction(batch_preprocess)
@@ -479,6 +506,8 @@ class customDataset(torch.utils.data.Dataset):
   def _custom_collate(self, batch):
     return _custom_collate(batch=batch,
                            instance_model_name=self.backbone_dict['instance_model_name'],
+                           coral_loss=self.coral_loss,
+                           soft_labels_mat=self.soft_labels,
                            concatenate_temporal=self.backbone_dict['concatenate_temporal'],
                            model=self.backbone_dict['model'],
                            smooth_labels=self.smooth_labels,
@@ -585,7 +614,6 @@ class customDataset(torch.utils.data.Dataset):
     return np.sort(self.video_labels['class_id'].unique().tolist())
 
 
-
 class customDatasetAggregated(torch.utils.data.Dataset):
   def __init__(self,root_folder_features,concatenate_temporal,model,is_train,csv_path,smooth_labels,soft_labels,coral_loss):
     self.root_folder_feature = root_folder_features
@@ -674,14 +702,22 @@ class customDatasetAggregated(torch.utils.data.Dataset):
   
   def __getitem__(self,idx):
     if isinstance(idx,int):
-      return _get_element(df=self.df,dict_data=helper.dict_data,idx=idx)
+      return _get_element(df=self.df,dict_data=helper.dict_data,idx=idx,dataset_type=CUSTOM_DATASET_TYPE.AGGREGATED)
     else:
+      raise NotImplementedError("Batch loading is not implemented for customDatasetAggregated")
       batch = [_get_element(df=self.df,dict_data=helper.dict_data,idx=idx) for idx in idx]
       batch = self._custom_collate(batch)
       return batch
   
   def _custom_collate(self,batch):
-    return _custom_collate(batch,self.instance_model_name,self.concatenate_temporal,self.model,self.num_classes,self.smooth_labels,self.soft_labels,self.coral_loss)
+    return _custom_collate(batch,
+                           self.instance_model_name,
+                           self.concatenate_temporal,
+                           self.model,
+                           self.num_classes,
+                           self.smooth_labels,
+                           self.soft_labels,
+                           self.coral_loss)
   
   def get_unique_subjects(self):
     return np.sort(self.df['subject_id'].unique().tolist())
@@ -731,7 +767,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
 
     # load_end = time.time()
     # print(f"Element {idx} loading time: {load_end - load_start:.2f} seconds")
-    return _get_element(dict_data=features,df=self.df,idx=idx)
+    return _get_element(dict_data=features,df=self.df,idx=idx, dataset_type=CUSTOM_DATASET_TYPE.WHOLE)
   
   def __getitem__(self,idx):
     if isinstance(idx,int):
@@ -914,6 +950,8 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                               saving_folder_path_extracted_video=None,
                               video_labels=None,
                               backbone_dict=backbone_dict,
+                              coral_loss=is_coral_loss,
+                              soft_labels=soft_labels,
                               smooth_labels=label_smooth)
       pin_memory = False
       persistent_workers = True
@@ -969,14 +1007,16 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
   return dataset_,loader_
  
   
-def _get_element(dict_data,df,idx):
+def _get_element(dict_data,df,idx,dataset_type):
   csv_row = df.iloc[idx]
   sample_id = csv_row['sample_id']
-  # if 'hflip' in self.root_folder_feature:
-  #   sample_id = sample_id + 8700
-  if sample_id > helper.step_shift * 4 and sample_id <= helper.step_shift * 6: # latent augm.
-    mask = dict_data['list_sample_id'] == ((sample_id - 1) % helper.step_shift + 1) # to get the real sample_id
-  else:
+  # If AGGREGATED or WHOLE dataset, sample_id is the real sample_id
+  if dataset_type in [CUSTOM_DATASET_TYPE.AGGREGATED, CUSTOM_DATASET_TYPE.WHOLE]:
+    if sample_id > helper.step_shift * 4 and sample_id <= helper.step_shift * 6: # latent augm.
+      mask = dict_data['list_sample_id'] == ((sample_id - 1) % helper.step_shift + 1) # to get the real sample_id
+    else:
+      mask = dict_data['list_sample_id'] == sample_id
+  else: # BASE dataset
     mask = dict_data['list_sample_id'] == sample_id
   if mask.sum() == 0:
     print(f"Sample ID {sample_id} not found in the dataset.")
