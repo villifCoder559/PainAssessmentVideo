@@ -215,7 +215,7 @@ class VideoBackbone(BackboneBase):
     self.model.eval()
     with torch.no_grad():
       # Forward pass
-      print(f'Free GPU memory: {torch.cuda.memory_reserved() / 1e9} GB')
+      # print(f'Free GPU memory: {torch.cuda.memory_reserved() / 1e9} GB')
       feat,attn = self.model.forward_features(x,
                                          return_embedding=return_embedding,
                                          return_attn=return_attn)
