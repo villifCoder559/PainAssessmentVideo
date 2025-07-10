@@ -318,13 +318,15 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
                                    accuracy_per_class=data['results'][key]['train_val']['list_train_accuracy_per_class'][best_epoch],
                                    y_lim=y_lim,
                                    ax=axs[0])
-        tools.plot_error_per_class(unique_classes=data['results'][key]['train_val']['y_unique'],
-                                   mae_per_class=data['results'][key]['train_val']['val_loss_per_class'][best_epoch],
-                                   title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
-                                   criterion=data['config']['criterion'],
-                                   accuracy_per_class=data['results'][key]['train_val']['list_val_accuracy_per_class'][best_epoch],
-                                   y_lim=y_lim,
-                                   ax=axs[1])
+        if data['config'].get('validate', True):
+          tools.plot_error_per_class(unique_classes=data['results'][key]['train_val']['y_unique'],
+                                    mae_per_class=data['results'][key]['train_val']['val_loss_per_class'][best_epoch],
+                                    title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
+                                    criterion=data['config']['criterion'],
+                                    accuracy_per_class=data['results'][key]['train_val']['list_val_accuracy_per_class'][best_epoch],
+                                    y_lim=y_lim,
+                                    ax=axs[1])
+        
         tools.plot_error_per_class(mae_per_class=data['results'][key]['test']['test_loss_per_class'],
                                  unique_classes=data['results'][key]['test']['test_unique_y'],
                                  title=f'TEST {key} - {test_id}',
@@ -679,7 +681,8 @@ def plot_confusion_matrices(data, root_output_folder, test_id, additional_info='
       else:
         fig, axs = plt.subplots(2, 1, figsize=(5, 10))
       tools.plot_confusion_matrix(dict_train_conf_matrix[epoch], ax=axs[0], title=f'TRAIN - Epoch {epoch}   - {test_id}')
-      tools.plot_confusion_matrix(dict_val_conf_matrix[epoch], ax=axs[1], title=f'VAL - Epoch {epoch}   - {test_id}')
+      if data['config'].get('validate', True):
+        tools.plot_confusion_matrix(dict_val_conf_matrix[epoch], ax=axs[1], title=f'VAL - Epoch {epoch}   - {test_id}')
       if int(epoch) == best_epoch_idx:
         tools.plot_confusion_matrix(dict_test_conf_matrix[epoch], ax=axs[2], title=f'TEST {test_id} - {key} - Epoch {epoch}')
       fig.tight_layout()
@@ -781,7 +784,8 @@ def plot_run_details(results_data, output_root,only_csv):
       plot_confusion_matrices(data, os.path.join(output_root), test_id)
       plot_gradient_per_module(data, os.path.join(output_root), test_id)
       plot_history_model_prediction(data, os.path.join(output_root), test_id,root_csv_path=os.path.dirname(file))
-      plot_accuray_per_class_across_epochs(data, os.path.join(output_root), test_id)
+      if data['config'].get('validate', True):
+        plot_accuray_per_class_across_epochs(data, os.path.join(output_root), test_id)
       # except Exception as e:
       #   print(f'Error in {file} - {e}')
   df = pd.DataFrame(list_row_csv)
