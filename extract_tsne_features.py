@@ -48,13 +48,13 @@ def main(dict_args):
     feats = dict_data['features'].reshape(dict_data['features'].shape[0], -1)
   
   # for mode in dict_args['mode']:
-  X_tsne,config,_ = tsne_tools.compute_tsne(feats, 
-                          pca_nr_batch=dict_args['nr_batch'],
-                          perplexity=dict_args['perplexity'], 
-                          apply_pca_before_tsne=dict_args['apply_pca_before_tsne'],
-                          random_seed=dict_args['random_seed'], # NOT applied for CUDA
-                          n_jobs=dict_args['n_jobs'], 
-                          mode=dict_args['mode'])
+  X_tsne, config, raw_data, dict_ = tsne_tools.compute_tsne(feats, 
+                              pca_nr_batch=dict_args['nr_batch'],
+                              perplexity=dict_args['perplexity'], 
+                              apply_pca_before_tsne=dict_args['apply_pca_before_tsne'],
+                              random_seed=dict_args['random_seed'], # NOT applied for CUDA
+                              n_jobs=dict_args['n_jobs'], 
+                              mode=dict_args['mode'])
   # reconstruct the original shape if only last dimension is considered as embedding
   if dict_args['only_last_dim_as_embedding']:
     list_reshaped_feats = []
