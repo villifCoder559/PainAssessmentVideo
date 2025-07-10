@@ -72,33 +72,6 @@ def get_loss(loss, dict_args=None):
   else:
     raise ValueError(f'Loss not found: {loss}. Valid options: l1, l2, ce, cdw_ce, sim_loss, coral')
 
-
-def get_head(head_name):
-  """Get HEAD enum from string name."""
-  heads = {
-    'gru': HEAD.GRU,
-    'attentive': HEAD.ATTENTIVE,
-    'linear': HEAD.LINEAR,
-    'attentive_jepa': HEAD.ATTENTIVE_JEPA
-  }
-  head_name = head_name.lower()
-  if head_name not in heads:
-    raise ValueError(f'Head not found: {head_name}. Valid options: {list(heads.keys())}')
-  return heads[head_name]
-
-def get_embedding_reduction(reduction):
-  """Get EMBEDDING_REDUCTION enum from string name."""
-  reductions = {
-    'temporal': EMBEDDING_REDUCTION.MEAN_TEMPORAL,
-    'spatial': EMBEDDING_REDUCTION.MEAN_SPATIAL,
-    'temporal_spatial': EMBEDDING_REDUCTION.MEAN_TEMPORAL_SPATIAL,
-    'none': EMBEDDING_REDUCTION.NONE
-  }
-  reduction = reduction.lower()
-  if reduction not in reductions:
-    raise ValueError(f'Embedding reduction not found: {reduction}. Valid options: {list(reductions.keys())}')
-  return reductions[reduction]
-
 # ------------ Main Entry Point ------------
 
 log_scale_optuna_hypers = ['lr','regulariz_lambda_L1','regulariz_lambda_L2']
@@ -250,7 +223,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     soft_labels=soft_labels,
     criterion=get_loss(loss, dict_args=dict_args_loss),
     concatenate_temp_dim=concatenate_temp_dim,
-    pooling_embedding_reduction=kwargs['pooling_clips_reduction'],
+    pooling_embedding_reduction=kwargs['pooling_embedding_reduction'],
     pooling_clips_reduction=kwargs['pooling_clips_reduction'],
     sample_frame_strategy=kwargs['sample_frame_strategy'],
     path_csv_dataset=kwargs['csv'],
@@ -284,7 +257,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     label_smooth=label_smooth,
     dict_augmented=dict_augmented,
     trial=trial,
-    prefetch_factor=kwargs['prefetch_factor']
+    prefetch_factor=kwargs['prefetch_factor'],
+    validate = kwargs['validation_enabled']
   )
     # save_stats(pr, os.path.join(run_folder_path, 'profiling_results.txt'))
     # pr.dump_stats(os.path.join(run_folder_path, 'profiling_results.prof'))
@@ -390,6 +364,7 @@ if __name__ == '__main__':
                     help='Path to video dataset')
   
   # Training parameters
+  parser.add_argument('--validation_enabled', type=int, choices=[0,1], default=1, help='Enable validation set during training. Default is 1 (enabled)')
   parser.add_argument('--save_best_model', action='store_true', help='Save the best model')
   parser.add_argument('--save_last_epoch_model', action='store_true', help='Save the last epoch model')
   parser.add_argument('--train_amp_enabled', action='store_true', help='Enable AMP training')
@@ -459,7 +434,7 @@ if __name__ == '__main__':
   parser.add_argument('--jitter', type=float,nargs='*',default=[0.0], help='Jitter augmentation probability. Default is 0.0')
   parser.add_argument('--rotation', type=float, nargs='*',default=[0.0], help='Rotation augmentation probability. Default is 0.0')
   parser.add_argument('--latent_basic', type=float, nargs='*', default=[0.0], help='Latent basic augmentation probability. Default is 0.0')
-  parser.add_argument('--latent_masking', type=float, nargs='*', default=[0.0], help='Latent masking augmentation probability. Default is 0.0')
+  parser.add_argument('--latent_masking', type=float, nargs='*', default=[0.0], help='Latent masking augmentation (0.2). Default is 0.0')
   
   # Early stopping parameters
   parser.add_argument('--key_early_stopping', type=str, default='val_accuracy', 
@@ -485,8 +460,19 @@ if __name__ == '__main__':
   # Parse arguments
   args = parser.parse_args()
   args.timeout = int(args.timeout * 3600) # Convert hours to seconds
-
   dict_args = vars(args)
+  
+  # Set up fixed parameters
+  clip_length = 16
+  seed_random_state = 42
+  pooling_clips_reduction = CLIPS_REDUCTION.NONE
+  pooling_emb_reduction = helper.EMBEDDING_REDUCTION.get_embedding_reduction('none')
+  sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
+  dict_args['pooling_embedding_reduction'] = pooling_emb_reduction
+  dict_args['pooling_clips_reduction'] = pooling_clips_reduction
+  dict_args['sample_frame_strategy'] = sample_frame_strategy
+  dict_args['stride_window_in_video'] = 16 # To avoid errors but not used
+  
   if dict_args['plot_live_loss']:
     helper.PLOT_LIVE_LOSS = True
   
@@ -536,11 +522,10 @@ if __name__ == '__main__':
   if dict_args['key_early_stopping'] not in ['val_accuracy']:
     raise ValueError(f"Invalid key for early stopping: {dict_args['key_early_stopping']}. Must be 'val_accuracy'.")
   
-  pooling_clips_reduction = CLIPS_REDUCTION.NONE
-  sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
-  dict_args['pooling_clips_reduction'] = pooling_clips_reduction
-  dict_args['sample_frame_strategy'] = sample_frame_strategy
-  dict_args['stride_window_in_video'] = 16 # To avoid errors but not used
+  if not dict_args['validation_enabled']:
+    helper.SAVE_LAST_EPOCH_MODEL = True
+    print("\nValidation is disabled. Last epoch model will be used for testing \n")
+  
   # Generate timestamp for unique folder name
   timestamp = int(time.time())
   server_name = platform.node()
@@ -560,10 +545,6 @@ if __name__ == '__main__':
   # Print all arguments
   print('\n\nTraining configuration:')
   print(args)
-  
-  # Set up fixed parameters
-  clip_length = 16
-  seed_random_state = 42
   
   # Determine target metric for model selection
   target_metric_best_model = args.key_early_stopping 
