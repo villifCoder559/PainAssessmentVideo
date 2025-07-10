@@ -57,28 +57,20 @@ class Model_Advanced: # Scenario_Advanced
     self.soft_labels = soft_labels 
     self.prefetch_factor = prefetch_factor
     self.T_S_S_shape = None
-    
-    if self.dataset_type == CUSTOM_DATASET_TYPE.BASE:
-      self.backbone_dict = {
-        'backbone': self.backbone,
-        'instance_model_name': tools.get_instace_model_name(self.head.model),
-        'model': self.head.model,
-        'concatenate_temporal': self.concatenate_temporal
-      }
-    else:
-      self.backbone_dict = None
-    # if helper.dict_data is None:
+    self.embedding_reduction = embedding_reduction
+    self.clips_reduction = clips_reduction
+
+    # Get dataset type
     if self.dataset_type == CUSTOM_DATASET_TYPE.AGGREGATED and helper.dict_data is None:
       self.set_global_dict_data_from_hdd_(complete_df=complete_df)
       # Set label according to the csv (ex: binary classification instead of multiclass)
       self._set_real_label_from_csv_(complete_df=complete_df)
     
+    # Instantiate the head model
     if head == 'GRU':
       if model_type != MODEL_TYPE.ViT_image:
         assert self.backbone.frame_size % self.backbone.tubelet_size == 0, "Frame size must be divisible by tubelet size."
       self.head = GRUHead(**head_params)
-    # elif head == 'ATTENTIVE':
-    #   self.head = AttentiveHead(**head_params)
     elif head == 'ATTENTIVE_JEPA':
       if hasattr(torch.nn.functional,"scaled_dot_product_attention"):
         use_sdpa = True
@@ -92,9 +84,14 @@ class Model_Advanced: # Scenario_Advanced
           T_S_S_shape = np.mean(helper.dict_data['features'][0].shape,axis=embedding_reduction.value)[:3]
           # T_S_S_shape = T_S_S_shape.squeeze()
       elif self.dataset_type == CUSTOM_DATASET_TYPE.WHOLE:
-        T_S_S_shape = [8,16,16] if head_params['input_dim'] == 1408 else [8,14,14] # 1408 giant model
+        # T_S_S_shape = [8,16,16] if head_params['input_dim'] == 1408 else [8,14,14] # 1408 giant model
+        T_S_S_shape = [self.backbone.frame_size // self.backbone.tubelet_size, self.backbone.out_spatial_size, self.backbone.out_spatial_size]
+      elif self.dataset_type == CUSTOM_DATASET_TYPE.BASE:
+        T_S_S_shape = [self.backbone.frame_size // self.backbone.tubelet_size, self.backbone.out_spatial_size, self.backbone.out_spatial_size]
+        if embedding_reduction.value is not None:
+          dummy_arr = np.zeros((1,*T_S_S_shape))
+          T_S_S_shape = np.mean(dummy_arr,axis=embedding_reduction.value,keepdims=True).shape[1:]
       print(f"Shape of T_S_S_shape: {T_S_S_shape}\n")
-        # dim_pos_enc = 
       print(f'\n num_heads: {head_params["num_heads"]},\n num_cross_heads: {head_params["num_cross_heads"]}\n')
       self.T_S_S_shape = T_S_S_shape
       self.head = AttentiveHeadJEPA(embed_dim=head_params['input_dim'],
@@ -121,6 +118,18 @@ class Model_Advanced: # Scenario_Advanced
     elif head == 'LINEAR':
       self.head = LinearHead(**head_params)
 
+    # If features are not precomputed, instntiate the backbone model
+    if self.dataset_type == CUSTOM_DATASET_TYPE.BASE:
+      self.backbone_dict = {
+        'backbone': self.backbone,
+        'instance_model_name': tools.get_instace_model_name(self.head),
+        'model': self.head,
+        'concatenate_temporal': self.concatenate_temporal,
+        'embedding_reduction':self.embedding_reduction,
+      }
+    else:
+      self.backbone_dict = None
+      
   def set_global_dict_data_from_hdd_(self,complete_df):
     list_sample_id = complete_df['sample_id'].tolist()
     dict_data_original = tools.load_dict_data(saving_folder_path=self.path_to_extracted_features)
@@ -155,7 +164,7 @@ class Model_Advanced: # Scenario_Advanced
     for sample_id in tensor_sample_id:
       # get the real label from csv
       real_csv_label = complete_df[complete_df['sample_id'] == sample_id.item()]['class_id'].values[0] 
-      if sample_id > helper.step_shift * 4 and sample_id <= helper.step_shift * 6: # latent augm.
+      if helper.is_latent_basic_augmentation(sample_id) or helper.is_latent_masking_augmentation(sample_id):
         mask = helper.dict_data['list_sample_id'] == ((sample_id - 1) % helper.step_shift + 1) # to get the real sample_id
       else:
         mask = helper.dict_data['list_sample_id'] == sample_id
@@ -352,7 +361,11 @@ class Model_Advanced: # Scenario_Advanced
                                           trial=trial)
     
     count_subject_ids_train, count_y_train = tools.get_unique_subjects_and_classes(train_csv_path)
-    count_subject_ids_val, count_y_val = tools.get_unique_subjects_and_classes(val_csv_path) 
+    if val_csv_path is not None:
+      count_subject_ids_val, count_y_val = tools.get_unique_subjects_and_classes(val_csv_path) 
+    else:
+      count_subject_ids_val = None
+      count_y_val = None
     return {'dict_results':dict_results, 
               'count_y_train':count_y_train, 
               'count_y_val':count_y_val,
