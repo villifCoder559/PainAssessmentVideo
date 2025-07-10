@@ -22,19 +22,34 @@ LOG_CROSS_ATTENTION = {
 }
 
 step_shift = 8700 # nr of samples in Biovid video dataset
+  
+def is_color_jitter_augmentation(sample_id):
+  return sample_id > step_shift * 2 and sample_id <= step_shift * 3
+
+def is_hflip_augmentation(sample_id):
+  return sample_id > 0 and sample_id <= step_shift
+
+def is_rotation_augmentation(sample_id):
+  return sample_id > step_shift * 3 and sample_id <= step_shift * 4
+
+def is_latent_basic_augmentation(sample_id):
+  return sample_id > step_shift * 4 and sample_id <= step_shift * 5
+
+def is_latent_masking_augmentation(sample_id):
+  return sample_id > step_shift * 5 and sample_id <= step_shift * 6
 
 def get_shift_for_sample_id(folder_feature):
   # step_shift * 4 => gaussian_noise in feats space
   # step_shift * 5 => masking in feats space
   if 'hflip' in folder_feature:
     return step_shift * 1
-  elif 'jitter' in folder_feature:
+  if 'jitter' in folder_feature:
     return step_shift * 2
-  elif 'rotation' in folder_feature:
+  if 'rotation' in folder_feature:
     return step_shift * 3
-  elif 'latent_basic' in folder_feature:
+  if 'latent_basic' in folder_feature:
     return step_shift * 4
-  elif 'latent_masking' in folder_feature:
+  if 'latent_masking' in folder_feature:
     return step_shift * 5
   return 0
   
