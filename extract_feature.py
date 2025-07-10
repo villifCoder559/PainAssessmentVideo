@@ -275,7 +275,7 @@ if __name__ == "__main__":
   parser.add_argument('--log_file_path', type=str, default=os.path.join('partA','video','features','log_file_feat_extr',f'log_file_{timestamp}.txt'), help='Path to log file')
   parser.add_argument('--backbone_type', type=str, default='video', help='Type of backbone. Can be video or image')
   parser.add_argument('--batch_size_feat_extraction', type=int, default=1, help='Batch size for feature extraction')
-  parser.add_argument('--n_workers', type=int, default=1, help='Number of workers for dataloader')
+  parser.add_argument('--n_workers', type=int, default=0, help='Number of workers for dataloader')
   parser.add_argument('--save_big_feature', action='store_true', help='Save one feature per sample')
   parser.add_argument('--stride_window', type=int, default=16, help='Stride window')
   parser.add_argument('--stride_inside_window', type=int, default=1, help='Stride inside window')
