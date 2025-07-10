@@ -40,7 +40,7 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
                           lr, epochs, optimizer_fn, round_output_loss, shuffle_training_batch, criterion,
                           early_stopping, enable_scheduler, concatenate_temp_dim, init_network,
                           regularization_lambda_L1, key_for_early_stopping, target_metric_best_model,stop_after_kth_fold,
-                          clip_grad_norm,regularization_lambda_L2,trial,summary_res,run_folder_path):
+                          clip_grad_norm,regularization_lambda_L2,trial,summary_res,run_folder_path,validate):
   """
   Perform k-fold cross-validation on the dataset and train the model.
   
@@ -67,16 +67,8 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
   
   # Create stratified group k-fold splits
   list_splits_idxs = create_stratified_splits(k_fold, seed_random_state, y_labels, subject_ids)
-  # Uncomment to verify splits are disjoint
   # check_intersection_splits(k_fold, subject_ids, list_splits_idxs)
-  
-  # Initialize result containers
-  # list_test_results = []
-  # list_best_model_idx = []
-  # best_results_state_dict = []
-  # dict_results_model_weights = {}
-  # dict_k_fold_results = {}
-  
+
   # Perform k-fold cross-validation
   for i in range(k_fold):
     start = time.time()
@@ -87,13 +79,10 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
       init_network, regularization_lambda_L1,
       key_for_early_stopping, early_stopping, enable_scheduler,
       target_metric_best_model, seed_random_state, clip_grad_norm,stop_after_kth_fold,
-      regularization_lambda_L2,trial
+      regularization_lambda_L2,trial,validate
     )
     
     # Store results
-    # list_test_results.append(fold_results['dict_test'])
-    # list_best_model_idx.append(fold_results['best_model_epoch'])
-    # best_results_state_dict.append(fold_results['best_model_state'])
     summary_res['results'].update(fold_results['fold_results'])
     summary_res['time'] += time.time() - start  
     tools.save_dict_k_fold_results(dict_k_fold_results=summary_res,
@@ -102,14 +91,6 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
     # stop to make the tests faster
     if stop_after_kth_fold is not None and i == stop_after_kth_fold[0] - 1:
       break
-  
-  # return summary_res
-  # return {
-  #   # 'list_test_results': list_test_results,
-  #   'best_results_idx': list_best_model_idx,
-  #   'best_results_state_dict': best_results_state_dict,
-  #   'dict_k_fold_results': dict_k_fold_results
-  # }
 
 def create_stratified_splits(k_fold, seed_random_state, y_labels, subject_ids):
   """Create stratified group k-fold splits"""
@@ -125,7 +106,7 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
                    init_network, regularization_lambda_L1,
                    key_for_early_stopping, early_stopping, enable_scheduler,
                    target_metric_best_model, seed_random_state,clip_grad_norm,
-                   stop_after_kth_fold,regularization_lambda_L2,trial):
+                   stop_after_kth_fold,regularization_lambda_L2,trial,validate=True):
   """Run a single fold of the cross-validation"""
   # Setup folder structure for this fold
   saving_path_kth_fold = os.path.join(train_folder_path, f'k{fold_idx}_cross_val')
@@ -133,7 +114,10 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
   
   # Create train/val/test splits for this fold
   test_idx_split = fold_idx % k_fold
-  val_idx_split = (fold_idx + 1) % k_fold
+  if validate:
+    val_idx_split = (fold_idx + 1) % k_fold
+  else:
+    val_idx_split = None
   train_idxs_split = [j for j in range(k_fold) if j != test_idx_split and j != val_idx_split]
   
   # Generate datasets
@@ -142,21 +126,14 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
   
   # Generate CSV files for each split
   path_csv_kth_fold = generate_fold_csv_files(split_indices, csv_array, cols, saving_path_kth_fold)
-  
-  # Generate dataset distribution plots
-  # for _, csv_path in path_csv_kth_fold.items():
-  #   tools.plot_dataset_distribuition(
-  #     csv_path=csv_path,
-  #     run_folder_path=saving_path_kth_fold,
-  #     total_classes=model_advanced.dataset.total_classes
-  #   )
-  
+    
   # Prepare sub-folds for training
   sub_k_fold_list = [list_splits_idxs[idx] for idx in train_idxs_split]
-  sub_k_fold_list.append(list_splits_idxs[val_idx_split])
+  if val_idx_split is not None: # If validation split is needed, add it to the sub-folds
+    sub_k_fold_list.append(list_splits_idxs[val_idx_split])
   
   # Train sub-fold models
-  # AUGMENTAION: val and test csv will be filtered in function get_dataset_and_loader  
+  # AUGMENTAION: val and test csv will be filtered in function get_dataset_and_loader (dataset.py)  
   fold_results_kth = train_subfold_models(
     fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sample_ids,
     saving_path_kth_fold, model_advanced, lr, epochs, optimizer_fn,
@@ -164,7 +141,7 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
     init_network, regularization_lambda_L1,
     key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state,
     clip_grad_norm,stop_after_kth_fold,path_csv_kth_fold['test'],regularization_lambda_L2,
-    trial
+    trial,validate
   )
     
   fold_results ={'fold_results':{}}
@@ -184,7 +161,10 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
 def create_split_indices(test_idx_split, val_idx_split, train_idxs_split, list_splits_idxs, sample_ids):
   """Create train/val/test split indices"""
   test_sample_ids = sample_ids[list_splits_idxs[test_idx_split]]
-  val_sample_ids = sample_ids[list_splits_idxs[val_idx_split]]
+  if val_idx_split is None: # if no validation split is needed
+    val_sample_ids = None
+  else:
+    val_sample_ids = sample_ids[list_splits_idxs[val_idx_split]]
   train_sample_ids = []
   
   for idx in train_idxs_split:
@@ -192,10 +172,9 @@ def create_split_indices(test_idx_split, val_idx_split, train_idxs_split, list_s
   
   return {
     'test': np.array([test_sample_ids, list_splits_idxs[test_idx_split]]),
-    'val': np.array([val_sample_ids, list_splits_idxs[val_idx_split]]),
+    'val': np.array([val_sample_ids, list_splits_idxs[val_idx_split]]) if val_idx_split is not None else None,
     'train': np.array([
-      train_sample_ids,
-      np.concatenate([list_splits_idxs[idx] for idx in train_idxs_split])
+      train_sample_ids, np.concatenate([list_splits_idxs[idx] for idx in train_idxs_split])
     ])
   }
 
@@ -204,10 +183,11 @@ def generate_fold_csv_files(split_indices, csv_array, cols, saving_path):
   path_csv_kth_fold = {}
   
   for key, v in split_indices.items():
-    csv_data = csv_array[v[1]]
-    path = os.path.join(saving_path, f'{key}.csv')
-    tools.generate_csv(cols=cols, data=csv_data, saving_path=path)
-    path_csv_kth_fold[key] = path
+    if v is not None:  # Skip if no validation split
+      csv_data = csv_array[v[1]]
+      path = os.path.join(saving_path, f'{key}.csv')
+      tools.generate_csv(cols=cols, data=csv_data, saving_path=path)
+      path_csv_kth_fold[key] = path
   
   return path_csv_kth_fold
 
@@ -216,7 +196,7 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
                       concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
                       init_network, regularization_lambda_L1,
                       key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state,clip_grad_norm,
-                      stop_after_kth_fold,test_csv_path,regularization_lambda_L2,trial):
+                      stop_after_kth_fold,test_csv_path,regularization_lambda_L2,trial,validate):
   """Train models on sub-folds"""
   if not isinstance(model_advanced, Model_Advanced):
     raise ValueError('model_advanced must be an instance of Model_Advanced')
@@ -230,7 +210,7 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
     # Generate train/val split for this subfold
     sub_path_csv_kth_fold = generate_subfold_csv_files(
       sub_idx, k_fold, sub_k_fold_list, csv_array, cols, 
-      sample_ids, saving_path_kth_sub_fold
+      sample_ids, saving_path_kth_sub_fold, validate
     )
     
     # Train model
@@ -243,7 +223,7 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
       criterion=criterion,
       saving_path=saving_path_kth_sub_fold,
       train_csv_path=sub_path_csv_kth_fold['train'],
-      val_csv_path=sub_path_csv_kth_fold['val'],
+      val_csv_path=sub_path_csv_kth_fold['val'] if 'sub_val' in sub_path_csv_kth_fold else None,
       round_output_loss=round_output_loss,
       shuffle_training_batch=shuffle_training_batch,
       init_network=init_network,
@@ -274,14 +254,19 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
   return fold_results_kth
 
 def generate_subfold_csv_files(sub_idx, k_fold, sub_k_fold_list, csv_array, cols, 
-                            sample_ids, saving_path_kth_sub_fold):
+                            sample_ids, saving_path_kth_sub_fold,validate):
   """Generate CSV files for a sub-fold"""
   sub_path_csv_kth_fold = {}
   
   # Get validation indices
-  val_indices = sub_k_fold_list[sub_idx]
-  val_sample_ids = sample_ids[val_indices]
-  
+  if validate:
+    val_indices = sub_k_fold_list[sub_idx]
+    val_sample_ids = sample_ids[val_indices]
+  else:
+    val_indices = None
+    val_sample_ids = None
+    sub_idx = None  # No validation split, so sub_idx is not used
+    
   # Get training indices (all except validation)
   train_sub_idx = [j for j in range(k_fold - 1) if j != sub_idx]
   train_indices = np.concatenate([sub_k_fold_list[j] for j in train_sub_idx])
@@ -289,16 +274,17 @@ def generate_subfold_csv_files(sub_idx, k_fold, sub_k_fold_list, csv_array, cols
   
   # Create split indices
   split_indices = {
-    'val': np.array([val_sample_ids, val_indices]),
+    'val': np.array([val_sample_ids, val_indices]) if val_indices is not None else None,
     'train': np.array([train_sample_ids, train_indices])
   }
   
   # Generate CSV files
   for key, v in split_indices.items():
-    csv_data = csv_array[v[1]]
-    path = os.path.join(saving_path_kth_sub_fold, f'{key}.csv')
-    tools.generate_csv(cols=cols, data=csv_data, saving_path=path)
-    sub_path_csv_kth_fold[key] = path
+    if v is not None: # Skip if no validation split
+      csv_data = csv_array[v[1]]
+      path = os.path.join(saving_path_kth_sub_fold, f'{key}.csv')
+      tools.generate_csv(cols=cols, data=csv_data, saving_path=path)
+      sub_path_csv_kth_fold[key] = path
   
   return sub_path_csv_kth_fold
 
@@ -455,6 +441,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    prefetch_factor,
                    soft_labels,
                    trial=None,
+                   validate=True
                   ):
  
 
@@ -498,6 +485,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
       'label_smooth': label_smooth,
       'soft_labels': soft_labels,
       **dict_augmented,
+      'validate': validate,
       'type_regul': 'elastic' if regularization_lambda_L1 > 0 and regularization_lambda_L2 > 0 else 'L1' if regularization_lambda_L1 > 0 else 'L2' if regularization_lambda_L2 > 0 else 'none'
       }
   def get_json_config():
@@ -632,7 +620,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                           stop_after_kth_fold=stop_after_kth_fold,
                                           trial=trial,
                                           summary_res=summary_res,
-                                          run_folder_path=run_folder_path
+                                          run_folder_path=run_folder_path,
+                                          validate=validate
                                           )
   if helper.LOG_CROSS_ATTENTION['enable']:
     summary_res['cross_attention_debug'] = helper.LOG_CROSS_ATTENTION

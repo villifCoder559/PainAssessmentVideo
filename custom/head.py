@@ -102,20 +102,21 @@ class BaseHead(nn.Module):
                                                               soft_labels=soft_labels,
                                                               label_smooth=label_smooth,
                                                               n_workers=n_workers)
-    val_dataset, val_loader = get_dataset_and_loader(batch_size=batch_size,
-                                                          csv_path=val_csv_path,
-                                                          root_folder_features=root_folder_features,
-                                                          shuffle_training_batch=False,
-                                                          is_training=False,
-                                                          concatenate_temporal=concatenate_temp_dim,
-                                                          dataset_type=dataset_type,
-                                                          prefetch_factor=prefetch_factor,
-                                                          backbone_dict=backbone_dict,
-                                                          model=self, 
-                                                          is_coral_loss=is_coral_loss,
-                                                          soft_labels=soft_labels,
-                                                          label_smooth=label_smooth,
-                                                          n_workers=n_workers)
+    if val_csv_path is not None:
+      val_dataset, val_loader = get_dataset_and_loader(batch_size=batch_size,
+                                                            csv_path=val_csv_path,
+                                                            root_folder_features=root_folder_features,
+                                                            shuffle_training_batch=False,
+                                                            is_training=False,
+                                                            concatenate_temporal=concatenate_temp_dim,
+                                                            dataset_type=dataset_type,
+                                                            prefetch_factor=prefetch_factor,
+                                                            backbone_dict=backbone_dict,
+                                                            model=self, 
+                                                            is_coral_loss=is_coral_loss,
+                                                            soft_labels=soft_labels,
+                                                            label_smooth=label_smooth,
+                                                            n_workers=n_workers)
     
     if isinstance(self,AttentiveClassifierJEPA) and enable_scheduler: 
       optimizer, _, scheduler, wd_scheduler = jepa_eval.init_opt( 
@@ -144,13 +145,15 @@ class BaseHead(nn.Module):
     train_unique_classes = torch.tensor(train_dataset.get_unique_classes())
     train_unique_subjects = torch.tensor(train_dataset.get_unique_subjects())
     # val_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
-    val_unique_classes = torch.tensor(val_dataset.get_unique_classes())
-    val_unique_subjects = torch.tensor(val_dataset.get_unique_subjects())
+    # if val_csv_path is not None:
+    val_unique_classes = torch.tensor(val_dataset.get_unique_classes()) if val_csv_path is not None else torch.tensor([])
+    val_unique_subjects = torch.tensor(val_dataset.get_unique_subjects()) if val_csv_path is not None else torch.tensor([])
     if helper.LOG_HISTORY_SAMPLE and torch.min(train_unique_classes)>=0 and torch.max(train_unique_classes)<=255 and torch.min(val_unique_classes)>=0 and torch.max(val_unique_classes)<=255:
       list_train_sample = train_dataset.get_all_sample_ids()
-      list_val_sample = val_dataset.get_all_sample_ids()
       history_train_sample_predictions = {id: torch.zeros(num_epochs, dtype=torch.uint8) for id in list_train_sample}
-      history_val_sample_predictions = {id: torch.zeros(num_epochs, dtype=torch.uint8) for id in list_val_sample}
+      # if val_csv_path is not None:
+      list_val_sample = val_dataset.get_all_sample_ids() if val_csv_path is not None else None
+      history_val_sample_predictions = {id: torch.zeros(num_epochs, dtype=torch.uint8) for id in list_val_sample} if val_csv_path is not None else None
       print('Size history_train_sample_predictions:')
       tools.print_dict_size(history_train_sample_predictions)
     else:
@@ -252,11 +255,12 @@ class BaseHead(nn.Module):
         # subject_count_batch[tmp] += 1
         dict_log_time['count_subjects'] = dict_log_time.get('count_subjects',0) + time.time() - time_to_count_subjects
         transfer_to_device = time.time() 
-          # HuberLoss requires float32 inputs
-        if isinstance(criterion, torch.nn.HuberLoss):
-          batch_y = batch_y.float()
-        elif isinstance(criterion, torch.nn.CrossEntropyLoss):
-          batch_y = batch_y.long()
+        # HuberLoss requires float32 inputs
+        if batch_y.dtype == torch.int32: # if ce not has label smoothing
+          if isinstance(criterion, torch.nn.HuberLoss):
+            batch_y = batch_y.float()
+          elif isinstance(criterion, torch.nn.CrossEntropyLoss):
+            batch_y = batch_y.long()
         batch_y = batch_y.to(device)
         dict_batch_X = {key: value.to(device) for key, value in dict_batch_X.items()}
         dict_log_time['transfer_to_device'] = dict_log_time.get('transfer_to_device',0) + time.time() - transfer_to_device
@@ -351,25 +355,27 @@ class BaseHead(nn.Module):
         start_load_batch = time.time()
 
       time_eval = time.time()
-      dict_eval = self.evaluate(criterion=criterion,is_test=False,
-                                unique_val_classes=val_unique_classes,
-                                unique_val_subjects=val_unique_subjects,
-                                val_loader=val_loader,
-                                is_coral_loss=is_coral_loss,
-                                epoch=epoch,
-                                history_val_sample_predictions=history_val_sample_predictions)
+      dict_eval = None
+      if val_csv_path is not None:
+        dict_eval = self.evaluate(criterion=criterion,is_test=False,
+                                  unique_val_classes=val_unique_classes,
+                                  unique_val_subjects=val_unique_subjects,
+                                  val_loader=val_loader,
+                                  is_coral_loss=is_coral_loss,
+                                  epoch=epoch,
+                                  history_val_sample_predictions=history_val_sample_predictions)
       dict_log_time['eval'] = dict_log_time.get('eval',0) + time.time()-time_eval
       # print(f'  Evaluation time: {dict_log_time["eval"]:.4f}')
       epoch_log_time = time.time()
-      if epoch == 0 or helper.SAVE_LAST_EPOCH_MODEL or (dict_eval[key_for_early_stopping] < best_eval_loss if key_for_early_stopping == 'val_loss' else dict_eval[key_for_early_stopping] > best_eval_loss):
-        best_eval_loss = dict_eval[key_for_early_stopping]
+      if epoch == 0 or helper.SAVE_LAST_EPOCH_MODEL or (dict_eval is not None and dict_eval[key_for_early_stopping] < best_eval_loss if key_for_early_stopping == 'val_loss' else dict_eval[key_for_early_stopping] > best_eval_loss):
+        best_eval_loss = dict_eval[key_for_early_stopping] if dict_eval is not None else 0.0
         best_model_state = copy.deepcopy(self.state_dict())
         best_model_state = {key: value.cpu() for key, value in best_model_state.items()}
         best_model_epoch = epoch
         best_epoch = True
       
       list_train_losses.append(train_loss / len(train_loader))
-      list_val_losses.append(dict_eval['val_loss'])
+      list_val_losses.append(dict_eval['val_loss'] if dict_eval is not None else 0.0)
       
       
       if helper.LOG_PER_CLASS_AND_SUBJECT:
@@ -394,23 +400,24 @@ class BaseHead(nn.Module):
           list_train_accuracy_per_class.append(class_accuracy[0] / class_accuracy[1]) # class_accuracy[0] is correct predictions, class_accuracy[1] is total)
           list_train_losses_per_subject.append((subject_loss / sample_per_subject_count))
           list_train_accuracy_per_subject.append(subject_accuracy / sample_per_subject_count)
-          list_val_losses_per_class.append(dict_eval['val_loss_per_class'])
-          list_val_losses_per_subject.append(dict_eval['val_loss_per_subject'])
-          list_val_accuracy_per_class.append(dict_eval['val_accuracy_per_class'])
-          list_val_accuracy_per_subject.append(dict_eval['val_accuracy_per_subject'])
+          
+          list_val_losses_per_class.append(dict_eval['val_loss_per_class'] if dict_eval is not None else None)
+          list_val_losses_per_subject.append(dict_eval['val_loss_per_subject'] if dict_eval is not None else None)
+          list_val_accuracy_per_class.append(dict_eval['val_accuracy_per_class'] if dict_eval is not None else None)
+          list_val_accuracy_per_subject.append(dict_eval['val_accuracy_per_subject'] if dict_eval is not None else None)
         
       if helper.LOG_PER_CLASS_AND_SUBJECT:
-        list_val_confidence_prediction_right_mean.append(dict_eval['val_prediction_confidence_right_mean'])
-        list_val_confidence_prediction_wrong_mean.append(dict_eval['val_prediction_confidence_wrong_mean'])
-        list_val_confidence_prediction_right_std.append(dict_eval['val_prediction_confidence_right_std'])
-        list_val_confidence_prediction_wrong_std.append(dict_eval['val_prediction_confidence_wrong_std'])
+        list_val_confidence_prediction_right_mean.append(dict_eval['val_prediction_confidence_right_mean'] if dict_eval is not None else 0.0)
+        list_val_confidence_prediction_wrong_mean.append(dict_eval['val_prediction_confidence_wrong_mean'] if dict_eval is not None else 0.0)
+        list_val_confidence_prediction_right_std.append(dict_eval['val_prediction_confidence_right_std'] if dict_eval is not None else 0.0)
+        list_val_confidence_prediction_wrong_std.append(dict_eval['val_prediction_confidence_wrong_std'] if dict_eval is not None else 0.0)
         
-      list_val_confusion_matricies.append(dict_eval['val_confusion_matrix'])
+      list_val_confusion_matricies.append(dict_eval['val_confusion_matrix'] if dict_eval is not None else None)
       
       train_confusion_matrix.compute()
       train_dict_precision_recall = tools.evaluate_classification_from_confusion_matrix(confusion_matrix=train_confusion_matrix,list_real_classes=train_unique_classes)
       list_train_performance_metric.append(train_dict_precision_recall[metric_for_stopping])
-      list_val_performance_metric.append(dict_eval[key_for_early_stopping])
+      list_val_performance_metric.append(dict_eval[key_for_early_stopping] if dict_eval is not None else 0.0)
       
       if scheduler:
         scheduler.step()
@@ -426,11 +433,12 @@ class BaseHead(nn.Module):
                            list_grad_norm=total_norm_epoch[epoch],
                            lrs=lrs,
                            wds=wds)
-      self.log_performance(stage='Val',
-                           num_epochs=num_epochs,
-                           loss=dict_eval['val_loss'],
-                          #  dict_kwarg={'acc_per_class':dict_eval['val_accuracy_per_class'],},
-                           accuracy=dict_eval[key_for_early_stopping])
+      if dict_eval is not None:
+        self.log_performance(stage='Val',
+                            num_epochs=num_epochs,
+                            loss=dict_eval['val_loss'],
+                            #  dict_kwarg={'acc_per_class':dict_eval['val_accuracy_per_class'],},
+                            accuracy=dict_eval[key_for_early_stopping])
       
       if helper.LOG_LOSS_ACCURACY and epoch > 0 and epoch % (helper.saving_rate_training_logs*2) == 0:
         fig,ax = plt.subplots(1,1,figsize=(10,10))
@@ -460,10 +468,10 @@ class BaseHead(nn.Module):
         fig.savefig(os.path.join(saving_path, f'loss_acc_epoch_{epoch}.png'), dpi=300)
         plt.close(fig)
         
-      if early_stopping(dict_eval[key_for_early_stopping]):
+      if dict_eval is not None and early_stopping(dict_eval[key_for_early_stopping]):
         break
       
-      if enable_optuna_pruning:
+      if enable_optuna_pruning and dict_eval is not None and trial is not None:
         trial.report(dict_eval[key_for_early_stopping], epoch)
         # trial.report(list_train_losses[-1], epoch)
         
@@ -484,7 +492,7 @@ class BaseHead(nn.Module):
         print(f'Stop event is set. Stopping training...')
         break
       
-    if saving_path and (helper.SAVE_PTH_MODEL or helper.SAVE_LAST_EPOCH_MODEL):
+    if saving_path and helper.SAVE_PTH_MODEL:
       print('Load and save best model for next steps...')
       torch.save(best_model_state, os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth'))
       print(f"Best model weights saved to {os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth')}")
@@ -500,7 +508,7 @@ class BaseHead(nn.Module):
       'train_unique_subject_ids': train_unique_subjects.numpy(),
       'train_count_subject_ids': train_dataset.get_count_subjects(),
       'val_unique_subject_ids': val_unique_subjects.numpy(),
-      'val_count_subject_ids': val_dataset.get_count_subjects(),
+      'val_count_subject_ids': val_dataset.get_count_subjects() if val_csv_path is not None else None,
       'train_unique_y': train_unique_classes,
       'val_unique_y': val_unique_classes,
       'subject_ids_unique': np.unique(np.concatenate((train_unique_subjects.numpy(),val_unique_subjects.numpy()),axis=0)),
