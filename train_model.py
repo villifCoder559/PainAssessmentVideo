@@ -351,6 +351,7 @@ if __name__ == '__main__':
   parser.add_argument('--head', type=str, default='ATTENTIVE_JEPA', help='Head type: GRU, ATTENTIVE, LINEAR, ATTENTIVE_JEPA')
   parser.add_argument('--n_workers', type=int, default=1, help='Number of workers for data loading. Default is 1')
   parser.add_argument('--prefetch_factor', type=int, default=2, help='Prefetch factor for data loading. Default is 2')
+  parser.add_argument('--embedding_reduction', type=str, default='none', help='Embedding reduction method: spatial, temporal, all, adaptive_pooling_3d, none. Default is spatial')
     
   # Path configuration
   parser.add_argument('--gp', action='store_true', help='Use global path prefix for file paths')
@@ -466,9 +467,8 @@ if __name__ == '__main__':
   clip_length = 16
   seed_random_state = 42
   pooling_clips_reduction = CLIPS_REDUCTION.NONE
-  pooling_emb_reduction = helper.EMBEDDING_REDUCTION.get_embedding_reduction('none')
   sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
-  dict_args['pooling_embedding_reduction'] = pooling_emb_reduction
+  dict_args['pooling_embedding_reduction'] = helper.EMBEDDING_REDUCTION.get_embedding_reduction(dict_args['embedding_reduction'])
   dict_args['pooling_clips_reduction'] = pooling_clips_reduction
   dict_args['sample_frame_strategy'] = sample_frame_strategy
   dict_args['stride_window_in_video'] = 16 # To avoid errors but not used
