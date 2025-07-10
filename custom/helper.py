@@ -23,11 +23,11 @@ LOG_CROSS_ATTENTION = {
 
 step_shift = 8700 # nr of samples in Biovid video dataset
   
+def is_hflip_augmentation(sample_id):
+  return sample_id > step_shift and sample_id <= step_shift * 2
+
 def is_color_jitter_augmentation(sample_id):
   return sample_id > step_shift * 2 and sample_id <= step_shift * 3
-
-def is_hflip_augmentation(sample_id):
-  return sample_id > 0 and sample_id <= step_shift
 
 def is_rotation_augmentation(sample_id):
   return sample_id > step_shift * 3 and sample_id <= step_shift * 4
