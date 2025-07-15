@@ -13,12 +13,14 @@ from VideoMAEv2.models.modeling_finetune import (
 from VideoMAEv2.models.modeling_pretrain import pretrain_videomae_giant_patch14_224
 from transformers import ViTFeatureExtractor, ViTModel
 from custom.helper import MODEL_TYPE
+import torch.nn as nn
 
-class BackboneBase:
+class BackboneBase(nn.Module):
   """Base class for feature extraction backbones."""
   
   def __init__(self):
     """Initialize the backbone base class."""
+    super(BackboneBase,self).__init__()
     self.model = None
     self.model_type = None
     self.device = "cuda"
@@ -32,8 +34,15 @@ class BackboneBase:
     Returns:
       Feature embeddings
     """
-    raise NotImplementedError("Subclasses must implement forward_features")
-
+    pass
+  
+  def load_pretrained_weights(self):
+    """Load pretrained weights from a file.
+    
+    Args:
+      weights_path: Path to the weights file
+    """
+    pass
 
 class VideoBackbone(BackboneBase):
   """Video feature extraction backbone using VideoMAEv2."""
@@ -42,7 +51,8 @@ class VideoBackbone(BackboneBase):
     self, 
     model_type: Enum,
     remove_head: bool = True,
-    download_if_unavailable: bool = False
+    adapter_dict: dict = None
+    # download_if_unavailable: bool = False
   ):
     """Initialize the video backbone.
     
@@ -61,6 +71,7 @@ class VideoBackbone(BackboneBase):
     
     # Check if model exists or needs downloading
     model_path = Path(model_type.value)
+    self.model_type = model_type
     if not model_path.exists():
       # if download_if_unavailable:
       #   print(f"Model not found at {model_path}. Downloading...")
@@ -75,7 +86,11 @@ class VideoBackbone(BackboneBase):
         self.model = self._load_model_pretrained(model_type)
       else:
         self.model = self._load_model_finetune(model_type, remove_head=remove_head)
-        
+      
+      # Freeze model parameters
+      for param in self.model.parameters():
+        param.requires_grad = False
+      
       # Cache important model parameters for efficient access
       self.tubelet_size = self.model.patch_embed.tubelet_size
       self.img_size = self.model.patch_embed.img_size[0]  # [224, 224]
@@ -83,22 +98,16 @@ class VideoBackbone(BackboneBase):
       self.out_spatial_size = self.img_size // self.patch_size  # 224/16 = 14
       self.embed_dim = self.model.embed_dim
       self.frame_size = 16  # Default frame size
+      self.remove_head = remove_head
+      if adapter_dict is not None:
+        self.model.add_adapters(adapter_dict) # add_adapters defined in modeling_finetune.py
+        
       
     elif model_type in [MODEL_TYPE.VJEPA2_G_384]:
       # IMPORT THE LIBRARY
       config_path = "vjepa2/configs/train/vitg16/cooldown-384px-64f.yaml"
-      sys.path.insert(0, os.path.abspath('vjepa2'))
-      with open (config_path,"r") as f:
-        config = yaml.safe_load(f)
-      import vjepa2.src.hub.backbones as backbones
-      
-      # Create model and weights for the encoder
-      jepa_model = backbones.vjepa2_vit_giant_384(pretrained=False,**config)
-      state_dict = torch.load(model_type.value, map_location='cpu', weights_only=True)
-      del state_dict['predictor']
-      encoder_state_dict = backbones._clean_backbone_key(state_dict["encoder"])
-      res = jepa_model[0].load_state_dict(encoder_state_dict, strict=False)  # state_dict has pos_embed but we use RoPE
-      print(res)
+      self.config_path = config_path
+      jepa_model = self.load_jepa2_weights()
       self.model = jepa_model[0]
       
       # Cache important model parameters for efficient access
@@ -108,12 +117,39 @@ class VideoBackbone(BackboneBase):
       self.out_spatial_size = self.img_size // self.patch_size  # 224/16 = 14
       self.embed_dim = self.model.embed_dim
       self.frame_size = self.model.num_frames  # Default frame size
-    
-    self.model_type = model_type
-    
-      
-    
+      if adapter_dict is not None:
+        NotImplementedError(f"Fine-tuning type {adapter_dict} is not implemented for JEPA2 backbone.")
 
+    self.adapter_dict = adapter_dict
+
+  
+  def load_jepa2_weights(self):
+    if not sys.path.exists('vjepa2'):
+      sys.path.insert(0, os.path.abspath('vjepa2'))
+    with open (self.config_path,"r") as f:
+      config = yaml.safe_load(f)
+    import vjepa2.src.hub.backbones as backbones
+    
+    # Create model and weights for the encoder
+    jepa_model = backbones.vjepa2_vit_giant_384(pretrained=False,**config)
+    state_dict = torch.load(self.model_type.value, map_location='cpu', weights_only=True)
+    del state_dict['predictor']
+    encoder_state_dict = backbones._clean_backbone_key(state_dict["encoder"])
+    res = jepa_model[0].load_state_dict(encoder_state_dict, strict=False)  # state_dict has pos_embed but we use RoPE
+    print(res)
+    return jepa_model
+
+  def load_pretrained_weights(self):
+    if self.model_type in [MODEL_TYPE.VIDEOMAE_v2_B, MODEL_TYPE.VIDEOMAE_v2_G, MODEL_TYPE.VIDEOMAE_v2_G_unl, MODEL_TYPE.VIDEOMAE_v2_S]:
+      if self.model_type == MODEL_TYPE.VIDEOMAE_v2_G_unl:
+        # Load pretrained model
+        self.model = self._load_model_pretrained(self.model_type)
+      else:
+        self.model = self._load_model_finetune(self.model_type, remove_head=self.remove_head)
+    elif self.model_type in [MODEL_TYPE.VJEPA2_G_384]:
+      # Load JEPA2 model
+      self.model = self.load_jepa2_weights()[0]
+      
   def _load_model_pretrained(self, model_type: Enum):
     """Load a pretrained model.
     
@@ -229,7 +265,7 @@ class VideoBackbone(BackboneBase):
       S = int(self.out_spatial_size)  # Spatial dimension
       
       feat = feat.reshape(B, T, S, S, self.embed_dim)# [B, T, S, S, embed_dim], e.g. [1, 8, 14, 14, 768]
-    feat = feat.to('cpu')
+    # feat = feat.to('cpu')
     # self.model.to('cpu') # Only for local testing
     if return_attn:
       attn = attn.to('cpu')
