@@ -368,6 +368,7 @@ class VisionTransformer(nn.Module):
         # num_features for consistency with other models
         self.num_features = self.embed_dim = embed_dim
         self.tubelet_size = tubelet_size
+        self.all_frames = all_frames
         self.patch_embed = PatchEmbed(
             img_size=img_size,
             patch_size=patch_size,
@@ -390,6 +391,13 @@ class VisionTransformer(nn.Module):
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)
                ]  # stochastic depth decay rule
+        
+        # Instantiate adapters as identity layers
+        self.adapters = nn.ModuleList([
+            nn.Identity() for _ in range(depth)
+        ])
+            
+        # Create transformer blocks
         self.blocks = nn.ModuleList([
             Block(
                 dim=embed_dim,
@@ -442,7 +450,25 @@ class VisionTransformer(nn.Module):
         self.num_classes = num_classes
         self.head = nn.Linear(
             self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
-
+        
+        
+    def add_adapters(self, adapter_dict):
+        """Add adapters to the transformer blocks."""
+        if adapter_dict['type'] == 'adapter':
+            import custom.adapters as adapters
+            self.adapters = nn.ModuleList([ 
+                adapters.Adapter(
+                    embed_dims=self.embed_dim,
+                    temporal_size=self.all_frames // self.tubelet_size,
+                    mlp_ratio=adapter_dict['mlp_ratio'],
+                    kernel_size=adapter_dict['kernel_size'],
+                    dilation=adapter_dict['dilation'],
+                ) for _ in range(len(self.blocks))
+            ])
+        else:
+            raise NotImplementedError(
+                f"Adapter type {adapter_dict['type']} is not implemented.")
+        
     def forward_features(self, x, return_embedding=False, return_attn=False):
         B = x.size(0)
 
@@ -454,7 +480,7 @@ class VisionTransformer(nn.Module):
         x = self.pos_drop(x)
         if return_attn:
             blk_attns = []
-        for blk in self.blocks:
+        for blk, adapter in zip(self.blocks, self.adapters):
             if self.with_cp:
                 x = cp.checkpoint(blk, x)
             else:
@@ -463,6 +489,12 @@ class VisionTransformer(nn.Module):
                     blk_attns.append(attn.detach().cpu())
                 else:
                     x = blk(x)
+                    
+            # Apply adapter 
+            x = adapter(x= x, 
+                        h= self.patch_embed.img_size[0] // self.patch_embed.patch_size[0],
+                        w= self.patch_embed.img_size[1] // self.patch_embed.patch_size[1])
+            
         if return_attn:
             return x, torch.stack(blk_attns,dim=0)
         if return_embedding:
