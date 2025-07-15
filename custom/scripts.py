@@ -6,7 +6,6 @@ import time
 from custom.tools import NpEncoder
 import custom.tools as tools
 import custom.helper as helper
-from custom.helper import HEAD, MODEL_TYPE, EMBEDDING_REDUCTION, SAMPLE_FRAME_STRATEGY
 import torch.nn as nn
 import torch.optim as optim
 import dataframe_image as dfi
@@ -440,6 +439,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    dict_augmented,
                    prefetch_factor,
                    soft_labels,
+                   adapter_dict,
                    trial=None,
                    validate=True
                   ):
@@ -469,6 +469,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
       'key_for_early_stopping': key_for_early_stopping,
       # 'stride_window_in_video': stride_window_in_video,
       'head_params': head_params,
+      'adapter_dict': adapter_dict,
+      'dataset_type': tools.get_dataset_type(features_folder_saving_path),
       'random_state': seed_random_state,
       'plot_dataset_distribution': is_plot_dataset_distribution,
       'round_output_loss': is_round_output_loss,
@@ -518,6 +520,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'target_metric_best_model': target_metric_best_model,
     'early_stopping': str(early_stopping),
     'soft_labels': soft_labels,
+    'adapter_dict': adapter_dict,
     'regularization_lambda_L2': regularization_lambda_L2,
     }
   ###############################
@@ -548,6 +551,10 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   #   helper.LOG_CROSS_ATTENTION['enable'] = False
   # else:
   #   helper.LOG_CROSS_ATTENTION['enable'] = True
+  if tools.get_dataset_type(features_folder_saving_path) != helper.CUSTOM_DATASET_TYPE.BASE:
+    adapter_dict = None
+    print(f'Adapter dict is set to None for all non BASE datasets')
+
   model_advanced = Model_Advanced(model_type=model_type,
                                   path_dataset=path_video_dataset,
                                   embedding_reduction=pooling_embedding_reduction,
@@ -557,6 +564,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   path_labels=path_csv_dataset,
                                   batch_size_training=batch_size_training,
                                   head=head.value,
+                                  adapter_dict=adapter_dict,
                                   soft_labels=soft_labels,
                                   prefetch_factor=prefetch_factor,
                                   head_params=head_params,
