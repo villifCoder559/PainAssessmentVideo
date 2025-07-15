@@ -13,7 +13,7 @@ import custom.helper as helper
 
 class Model_Advanced: # Scenario_Advanced
   def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,
-              path_labels, sample_frame_strategy, head, head_params,
+              path_labels, sample_frame_strategy, head, head_params, adapter_dict,
               batch_size_training,stride_window,clip_length,dict_augmented,prefetch_factor,soft_labels,
               features_folder_saving_path,concatenate_temporal,label_smooth,n_workers,new_csv_path):
     """
@@ -30,12 +30,14 @@ class Model_Advanced: # Scenario_Advanced
     stride_window (int, optional): Stride window for sampling frames. Defaults to 2.
     clip_length (int, optional): Length of each video clip. Defaults to 16.
     svr_params (dict, optional): Parameters for the Support Vector Regressor (SVR). Defaults to {'kernel': 'rbf', 'C': 1, 'epsilon': 0.1}.
-
     """
+    
     if model_type != MODEL_TYPE.ViT_image:
-      self.backbone = VideoBackbone(model_type)
+      self.backbone = VideoBackbone(model_type, adapter_dict=adapter_dict)
     else:
       self.backbone = VitImageBackbone()
+      if head_params.get('adapter_dict', None) is not None:
+        raise ValueError("Adapter dictionary is not supported for ViT image model type.")
     
     self.dataset = customDataset(path_dataset=path_dataset, 
                                  path_labels=path_labels, 
@@ -111,6 +113,8 @@ class Model_Advanced: # Scenario_Advanced
                                           num_queries=head_params['num_queries'],
                                           agg_method=head_params['agg_method'],
                                           use_sdpa=use_sdpa,
+                                          embedding_reduction=helper.EMBEDDING_REDUCTION.get_embedding_reduction(head_params['embedding_reduction']),
+                                          backbone=self.backbone if self.dataset_type == CUSTOM_DATASET_TYPE.BASE else None,
                                           coral_loss=head_params['coral_loss'],
                                           complete_block=head_params['complete_block'],
                                           cross_block_after_transformers=head_params['cross_block_after_transformers'],
