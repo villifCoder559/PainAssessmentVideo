@@ -150,7 +150,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     num_classes = GRU_output_size
 
   else:
-    # JEPA-attentive head parameters
+    # Attentive head parameters
     nr_blocks = _suggest(trial, 'nr_blocks', kwargs['nr_blocks'], kwargs['optuna_categorical'])
     num_heads = trial.suggest_categorical('num_heads', kwargs['num_heads'])
     num_cross_head = trial.suggest_categorical('num_cross_head', kwargs['num_cross_head'])
@@ -165,15 +165,20 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     q_k_v_dim = trial.suggest_categorical('q_k_v_dim', kwargs['q_k_v_dim'])
     emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
     custom_mlp = trial.suggest_categorical('custom_mlp', kwargs['custom_mlp'])
-    
     if loss in ['l1', 'l2', 'huber']:
       num_classes = 1
       print(f"\nRegression task detected. Setting num_classes to 1 for {loss} loss.")
     else:
       num_classes = pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique()
+    adapter_dict = {
+      'type': trial.suggest_categorical('adapter_type', kwargs['adapter_type']),
+      'mlp_ratio': trial.suggest_categorical('adpater_mlp_ratio', kwargs['adpater_mlp_ratio']),
+      'kernel_size': trial.suggest_categorical('adapter_kernel_size', kwargs['adapter_kernel_size']),
+      'dilation': trial.suggest_categorical('adapter_dilation', kwargs['adapter_dilation']),
+    }
     head_params = {
       'input_dim': emb_dim * 8 if concatenate_temp_dim else emb_dim,
-      'q_k_v_dim': q_k_v_dim if q_k_v_dim is not None else emb_dim,
+      'q_k_v_dim': q_k_v_dim if q_k_v_dim != None else emb_dim,
       'num_classes': num_classes,
       'num_cross_heads': num_cross_head,
       'num_heads': num_heads or num_cross_head,
@@ -189,7 +194,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'cross_block_after_transformers': cross_block_after_transformers,
       'num_queries': num_queries,
       'agg_method': queries_agg_method,
-      'complete_block': trial.suggest_categorical('complete_block', kwargs['complete_block'])
+      'complete_block': trial.suggest_categorical('complete_block', kwargs['complete_block']),
+      'embedding_reduction': kwargs['embedding_reduction'],
     }
     head_enum = HEAD.ATTENTIVE_JEPA
 
@@ -229,6 +235,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     path_csv_dataset=kwargs['csv'],
     path_video_dataset=kwargs['path_video_dataset'],
     head=head_enum,
+    adapter_dict=adapter_dict,
     stride_window_in_video=kwargs['stride_window_in_video'],
     features_folder_saving_path=kwargs['ffsp'],
     head_params=head_params,
@@ -406,6 +413,12 @@ if __name__ == '__main__':
   parser.add_argument('--q_k_v_dim', type=int, nargs='*', default=[None],
                     help='Dimension of query, key, value for Attentive head. Default is None (use input_dim)')
   
+  # Adapter backbone finetuning parameters
+  parser.add_argument('--adpater_mlp_ratio', type=float, nargs='*', default=[0.25], help='MLP ratio(s) for backbone adapter. Default is 0.25')
+  parser.add_argument('--adapter_kernel_size', type=int, nargs='*', default=[3], help='Kernel size(s) for backbone adapter. Default is 3')
+  parser.add_argument('--adapter_dilation', type=int, nargs='*', default=[1], help='Dilation(s) for backbone adapter. Default is 1')
+  parser.add_argument('--adapter_type', type=str, nargs='*', default=['adapter'], help='Adapter type. Default is adapter (unique available)')
+   
   # Linear parameters
   parser.add_argument('--linear_dim_reduction', type=str, default='spatial', help=f'Dimension reduction for Linear head. Can be {[d.name.lower() for d in EMBEDDING_REDUCTION]}')
   
