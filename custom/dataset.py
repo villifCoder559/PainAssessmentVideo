@@ -80,7 +80,7 @@ class customDataset(torch.utils.data.Dataset):
         video_labels (pd.DataFrame, optional): DataFrame containing video labels
     """
     # Validate inputs
-    if backbone_dict is not None and not isinstance(backbone_dict['backbone'], BackboneBase):
+    if backbone_dict != None and not isinstance(backbone_dict['backbone'], BackboneBase):
       instances = [BackboneBase,INSTANCE_MODEL_NAME,bool, nn.Module]
       for key in ['backbone', 'instance_model_name', 'concatenate_temporal', 'model']:
         if key not in backbone_dict:
@@ -88,7 +88,7 @@ class customDataset(torch.utils.data.Dataset):
         if not isinstance(backbone_dict[key], instances.pop(0)):
           raise ValueError(f"backbone_dict['{key}'] must be an instance of {instances[0]}")
         
-    if video_labels is not None:
+    if video_labels != None:
       assert isinstance(video_labels, pd.DataFrame), "video_labels must be a pandas DataFrame."
       
     assert os.path.exists(path_dataset), f"Dataset path {path_dataset} does not exist."
@@ -127,7 +127,7 @@ class customDataset(torch.utils.data.Dataset):
     self._set_sampling_strategy(sample_frame_strategy)
     
     # Set video labels
-    if video_labels is None and path_labels is not None:
+    if video_labels is None and path_labels != None:
       self.set_path_labels(path_labels)
     else:
       self.video_labels = video_labels
@@ -150,7 +150,9 @@ class customDataset(torch.utils.data.Dataset):
       )
     else:
       self.soft_labels = None
+      
     self.coral_loss = coral_loss
+    self.num_classes = len(self.get_unique_classes())
   
   def _set_sampling_strategy(self, strategy):
     """
@@ -329,8 +331,8 @@ class customDataset(torch.utils.data.Dataset):
     else:
       # latent based augm. approaches are applied in _get_element function (at the end of file) 
       sample_id = csv_array.iloc[4]
-      color_jitter = helper.is_color_jitter_augmentation(sample_id)
       h_flip = helper.is_hflip_augmentation(sample_id)
+      color_jitter = helper.is_color_jitter_augmentation(sample_id)
       rotation = helper.is_rotation_augmentation(sample_id)
       preprocessed_tensors = self.preprocess_images(frames_list, 
                                                     crop_size=(self.image_resize_h, self.image_resize_w),
@@ -372,18 +374,23 @@ class customDataset(torch.utils.data.Dataset):
       else:
         # Training path
         dict_data = self.__standard_getitem__(idx,is_training=True)
-        features = self.backbone_dict['backbone'].forward_features(dict_data['preprocess'])
+        # features = self.backbone_dict['backbone'].forward_features(dict_data['preprocess'])
         
-        # Apply pooling if specified in backbone_dict
-        if self.backbone_dict['embedding_reduction'] is not EMBEDDING_REDUCTION.NONE:
-          features = torch.mean(features,dim=self.backbone_dict['embedding_reduction'].value,keepdim=True)
-        dict_data = {
-          'features': features,
-          'list_labels': dict_data['labels'],
-          'list_sample_id': dict_data['sample_id'],
-          'list_subject_id': dict_data['subject_id'],
-        }
-        return _get_element(dict_data=dict_data,df=self.video_labels,idx=idx,dataset_type=CUSTOM_DATASET_TYPE.BASE)
+        # # Apply pooling if specified in backbone_dict
+        # if self.backbone_dict['embedding_reduction'] is not EMBEDDING_REDUCTION.NONE:
+        #   features = torch.mean(features,dim=self.backbone_dict['embedding_reduction'].value,keepdim=True)
+        # dict_data = {
+        #   'features': features,
+        #   'list_labels': dict_data['labels'],
+        #   'list_sample_id': dict_data['sample_id'],
+        #   'list_subject_id': dict_data['subject_id'],
+        # }
+        return {
+              'features': dict_data['preprocess'],      # [B,C,frame_length,H,W]
+              'labels': dict_data['labels'],            # [8]
+              'subject_id': dict_data['subject_id'],    # [8]
+              'sample_id': dict_data['sample_id'][0]    # int
+          }
     else: # list case
       raise NotImplementedError("Batch processing is not implemented yet in this dataset class.")
       if self.backbone_dict is None:
@@ -489,11 +496,7 @@ class customDataset(torch.utils.data.Dataset):
     """
     # Combine preprocessed tensors from all samples
     data = torch.cat([item['preprocess'].squeeze() for item in batch], dim=0) # [chunks, C, clip_length, H, W]
-    # data = data.permute()
-    # data = data.reshape(
-    #   -1, self.image_channels, self.clip_length, 
-    #   self.image_resize_h, self.image_resize_w
-    # )  # 
+
     # Combine metadata from all samples
     labels = torch.cat([item['labels'] for item in batch], dim=0)
     path = np.concatenate([item['path'] for item in batch])
@@ -502,16 +505,37 @@ class customDataset(torch.utils.data.Dataset):
     list_frames = torch.cat([item['frame_list'] for item in batch], dim=0).squeeze()
 
     return data, labels, subject_id, sample_id, path, list_frames
+
   
   def _custom_collate(self, batch):
-    return _custom_collate(batch=batch,
-                           instance_model_name=self.backbone_dict['instance_model_name'],
-                           coral_loss=self.coral_loss,
-                           soft_labels_mat=self.soft_labels,
-                           concatenate_temporal=self.backbone_dict['concatenate_temporal'],
-                           model=self.backbone_dict['model'],
-                           smooth_labels=self.smooth_labels,
-                           num_classes=self.total_classes)
+    labels = torch.stack([item['labels'][0] for item in batch], dim=0)
+    subject_id = torch.stack([item['subject_id'][0] for item in batch], dim=0)
+    sample_id = torch.stack([item['sample_id'] for item in batch], dim=0)
+    data = torch.cat([item['features'] for item in batch], dim=0)
+    
+    lengths = torch.tensor([item['features'].shape[0] for item in batch]) 
+    # features = torch.nn.utils.rnn.pad_sequence(data,batch_first=True) # [batch_size,seq_len,emb_dim]
+    # lengths_tensor = torch.tensor(lengths, dtype=torch.int32)
+    # max_len = max(lengths)
+    # key_padding_mask = torch.arange(max_len).expand(len(batch), max_len) >= lengths_tensor.unsqueeze(1)
+    # key_padding_mask = ~key_padding_mask # set True for attention, if True means use the token to compute the attention, otherwise don't use it 
+      
+    if self.smooth_labels > 0.0: # and model.output_size > 1:
+      labels = smooth_labels_batch(gt_classes=labels, num_classes=self.num_classes, smoothing=self.smooth_labels)
+    elif self.soft_labels != None:
+      labels = self.soft_labels[labels].to(torch.float32) # soft labels
+    elif self.coral_loss:
+      labels = levels_from_labelbatch(labels, self.num_classes, dtype=torch.float32)
+    
+    # [B, C, T, H, W], padding applied in the model forward pass
+    return {'x':data, 
+           'key_padding_mask': None,
+           'lengths': lengths, 
+           }, \
+            labels, \
+            subject_id, \
+            sample_id, \
+
   
   def _single_uniform_sampling(self, video_len):
     """
@@ -798,6 +822,13 @@ class customDatasetWhole(torch.utils.data.Dataset):
   def get_all_sample_ids(self):
     return self.df['sample_id'].tolist()
 
+
+
+
+
+
+
+
 def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_classes,smooth_labels, soft_labels_mat,coral_loss):
   # Pre-flatten features: reshape each sample to (sequence_length, emb_dim)
   if instance_model_name != helper.INSTANCE_MODEL_NAME.LINEARPROBE:
@@ -1023,19 +1054,6 @@ def _get_element(dict_data,df,idx,dataset_type):
   features = dict_data['features'][mask]
   labels = dict_data['list_labels'][mask]
   subject_id = dict_data['list_subject_id'][mask]
-  
-  # polarity inversion + gaussian noise
-  if sample_id > helper.step_shift * 4 and sample_id <= helper.step_shift * 5: 
-    gaussian_noise = torch.randn_like(features) * 0.1
-    features = (-1 * features) + gaussian_noise 
-  
-  # random masking patches
-  elif sample_id > helper.step_shift * 5 and sample_id <= helper.step_shift * 6:
-    B,T,S,S,C = features.shape
-    mask_grid = torch.rand(S,S) < 0.1 # 10% of the grid
-    mask_grid = mask_grid.unsqueeze(0).unsqueeze(0).unsqueeze(-1)
-    mask_grid = mask_grid.expand(B,T,S,S,C) # [B,T,S,S,C]
-    features = features.masked_fill(mask_grid, 0.0) # set to zero the masked values
   
   return {
       'features': features,     # [8,8,1,1,768]-> [seq_len,Temporal,Space,Space,Emb]
