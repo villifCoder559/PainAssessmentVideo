@@ -6,6 +6,7 @@ stoic_subjects = [27,28,32,33,34,35,36,39,40,41,42,44,51,53,55,56,61,64,74,87]
 saving_rate_training_logs = 3
 dict_data = None
 
+head_time_logs = {}
 
 AMP_ENABLED = False
 AMP_DTYPE = None
@@ -21,6 +22,19 @@ LOG_CROSS_ATTENTION = {
   'state':'train'
 }
 
+def get_sampling_frame_startegy(strategy):
+  """Get sampling strategy from string name."""
+  strategy = strategy.lower()
+  if strategy == SAMPLE_FRAME_STRATEGY.UNIFORM.value:
+    return SAMPLE_FRAME_STRATEGY.UNIFORM
+  elif strategy == SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW.value:
+    return SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
+  elif strategy == SAMPLE_FRAME_STRATEGY.CENTRAL_SAMPLING.value:
+    return SAMPLE_FRAME_STRATEGY.CENTRAL_SAMPLING
+  elif strategy == SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING.value:
+    return SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING 
+  else:
+    raise ValueError(f'Sampling strategy not found: {strategy}. Valid options: {list(SAMPLE_FRAME_STRATEGY)}')
 step_shift = 8700 # nr of samples in Biovid video dataset
   
 def is_hflip_augmentation(sample_id):
@@ -56,81 +70,161 @@ def get_shift_for_sample_id(folder_feature):
 class SAMPLE_FRAME_STRATEGY(Enum):
   UNIFORM = 'uniform'
   SLIDING_WINDOW = 'sliding_window'
-  CENTRAL_SAMPLING = 'central_sampling'
-  RANDOM_SAMPLING = 'random_sampling' 
+  CENTRAL_SAMPLING = 'central'
+  RANDOM_SAMPLING = 'random' 
   
-class MODEL_TYPE(Enum):
-  # VideoMAEv2
-  VIDEOMAE_v2_G_unl = os.path.join("VideoMAEv2","pretrained","vit_g_hybrid_pt_1200e.pth")
-  VIDEOMAE_v2_S = os.path.join('VideoMAEv2','pretrained',"vit_s_k710_dl_from_giant.pth")
-  VIDEOMAE_v2_B = os.path.join('VideoMAEv2','pretrained',"vit_b_k710_dl_from_giant.pth")
-  VIDEOMAE_v2_G = os.path.join('VideoMAEv2','pretrained',"vit_g_hybrid_pt_1200e_k710_ft.pth")
+# class MODEL_TYPE(Enum):
+#   # VideoMAEv2
+#   VIDEOMAE_v2_G_unl = os.path.join("VideoMAEv2","pretrained","vit_g_hybrid_pt_1200e.pth")
+#   VIDEOMAE_v2_S = os.path.join('VideoMAEv2','pretrained',"vit_s_k710_dl_from_giant.pth")
+#   VIDEOMAE_v2_B = os.path.join('VideoMAEv2','pretrained',"vit_b_k710_dl_from_giant.pth")
+#   VIDEOMAE_v2_G = os.path.join('VideoMAEv2','pretrained',"vit_g_hybrid_pt_1200e_k710_ft.pth")
   
-  # V-Jepa 2
-  VJEPA2_G_384 = os.path.join('vjepa2','pretrained','vitg-384.pt')
+#   # V-Jepa 2
+#   VJEPA2_G_384 = os.path.join('vjepa2','pretrained','vitg-384.pt')
   
-  # standard ViT
-  ViT_image = 'ViT_image'
-  
-  def get_model_type(type):
-    """
-    Retrieves the corresponding model type based on the provided type identifier.
+#   # standard ViT
+#   ViT_image = 'ViT_image'
+#   def set_custom_model_type(type,custom_model_path):
+#     if type == 'S':
+#       MODEL_TYPE.VIDEOMAE_v2_S = custom_model_path
+#     elif type == 'B':
+#       MODEL_TYPE.VIDEOMAE_v2_B = custom_model_path
+#     elif type == 'G':
+#       MODEL_TYPE.VIDEOMAE_v2_G = custom_model_path
+#     elif type == 'G_unl':
+#       MODEL_TYPE.VIDEOMAE_v2_G_unl = custom_model_path
+#     elif type == 'VJEPA2_G_384':
+#       MODEL_TYPE.VJEPA2_G_384 = custom_model_path
+#     elif type == 'ViT_image':
+#       MODEL_TYPE.ViT_image = custom_model_path
+#     else:
+#       raise ValueError(f"Model type {type} not found. Choose between 'S','B','G','G_unl', 'VJEPA2_G_384' or 'ViT_image'")
+#   def get_model_type(type):
+#     """
+#     Retrieves the corresponding model type based on the provided type identifier.
 
-    Args:
-      type (str): A string representing the model type. 
-            Accepted values are:
-            - 'S': Corresponds to MODEL_TYPE.VIDEOMAE_v2_S
-            - 'B': Corresponds to MODEL_TYPE.VIDEOMAE_v2_B
-            - 'G': Corresponds to MODEL_TYPE.VIDEOMAE_v2_G
-            - 'ViT_image': Corresponds to MODEL_TYPE.ViT_image
+#     Args:
+#       type (str): A string representing the model type. 
+#             Accepted values are:
+#             - 'S': Corresponds to MODEL_TYPE.VIDEOMAE_v2_S
+#             - 'B': Corresponds to MODEL_TYPE.VIDEOMAE_v2_B
+#             - 'G': Corresponds to MODEL_TYPE.VIDEOMAE_v2_G
+#             - 'ViT_image': Corresponds to MODEL_TYPE.ViT_image
 
-    Returns:
-      MODEL_TYPE: The corresponding model type constant.
+#     Returns:
+#       MODEL_TYPE: The corresponding model type constant.
 
-    Raises:
-      ValueError: If the provided type is not one of the accepted values.
-    """
-    if type == 'S':
-      return MODEL_TYPE.VIDEOMAE_v2_S
-    elif type == 'B':
-      return MODEL_TYPE.VIDEOMAE_v2_B
-    elif type == 'G':
-      return MODEL_TYPE.VIDEOMAE_v2_G
-    elif type == 'G_unl':
-      return MODEL_TYPE.VIDEOMAE_v2_G_unl
-    elif type == 'VJEPA2_G_384':
-      return MODEL_TYPE.VJEPA2_G_384
-    elif type == 'ViT_image':
-      return MODEL_TYPE.ViT_image
-    else:
-      raise ValueError(f"Model type {type} not found. Choose between 'S','B','G' or 'ViT_image'")
-  def get_embedding_size(type):
-    """
-    Returns the embedding size for a given model type.
+#     Raises:
+#       ValueError: If the provided type is not one of the accepted values.
+#     """
+#     if type == 'S':
+#       return MODEL_TYPE.VIDEOMAE_v2_S
+#     elif type == 'B':
+#       return MODEL_TYPE.VIDEOMAE_v2_B
+#     elif type == 'G':
+#       return MODEL_TYPE.VIDEOMAE_v2_G
+#     elif type == 'G_unl':
+#       return MODEL_TYPE.VIDEOMAE_v2_G_unl
+#     elif type == 'VJEPA2_G_384':
+#       return MODEL_TYPE.VJEPA2_G_384
+#     elif type == 'ViT_image':
+#       return MODEL_TYPE.ViT_image
+#     else:
+#       raise ValueError(f"Model type {type} not found. Choose between 'S','B','G' or 'ViT_image'")
+#   def get_embedding_size(type):
+#     """
+#     Returns the embedding size for a given model type.
 
-    Parameters:
-    type (str): The type of the model. Accepted values are:
-          - 'S': Small model, returns an embedding size of 384.
-          - 'B': Base model, returns an embedding size of 768.
-          - 'G': Large model, returns an embedding size of 1408.
-          - 'ViT_image': Vision Transformer model, returns an embedding size of 768.
+#     Parameters:
+#     type (str): The type of the model. Accepted values are:
+#           - 'S': Small model, returns an embedding size of 384.
+#           - 'B': Base model, returns an embedding size of 768.
+#           - 'G': Large model, returns an embedding size of 1408.
+#           - 'ViT_image': Vision Transformer model, returns an embedding size of 768.
 
-    Returns:
-    int: The embedding size corresponding to the specified model type.
+#     Returns:
+#     int: The embedding size corresponding to the specified model type.
 
-    Raises:
-    ValueError: If the provided model type is not one of the accepted values.
-    """
+#     Raises:
+#     ValueError: If the provided model type is not one of the accepted values.
+#     """
+#     if type == 'S':
+#       return 384
+#     elif type == 'B':
+#       return 768
+#     elif type == 'G':
+#       return 1408
+#     elif type == 'ViT_image':
+#       return 768
+#     else:
+#       raise ValueError(f"Model type {type} not found. Choose between 'S','B','G' or 'ViT_image'")
+
+
+class ModelTypeEntry:
+  def __init__(self, name, value):
+    self.name = name
+    self.value = value
+
+class MODEL_TYPE:
+  _entries = {
+    'VIDEOMAE_v2_G_unl': ModelTypeEntry('VIDEOMAE_v2_G_unl', os.path.join("VideoMAEv2", "pretrained", "vit_g_hybrid_pt_1200e.pth")),
+    'VIDEOMAE_v2_S': ModelTypeEntry('VIDEOMAE_v2_S', os.path.join('VideoMAEv2', 'pretrained', "vit_s_k710_dl_from_giant.pth")),
+    'VIDEOMAE_v2_B': ModelTypeEntry('VIDEOMAE_v2_B', os.path.join('VideoMAEv2', 'pretrained', "vit_b_k710_dl_from_giant.pth")),
+    'VIDEOMAE_v2_G': ModelTypeEntry('VIDEOMAE_v2_G', os.path.join('VideoMAEv2', 'pretrained', "vit_g_hybrid_pt_1200e_k710_ft.pth")),
+    'VJEPA2_G_384': ModelTypeEntry('VJEPA2_G_384', os.path.join('vjepa2', 'pretrained', 'vitg-384.pt')),
+    'ViT_image': ModelTypeEntry('ViT_image', 'ViT_image'),
+  }
+
+  VIDEOMAE_v2_G_unl = _entries['VIDEOMAE_v2_G_unl']
+  VIDEOMAE_v2_S     = _entries['VIDEOMAE_v2_S']
+  VIDEOMAE_v2_B     = _entries['VIDEOMAE_v2_B']
+  VIDEOMAE_v2_G     = _entries['VIDEOMAE_v2_G']
+  VJEPA2_G_384      = _entries['VJEPA2_G_384']
+  ViT_image         = _entries['ViT_image']
+
+  @classmethod
+  def set_custom_model_type(cls, type, custom_model_path):
+    mapping = {
+      'S': 'VIDEOMAE_v2_S',
+      'B': 'VIDEOMAE_v2_B',
+      'G': 'VIDEOMAE_v2_G',
+      'G_unl': 'VIDEOMAE_v2_G_unl',
+      'VJEPA2_G_384': 'VJEPA2_G_384',
+      'ViT_image': 'ViT_image'
+    }
+    key = mapping.get(type)
+    if key is None or key not in cls._entries:
+      raise ValueError(f"Model type '{type}' not found. Choose from: {list(mapping.keys())}")
+    cls._entries[key].value = custom_model_path
+
+  @classmethod
+  def get_model_type(cls, type):
+    mapping = {
+      'S': 'VIDEOMAE_v2_S',
+      'B': 'VIDEOMAE_v2_B',
+      'G': 'VIDEOMAE_v2_G',
+      'G_unl': 'VIDEOMAE_v2_G_unl',
+      'VJEPA2_G_384': 'VJEPA2_G_384',
+      'ViT_image': 'ViT_image'
+    }
+    key = mapping.get(type)
+    if key and key in cls._entries:
+      return cls._entries[key]
+    raise ValueError(f"Model type '{type}' not found. Choose from: {list(mapping.keys())}")
+
+  @classmethod
+  def get_embedding_size(cls, type):
     if type == 'S':
       return 384
-    elif type == 'B':
+    elif type in ['B', 'ViT_image']:
       return 768
     elif type == 'G':
       return 1408
-    elif type == 'ViT_image':
-      return 768
     else:
-      raise ValueError(f"Model type {type} not found. Choose between 'S','B','G' or 'ViT_image'")
+      raise ValueError(
+        f"Model type '{type}' not supported for embedding size. Choose between 'S','B','G','ViT_image'")
+
 class EMBEDDING_REDUCTION(Enum):  
   # [B,t,p,p,emb] -> [B,1,p,p,emb] ex: [3,8,14,14,768] -> [3,1,14,14,768]
   MEAN_TEMPORAL = (1,) 
