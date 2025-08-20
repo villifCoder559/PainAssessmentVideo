@@ -15,6 +15,7 @@ import platform
 import pandas as pd
 # import cProfile, pstats
 import numpy as np
+import torch
 from pstats import SortKey
 import optuna
 from copy import deepcopy
@@ -23,7 +24,7 @@ from cdw_cross_entropy_loss import cdw_cross_entropy_loss
 import optunahub
 from sim_loss.age_estimation.loss import SimLoss # type: ignore
 from coral_pytorch.losses import coral_loss
-
+import sys
 
 # ------------ Helper Functions ------------
 
@@ -39,12 +40,28 @@ def get_optimizer(opt):
   if opt not in optimizers:
     raise ValueError(f'Optimizer not found: {opt}. Valid options: {list(optimizers.keys())}')
   return optimizers[opt]
+ 
+def get_sampling_frame_startegy(strategy):
+  """Get sampling strategy from string name."""
+  strategy = strategy.lower()
+  if strategy == SAMPLE_FRAME_STRATEGY.UNIFORM.value:
+    return SAMPLE_FRAME_STRATEGY.UNIFORM
+  elif strategy == SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW.value:
+    return SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
+  elif strategy == SAMPLE_FRAME_STRATEGY.CENTRAL_SAMPLING.value:
+    return SAMPLE_FRAME_STRATEGY.CENTRAL_SAMPLING
+  elif strategy == SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING.value:
+    return SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING 
+  else:
+    raise ValueError(f'Sampling strategy not found: {strategy}. Valid options: {list(SAMPLE_FRAME_STRATEGY)}')
   
 def get_loss(loss, dict_args=None):
   """Get loss function from string name using if/elif."""
   loss = loss.lower()
   if loss == 'l1':
     return nn.L1Loss()
+  elif loss == 'ce_weight':
+    return nn.CrossEntropyLoss(weight=torch.tensor(dict_args['class_weights'], dtype=torch.float32, device='cuda'))
   elif loss == 'huber':
     return nn.HuberLoss(delta=dict_args['delta_huber'])
   elif loss == 'l2':
@@ -117,6 +134,12 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   delta_huber = _suggest(trial, 'delta_huber', kwargs['delta_huber'], kwargs['optuna_categorical'])
   if loss == 'cdw_ce' and label_smooth > 0:
     raise ValueError('Label smoothing not supported for CDW loss. Use label_smooth=0.')
+  num_clips_per_video = trial.suggest_categorical('num_clips_per_video', kwargs['num_clips_per_video'])
+  sample_frame_strategy = trial.suggest_categorical('sample_frame_strategy', kwargs['sample_frame_strategy'])
+  stride_inside_window = trial.suggest_categorical('stride_inside_window', kwargs['stride_inside_window'])
+  use_sdpa = trial.suggest_categorical('use_sdpa', kwargs['use_sdpa'])
+  if use_sdpa and not hasattr(torch.nn.functional,"scaled_dot_product_attention"):
+    raise ValueError("SDPA (Scaled Dot Product Attention) is not available in this PyTorch version. Set use_sdpa=0 or update PyTorch")
   
   # augmentation
   hflip = _suggest(trial, 'hflip', kwargs['hflip'], kwargs['optuna_categorical'])
@@ -175,6 +198,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'mlp_ratio': trial.suggest_categorical('adpater_mlp_ratio', kwargs['adpater_mlp_ratio']),
       'kernel_size': trial.suggest_categorical('adapter_kernel_size', kwargs['adapter_kernel_size']),
       'dilation': trial.suggest_categorical('adapter_dilation', kwargs['adapter_dilation']),
+      'num_adapters': trial.suggest_categorical('num_adapters', kwargs['num_adapters']),
     }
     head_params = {
       'input_dim': emb_dim * 8 if concatenate_temp_dim else emb_dim,
@@ -209,12 +233,22 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     if past.params == trial.params:
       return past.value
 
-  if num_classes == 1 and (loss == 'cdw_ce' or loss == 'ce'):
+  if num_classes == 1 and (loss == 'cdw_ce' or loss == 'ce' or loss == 'ce_weight' or loss == 'sim_loss'):
     raise ValueError('Loss function not supported for regression. Use l1 or l2 loss.')
+
+  if loss == 'ce_weight':
+    df = pd.read_csv(kwargs['csv'], sep='\t')
+    class_counts = df['class_id'].value_counts(normalize=True).sort_index()
+    class_weights = 1.0 / class_counts.values  # Inverse of frequency
+    print(f"Class weights: {class_weights}")
+  else:
+    class_weights = None
+    
   dict_args_loss = {'num_classes': num_classes, 
                     'alpha': cdw_ce_alpha, 
                     'sim_loss_reduction': sim_loss_reduction,
                     'delta_huber': delta_huber,
+                    'class_weights': class_weights,
                     'transform': cdw_ce_power_transform}
   dict_augmented={
       'hflip': hflip,
@@ -231,12 +265,15 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     concatenate_temp_dim=concatenate_temp_dim,
     pooling_embedding_reduction=kwargs['pooling_embedding_reduction'],
     pooling_clips_reduction=kwargs['pooling_clips_reduction'],
-    sample_frame_strategy=kwargs['sample_frame_strategy'],
+    sample_frame_strategy=get_sampling_frame_startegy(sample_frame_strategy),
+    num_clips_per_video=num_clips_per_video,
     path_csv_dataset=kwargs['csv'],
     path_video_dataset=kwargs['path_video_dataset'],
     head=head_enum,
+    use_sdpa=use_sdpa,
     adapter_dict=adapter_dict,
     stride_window_in_video=kwargs['stride_window_in_video'],
+    stride_inside_window=stride_inside_window,
     features_folder_saving_path=kwargs['ffsp'],
     head_params=head_params,
     k_fold=kwargs['k_fold'],
@@ -387,11 +424,15 @@ if __name__ == '__main__':
   parser.add_argument('--clip_grad_norm', type=float, default=None, help='Clip gradient norm. Default is None (not applied)')
   parser.add_argument('--concatenate_temp_dim', type=int, nargs='*', default=[0],
                     help='Concatenate temporal dimension in input to the model. (ex: the embeddind is [temporal*emb_dim]=6144 if model base)')
-  parser.add_argument('--loss', type=str, nargs='*', default='ce', help='Loss function: l1, l2, ce, cdw_ce,sim_loss,huber, coral. Default is ce')
+  parser.add_argument('--loss', type=str, nargs='*', default='ce', help='Loss function: l1, l2, ce, cdw_ce,sim_loss,huber, coral, ce_weight. Default is ce')
   parser.add_argument('--cdw_ce_alpha', type=float, nargs='*', default=[2], help='Alpha parameter for CDW loss.') 
   parser.add_argument('--cdw_ce_transform', type=str, nargs='*', default=['power'], help='Transform for CDW loss. Default is power, can Be also "huber" or "log"')
   parser.add_argument('--sim_loss_reduction', type=float, nargs='*', default=[0.0], help='Reduction factor for sim loss. Default is 0.0 (no reduction)')
   parser.add_argument('--delta_huber', type=float, nargs='*',default=[None], help='Delta parameter for Huber loss.')
+  parser.add_argument('--num_clips_per_video',type=int, nargs='*', default=[1], help='Number of clips per video for random sampling strategy. Default is 1')
+  parser.add_argument('--sample_frame_strategy', type=str, nargs='*', default=['sliding_window'],help=f'Sampling strategy for frames in a video when not use pre-computed feats: {list(SAMPLE_FRAME_STRATEGY)}. Default is sliding_window')
+  parser.add_argument('--stride_inside_window', type=int, nargs='*', default=[1], help='Stride inside the sampling window. Default is 1')
+  parser.add_argument('--use_sdpa', type=int, nargs='*', default=[0], help='Use SDPA (Scaled dot product attention) for backbone when feats are not precomputed. Default is 0 (not used)')
   
   # Attention parameters
   parser.add_argument('--num_heads', type=int, nargs='*',default=[8], help='Number of heads for attention in transformer (when nr_blocks >1). Default is 8')
@@ -418,7 +459,8 @@ if __name__ == '__main__':
   parser.add_argument('--adapter_kernel_size', type=int, nargs='*', default=[3], help='Kernel size(s) for backbone adapter. Default is 3')
   parser.add_argument('--adapter_dilation', type=int, nargs='*', default=[1], help='Dilation(s) for backbone adapter. Default is 1')
   parser.add_argument('--adapter_type', type=str, nargs='*', default=['adapter'], help='Adapter type. Default is adapter (unique available)')
-   
+  parser.add_argument('--num_adapters', type=int, nargs='*', default=[0], help='Number of adapters to use. Default is 1')
+  
   # Linear parameters
   parser.add_argument('--linear_dim_reduction', type=str, default='spatial', help=f'Dimension reduction for Linear head. Can be {[d.name.lower() for d in EMBEDDING_REDUCTION]}')
   
@@ -480,10 +522,8 @@ if __name__ == '__main__':
   clip_length = 16
   seed_random_state = 42
   pooling_clips_reduction = CLIPS_REDUCTION.NONE
-  sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
   dict_args['pooling_embedding_reduction'] = helper.EMBEDDING_REDUCTION.get_embedding_reduction(dict_args['embedding_reduction'])
   dict_args['pooling_clips_reduction'] = pooling_clips_reduction
-  dict_args['sample_frame_strategy'] = sample_frame_strategy
   dict_args['stride_window_in_video'] = 16 # To avoid errors but not used
   
   if dict_args['plot_live_loss']:
@@ -589,7 +629,8 @@ if __name__ == '__main__':
     'early_stopping': early_stopping,
     'clip_length': clip_length,
     'dict_augmented': dict_augmented,
-    **dict_args
+    **dict_args,
+    'launch_command':" ".join(sys.argv), 
   }
   
   # Create output directory and save configuration
