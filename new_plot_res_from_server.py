@@ -741,7 +741,7 @@ def plot_accuray_per_class_across_epochs(data, run_output_folder, test_id, addit
 
       # Plot accuracy
       line2, = ax2.plot(val_accuracy[:, class_idx], color='tab:blue', label='Accuracy')
-      ax2.set_ylim(0, 1)
+      ax2.set_ylim(0, 1.1)
       ax2.set_ylabel('Accuracy', color='tab:blue')
       ax2.tick_params(axis='y', labelcolor='tab:blue')
 
