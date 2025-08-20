@@ -10,9 +10,9 @@ from VideoMAEv2.models.modeling_finetune import (
   vit_base_patch16_224,
   vit_giant_patch14_224
 )
-from VideoMAEv2.models.modeling_pretrain import pretrain_videomae_giant_patch14_224
+from VideoMAEv2.models.modeling_pretrain import pretrain_videomae_giant_patch14_224, pretrain_videomae_base_patch16_224,pretrain_videomae_small_patch16_224
 from transformers import ViTFeatureExtractor, ViTModel
-from custom.helper import MODEL_TYPE
+from custom.helper import MODEL_TYPE, ModelTypeEntry
 import torch.nn as nn
 
 class BackboneBase(nn.Module):
@@ -49,10 +49,11 @@ class VideoBackbone(BackboneBase):
   
   def __init__(
     self, 
-    model_type: Enum,
+    model_type,
     remove_head: bool = True,
-    adapter_dict: dict = None
-    # download_if_unavailable: bool = False
+    adapter_dict: dict = None,
+    use_sdpa: bool = False,
+    custom_model_path: bool = False,
   ):
     """Initialize the video backbone.
     
@@ -67,11 +68,12 @@ class VideoBackbone(BackboneBase):
     super().__init__()
     
     # Validate model type
-    assert model_type in MODEL_TYPE, f"Model type must be one of {list(MODEL_TYPE)}."
-    
+    assert isinstance(model_type, ModelTypeEntry), f"Model type must be one of {MODEL_TYPE._entries}."
+
     # Check if model exists or needs downloading
     model_path = Path(model_type.value)
     self.model_type = model_type
+    self.use_sdpa = use_sdpa
     if not model_path.exists():
       # if download_if_unavailable:
       #   print(f"Model not found at {model_path}. Downloading...")
@@ -80,12 +82,12 @@ class VideoBackbone(BackboneBase):
       raise FileNotFoundError(
         f"Model not found at {model_path}. "
         )
-    if model_type in [MODEL_TYPE.VIDEOMAE_v2_B, MODEL_TYPE.VIDEOMAE_v2_G, MODEL_TYPE.VIDEOMAE_v2_G_unl, MODEL_TYPE.VIDEOMAE_v2_S]:
-      if model_type == MODEL_TYPE.VIDEOMAE_v2_G_unl:
+    if model_type in [MODEL_TYPE.VIDEOMAE_v2_S, MODEL_TYPE.VIDEOMAE_v2_B, MODEL_TYPE.VIDEOMAE_v2_G, MODEL_TYPE.VIDEOMAE_v2_G_unl]:
+      if model_type == MODEL_TYPE.VIDEOMAE_v2_G_unl or custom_model_path:
         # Load pretrained model
         self.model = self._load_model_pretrained(model_type)
       else:
-        self.model = self._load_model_finetune(model_type, remove_head=remove_head)
+        self.model = self._load_model_finetune(model_type, remove_head=remove_head, use_sdpa=use_sdpa)
       
       # Freeze model parameters
       for param in self.model.parameters():
@@ -145,12 +147,12 @@ class VideoBackbone(BackboneBase):
         # Load pretrained model
         self.model = self._load_model_pretrained(self.model_type)
       else:
-        self.model = self._load_model_finetune(self.model_type, remove_head=self.remove_head)
+        self.model = self._load_model_finetune(self.model_type, remove_head=self.remove_head, use_sdpa=self.use_sdpa)
     elif self.model_type in [MODEL_TYPE.VJEPA2_G_384]:
       # Load JEPA2 model
       self.model = self.load_jepa2_weights()[0]
       
-  def _load_model_pretrained(self, model_type: Enum):
+  def _load_model_pretrained(self, model_type):
     """Load a pretrained model.
     
     Args:
@@ -159,29 +161,36 @@ class VideoBackbone(BackboneBase):
     Returns:
       Loaded model
     """
-    if model_type == MODEL_TYPE.VIDEOMAE_v2_G_unl:
-      # Load weights
-      checkpoint = torch.load(model_type.value, map_location='cpu')
-      weights = checkpoint['model']
-      # kwargs = {'init_ckpt':model_type.value,
-      #           'pretrained':True}
-      # Filter out decoder weights, keeping only encoder weights
-      new_weights = {
-        key.replace('encoder.', ''): value 
-        for key, value in weights.items() 
-        if 'encoder' in key and 'decoder' not in key
-      }
-      
-      # Create model and load weights
-      model = pretrain_videomae_giant_patch14_224(pretrained=False)
-      model = model.encoder
-      model.load_state_dict(new_weights)
-      
-      return model
+    # if model_type == MODEL_TYPE.VIDEOMAE_v2_G_unl:
+    # Load weights
+    checkpoint = torch.load(model_type.value, map_location='cpu')
+    weights = checkpoint['model']
+    # kwargs = {'init_ckpt':model_type.value,
+    #           'pretrained':True}
+    # Filter out decoder weights, keeping only encoder weights
+    new_weights = {
+      key.replace('encoder.', ''): value 
+      for key, value in weights.items() 
+      if 'encoder' in key and 'decoder' not in key
+    }
     
-    return None
-  
-  def _load_model_finetune(self, model_type: Enum, remove_head: bool = True):
+    # Create model and load weights
+    if model_type == MODEL_TYPE.VIDEOMAE_v2_G_unl:
+      model = pretrain_videomae_giant_patch14_224(pretrained=False)
+    elif model_type == MODEL_TYPE.VIDEOMAE_v2_S:
+      model = pretrain_videomae_small_patch16_224(pretrained=False)
+    elif model_type == MODEL_TYPE.VIDEOMAE_v2_B:
+      model = pretrain_videomae_base_patch16_224(pretrained=False)
+    elif model_type == MODEL_TYPE.VIDEOMAE_v2_G:
+      model = pretrain_videomae_giant_patch14_224(pretrained=False)
+    else:
+      raise ValueError(f"Unsupported model type for pretrained loading: {model_type}")
+    model = model.encoder
+    model.load_state_dict(new_weights)
+    
+    return model
+    
+  def _load_model_finetune(self, model_type: Enum, remove_head: bool = True, use_sdpa: bool = False):
     """Load a fine-tuned model.
     
     Args:
@@ -204,6 +213,7 @@ class VideoBackbone(BackboneBase):
     # Get model constructor and kwargs
     model_fn, kwargs = model_map[model_type]
     
+    kwargs['use_sdpa'] = use_sdpa
     # Create model instance
     model = model_fn(pretrained=False, **kwargs)
     
@@ -252,10 +262,8 @@ class VideoBackbone(BackboneBase):
     with torch.no_grad():
       # Forward pass
       # print(f'Free GPU memory: {torch.cuda.memory_reserved() / 1e9} GB')
-      feat,attn = self.model.forward_features(x,
-                                         return_embedding=return_embedding,
-                                         return_attn=return_attn)
-    
+      args = {'x':x, 'return_embedding':return_embedding, 'return_attn':return_attn}
+      feat,attn = self.model.forward_features(**args)
     # Process and reshape features if needed
     if return_embedding:
       B = feat.shape[0]  # Batch size
