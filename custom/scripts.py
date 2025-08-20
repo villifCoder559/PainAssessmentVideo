@@ -222,7 +222,7 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
       criterion=criterion,
       saving_path=saving_path_kth_sub_fold,
       train_csv_path=sub_path_csv_kth_fold['train'],
-      val_csv_path=sub_path_csv_kth_fold['val'] if 'sub_val' in sub_path_csv_kth_fold else None,
+      val_csv_path=sub_path_csv_kth_fold['val'] if 'val' in sub_path_csv_kth_fold else None,
       round_output_loss=round_output_loss,
       shuffle_training_batch=shuffle_training_batch,
       init_network=init_network,
@@ -434,9 +434,12 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    concatenate_temp_dim,
                    stop_after_kth_fold,
                    n_workers,
+                   num_clips_per_video,
                    clip_grad_norm,
                    label_smooth,
+                   stride_inside_window,
                    dict_augmented,
+                   use_sdpa,
                    prefetch_factor,
                    soft_labels,
                    adapter_dict,
@@ -553,7 +556,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   #   helper.LOG_CROSS_ATTENTION['enable'] = True
   if tools.get_dataset_type(features_folder_saving_path) != helper.CUSTOM_DATASET_TYPE.BASE:
     adapter_dict = None
-    print(f'Adapter dict is set to None for all non BASE datasets')
+    print(f'WARNING: adapter_dict is set to None because the dataset type is {tools.get_dataset_type(features_folder_saving_path)}\n')
 
   model_advanced = Model_Advanced(model_type=model_type,
                                   path_dataset=path_video_dataset,
@@ -561,10 +564,13 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   clips_reduction=pooling_clips_reduction,
                                   sample_frame_strategy=sample_frame_strategy,
                                   stride_window=stride_window_in_video,
+                                  stride_inside_window = stride_inside_window,
                                   path_labels=path_csv_dataset,
+                                  use_sdpa=use_sdpa,
                                   batch_size_training=batch_size_training,
                                   head=head.value,
                                   adapter_dict=adapter_dict,
+                                  num_clips_per_video=num_clips_per_video,
                                   soft_labels=soft_labels,
                                   prefetch_factor=prefetch_factor,
                                   head_params=head_params,

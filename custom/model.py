@@ -12,8 +12,8 @@ import custom.helper as helper
 # import wandb
 
 class Model_Advanced: # Scenario_Advanced
-  def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,
-              path_labels, sample_frame_strategy, head, head_params, adapter_dict,
+  def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,stride_inside_window,
+              path_labels, sample_frame_strategy, head, head_params, adapter_dict,num_clips_per_video, use_sdpa,
               batch_size_training,stride_window,clip_length,dict_augmented,prefetch_factor,soft_labels,
               features_folder_saving_path,concatenate_temporal,label_smooth,n_workers,new_csv_path):
     """
@@ -33,7 +33,7 @@ class Model_Advanced: # Scenario_Advanced
     """
     
     if model_type != MODEL_TYPE.ViT_image:
-      self.backbone = VideoBackbone(model_type, adapter_dict=adapter_dict)
+      self.backbone = VideoBackbone(model_type, adapter_dict=adapter_dict,use_sdpa=use_sdpa)
     else:
       self.backbone = VitImageBackbone()
       if head_params.get('adapter_dict', None) is not None:
@@ -41,8 +41,10 @@ class Model_Advanced: # Scenario_Advanced
     
     self.dataset = customDataset(path_dataset=path_dataset, 
                                  path_labels=path_labels, 
+                                 num_clips_per_video=num_clips_per_video,
                                  sample_frame_strategy=sample_frame_strategy, 
                                  stride_window=stride_window, 
+                                 stride_inside_window=stride_inside_window,
                                  clip_length=clip_length)
     self.batch_size_training = batch_size_training
     
@@ -241,9 +243,12 @@ class Model_Advanced: # Scenario_Advanced
                                                         concatenate_temporal=concatenate_temporal,
                                                         dataset_type=self.dataset_type,
                                                         is_training=False,
+                                                        num_clips_per_video=self.dataset.num_clips_per_video,
+                                                        sample_frame_strategy=self.dataset.type_sample_frame_strategy,
                                                         root_folder_features=self.path_to_extracted_features,
                                                         shuffle_training_batch=False,
                                                         backbone_dict=self.backbone_dict,
+                                                        stride_inside_window=self.dataset.stride_inside_window,
                                                         model=self.head,
                                                         is_coral_loss=is_coral_loss,
                                                         soft_labels=self.soft_labels,
@@ -347,6 +352,9 @@ class Model_Advanced: # Scenario_Advanced
                                           saving_path=saving_path,
                                           init_network=init_network,
                                           dataset_type=self.dataset_type,
+                                          num_clips_per_video=self.dataset.num_clips_per_video,
+                                          sample_frame_strategy=self.dataset.type_sample_frame_strategy,
+                                          stride_inside_window=self.dataset.stride_inside_window,
                                           num_epochs=num_epochs,
                                           is_coral_loss=is_coral_loss,
                                           train_csv_path=train_csv_path,
