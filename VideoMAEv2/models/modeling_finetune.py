@@ -148,6 +148,7 @@ class Attention(nn.Module):
                  qkv_bias=False,
                  qk_scale=None,
                  attn_drop=0.,
+                 use_sdpa=False,
                  proj_drop=0.,
                  attn_head_dim=None):
         super().__init__()
@@ -157,7 +158,7 @@ class Attention(nn.Module):
             head_dim = attn_head_dim
         all_head_dim = head_dim * self.num_heads
         self.scale = qk_scale or head_dim**-0.5
-
+        self.use_sdpa = use_sdpa
         self.qkv = nn.Linear(dim, all_head_dim * 3, bias=False)
         if qkv_bias:
             self.q_bias = nn.Parameter(torch.zeros(all_head_dim))
@@ -181,9 +182,8 @@ class Attention(nn.Module):
                                   requires_grad=False), self.v_bias))
         qkv = F.linear(input=x, weight=self.qkv.weight, bias=qkv_bias)
         qkv = qkv.reshape(B, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[
-            2]  # make torchscript happy (cannot use tensor as tuple)
-        if hasattr(torch.nn.functional,"scaled_dot_product_attention") and not return_attn:
+        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
+        if hasattr(torch.nn.functional,"scaled_dot_product_attention") and not return_attn and self.use_sdpa:
             x = F.scaled_dot_product_attention(q, k, v, 
                                                dropout_p=self.att_drop_val if self.training else 0.0,
                                                scale=self.scale).transpose(1, 2).reshape(B, N, -1)
@@ -213,6 +213,7 @@ class Block(nn.Module):
                  attn_drop=0.,
                  drop_path=0.,
                  init_values=None,
+                 use_sdpa=False,
                  act_layer=nn.GELU,
                  norm_layer=nn.LayerNorm,
                  attn_head_dim=None,
@@ -233,6 +234,7 @@ class Block(nn.Module):
                 dim,
                 num_heads=num_heads,
                 qkv_bias=qkv_bias,
+                use_sdpa=use_sdpa,
                 qk_scale=qk_scale,
                 attn_drop=attn_drop,
                 proj_drop=drop,
@@ -334,6 +336,14 @@ def get_sinusoid_encoding_table(n_position, d_hid):
     return torch.tensor(
         sinusoid_table, dtype=torch.float, requires_grad=False).unsqueeze(0)
 
+class IdentityAdapter(nn.Module):
+    def forward(self, x, h=None, w=None):
+        return x
+    
+    def init_weights(self, pretrained=None):
+        """Initialize weights for the IdentityAdapter."""
+        # No weights to initialize for IdentityAdapter
+        pass
 
 class VisionTransformer(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
@@ -360,6 +370,7 @@ class VisionTransformer(nn.Module):
                  init_scale=0.,
                  all_frames=16,
                  tubelet_size=2,
+                 use_sdpa=False,
                  use_mean_pooling=True,
                  with_cp=False,
                  cos_attn=False):
@@ -394,7 +405,7 @@ class VisionTransformer(nn.Module):
         
         # Instantiate adapters as identity layers
         self.adapters = nn.ModuleList([
-            nn.Identity() for _ in range(depth)
+            IdentityAdapter() for _ in range(depth)
         ])
             
         # Create transformer blocks
@@ -406,6 +417,7 @@ class VisionTransformer(nn.Module):
                 qkv_bias=qkv_bias,
                 qk_scale=qk_scale,
                 drop=drop_rate,
+                use_sdpa=use_sdpa,
                 attn_drop=attn_drop_rate,
                 drop_path=dpr[i],
                 norm_layer=norm_layer,
@@ -456,15 +468,35 @@ class VisionTransformer(nn.Module):
         """Add adapters to the transformer blocks."""
         if adapter_dict['type'] == 'adapter':
             import custom.adapters as adapters
-            self.adapters = nn.ModuleList([ 
+            num_adapters = adapter_dict['num_adapters']
+            self.adapters = nn.ModuleList()
+            if num_adapters > len(self.blocks):
+                raise ValueError(
+                    f"Number of adapters ({num_adapters}) cannot be greater than number of blocks ({len(self.blocks)}).")
+            if len(self.blocks) != num_adapters:
+                missing_adapters = len(self.blocks) - num_adapters
+                for _ in range(missing_adapters):
+                    self.adapters.append(
+                        IdentityAdapter())  # Fill with identity adapters
+            self.adapters.extend(
                 adapters.Adapter(
                     embed_dims=self.embed_dim,
                     temporal_size=self.all_frames // self.tubelet_size,
                     mlp_ratio=adapter_dict['mlp_ratio'],
                     kernel_size=adapter_dict['kernel_size'],
-                    dilation=adapter_dict['dilation'],
-                ) for _ in range(len(self.blocks))
-            ])
+                    dilation=adapter_dict['dilation'])
+                for _ in range(num_adapters)
+            )
+            # self.adapters = nn.ModuleList([ 
+            #     adapters.Adapter(
+            #         embed_dims=self.embed_dim,
+            #         temporal_size=self.all_frames // self.tubelet_size,
+            #         mlp_ratio=adapter_dict['mlp_ratio'],
+            #         kernel_size=adapter_dict['kernel_size'],
+            #         dilation=adapter_dict['dilation'],
+            #     ) for _ in range(num_adapters)
+            # ])
+            
         else:
             raise NotImplementedError(
                 f"Adapter type {adapter_dict['type']} is not implemented.")
@@ -491,9 +523,9 @@ class VisionTransformer(nn.Module):
                     x = blk(x)
                     
             # Apply adapter 
-            x = adapter(x= x, 
-                        h= self.patch_embed.img_size[0] // self.patch_embed.patch_size[0],
-                        w= self.patch_embed.img_size[1] // self.patch_embed.patch_size[1])
+            x = adapter(x, # x 
+                        self.patch_embed.img_size[0] // self.patch_embed.patch_size[0], # h
+                        self.patch_embed.img_size[1] // self.patch_embed.patch_size[1]) # w
             
         if return_attn:
             return x, torch.stack(blk_attns,dim=0)
