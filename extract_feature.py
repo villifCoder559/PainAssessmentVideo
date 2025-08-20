@@ -20,13 +20,16 @@ import tqdm
 
 def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,enable_batch_extraction,batch_size_feat_extraction,n_workers,saving_chunk_size=100,  preprocess_align = False,
          preprocess_crop_detection = False,preprocess_frontalize = True,path_dataset=None,path_labels=None,stride_window=16,clip_length=16,
-         log_file_path=None,root_saving_folder_path=None,backbone_type='video',from_=None,to_=None,save_big_feature=False,h_flip=False,
-         stride_inside_window=1,float_16=False,color_jitter=False,rotation=False,save_as_safetensors=True,video_extension='.mp4'
+         log_file_path=None,root_saving_folder_path=None,backbone_type='video',from_=None,to_=None,save_big_feature=False,h_flip=False,num_clips_per_video=None,
+         stride_inside_window=1,float_16=False,color_jitter=False,rotation=False,save_as_safetensors=True,video_extension='.mp4',sample_frame_strategy=SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW,
+          backbone_model_path=None
          ):
+  if backbone_model_path is not None:
+    MODEL_TYPE.set_custom_model_type(type=model_type,custom_model_path=backbone_model_path)
+    print(f'Using custom backbone model from {backbone_model_path}')
   model_type = MODEL_TYPE.get_model_type(model_type)    
   
   pooling_clips_reduction = CLIPS_REDUCTION.NONE
-  sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
   
   def _write_log_file(log_message):
     if not os.path.exists(os.path.dirname(log_file_path)):
@@ -114,6 +117,8 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
       end = time.time()
       print(f'Elapsed time : {((end - start)//60//60):.0f} h {(((end - start)//60%60)):.0f} m {(((end - start)%60)):.0f} s')
       expected_end = (end - start) * (len(dataloader) / count)
+      if count % 20 == 0:
+        print(f'Dict size in GB: {feature.element_size()*feature.nelement()/1024/1024/1024:.2f} GB')
       print(f'Expected time: {expected_end//60//60:.0f} h {expected_end//60%60:.0f} m {expected_end%60:.0f} s\n')
       # if count % 10 == 0:
       #   _write_log_file(f'Batch {count}/{len(dataloader)}')
@@ -174,9 +179,10 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
                            saving_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)) if not save_as_safetensors else root_saving_folder_path)
       _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(root_saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} \n')
   
-  print('Model type:',model_type)
+  print(f'Model type: {model_type.name}, {model_type.value}')
   if backbone_type == 'video':
-    backbone_model = VideoBackbone(model_type=model_type)
+    backbone_model = VideoBackbone(model_type=model_type,
+                                   custom_model_path=True if backbone_model_path is not None else False)
   elif backbone_type == 'image':
     backbone_model = VitImageBackbone()
     stride_window = 1
@@ -193,6 +199,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
     print(f"Last element of video_labels : {video_labels.iloc[-1,0]}")
   custom_ds = customDataset(path_dataset=path_dataset,
                 path_labels=path_labels,
+                num_clips_per_video=num_clips_per_video,
                 sample_frame_strategy=sample_frame_strategy,
                 image_resize_w=backbone_model.img_size,
                 image_resize_h=backbone_model.img_size,
@@ -262,6 +269,7 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser(description='Extract features from video dataset.')
   parser.add_argument('--gp', action='store_true', help='Global path')
   parser.add_argument('--model_type', type=str, required=False, default="B")
+  parser.add_argument('--backbone_model_path', type=str, required=False, default=None, help='Path to custom model for feats_extraction')
   parser.add_argument('--saving_after', type=int, required=False, default=8800,help='Number of batch to save in one file')
   parser.add_argument('--emb_red', type=str, default='spatial', help='Embedding reduction. Can be spatial, temporal, all, none, adaptive_pooling_3d')
   parser.add_argument('--prep_al', action='store_true', help='Preprocess align') # deprecated not use
@@ -288,6 +296,8 @@ if __name__ == "__main__":
   parser.add_argument('--adaptive_avg_pool3d_out_shape', type=int, nargs='*', default=[2,2,2], help='3d pooling kernel size')
   parser.add_argument('--enable_batch_extraction', action='store_true', help='Enable batch extraction')
   parser.add_argument('--video_extension', type=str, default='.mp4', help='Video extension to use for dataset')
+  parser.add_argument('--sample_frame_strategy', type=str, default='sliding_window', help=f'Strategy to sample frames from video. Can be {list(SAMPLE_FRAME_STRATEGY)}')
+  parser.add_argument('--num_clips_per_video', type=int, default=None, help='Number of clips per video. If None, all clips will be used. Can be used only with random sampling strategy')
   # CUDA_VISIBLE_DEVICES=0 python3 extract_feature.py --gp --model_type B --saving_after 150 --emb_red spatial --path_dataset partA/video/video_frontalized_new --path_labels partA/starting_point/samples_exc_no_detection.csv --saving_folder_path partA/video/features/samples_16_frontalized_new --backbone_type video --from_ 0 --to_ 1500 --batch_size_feat_extraction 5 --n_workers 5
   # prompt example: python3 extract_feature.py --gp --model_type B --saving_after 5000  --emb_red temporal  --path_dataset partA/video/video_frontalized --path_labels partA/starting_point/samples_exc_no_detection.csv --saving_folder_path partA/video/features/samples_vit_img --log_file_path partA/video/features/samples_vit_img/log_file.txt --backbone_type image 
   args = parser.parse_args()
@@ -313,6 +323,8 @@ if __name__ == "__main__":
     args.saving_after = 1
   main(model_type=args.model_type,
        saving_chunk_size=args.saving_after,
+       sample_frame_strategy=helper.get_sampling_frame_startegy(args.sample_frame_strategy),
+       num_clips_per_video=args.num_clips_per_video,
        preprocess_align=args.prep_al,
        preprocess_crop_detection=args.prep_crop,
        preprocess_frontalize=args.prep_front,
@@ -337,7 +349,8 @@ if __name__ == "__main__":
        save_as_safetensors=args.save_as_safetensors,
        adaptive_avg_pool3d_out_shape=adaptive_avg_pool3d_out_shape,
        enable_batch_extraction=args.enable_batch_extraction,
-       video_extension=args.video_extension
+       video_extension=args.video_extension,
+       backbone_model_path=args.backbone_model_path
        )
   
   
