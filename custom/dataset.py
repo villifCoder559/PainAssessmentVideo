@@ -59,6 +59,7 @@ class customDataset(torch.utils.data.Dataset):
       image_resize_w=224,
       image_resize_h=224,
       smooth_labels= 0.0,
+      num_clips_per_video=1, # only for random sampling strategy
       coral_loss=None,
       soft_labels=None,
       video_extension = '.mp4'
@@ -115,6 +116,7 @@ class customDataset(torch.utils.data.Dataset):
     self.color_jitter = color_jitter
     self.rotation = rotation
     self.smooth_labels = smooth_labels
+    self.num_clips_per_video = num_clips_per_video
     
     # if rotation is not None:
     #   warnings.warn('The rotation is not implemented yet')
@@ -161,6 +163,11 @@ class customDataset(torch.utils.data.Dataset):
     Args:
         strategy (str): The sampling strategy to use
     """
+    if self.num_clips_per_video is not None and self.num_clips_per_video != 1 and strategy != SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING:
+      raise ValueError(
+        f"num_clips_per_video must be None for sampling strategy {strategy}. "
+        f"Use {SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING} for multiple clips per video."
+      )
     if strategy == SAMPLE_FRAME_STRATEGY.UNIFORM:
       self.sample_frame_strategy = self._single_uniform_sampling
       warnings.warn(f"The {SAMPLE_FRAME_STRATEGY.UNIFORM} sampling strategy does not take into account the stride window.")
@@ -173,7 +180,7 @@ class customDataset(torch.utils.data.Dataset):
         
     elif strategy == SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING:
       self.sample_frame_strategy = self._random_sampling
-      warnings.warn(f"The {SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING} sampling strategy does not take into account the stride window.")
+      # warnings.warn(f"The {SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING} sampling strategy does not take into account the stride window.")
   
   def _load_reference_landmarks(self):
     """Load reference facial landmarks for face frontalization"""
@@ -303,7 +310,6 @@ class customDataset(torch.utils.data.Dataset):
     # Open video and get properties
     container = cv2.VideoCapture(video_path)
     tot_frames = int(container.get(cv2.CAP_PROP_FRAME_COUNT))
-    
     # Set frame dimensions based on preprocessing requirements
     width_frames = int(container.get(cv2.CAP_PROP_FRAME_WIDTH))
     height_frames = int(container.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -311,17 +317,24 @@ class customDataset(torch.utils.data.Dataset):
     if tot_frames == 0:
       raise ValueError(f"Video {video_path} has no frames. Please check the video file.")
     # Get frame indices based on sampling strategy
-    list_indices = self.sample_frame_strategy(tot_frames)
-
+    try:
+      list_indices = self.sample_frame_strategy(tot_frames)
+    except ValueError as e:
+      print(f"Error in sampling strategy for video {video_path}: {e}")
+      raise e
     # Read and process frames
+    time_read_video = time.time()
     frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames)
     container.release()
+    helper.head_time_logs['read_video'] = helper.head_time_logs.get('read_video',0) + (time.time() - time_read_video)
 
     # Reshape frames for preprocessing
     nr_clips, nr_frames = frames_list.shape[:2]
+    
     # Preprocess frames (considering only 1 video at time)
     # [nr_clips, nr_frames, H, W, C] -> [nr_clips * nr_frames, H, W, C] -> [B,C,H,W]
     frames_list = frames_list.reshape(-1, *frames_list.shape[2:]).permute(0, 3, 1, 2)
+    time_preprocess_video = time.time()
     if not is_training:
       preprocessed_tensors = self.preprocess_images(frames_list, 
                                                     crop_size=(self.image_resize_h, self.image_resize_w),
@@ -341,13 +354,15 @@ class customDataset(torch.utils.data.Dataset):
                                                     rotation=rotation)
     preprocessed_tensors = preprocessed_tensors.reshape(nr_clips, nr_frames, *preprocessed_tensors.shape[1:]) # [nr_clips, nr_frames, C, H, W]
     preprocessed_tensors = preprocessed_tensors.permute(0,2,1,3,4) # [B=nr_clips, T=nr_frames, C, H, W] -> [B, C, T, H, W]
+    helper.head_time_logs['preprocess_video'] = helper.head_time_logs.get('preprocess_video',0) + (time.time() - time_preprocess_video)
     
     # Create metadata tensors
+    time_metadata = time.time()
     sample_id = torch.full((nr_clips,), int(csv_array.iloc[4]), dtype=torch.int32)
     labels = torch.full((nr_clips,), int(csv_array.iloc[2]), dtype=torch.int32)
     subject_id = torch.full((nr_clips,), int(csv_array.iloc[0]), dtype=torch.int32)
     path = np.repeat(video_path, nr_clips)
-      
+    helper.head_time_logs['metadata'] = helper.head_time_logs.get('metadata',0) + (time.time() - time_metadata)  
     return {
         'preprocess': preprocessed_tensors, # [B,C,T,H,W]
         'labels': labels,
@@ -457,20 +472,8 @@ class customDataset(torch.utils.data.Dataset):
       frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
       # Apply preprocessing if needed
-      if self.preprocess_align:
-        frame = self.face_extractor.align_face(frame)
-            
-      if self.preprocess_crop_detection:
-        frame = self.face_extractor.crop_face_detection(frame)
-            
-      if self.preprocess_frontalize:
-        frame, _ = self.face_extractor.frontalize_img(
-          frame=frame,
-          ref_landmarks=self.reference_landmarks,
-          frontalization_mode='SVD',
-          v2=True,
-          align=True
-        )
+      if self.preprocess_align or self.preprocess_frontalize or self.preprocess_crop_detection:
+        raise NotImplementedError("Face preprocessing is not implemented yet.")
         
       # Check if this frame should be included in any clip
       mask = np.any(np.isin(list_indices, frame_idx),axis=1)
@@ -508,11 +511,11 @@ class customDataset(torch.utils.data.Dataset):
 
   
   def _custom_collate(self, batch):
+    time_custom_collate = time.time()
     labels = torch.stack([item['labels'][0] for item in batch], dim=0)
     subject_id = torch.stack([item['subject_id'][0] for item in batch], dim=0)
     sample_id = torch.stack([item['sample_id'] for item in batch], dim=0)
     data = torch.cat([item['features'] for item in batch], dim=0)
-    
     lengths = torch.tensor([item['features'].shape[0] for item in batch]) 
     # features = torch.nn.utils.rnn.pad_sequence(data,batch_first=True) # [batch_size,seq_len,emb_dim]
     # lengths_tensor = torch.tensor(lengths, dtype=torch.int32)
@@ -527,6 +530,7 @@ class customDataset(torch.utils.data.Dataset):
     elif self.coral_loss:
       labels = levels_from_labelbatch(labels, self.num_classes, dtype=torch.float32)
     
+    helper.head_time_logs['custom_collate'] = helper.head_time_logs.get('custom_collate',0) + (time.time() - time_custom_collate)
     # [B, C, T, H, W], padding applied in the model forward pass
     return {'x':data, 
            'key_padding_mask': None,
@@ -600,8 +604,21 @@ class customDataset(torch.utils.data.Dataset):
     Returns:
         torch.Tensor: Frame indices
     """
-    indices = torch.randperm(video_len, dtype=torch.int16)[:self.clip_length]
-    return torch.sort(indices).values[None, :]
+    valid_starts = np.arange(0, video_len - self.clip_length * self.stride_inside_window + 1)
+    if valid_starts.size == 0:
+      raise ValueError(
+        f"Video length {video_len} is too short for the specified clip length {self.clip_length} "
+        f"and stride inside window {self.stride_inside_window}. "
+      )
+    try:
+      start_idxs = np.random.choice(valid_starts, size=self.num_clips_per_video, replace=False)
+    except ValueError as e:
+      start_idxs = np.random.choice(valid_starts, size=self.num_clips_per_video, replace=True) # If not enough unique starts, allow replacement
+    start_idxs = np.sort(start_idxs.astype(int))
+    indices = np.array([np.arange(start_idx, start_idx + self.clip_length * self.stride_inside_window, self.stride_inside_window) for start_idx in start_idxs])
+    indices = torch.tensor(indices, dtype=torch.int32)
+    # indices = torch.randperm(video_len, dtype=torch.int16)[:self.clip_length]
+    return indices  # [num_clips, clip_length]
   
   def _sliding_window_sampling(self, video_len):
     """
@@ -626,7 +643,7 @@ class customDataset(torch.utils.data.Dataset):
     indices = torch.arange(0, video_len - self.clip_length * self.stride_inside_window + 1, self.stride_window)
     list_indices = torch.stack([torch.arange(start_idx, start_idx + self.clip_length * self.stride_inside_window, self.stride_inside_window) for start_idx in indices])
     # print('Sliding shape', list_indices.shape)
-    return list_indices
+    return list_indices # shape [num_windows, clip_length]
   
   def get_unique_subjects(self):
     return np.sort(self.video_labels['subject_id'].unique().tolist())
@@ -944,7 +961,7 @@ def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: f
 
  
 def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_training_batch,is_training,dataset_type,concatenate_temporal,model,
-                           label_smooth,soft_labels,is_coral_loss,n_workers=None,backbone_dict=None,prefetch_factor=None):
+                           label_smooth,soft_labels,is_coral_loss,stride_inside_window=1,num_clips_per_video=1,sample_frame_strategy=None,n_workers=None,backbone_dict=None,prefetch_factor=None):
   if dataset_type.value == CUSTOM_DATASET_TYPE.WHOLE.value:
     dataset_ = customDatasetWhole(csv_path,root_folder_features=root_folder_features,
                                   concatenate_temporal=concatenate_temporal,
@@ -970,11 +987,12 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
   elif dataset_type.value == CUSTOM_DATASET_TYPE.BASE.value:
     if backbone_dict is not None:
       dataset_ = customDataset(path_dataset=root_folder_features,
-                              sample_frame_strategy=SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW,
+                              sample_frame_strategy=sample_frame_strategy,
+                              num_clips_per_video=num_clips_per_video,
                               path_labels=csv_path,
                               stride_window=16,
                               clip_length=16,
-                              stride_inside_window=1,
+                              stride_inside_window=stride_inside_window,
                               preprocess_align=False,
                               preprocess_frontalize=False,
                               preprocess_crop_detection=False,
@@ -993,34 +1011,34 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
     raise ValueError(f'Unknown dataset type: {dataset_type}. Choose one of {CUSTOM_DATASET_TYPE}')
 
   if is_training:
-    # try:
-    customBatchSampler_train = customBatchSampler(df=dataset_.df, 
-                                        batch_size=batch_size,
-                                        shuffle=shuffle_training_batch)
-    if n_workers > 1:
-      loader_ = DataLoader(
-                          dataset=dataset_,
-                          batch_sampler=customBatchSampler_train,
-                          collate_fn=dataset_._custom_collate,
-                          # batch_size=1,
-                          num_workers=n_workers,
-                          persistent_workers= persistent_workers,
-                          prefetch_factor=prefetch_factor,
-                          pin_memory=pin_memory)
-      print(f'Use custom Dataloader with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
-    else:
-      loader_ = DataLoader(
-                          dataset=dataset_,
-                          batch_sampler=customBatchSampler_train,
-                          collate_fn=dataset_._custom_collate,
-                          # batch_size=1,
-                          pin_memory=True)
-      print(f'Use custom Dataloader!')
-    # except Exception as e:
-    #   raise ValueError(f'Error in customBatchSampler: {e}') from e
-    #   print(f'Err: {e}')
-    #   print(f'Use standard DataLoader')
-    #   loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate,persistent_workers=True)
+    try:
+      customBatchSampler_train = customBatchSampler(df=dataset_.df, 
+                                          batch_size=batch_size,
+                                          shuffle=shuffle_training_batch)
+      if n_workers > 1:
+        loader_ = DataLoader(
+                            dataset=dataset_,
+                            batch_sampler=customBatchSampler_train,
+                            collate_fn=dataset_._custom_collate,
+                            # batch_size=1,
+                            num_workers=n_workers,
+                            persistent_workers= persistent_workers,
+                            prefetch_factor=prefetch_factor,
+                            pin_memory=pin_memory)
+        print(f'Use custom Dataloader with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
+      else:
+        loader_ = DataLoader(
+                            dataset=dataset_,
+                            batch_sampler=customBatchSampler_train,
+                            collate_fn=dataset_._custom_collate,
+                            # batch_size=1,
+                            pin_memory=True)
+        print(f'Use custom Dataloader!')
+    except Exception as e:
+      # raise ValueError(f'Error in customBatchSampler: {e}') from e
+      print(f'Err: {e}')
+      print(f'Use standard DataLoader')
+      loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate,num_workers=n_workers,persistent_workers=True)
   else:
     if n_workers > 1:
       nr_batches = len(dataset_.df) // batch_size + 1
