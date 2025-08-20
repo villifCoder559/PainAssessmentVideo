@@ -87,7 +87,8 @@ class BaseHead(nn.Module):
   def start_train(self, num_epochs, criterion, optimizer,lr, saving_path, train_csv_path, val_csv_path ,batch_size,dataset_type,
                   round_output_loss, shuffle_training_batch, regularization_lambda_L1,concatenate_temp_dim,clip_grad_norm,
                   early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,backbone_dict,n_workers,label_smooth,
-                  regularization_lambda_L2,trial,enable_optuna_pruning,prefetch_factor,soft_labels,is_coral_loss):
+                  regularization_lambda_L2,trial,enable_optuna_pruning,prefetch_factor,soft_labels,is_coral_loss,sample_frame_strategy,stride_inside_window,
+                  num_clips_per_video):
     
     # Generate Thread for smooth stopping 
     stop_event = threading.Event()
@@ -109,7 +110,10 @@ class BaseHead(nn.Module):
                                                               root_folder_features=root_folder_features,
                                                               shuffle_training_batch=shuffle_training_batch,
                                                               is_training=True,
+                                                              stride_inside_window=stride_inside_window,
                                                               concatenate_temporal=concatenate_temp_dim,
+                                                              num_clips_per_video=num_clips_per_video,
+                                                              sample_frame_strategy=sample_frame_strategy,
                                                               dataset_type=dataset_type,
                                                               prefetch_factor=prefetch_factor,
                                                               backbone_dict=backbone_dict,
@@ -124,6 +128,9 @@ class BaseHead(nn.Module):
                                                             root_folder_features=root_folder_features,
                                                             shuffle_training_batch=False,
                                                             is_training=False,
+                                                            sample_frame_strategy=sample_frame_strategy,
+                                                            num_clips_per_video=num_clips_per_video,
+                                                            stride_inside_window=stride_inside_window,
                                                             concatenate_temporal=concatenate_temp_dim,
                                                             dataset_type=dataset_type,
                                                             prefetch_factor=prefetch_factor,
@@ -505,10 +512,15 @@ class BaseHead(nn.Module):
       dict_log_time['log_epoch'] = dict_log_time.get('log_epoch',0) + time.time()-epoch_log_time
       dict_log_time['epoch'] = time.time()-start_epoch
 
-      print(f'TIME LOGS:')
+      print(f'---------TRAIN LOOP LOGS---------')
       for k,v in dict_log_time.items():
         print(f'  {k} time: {v:.4f} s')
 
+      print(f'---------HEAD TIME LOGS---------')
+      for k,v in helper.head_time_logs.items():
+        print(f'  {k} time: {v:.4f} s')
+      helper.head_time_logs = {} # reset logs for next epoch
+      
       if helper.LOG_GRADIENT_PER_MODULE and np.mean(total_norm_epoch[epoch]) < 1e-2:
         print(f'Gradient norm is small (< 1e-1). Stopping training...')
         break
@@ -612,7 +624,7 @@ class BaseHead(nn.Module):
         elif isinstance(criterion, torch.nn.CrossEntropyLoss):
           batch_y = batch_y.long()
         
-        dict_batch_X = {key: value.to(device) for key, value in dict_batch_X.items()}
+        dict_batch_X = {key: value.to(device) if value is not None else None for key, value in dict_batch_X.items()}
         batch_y = batch_y.to(device)
         
         # subject_batch_count[tmp] += 1
@@ -896,31 +908,30 @@ class AttentiveHeadJEPA(BaseHead):
     
   def apply_pos_enc(self, x):
     if self.pos_enc_tensor is None or self.pos_enc_tensor.shape[0] != x.size(1):
-        if x.size(1) % self.total_grid_area != 0:
-          raise ValueError(f'Input length {x.size(1)} is not divisible by batch size {x.size(0)}')
-        self.pos_enc_tensor = pos_embs.get_1d_sincos_pos_embed_torch(embed_dim=x.size(2),
-                                                                    grid_size=x.size(1)//self.total_grid_area).unsqueeze(0).to(x.device) # [1, nr_clips, emb_dim]
-        if x.shape[1] % self.pos_enc_tensor.shape[1] != 0:
-          raise ValueError(f'x.shape not divisible for pos_enc.shape. x size of {x.size(1)} is not divisible by pos_enc size {self.pos_enc.size(1)}')
-        self.pos_enc_tensor = torch.repeat_interleave(self.pos_enc_tensor, x.shape[1]//self.pos_enc_tensor.shape[1], dim=1)
-        # self.pos_enc_tensor = pos_embs.get_3d_sincos_pos_embed_torch(embed_dim=x.size(2),
-        #                                                               grid_depth=x.size(1)//(self.total_grid_area), # Considering same length for all dimensions!
-        #                                                               grid_size=self.grid_size_pos[1]).to(x.device).unsqueeze(0)
-      # print(self.pos_enc_tensor.shape)
+      if x.size(1) % self.total_grid_area != 0:
+        raise ValueError(f'Input length {x.size(1)} is not divisible by grid size {self.total_grid_area}.\nx.size // self.total_grid_area = {x.size(1)} // {self.total_grid_area} = {x.size(1)//self.total_grid_area}')
+      self.pos_enc_tensor = pos_embs.get_1d_sincos_pos_embed_torch(embed_dim=x.size(2),
+                                                                  grid_size=x.size(1)//self.total_grid_area).unsqueeze(0).to(x.device) # [1, nr_clips, emb_dim]
+      if x.shape[1] % self.pos_enc_tensor.shape[1] != 0:
+        raise ValueError(f'x.shape not divisible for pos_enc.shape. x size of {x.size(1)} is not divisible by pos_enc size {self.pos_enc.size(1)}')
+      self.pos_enc_tensor = torch.repeat_interleave(self.pos_enc_tensor, x.shape[1]//self.pos_enc_tensor.shape[1], dim=1)
+      # self.pos_enc_tensor = pos_embs.get_3d_sincos_pos_embed_torch(embed_dim=x.size(2),
+      #                                                               grid_depth=x.size(1)//(self.total_grid_area), # Considering same length for all dimensions!
+      #                                                               grid_size=self.grid_size_pos[1]).to(x.device).unsqueeze(0)
+    # print(self.pos_enc_tensor.shape)
     return x + self.pos_enc_tensor
 
-  def get_feats_from_backbone_v2(self, x, **kwargs):
+  def elaborate_feats_from_backbone_v2(self, x, **kwargs):
     """
     Alternative implementation using torch.split for better memory patterns
     """
     # Get backbone features
-    x = self.backbone.forward_features(x)
     
     lengths = kwargs['lengths']
     T, S = x.shape[1], x.shape[2]
     tokens_per_chunk = T * S * S
     
-    # Split tensor in one operation instead of manual slicing
+    # Split tensor 
     samples = torch.split(x, lengths.tolist(), dim=0)
     
     # Calculate max length upfront
@@ -931,7 +942,7 @@ class AttentiveHeadJEPA(BaseHead):
     padded_x = torch.zeros(batch_size, max_len, x.shape[-1], 
                           dtype=x.dtype, device=x.device)
     
-    # Process each sample with minimal memory overhead
+    # Process each sample to apply padding
     for i, sample in enumerate(samples):
       flat_sample = sample.reshape(-1, sample.shape[-1])
       seq_len = flat_sample.shape[0]
@@ -953,7 +964,8 @@ class AttentiveHeadJEPA(BaseHead):
     for real_len in kwargs['lengths']:
       list_x.append(x[start:start+real_len]) # [B*chunks, T, S, S, embed_dim] -> list([chunks, T, S, S, embed_dim]) where len(list_x) = B
       start += real_len
-    x = list_x # list([chunks, T, S, S, embed_dim]), len(x) = B  
+    x = list_x # list([chunks, T, S, S, embed_dim]), len(x) = B
+      
     x = [sample.reshape(-1,sample.shape[-1]) for sample in x] # [chunks*T*S*S, emb_dim] , concat_temporal = False
     
     # pad sequences to the max length in the batch
@@ -967,16 +979,42 @@ class AttentiveHeadJEPA(BaseHead):
     return x, key_padding_mask
   
   def forward(self, x, key_padding_mask=None, return_video_emb=False,**kwargs):
+    # Extract features from backbone (if needed)
     if self.backbone is not None:
-      x, key_padding_mask = self.get_feats_from_backbone_v2(x, **kwargs) 
-    
-    if self.embedding_reduction !=  helper.EMBEDDING_REDUCTION.NONE:
-      x = torch.mean(x,dim=self.embedding_reduction.value,keepdim=True)
+      time_backbone_forward = time.time()
+      x = self.backbone.forward_features(x) # [B * num_chunks, channels, frames=16, height, width] -> [B*chunks, T, S, S, embed_dim]
+      helper.head_time_logs['backbone_forward'] = helper.head_time_logs.get('backbone_forward',0) + (time.time() - time_backbone_forward)
       
+      # Apply reduction if needed
+      time_reduction = time.time()
+      if self.embedding_reduction !=  helper.EMBEDDING_REDUCTION.NONE:
+        x = torch.mean(x,dim=self.embedding_reduction.value,keepdim=True)
+      helper.head_time_logs['embedding_reduction'] = helper.head_time_logs.get('embedding_reduction',0) + (time.time() - time_reduction)
+      
+      # Reshape x  : [B * num_chunks, T, S, S, embed_dim] -> [B, num_chunks*T*S*S, embed_dim]
+      time_reshape = time.time()
+      if torch.all(kwargs['lengths'] == kwargs['lengths'][0]):
+        # x = x.reshape(x.shape[0]//kwargs['lengths'][0],-1, x.shape[-1]) 
+        x = x.contiguous().view(x.shape[0]//kwargs['lengths'][0], -1, x.shape[-1]) # [B, num_chunks*T*S*S, embed_dim]
+        key_padding_mask = None # no need to compute key_padding_mask if all sequences have the same length
+      else:
+        x, key_padding_mask = self.elaborate_feats_from_backbone_v2(x, **kwargs)
+      helper.head_time_logs['embedding_reshape'] = helper.head_time_logs.get('embedding_reshape',0) + (time.time() - time_reshape)
+    else:
+      # if features are already extracted, use them directly (key_padding_mask already computed in the dataloader)
+      time_reduction = time.time()
+      if self.embedding_reduction !=  helper.EMBEDDING_REDUCTION.NONE:
+        x = torch.mean(x,dim=self.embedding_reduction.value,keepdim=True)
+      helper.head_time_logs['embedding_reduction'] = helper.head_time_logs.get('embedding_reduction',0) + (time.time() - time_reduction)
+
+    # Apply positional encoding if enabled
+    time_pos_enc = time.time()
     if self.pos_enc:
       x = self.apply_pos_enc(x) # add positional encoding if enabled
+    helper.head_time_logs['pos_enc'] = helper.head_time_logs.get('pos_enc',0) + (time.time() - time_pos_enc)
     
     # FORWARD PASS
+    time_head = time.time()
     x,xattn = self.pooler(x,key_padding_mask,helper.LOG_CROSS_ATTENTION['enable']) 
     x = x.squeeze(1) # # [B, num_queries=1, C] -> [B, C]
     x = self.aggregator(x)
@@ -984,6 +1022,7 @@ class AttentiveHeadJEPA(BaseHead):
       return x, self.linear(x)
     else:
       x = self.linear(x)
+    helper.head_time_logs['head_forward'] = helper.head_time_logs.get('head_forward',0) + (time.time() - time_head)
     
     # LOG CROSS ATTENTION if enabled
     if helper.LOG_CROSS_ATTENTION['enable'] and xattn is not None:
