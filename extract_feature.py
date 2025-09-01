@@ -22,7 +22,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
          preprocess_crop_detection = False,preprocess_frontalize = True,path_dataset=None,path_labels=None,stride_window=16,clip_length=16,
          log_file_path=None,root_saving_folder_path=None,backbone_type='video',from_=None,to_=None,save_big_feature=False,h_flip=False,num_clips_per_video=None,
          stride_inside_window=1,float_16=False,color_jitter=False,rotation=False,save_as_safetensors=True,video_extension='.mp4',sample_frame_strategy=SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW,
-          backbone_model_path=None
+          backbone_model_path=None,dict_augmentation=None,quadrant=None
          ):
   if backbone_model_path is not None:
     MODEL_TYPE.set_custom_model_type(type=model_type,custom_model_path=backbone_model_path)
@@ -97,18 +97,30 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
       print(f'batch feature shape {feature.shape}')
       list_frames.append(list_sampled_frames)
       list_features.append(feature.detach().cpu())
-      list_labels.append(labels) 
-      if h_flip:
+      list_labels.append(labels)
+      split_path = path[-1].split('$')
+      base_shift = 0
+      
+      # Check if is the case where the video is split into multiple quadrants
+      if len(split_path) > 1:
+        video_part = split_path[-1].split('.')[0]
+        base_shift = helper.get_shift_for_sample_id(video_part)
+      sample_id = sample_id + base_shift
+      
+      # update sample_id based on augmentation
+      if dict_augmentation['h_flip']:
         list_sample_id.append(sample_id+helper.get_shift_for_sample_id('hflip')) # if h_flip, add 8700 to sample_id
-      elif color_jitter:
+      elif dict_augmentation['color_jitter']:
         list_sample_id.append(sample_id+helper.get_shift_for_sample_id('jitter'))
-      elif rotation:
+      elif dict_augmentation['rotation']:
         list_sample_id.append(sample_id+helper.get_shift_for_sample_id('rotate'))  
       else:
         list_sample_id.append(sample_id)
       print(f'sample_id: {list_sample_id[-1]}')
+      print(f'list_frames: {list_sampled_frames[-1]}')
       list_subject_id.append(subject_id)
       list_path.append(path)
+      
       # add list for random cropped part
       count += 1
       print(f'Batch {count}/{len(dataloader)}')
@@ -206,13 +218,14 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
                 stride_window=stride_window,
                 clip_length=clip_length,
                 video_labels=video_labels,
-                flip_horizontal=h_flip,
-                color_jitter=color_jitter,
-                rotation=rotation,
+                flip_horizontal=dict_augmentation['h_flip'],
+                color_jitter=dict_augmentation['color_jitter'],
+                rotation=dict_augmentation['rotation'],
                 video_extension=video_extension,
                 preprocess_align=preprocess_align,
                 preprocess_frontalize=preprocess_frontalize,
                 stride_inside_window=stride_inside_window,
+                quadrant=quadrant,
                 preprocess_crop_detection=preprocess_crop_detection,
                 saving_folder_path_extracted_video=None)
   
@@ -237,7 +250,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
     'backbone_type': backbone_type,
     'n_workers': n_workers,
     'save_big_feature': save_big_feature,
-    'h_flip': h_flip,
+    **dict_augmentation,
     'stride_inside_window': stride_inside_window,
     'float_16': float_16,
     'video_extension': video_extension,
@@ -298,6 +311,7 @@ if __name__ == "__main__":
   parser.add_argument('--video_extension', type=str, default='.mp4', help='Video extension to use for dataset')
   parser.add_argument('--sample_frame_strategy', type=str, default='sliding_window', help=f'Strategy to sample frames from video. Can be {list(SAMPLE_FRAME_STRATEGY)}')
   parser.add_argument('--num_clips_per_video', type=int, default=None, help='Number of clips per video. If None, all clips will be used. Can be used only with random sampling strategy')
+  parser.add_argument('--quadrant', type=str, default=None, help="Filter quadrants part (ipper_left,upper_right,bottom_left,bottom_right). If None it will be ignored")
   # CUDA_VISIBLE_DEVICES=0 python3 extract_feature.py --gp --model_type B --saving_after 150 --emb_red spatial --path_dataset partA/video/video_frontalized_new --path_labels partA/starting_point/samples_exc_no_detection.csv --saving_folder_path partA/video/features/samples_16_frontalized_new --backbone_type video --from_ 0 --to_ 1500 --batch_size_feat_extraction 5 --n_workers 5
   # prompt example: python3 extract_feature.py --gp --model_type B --saving_after 5000  --emb_red temporal  --path_dataset partA/video/video_frontalized --path_labels partA/starting_point/samples_exc_no_detection.csv --saving_folder_path partA/video/features/samples_vit_img --log_file_path partA/video/features/samples_vit_img/log_file.txt --backbone_type image 
   args = parser.parse_args()
@@ -321,6 +335,11 @@ if __name__ == "__main__":
   print(args)
   if args.save_big_feature:
     args.saving_after = 1
+  dict_augmentation = {
+    'h_flip': args.h_flip,
+    'color_jitter': args.color_jitter,
+    'rotation': args.rotation
+  }
   main(model_type=args.model_type,
        saving_chunk_size=args.saving_after,
        sample_frame_strategy=helper.get_sampling_frame_startegy(args.sample_frame_strategy),
@@ -341,16 +360,15 @@ if __name__ == "__main__":
        save_big_feature=args.save_big_feature,
        stride_window=args.stride_window,
        clip_length=args.clip_length,
-       h_flip=args.h_flip,
-       color_jitter=args.color_jitter,
-       rotation=args.rotation,
+       dict_augmentation=dict_augmentation,
        stride_inside_window=args.stride_inside_window,
        float_16=args.float_16,
        save_as_safetensors=args.save_as_safetensors,
        adaptive_avg_pool3d_out_shape=adaptive_avg_pool3d_out_shape,
        enable_batch_extraction=args.enable_batch_extraction,
        video_extension=args.video_extension,
-       backbone_model_path=args.backbone_model_path
+       backbone_model_path=args.backbone_model_path,
+       quadrant=args.quadrant
        )
   
   
