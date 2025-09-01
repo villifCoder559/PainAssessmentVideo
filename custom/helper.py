@@ -65,6 +65,14 @@ def get_shift_for_sample_id(folder_feature):
     return step_shift * 4
   if 'latent_masking' in folder_feature:
     return step_shift * 5
+  if 'bottom_left' in folder_feature:
+    return step_shift * 6
+  if 'bottom_right' in folder_feature:
+    return step_shift * 7
+  if 'upper_left' in folder_feature:
+    return step_shift * 8
+  if 'upper_right' in folder_feature:
+    return step_shift * 9
   return 0
   
 class SAMPLE_FRAME_STRATEGY(Enum):
