@@ -15,7 +15,8 @@ class Model_Advanced: # Scenario_Advanced
   def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,stride_inside_window,
               path_labels, sample_frame_strategy, head, head_params, adapter_dict,num_clips_per_video, use_sdpa,
               batch_size_training,stride_window,clip_length,dict_augmented,prefetch_factor,soft_labels,
-              features_folder_saving_path,concatenate_temporal,label_smooth,n_workers,new_csv_path):
+              features_folder_saving_path,concatenate_temporal,label_smooth,n_workers,new_csv_path,
+              load_dataset_in_memory):
     """
     Initialize the custom model. 
     Parameters:
@@ -57,15 +58,22 @@ class Model_Advanced: # Scenario_Advanced
     self.concatenate_temporal = concatenate_temporal
     self.path_to_extracted_features = features_folder_saving_path
     self.dataset_type = tools.get_dataset_type(self.path_to_extracted_features)
+    self.load_dataset_in_memory = load_dataset_in_memory
+    
     self.label_smooth = label_smooth
     self.soft_labels = soft_labels 
     self.prefetch_factor = prefetch_factor
     self.T_S_S_shape = None
     self.embedding_reduction = embedding_reduction
     self.clips_reduction = clips_reduction
-
+    
     # Get dataset type
-    if self.dataset_type == CUSTOM_DATASET_TYPE.AGGREGATED and helper.dict_data is None:
+    if self.dataset_type == CUSTOM_DATASET_TYPE.WHOLE and self.load_dataset_in_memory:
+      if helper.dict_data is None:
+        self.load_whole_dict_data_in_memory(complete_df=complete_df)
+        self._set_real_label_from_csv_(complete_df=complete_df)
+    
+    elif self.dataset_type == CUSTOM_DATASET_TYPE.AGGREGATED and helper.dict_data is None:
       self.set_global_dict_data_from_hdd_(complete_df=complete_df)
       # Set label according to the csv (ex: binary classification instead of multiclass)
       self._set_real_label_from_csv_(complete_df=complete_df)
@@ -135,7 +143,42 @@ class Model_Advanced: # Scenario_Advanced
       }
     else:
       self.backbone_dict = None
+  
+  def load_whole_dict_data_in_memory(self,complete_df):
+    list_path_features = []
+    list_sample_name = complete_df['sample_name'].tolist()
+    
+    # Get all the paths to the features
+    for root,dir,files in os.walk(self.path_to_extracted_features):
+      for file in files:
+        sample_name = os.path.splitext(file)[0]
+        if '.safetensors' in file and sample_name in list_sample_name:
+          list_path_features.append(os.path.join(root, file))
+    
+    # Load all the data in RAM memory      
+    dict_data_original = {}
+    for path in list_path_features:
+      dict_data = tools.load_dict_data(saving_folder_path=path)
+      for k,v in dict_data.items():
+        if k not in dict_data_original:
+          dict_data_original[k] = []
+        dict_data_original[k].append(v)
+    
+    # Concatenate all the data
+    for k,v in dict_data_original.items():
+      if isinstance(v[0], np.ndarray):
+        dict_data_original[k] = np.concatenate(v, axis=0)
+      if isinstance(v[0], torch.Tensor):
+        dict_data_original[k] = torch.concat(v, dim=0)
+    
+    for type_augm, p in self.dict_augmented.items():
+      if p > 0 and p<= 1 and not 'latent' in type_augm:
+        raise NotImplementedError("Loading augmented data in memory is not implemented yet.")
       
+    # Set the global dict_data
+    helper.dict_data = dict_data_original
+    
+    
   def set_global_dict_data_from_hdd_(self,complete_df):
     list_sample_id = complete_df['sample_id'].tolist()
     dict_data_original = tools.load_dict_data(saving_folder_path=self.path_to_extracted_features)
