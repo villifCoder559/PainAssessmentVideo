@@ -443,6 +443,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    prefetch_factor,
                    soft_labels,
                    adapter_dict,
+                   load_dataset_in_memory,
                    trial=None,
                    validate=True
                   ):
@@ -569,6 +570,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                   use_sdpa=use_sdpa,
                                   batch_size_training=batch_size_training,
                                   head=head.value,
+                                  load_dataset_in_memory=load_dataset_in_memory, # TODO: make it a parameter
                                   adapter_dict=adapter_dict,
                                   num_clips_per_video=num_clips_per_video,
                                   soft_labels=soft_labels,
