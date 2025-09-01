@@ -1,7 +1,7 @@
 import os
 os.environ["OPTUNA_DISABLE_TELEMETRY"] = "1"
 # os.environ["TMPDIR"] = "tmp"
-import cdw_cross_entropy_loss.cdw_cross_entropy_loss
+# import cdw_cross_entropy_loss.cdw_cross_entropy_loss
 from custom.helper import CLIPS_REDUCTION, EMBEDDING_REDUCTION, MODEL_TYPE, SAMPLE_FRAME_STRATEGY, HEAD, GLOBAL_PATH
 import time
 import math
@@ -259,6 +259,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     }
   
   run_folder_path, results = scripts.run_train_test(
+    load_dataset_in_memory=kwargs['load_dataset_in_memory'],
     model_type=model_type,
     soft_labels=soft_labels,
     criterion=get_loss(loss, dict_args=dict_args_loss),
@@ -407,6 +408,9 @@ if __name__ == '__main__':
                     help='Global folder name for saving results')
   parser.add_argument('--path_video_dataset', type=str, default=os.path.join('partA','video','video_frontalized'), 
                     help='Path to video dataset')
+
+  # Data loading parameters
+  parser.add_argument('--load_dataset_in_memory', type=int, default=0, help='Load the entire dataset into RAM memory. Default is 0 (False)')
   
   # Training parameters
   parser.add_argument('--validation_enabled', type=int, choices=[0,1], default=1, help='Enable validation set during training. Default is 1 (enabled)')
@@ -432,7 +436,7 @@ if __name__ == '__main__':
   parser.add_argument('--num_clips_per_video',type=int, nargs='*', default=[1], help='Number of clips per video for random sampling strategy. Default is 1')
   parser.add_argument('--sample_frame_strategy', type=str, nargs='*', default=['sliding_window'],help=f'Sampling strategy for frames in a video when not use pre-computed feats: {list(SAMPLE_FRAME_STRATEGY)}. Default is sliding_window')
   parser.add_argument('--stride_inside_window', type=int, nargs='*', default=[1], help='Stride inside the sampling window. Default is 1')
-  parser.add_argument('--use_sdpa', type=int, nargs='*', default=[0], help='Use SDPA (Scaled dot product attention) for backbone when feats are not precomputed. Default is 0 (not used)')
+  parser.add_argument('--use_sdpa', type=int, nargs='*', default=[1], help='Use SDPA (Scaled dot product attention) for backbone when feats are not precomputed. Default is 0 (not used)')
   
   # Attention parameters
   parser.add_argument('--num_heads', type=int, nargs='*',default=[8], help='Number of heads for attention in transformer (when nr_blocks >1). Default is 8')
