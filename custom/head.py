@@ -910,14 +910,18 @@ class AttentiveHeadJEPA(BaseHead):
     if self.pos_enc_tensor is None or self.pos_enc_tensor.shape[0] != x.size(1):
       if x.size(1) % self.total_grid_area != 0:
         raise ValueError(f'Input length {x.size(1)} is not divisible by grid size {self.total_grid_area}.\nx.size // self.total_grid_area = {x.size(1)} // {self.total_grid_area} = {x.size(1)//self.total_grid_area}')
-      self.pos_enc_tensor = pos_embs.get_1d_sincos_pos_embed_torch(embed_dim=x.size(2),
-                                                                  grid_size=x.size(1)//self.total_grid_area).unsqueeze(0).to(x.device) # [1, nr_clips, emb_dim]
+      if self.pos_enc == 1: 
+        self.pos_enc_tensor = pos_embs.get_1d_sincos_pos_embed_torch(embed_dim=x.size(2), # [B, seq_len ,C]
+                                                                    grid_size=x.size(1)//self.total_grid_area).unsqueeze(0).to(x.device) # [1, nr_clips, emb_dim]
+        self.pos_enc_tensor = torch.repeat_interleave(self.pos_enc_tensor, x.shape[1]//self.pos_enc_tensor.shape[1], dim=1)
+      
+      elif self.pos_enc == 43: # ONLY for quadrant features
+        self.pos_enc_tensor = pos_embs.get_3d_sincos_pos_embed_torch(embed_dim=x.size(2), # [B, seq_len ,C]
+                                                                      grid_depth=x.size(1)//(self.total_grid_area), # Time dimension
+                                                                      grid_size=2 # numer of quadrants (2x2) # self.grid_size_pos[1]
+                                                                    ).unsqueeze(0).to(x.device)
       if x.shape[1] % self.pos_enc_tensor.shape[1] != 0:
         raise ValueError(f'x.shape not divisible for pos_enc.shape. x size of {x.size(1)} is not divisible by pos_enc size {self.pos_enc.size(1)}')
-      self.pos_enc_tensor = torch.repeat_interleave(self.pos_enc_tensor, x.shape[1]//self.pos_enc_tensor.shape[1], dim=1)
-      # self.pos_enc_tensor = pos_embs.get_3d_sincos_pos_embed_torch(embed_dim=x.size(2),
-      #                                                               grid_depth=x.size(1)//(self.total_grid_area), # Considering same length for all dimensions!
-      #                                                               grid_size=self.grid_size_pos[1]).to(x.device).unsqueeze(0)
     # print(self.pos_enc_tensor.shape)
     return x + self.pos_enc_tensor
 
