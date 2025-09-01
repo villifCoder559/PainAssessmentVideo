@@ -62,7 +62,8 @@ class customDataset(torch.utils.data.Dataset):
       num_clips_per_video=1, # only for random sampling strategy
       coral_loss=None,
       soft_labels=None,
-      video_extension = '.mp4'
+      video_extension = '.mp4',
+      quadrant=None
   ):
     """
     Initialize the dataset with specified parameters.
@@ -117,6 +118,7 @@ class customDataset(torch.utils.data.Dataset):
     self.rotation = rotation
     self.smooth_labels = smooth_labels
     self.num_clips_per_video = num_clips_per_video
+    self.quadrant = quadrant
     
     # if rotation is not None:
     #   warnings.warn('The rotation is not implemented yet')
@@ -305,7 +307,10 @@ class customDataset(torch.utils.data.Dataset):
   def __standard_getitem__(self, idx, is_training):
     
     csv_array = self.video_labels.iloc[idx]
-    video_path = os.path.join(self.path_dataset, csv_array.iloc[1], csv_array.iloc[5] + self.video_extension)
+    if self.quadrant is not None:
+      video_path = os.path.join(self.path_dataset, csv_array.iloc[1], f'{csv_array.iloc[5]}${self.quadrant}{self.video_extension}')
+    else:
+      video_path = os.path.join(self.path_dataset, csv_array.iloc[1], csv_array.iloc[5] + self.video_extension)
 
     # Open video and get properties
     container = cv2.VideoCapture(video_path)
@@ -335,6 +340,7 @@ class customDataset(torch.utils.data.Dataset):
     # [nr_clips, nr_frames, H, W, C] -> [nr_clips * nr_frames, H, W, C] -> [B,C,H,W]
     frames_list = frames_list.reshape(-1, *frames_list.shape[2:]).permute(0, 3, 1, 2)
     time_preprocess_video = time.time()
+    # Apply augmnentation based on training status
     if not is_training:
       preprocessed_tensors = self.preprocess_images(frames_list, 
                                                     crop_size=(self.image_resize_h, self.image_resize_w),
@@ -642,7 +648,11 @@ class customDataset(torch.utils.data.Dataset):
       )
     indices = torch.arange(0, video_len - self.clip_length * self.stride_inside_window + 1, self.stride_window)
     list_indices = torch.stack([torch.arange(start_idx, start_idx + self.clip_length * self.stride_inside_window, self.stride_inside_window) for start_idx in indices])
-    # print('Sliding shape', list_indices.shape)
+    
+    # Give importance to the end of the video (Biovid has important info at the end)
+    list_indices = video_len - list_indices - 1
+    list_indices = list_indices.flip(dims=(0, 1))  # row-wise + clip-wise flip
+    
     return list_indices # shape [num_windows, clip_length]
   
   def get_unique_subjects(self):
@@ -662,7 +672,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
     self.concatenate_temporal = concatenate_temporal
     self.df = pd.read_csv(csv_path,sep='\t')
     self.num_classes = len(self.get_unique_classes())
-    
+    self.is_quadrant = True if 'combined' in root_folder_features else False
     if not is_train:
       # Keep only original samples if validation/test (sample_id<=8700)
       filter_mask = self.df['sample_id'] <= helper.step_shift
@@ -743,7 +753,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
   
   def __getitem__(self,idx):
     if isinstance(idx,int):
-      return _get_element(df=self.df,dict_data=helper.dict_data,idx=idx,dataset_type=CUSTOM_DATASET_TYPE.AGGREGATED)
+      return _get_element(df=self.df,dict_data=helper.dict_data,idx=idx,dataset_type=CUSTOM_DATASET_TYPE.AGGREGATED,is_quadrant=self.is_quadrant)
     else:
       raise NotImplementedError("Batch loading is not implemented for customDatasetAggregated")
       batch = [_get_element(df=self.df,dict_data=helper.dict_data,idx=idx) for idx in idx]
@@ -778,6 +788,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
     self.df = pd.read_csv(csv_path,sep='\t') # subject_id, subject_name, class_id, class_name, sample_id, sample_name
     self.concatenate_temporal = concatenate_temporal
     self.model = model
+    self.is_quadrant = True if 'combined' in root_folder_features else False
     self.instance_model_name = tools.get_instace_model_name(model)
     self.smooth_labels = smooth_labels
     self.num_classes = len(self.get_unique_classes())
@@ -808,8 +819,8 @@ class customDatasetWhole(torch.utils.data.Dataset):
 
     # load_end = time.time()
     # print(f"Element {idx} loading time: {load_end - load_start:.2f} seconds")
-    return _get_element(dict_data=features,df=self.df,idx=idx, dataset_type=CUSTOM_DATASET_TYPE.WHOLE)
-  
+    return _get_element(dict_data=features,df=self.df,idx=idx, dataset_type=CUSTOM_DATASET_TYPE.WHOLE, is_quadrant=self.is_quadrant)
+
   def __getitem__(self,idx):
     if isinstance(idx,int):
       el = self._load_element(idx=idx)
@@ -838,12 +849,6 @@ class customDatasetWhole(torch.utils.data.Dataset):
     return np.sort(self.df['class_id'].unique().tolist())
   def get_all_sample_ids(self):
     return self.df['sample_id'].tolist()
-
-
-
-
-
-
 
 
 def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_classes,smooth_labels, soft_labels_mat,coral_loss):
@@ -1056,15 +1061,20 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
   return dataset_,loader_
  
   
-def _get_element(dict_data,df,idx,dataset_type):
+def _get_element(dict_data,df,idx,dataset_type,is_quadrant=False):
   csv_row = df.iloc[idx]
   sample_id = csv_row['sample_id']
   # If AGGREGATED or WHOLE dataset, sample_id is the real sample_id
   if dataset_type in [CUSTOM_DATASET_TYPE.AGGREGATED, CUSTOM_DATASET_TYPE.WHOLE]:
     if sample_id > helper.step_shift * 4 and sample_id <= helper.step_shift * 6: # latent augm.
       mask = dict_data['list_sample_id'] == ((sample_id - 1) % helper.step_shift + 1) # to get the real sample_id
-    else:
+    elif not is_quadrant:
       mask = dict_data['list_sample_id'] == sample_id
+    else: # quadrant dataset
+      if dataset_type == CUSTOM_DATASET_TYPE.WHOLE:
+        mask = torch.full((dict_data['list_sample_id'].shape[0],),True)
+      else:
+        raise NotImplementedError("AGGREGATED dataset with quadrant not implemented yet.")
   else: # BASE dataset
     mask = dict_data['list_sample_id'] == sample_id
   if mask.sum() == 0:
