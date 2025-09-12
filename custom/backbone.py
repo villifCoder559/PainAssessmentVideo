@@ -49,7 +49,7 @@ class VideoBackbone(BackboneBase):
   
   def __init__(
     self, 
-    model_type,
+    model_type: ModelTypeEntry,
     remove_head: bool = True,
     adapter_dict: dict = None,
     use_sdpa: bool = False,
