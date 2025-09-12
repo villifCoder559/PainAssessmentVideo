@@ -58,11 +58,11 @@ def get_list_videos(video_folder):
   list_videos = []
   for root, dirs, files in os.walk(video_folder):
     for file in files:
-      if file.endswith('.mp4'):
+      if file.endswith('.mp4') and '$' not in file:
         list_videos.append(os.path.join(root, file))
   return list_videos
 
-# Example usage
+
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Split video into quadrants and save specified part.")
   parser.add_argument("--video_folder", type=str, help="Path to the input video folder")
