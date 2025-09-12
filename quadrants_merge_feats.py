@@ -5,10 +5,24 @@ import numpy as np
 import pandas as pd
 from concurrent.futures import ProcessPoolExecutor
 import custom.tools as tools
+import argparse
 
+parser = argparse.ArgumentParser() 
+parser.add_argument('--root_folder', type=str, required=True, help='Path to the root folder containing quadrant features')
+parser.add_argument('--combined_root_folder', type=str, default=None, help='Path to the output folder for combined features')
+root_folder = parser.parse_args().root_folder
+combined_root_folder = parser.parse_args().combined_root_folder
+if combined_root_folder is None:
+  if root_folder.endswith('/'):
+    root_folder = root_folder[:-1]
+  combined_root_folder = root_folder + "_combined"
 
-root_folder = "/equilibrium/fvilli/features_BIOVID_S_stride_32_inside_2_last143"
-combined_root_folder = "/equilibrium/fvilli/features_BIOVID_S_stride_32_inside_2_last143_combined"
+print(f"Loading features from {root_folder}")
+print(f"Saving combined features to {combined_root_folder}")
+
+if root_folder == combined_root_folder:
+  raise ValueError("Root folder and combined root folder must be different")
+
 quadrants_id = ['upper_left', 'upper_right', 'bottom_left', 'bottom_right']
 csv_path = "partA/starting_point/samples.csv"
 
@@ -25,7 +39,7 @@ def process_sample(name, sample):
   }
 
   if not all(os.path.exists(p) for p in feats_quadrant_path.values()):
-    raise FileNotFoundError(f"Features not found for sample {sample} in subject {name}")
+    raise FileNotFoundError(f"Features not found for sample {sample} in subject {name} in {q} quadrant")
 
   dict_feats = {q: tools.load_dict_data(feats_quadrant_path[q]) for q in quadrants_id}
   keys = list(dict_feats[quadrants_id[0]].keys())
