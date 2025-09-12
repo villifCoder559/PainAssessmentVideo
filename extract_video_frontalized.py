@@ -16,7 +16,10 @@ def load_reference_landmarks(path):
 
 def main(generate_video,csv_path,path_folder_output,list_target_video,path_ref_landmarks,global_path,from_,to_,interpolation_mod_chunk,video_folder_path,align_before_front,log_error_path=None,only_oval=False):
   
-  face_extractor = extractor.FaceExtractor(visionRunningMode='video')
+  face_extractor = extractor.FaceExtractor(visionRunningMode='video',
+                                           min_face_detection_confidence=0.3,
+                                           min_face_presence_confidence=0.3,
+                                           min_tracking_confidence=0.3)
   csv_list_video_path = np.array(tools.get_list_video_path_from_csv(csv_path=csv_path,
                                                                     video_folder_path=video_folder_path))
   root_video_path = os.path.split(os.path.split(csv_list_video_path[0])[0])[0]
@@ -66,7 +69,16 @@ def main(generate_video,csv_path,path_folder_output,list_target_video,path_ref_l
       if global_path:
         out_path = GLOBAL_PATH.get_global_path(out_path)
       print(f'length of list frame: {len(dict_result_frontalization["list_frontalized_frame"])}')
+      heights, widths = check_image_size(dict_result_frontalization['list_frontalized_frame'])
+      
+      if heights['max'] != heights['min'] or widths['max'] != widths['min']:
+        resize_dim = (heights['max'], widths['max'])
+      else:
+        resize_dim = None
+      if resize_dim is not None:
+        print(f'Resize dim: {resize_dim}')
       tools.generate_video_from_list_frame(list_frame=dict_result_frontalization['list_frontalized_frame'],
+                                           resize=resize_dim,
                                           path_video_output=out_path)
       print(f'Video frontalized: {out_path}')
 
@@ -77,6 +89,22 @@ def main(generate_video,csv_path,path_folder_output,list_target_video,path_ref_l
     predicted_time = ((end-start)/count*(len(list_video_path)-count))
     print(f'Time to end : {int(predicted_time/60/60)} h {int(predicted_time/60%60)} m {int(predicted_time%60)} s\n')
   
+  
+def check_image_size(input_video_frames):
+  heights = {'max':0,'min':input_video_frames[0].shape[0]}
+  widths = {'max':0,'min':input_video_frames[0].shape[1]}
+  for frame in input_video_frames:
+    height, width, _ = frame.shape
+    if height > heights['max']:
+      heights['max'] = height
+    if width > widths['max']:
+      widths['max'] = width
+    if height < heights['min']:
+      heights['min'] = height
+    if width < widths['min']:
+      widths['min'] = width
+  return heights, widths
+
 if __name__ == '__main__':
   def read_ltv(ltv):
     list_video = []
