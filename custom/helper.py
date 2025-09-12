@@ -1,12 +1,18 @@
 from enum import Enum
 import os
 from pathlib import Path
+import multiprocessing as mp
+
 
 stoic_subjects = [27,28,32,33,34,35,36,39,40,41,42,44,51,53,55,56,61,64,74,87]
 saving_rate_training_logs = 3
 dict_data = None
 
-head_time_logs = {}
+train_time_logs = {}
+
+# Profile workers in dataloader
+time_profile_dict = mp.Manager().dict()
+time_profiling_enabled = True
 
 AMP_ENABLED = False
 AMP_DTYPE = None
@@ -15,6 +21,7 @@ LOG_PER_CLASS_AND_SUBJECT = True
 LOG_HISTORY_SAMPLE = False
 QUERIES_AGG_METHOD = ['mean','max']
 LOG_LOSS_ACCURACY = False
+LOG_GRADIENT_NORM = False
 SAVE_LAST_EPOCH_MODEL = False
 SAVE_PTH_MODEL = False
 LOG_CROSS_ATTENTION = {
@@ -36,7 +43,23 @@ def get_sampling_frame_startegy(strategy):
   else:
     raise ValueError(f'Sampling strategy not found: {strategy}. Valid options: {list(SAMPLE_FRAME_STRATEGY)}')
 step_shift = 8700 # nr of samples in Biovid video dataset
-  
+
+def get_augmentation_type(sample_id):
+  if is_hflip_augmentation(sample_id):
+    return 'hflip'
+  elif is_color_jitter_augmentation(sample_id):
+    return 'jitter'
+  elif is_rotation_augmentation(sample_id):
+    return 'rotation'
+  elif is_latent_basic_augmentation(sample_id):
+    return 'latent_basic'
+  elif is_latent_masking_augmentation(sample_id):
+    return 'latent_masking'
+  elif is_spatial_shift_augmentation(sample_id):
+    return 'shift'
+  else:
+    raise ValueError(f'Augmentation type not found for sample_id: {sample_id}')
+
 def is_hflip_augmentation(sample_id):
   return sample_id > step_shift and sample_id <= step_shift * 2
 
@@ -51,6 +74,9 @@ def is_latent_basic_augmentation(sample_id):
 
 def is_latent_masking_augmentation(sample_id):
   return sample_id > step_shift * 5 and sample_id <= step_shift * 6
+
+def is_spatial_shift_augmentation(sample_id):
+  return sample_id > step_shift * 10 and sample_id <= step_shift * 11
 
 def get_shift_for_sample_id(folder_feature):
   # step_shift * 4 => gaussian_noise in feats space
@@ -73,6 +99,8 @@ def get_shift_for_sample_id(folder_feature):
     return step_shift * 8
   if 'upper_right' in folder_feature:
     return step_shift * 9
+  if 'shift' in folder_feature:
+    return step_shift * 10
   return 0
   
 class SAMPLE_FRAME_STRATEGY(Enum):
