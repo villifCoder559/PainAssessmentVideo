@@ -113,7 +113,9 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
       elif dict_augmentation['color_jitter']:
         list_sample_id.append(sample_id+helper.get_shift_for_sample_id('jitter'))
       elif dict_augmentation['rotation']:
-        list_sample_id.append(sample_id+helper.get_shift_for_sample_id('rotate'))  
+        list_sample_id.append(sample_id+helper.get_shift_for_sample_id('rotate'))
+      elif dict_augmentation['spatial_shift']:
+        list_sample_id.append(sample_id+helper.get_shift_for_sample_id('spatial_shift'))
       else:
         list_sample_id.append(sample_id)
       print(f'sample_id: {list_sample_id[-1]}')
@@ -221,6 +223,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
                 flip_horizontal=dict_augmentation['h_flip'],
                 color_jitter=dict_augmentation['color_jitter'],
                 rotation=dict_augmentation['rotation'],
+                spatial_shift=dict_augmentation['spatial_shift'],
                 video_extension=video_extension,
                 preprocess_align=preprocess_align,
                 preprocess_frontalize=preprocess_frontalize,
@@ -237,7 +240,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
     'log_file_path': log_file_path,
     'saving_folder_path': root_saving_folder_path,
     'saving_chunk_size': saving_chunk_size,
-    'model_type': model_type,
+    'model_type': model_type.value,
     'pooling_embedding_reduction': pooling_embedding_reduction,
     'pooling_clips_reduction': pooling_clips_reduction,
     'sample_frame_strategy': sample_frame_strategy,
@@ -285,15 +288,15 @@ if __name__ == "__main__":
   parser.add_argument('--backbone_model_path', type=str, required=False, default=None, help='Path to custom model for feats_extraction')
   parser.add_argument('--saving_after', type=int, required=False, default=8800,help='Number of batch to save in one file')
   parser.add_argument('--emb_red', type=str, default='spatial', help='Embedding reduction. Can be spatial, temporal, all, none, adaptive_pooling_3d')
-  parser.add_argument('--prep_al', action='store_true', help='Preprocess align') # deprecated not use
-  parser.add_argument('--prep_crop', action='store_true', help='Preprocess crop') # deprecated not use
-  parser.add_argument('--prep_front', action='store_true', help='Preprocess frontalize') # deprecated not use
+  # parser.add_argument('--prep_al', action='store_true', help='Preprocess align') # deprecated not use
+  # parser.add_argument('--prep_crop', action='store_true', help='Preprocess crop') # deprecated not use
+  # parser.add_argument('--prep_front', action='store_true', help='Preprocess frontalize') # deprecated not use
   parser.add_argument('--from_', type=int, default=None, help='START idx (included) extracting features from (--path_labels) row. Start from 0')
   parser.add_argument('--to_', type=int, default=None, help='STOP idx (excluded) extracting features from (--path_labels) row')
   parser.add_argument('--path_dataset', type=str, default=os.path.join('partA','video','video'), help='Path to dataset')
   parser.add_argument('--path_labels', type=str, default=os.path.join('partA','starting_point','samples_exc_no_detection.csv'), help='Path to csv file')
   parser.add_argument('--saving_folder_path', type=str, default=os.path.join('partA','video','features',f'samples_16_{timestamp}'), help='Path to saving folder')
-  parser.add_argument('--log_file_path', type=str, default=os.path.join('partA','video','features','log_file_feat_extr',f'log_file_{timestamp}.txt'), help='Path to log file')
+  parser.add_argument('--log_file_path', type=str, default=None, help='Path to log file')
   parser.add_argument('--backbone_type', type=str, default='video', help='Type of backbone. Can be video or image')
   parser.add_argument('--batch_size_feat_extraction', type=int, default=1, help='Batch size for feature extraction')
   parser.add_argument('--n_workers', type=int, default=0, help='Number of workers for dataloader')
@@ -303,6 +306,7 @@ if __name__ == "__main__":
   parser.add_argument('--clip_length', type=int, default=16, help='Clip length')
   parser.add_argument('--h_flip', action='store_true', help='Apply Horizontal flip')
   parser.add_argument('--color_jitter', action='store_true', help='Apply color jitter')
+  parser.add_argument('--spatial_shift', action='store_true', help='Apply spatial shift to video')
   parser.add_argument('--rotation', action='store_true', help='Apply rotation')
   parser.add_argument('--float_16', action='store_true', help='Use float 16')
   parser.add_argument('--save_as_safetensors', action='store_true', help='Save as safetensors')
@@ -338,15 +342,20 @@ if __name__ == "__main__":
   dict_augmentation = {
     'h_flip': args.h_flip,
     'color_jitter': args.color_jitter,
-    'rotation': args.rotation
+    'rotation': args.rotation,
+    'spatial_shift': args.spatial_shift
   }
+  
+  if args.log_file_path is None:
+    args.log_file_path = os.path.join(args.saving_folder_path,'log_file.txt')
+    
   main(model_type=args.model_type,
        saving_chunk_size=args.saving_after,
        sample_frame_strategy=helper.get_sampling_frame_startegy(args.sample_frame_strategy),
        num_clips_per_video=args.num_clips_per_video,
-       preprocess_align=args.prep_al,
-       preprocess_crop_detection=args.prep_crop,
-       preprocess_frontalize=args.prep_front,
+       preprocess_align=None,
+       preprocess_crop_detection=None,
+       preprocess_frontalize=None,
        path_dataset=args.path_dataset,
        path_labels=args.path_labels,
        log_file_path=args.log_file_path,
