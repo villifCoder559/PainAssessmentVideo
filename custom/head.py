@@ -1,3 +1,4 @@
+from collections import defaultdict
 import time
 import numpy as np
 import torch
@@ -13,6 +14,7 @@ import custom.helper as helper
 from custom.dataset import customBatchSampler
 from torch.nn.utils.rnn import pack_padded_sequence,pack_padded_sequence
 from custom.dataset import get_dataset_and_loader
+import custom.dataset as dataset_utils
 import tqdm
 import copy
 from jepa.src.models.attentive_pooler import AttentiveClassifier as AttentiveClassifierJEPA
@@ -31,6 +33,8 @@ from jepa.src.utils.tensors import trunc_normal_
 from coral_pytorch.layers import CoralLayer
 from coral_pytorch.dataset import proba_to_label
 import custom.backbone as custom_backbone
+import multiprocessing as mp
+
 
 class BaseHead(nn.Module):
   def __init__(self, model,is_classification):
@@ -88,7 +92,7 @@ class BaseHead(nn.Module):
                   round_output_loss, shuffle_training_batch, regularization_lambda_L1,concatenate_temp_dim,clip_grad_norm,
                   early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,backbone_dict,n_workers,label_smooth,
                   regularization_lambda_L2,trial,enable_optuna_pruning,prefetch_factor,soft_labels,is_coral_loss,sample_frame_strategy,stride_inside_window,
-                  num_clips_per_video):
+                  num_clips_per_video, **kwargs):
     
     # Generate Thread for smooth stopping 
     stop_event = threading.Event()
@@ -122,6 +126,7 @@ class BaseHead(nn.Module):
                                                               soft_labels=soft_labels,
                                                               label_smooth=label_smooth,
                                                               n_workers=n_workers)
+        
     if val_csv_path is not None:
       val_dataset, val_loader = get_dataset_and_loader(batch_size=batch_size,
                                                             csv_path=val_csv_path,
@@ -163,7 +168,8 @@ class BaseHead(nn.Module):
       else:
         scheduler = None
         wd_scheduler = None
-    
+
+    CCC_loss = CCCLoss() if kwargs['add_CCC_loss'] else None
     # train_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
     train_unique_classes = torch.tensor(train_dataset.get_unique_classes())
     train_unique_subjects = torch.tensor(train_dataset.get_unique_subjects())
@@ -306,7 +312,12 @@ class BaseHead(nn.Module):
           outputs = self(**dict_batch_X) # input [batch, seq_len, emb_dim]
           if outputs.shape[1] == 1: # if regression I don't need to keep dim 1 
             outputs = outputs.squeeze(1)
-          loss = criterion(outputs, batch_y)
+          
+          if CCC_loss:
+            loss = criterion(outputs, batch_y) + (kwargs['add_CCC_loss'] * CCC_loss(outputs, batch_y) if CCC_loss else 0.0)
+          else:
+            loss = criterion(outputs, batch_y)
+            
           if regularization_lambda_L1 > 0:
             # Sum absolute values of all trainable parameters except biases
             l1_norm = sum(param.abs().sum() for name,param in self.named_parameters() if param.requires_grad and 'bias' not in name) 
@@ -322,8 +333,10 @@ class BaseHead(nn.Module):
         scaler.unscale_(optimizer)  # Unscale gradients before clipping
         if clip_grad_norm:
           total_norm=torch.nn.utils.clip_grad_norm_(self.parameters(), clip_grad_norm).detach().cpu() #  torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)
-        else:
+        elif helper.LOG_GRADIENT_NORM:
           total_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), 500).detach().cpu() 
+        else:
+          total_norm = torch.tensor(0.0)
         dict_log_time['log_gradient'] = dict_log_time.get('log_gradient',0) + time.time() - log_gradient_start
         total_norm_epoch[epoch].append(total_norm.item())
         start_optimizer = time.time()
@@ -395,7 +408,9 @@ class BaseHead(nn.Module):
                                   val_loader=val_loader,
                                   is_coral_loss=is_coral_loss,
                                   epoch=epoch,
-                                  history_val_sample_predictions=history_val_sample_predictions)
+                                  history_val_sample_predictions=history_val_sample_predictions,
+                                  CCC_loss=CCC_loss,
+                                  **kwargs)
       dict_log_time['eval'] = dict_log_time.get('eval',0) + time.time()-time_eval
       # print(f'  Evaluation time: {dict_log_time["eval"]:.4f}')
       epoch_log_time = time.time()
@@ -448,6 +463,7 @@ class BaseHead(nn.Module):
       
       train_confusion_matrix.compute()
       train_dict_precision_recall = tools.evaluate_classification_from_confusion_matrix(confusion_matrix=train_confusion_matrix,list_real_classes=train_unique_classes)
+      train_dict_precision_recall['loss'] = list_train_losses[-1]
       list_train_performance_metric.append(train_dict_precision_recall[metric_for_stopping])
       list_val_performance_metric.append(dict_eval[key_for_early_stopping] if dict_eval is not None else 0.0)
       
@@ -460,7 +476,7 @@ class BaseHead(nn.Module):
       self.log_performance(stage='Train',
                            num_epochs=num_epochs,
                            loss=list_train_losses[-1], 
-                           accuracy=train_dict_precision_recall[metric_for_stopping],
+                           accuracy=train_dict_precision_recall['accuracy'],
                            epoch=epoch,
                            list_grad_norm=total_norm_epoch[epoch],
                            lrs=lrs,
@@ -470,7 +486,7 @@ class BaseHead(nn.Module):
                             num_epochs=num_epochs,
                             loss=dict_eval['val_loss'],
                             #  dict_kwarg={'acc_per_class':dict_eval['val_accuracy_per_class'],},
-                            accuracy=dict_eval[key_for_early_stopping])
+                            accuracy=dict_eval['val_accuracy'],)
       
       if helper.LOG_LOSS_ACCURACY and epoch > 0 and epoch % (helper.saving_rate_training_logs*2) == 0:
         fig,ax = plt.subplots(1,1,figsize=(10,10))
@@ -517,10 +533,23 @@ class BaseHead(nn.Module):
         print(f'  {k} time: {v:.4f} s')
 
       print(f'---------HEAD TIME LOGS---------')
-      for k,v in helper.head_time_logs.items():
+      for k,v in helper.train_time_logs.items():
         print(f'  {k} time: {v:.4f} s')
-      helper.head_time_logs = {} # reset logs for next epoch
-      
+
+      print('-----------WORKERS TIME LOGS-----------')
+      summary_aggregated = {}
+      for key,val in helper.time_profile_dict.items():
+        split_key = key.split('_')
+        pid = int(split_key[0])
+        key_name = '_'.join(split_key[1:])
+        summary_aggregated[key_name] = summary_aggregated.get(key_name,0) + val
+      for k,v in summary_aggregated.items():
+        print(f'  {k}: {v:.4f} {"s" if "time" in k else "count"}')
+
+      print('---------------------------------------')
+
+      helper.time_profile_dict.clear() # reset logs for next epoch
+      helper.train_time_logs = {}
       if helper.LOG_GRADIENT_PER_MODULE and np.mean(total_norm_epoch[epoch]) < 1e-2:
         print(f'Gradient norm is small (< 1e-1). Stopping training...')
         break
@@ -589,7 +618,7 @@ class BaseHead(nn.Module):
       # 'list_y': list_list_y
     }
 
-  def evaluate(self, val_loader, criterion, unique_val_subjects, unique_val_classes, is_test,is_coral_loss,epoch,history_val_sample_predictions=None,save_log=True):
+  def evaluate(self, val_loader, criterion, unique_val_subjects, unique_val_classes, is_test,is_coral_loss,epoch,history_val_sample_predictions=None,save_log=True,**kwargs):
     # unique_train_val_classes is only for eval but kept the name for compatibility
     device = 'cuda'
     count = 0
@@ -635,7 +664,12 @@ class BaseHead(nn.Module):
         
         if outputs.shape[1] == 1: # if regression I don't need to keep dim 1 
           outputs = outputs.squeeze(1)
-        loss = criterion(outputs, batch_y)
+
+        if kwargs['CCC_loss']:
+          loss = criterion(outputs, batch_y) + (kwargs['add_CCC_loss'] * kwargs['CCC_loss'](outputs, batch_y) if kwargs['CCC_loss'] else 0.0)
+        else:
+          loss = criterion(outputs, batch_y)
+        
         val_loss += loss.item()
         
         if is_coral_loss:
@@ -781,37 +815,9 @@ class LinearHead(BaseHead):
     is_classification = True if num_classes > 1 else False
     self.is_classification = is_classification
     self.num_classes = num_classes
-  # def get_dataset_and_loader(self, csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal):
-  #   return super().get_dataset_and_loader(csv_path, root_folder_features, batch_size, shuffle_training_batch, is_training, dataset_type, concatenate_temporal, False)
 
 
-# class CrossAttentionBlock(nn.Module):
-#     def __init__(
-#         self,
-#         dim,
-#         num_heads,
-#         mlp_ratio=4.,
-#         drop=0.0,
-#         attn_drop=0.0,
-#         residual_drop=0.0,
-#         qkv_bias=False,
-#         act_layer=nn.GELU,
-#         norm_layer=nn.LayerNorm,
-#         use_sdpa=False
-#     ):
-#         super().__init__()
-#         self.norm1 = norm_layer(dim)
-#         self.xattn = CrossAttention(dim, 
-#                                     num_heads=num_heads,
-#                                     qkv_bias=qkv_bias,
-#                                     use_sdpa=use_sdpa,
-#                                     attn_drop=attn_drop,
-#                                     proj_drop=drop)
-#         self.norm2 = norm_layer(dim)
-#         mlp_hidden_dim = int(dim * mlp_ratio)
-#         self.mlp = MLP(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
-#         self.residual_drop = nn.Dropout(residual_drop)
-  
+
 class AttentiveHeadJEPA(BaseHead):
   def __init__(self,
       embed_dim=768,
@@ -866,7 +872,7 @@ class AttentiveHeadJEPA(BaseHead):
     self.num_queries = num_queries
     self.pos_enc = pos_enc
     self.pos_enc_tensor = None
-    self.total_grid_area = grid_size_pos[1]*grid_size_pos[2]
+    self.total_grid_area = grid_size_pos[1]*grid_size_pos[2] # spatial_area * spatial_area
     self.grid_size_pos = grid_size_pos
     self.head_init_path = head_init_path
     self.coral_loss = coral_loss
@@ -910,16 +916,37 @@ class AttentiveHeadJEPA(BaseHead):
     if self.pos_enc_tensor is None or self.pos_enc_tensor.shape[0] != x.size(1):
       if x.size(1) % self.total_grid_area != 0:
         raise ValueError(f'Input length {x.size(1)} is not divisible by grid size {self.total_grid_area}.\nx.size // self.total_grid_area = {x.size(1)} // {self.total_grid_area} = {x.size(1)//self.total_grid_area}')
-      if self.pos_enc == 1: 
-        self.pos_enc_tensor = pos_embs.get_1d_sincos_pos_embed_torch(embed_dim=x.size(2), # [B, seq_len ,C]
-                                                                    grid_size=x.size(1)//self.total_grid_area).unsqueeze(0).to(x.device) # [1, nr_clips, emb_dim]
-        self.pos_enc_tensor = torch.repeat_interleave(self.pos_enc_tensor, x.shape[1]//self.pos_enc_tensor.shape[1], dim=1)
       
-      elif self.pos_enc == 43: # ONLY for quadrant features
+      if self.pos_enc == 1: # 1D temporal positional encoding  
+        self.pos_enc_tensor = pos_embs.get_1d_sincos_pos_embed_torch(embed_dim=x.size(2), # [B, seq_len ,C]
+                                                                    grid_size=x.size(1)//self.total_grid_area).unsqueeze(0).to(x.device) # -> [1, nr_clips, emb_dim]
+        # Extracted the temporal dimension only, repeat for all spatial tokens and chunks
+        self.pos_enc_tensor = torch.repeat_interleave(self.pos_enc_tensor, x.shape[1] // self.pos_enc_tensor.shape[1], dim=1)
+      
+      elif self.pos_enc == 3: # 3D positional encoding
+        grid_depth = x.size(1) // self.total_grid_area # depth => time_dimension
+        grid_size = self.grid_size_pos[1] # height * width => spatial_dimension
         self.pos_enc_tensor = pos_embs.get_3d_sincos_pos_embed_torch(embed_dim=x.size(2), # [B, seq_len ,C]
-                                                                      grid_depth=x.size(1)//(self.total_grid_area), # Time dimension
-                                                                      grid_size=2 # numer of quadrants (2x2) # self.grid_size_pos[1]
+                                                                    grid_depth=grid_depth, # depth => time_dimension
+                                                                    grid_size=grid_size # height * width => spatial_dimension
                                                                     ).unsqueeze(0).to(x.device)
+      
+      elif self.pos_enc == 41: # ONLY QUADRANTS 1D temporal position encoding
+        nr_frames = x.size(1) // self.total_grid_area // 4 # 4 quadrants
+        self.pos_enc_tensor = pos_embs.get_1d_sincos_pos_embed_torch(embed_dim=x.size(2), # [B, seq_len ,C]
+                                                                    grid_size=nr_frames # depth => time_dimension
+                                                                    ).unsqueeze(0).to(x.device)
+        self.pos_enc_tensor = torch.repeat_interleave(self.pos_enc_tensor, x.shape[1] // self.pos_enc_tensor.shape[1], dim=1)
+
+      elif self.pos_enc == 43: # ONLY QUADRANTS 3D positional encoding  
+        grid_size = self.grid_size_pos[1] * 2 
+        grid_depth = x.size(1) // self.total_grid_area // 4 
+        self.pos_enc_tensor = pos_embs.get_3d_sincos_pos_embed_torch(embed_dim=x.size(2), # [B, seq_len ,C]
+                                                                      grid_depth=grid_depth, # depth => time_dimension
+                                                                      grid_size=grid_size # height * width => spatial_dimension
+                                                                    ).unsqueeze(0).to(x.device)
+        # print(f'Pos enc shape (3D): {self.pos_enc_tensor.shape}')
+        # print(f'Input shape: {x.shape}')
       if x.shape[1] % self.pos_enc_tensor.shape[1] != 0:
         raise ValueError(f'x.shape not divisible for pos_enc.shape. x size of {x.size(1)} is not divisible by pos_enc size {self.pos_enc.size(1)}')
     # print(self.pos_enc_tensor.shape)
@@ -987,13 +1014,13 @@ class AttentiveHeadJEPA(BaseHead):
     if self.backbone is not None:
       time_backbone_forward = time.time()
       x = self.backbone.forward_features(x) # [B * num_chunks, channels, frames=16, height, width] -> [B*chunks, T, S, S, embed_dim]
-      helper.head_time_logs['backbone_forward'] = helper.head_time_logs.get('backbone_forward',0) + (time.time() - time_backbone_forward)
+      helper.train_time_logs['backbone_forward'] = helper.train_time_logs.get('backbone_forward',0) + (time.time() - time_backbone_forward)
       
       # Apply reduction if needed
       time_reduction = time.time()
       if self.embedding_reduction !=  helper.EMBEDDING_REDUCTION.NONE:
         x = torch.mean(x,dim=self.embedding_reduction.value,keepdim=True)
-      helper.head_time_logs['embedding_reduction'] = helper.head_time_logs.get('embedding_reduction',0) + (time.time() - time_reduction)
+      helper.train_time_logs['embedding_reduction'] = helper.train_time_logs.get('embedding_reduction',0) + (time.time() - time_reduction)
       
       # Reshape x  : [B * num_chunks, T, S, S, embed_dim] -> [B, num_chunks*T*S*S, embed_dim]
       time_reshape = time.time()
@@ -1003,19 +1030,19 @@ class AttentiveHeadJEPA(BaseHead):
         key_padding_mask = None # no need to compute key_padding_mask if all sequences have the same length
       else:
         x, key_padding_mask = self.elaborate_feats_from_backbone_v2(x, **kwargs)
-      helper.head_time_logs['embedding_reshape'] = helper.head_time_logs.get('embedding_reshape',0) + (time.time() - time_reshape)
+      helper.train_time_logs['embedding_reshape'] = helper.train_time_logs.get('embedding_reshape',0) + (time.time() - time_reshape)
     else:
       # if features are already extracted, use them directly (key_padding_mask already computed in the dataloader)
       time_reduction = time.time()
       if self.embedding_reduction !=  helper.EMBEDDING_REDUCTION.NONE:
         x = torch.mean(x,dim=self.embedding_reduction.value,keepdim=True)
-      helper.head_time_logs['embedding_reduction'] = helper.head_time_logs.get('embedding_reduction',0) + (time.time() - time_reduction)
+      helper.train_time_logs['embedding_reduction'] = helper.train_time_logs.get('embedding_reduction',0) + (time.time() - time_reduction)
 
     # Apply positional encoding if enabled
     time_pos_enc = time.time()
     if self.pos_enc:
       x = self.apply_pos_enc(x) # add positional encoding if enabled
-    helper.head_time_logs['pos_enc'] = helper.head_time_logs.get('pos_enc',0) + (time.time() - time_pos_enc)
+    helper.train_time_logs['pos_enc'] = helper.train_time_logs.get('pos_enc',0) + (time.time() - time_pos_enc)
     
     # FORWARD PASS
     time_head = time.time()
@@ -1026,7 +1053,7 @@ class AttentiveHeadJEPA(BaseHead):
       return x, self.linear(x)
     else:
       x = self.linear(x)
-    helper.head_time_logs['head_forward'] = helper.head_time_logs.get('head_forward',0) + (time.time() - time_head)
+    helper.train_time_logs['head_forward'] = helper.train_time_logs.get('head_forward',0) + (time.time() - time_head)
     
     # LOG CROSS ATTENTION if enabled
     if helper.LOG_CROSS_ATTENTION['enable'] and xattn is not None:
@@ -1344,3 +1371,64 @@ class MeanMaxAggregator(nn.Module):
     else:  # 'max'
       # elementwise max
       return pooled_feats.max(dim=1)[0]  # [B, C]
+
+class CCCLoss(nn.Module):
+  """
+  Concordance Correlation Coefficient loss: returns (1 - CCC).
+
+  Args:
+    eps (float): small value for numeric stability.
+    per_sample (bool):
+      - False (default): compute CCC across all elements (flattened) and return a scalar.
+      - True: compute CCC per-sample across dims 1.. and reduce according to `reduction`.
+    reduction (str): 'mean'|'sum'|'none' used only when per_sample=True.
+  """
+  def __init__(self, eps: float = 1e-8, per_sample: bool = False, reduction: str = "mean"):
+    super().__init__()
+    assert reduction in ("mean", "sum", "none")
+    self.eps = eps
+    self.per_sample = per_sample
+    self.reduction = reduction
+
+  def forward(self, preds: torch.Tensor, target: torch.Tensor):
+    
+    if target.dtype.is_floating_point is False:
+      target = target.float()
+    if preds.dtype.is_floating_point is False:
+      preds = preds.float()
+    if preds.shape != target.shape:
+      raise ValueError(f"preds and target must have same shape, got {preds.shape} vs {target.shape}")
+
+    if not self.per_sample:
+      # Flatten everything and compute a single CCC
+      p = preds.view(-1)
+      t = target.view(-1)
+
+      mu_p = p.mean()
+      mu_t = t.mean()
+      var_p = p.var(unbiased=False)
+      var_t = t.var(unbiased=False)
+      cov = ((p - mu_p) * (t - mu_t)).mean()
+      ccc = (2.0 * cov) / (var_p + var_t + (mu_p - mu_t) ** 2 + self.eps)
+      return 1.0 - ccc
+
+    # Per-sample CCC: compute CCC for each sample across dims 1..
+    p = preds.view(preds.size(0), -1)   # [B, L]
+    t = target.view(target.size(0), -1) # [B, L]
+
+    mu_p = p.mean(dim=1)    # [B]
+    mu_t = t.mean(dim=1)    # [B]
+    var_p = p.var(dim=1, unbiased=False)  # [B]
+    var_t = t.var(dim=1, unbiased=False)  # [B]
+    cov = ((p - mu_p.unsqueeze(1)) * (t - mu_t.unsqueeze(1))).mean(dim=1)  # [B]
+
+    ccc = (2.0 * cov) / (var_p + var_t + (mu_p - mu_t) ** 2 + self.eps)  # [B]
+    loss = 1.0 - ccc  # [B]
+
+    if self.reduction == "mean":
+      return loss.mean()
+    elif self.reduction == "sum":
+      return loss.sum()
+    else:  # 'none'
+      return loss
+
