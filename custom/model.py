@@ -10,6 +10,7 @@ from custom.helper import CUSTOM_DATASET_TYPE, MODEL_TYPE, get_shift_for_sample_
 import pandas as pd
 import custom.helper as helper
 # import wandb
+import tqdm
 
 class Model_Advanced: # Scenario_Advanced
   def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,stride_inside_window,
@@ -157,7 +158,7 @@ class Model_Advanced: # Scenario_Advanced
     
     # Load all the data in RAM memory      
     dict_data_original = {}
-    for path in list_path_features:
+    for path in tqdm.tqdm(list_path_features,desc="Loading features in memory"):
       dict_data = tools.load_dict_data(saving_folder_path=path)
       for k,v in dict_data.items():
         if k not in dict_data_original:
@@ -170,7 +171,7 @@ class Model_Advanced: # Scenario_Advanced
         dict_data_original[k] = np.concatenate(v, axis=0)
       if isinstance(v[0], torch.Tensor):
         dict_data_original[k] = torch.concat(v, dim=0)
-    
+
     for type_augm, p in self.dict_augmented.items():
       if p > 0 and p<= 1 and not 'latent' in type_augm:
         raise NotImplementedError("Loading augmented data in memory is not implemented yet.")
@@ -237,6 +238,8 @@ class Model_Advanced: # Scenario_Advanced
         return 73
       elif type_augm == 'latent_masking':
         return 83
+      elif type_augm == 'shift':
+        return 93
       else:
         raise ValueError(f'Unknown augmentation type: {type_augm}')
     list_df = []
@@ -344,7 +347,7 @@ class Model_Advanced: # Scenario_Advanced
             shuffle_training_batch,init_network,
             regularization_lambda_L1,key_for_early_stopping,early_stopping,
             enable_scheduler,concatenate_temporal,clip_grad_norm,regularization_lambda_L2,
-            enable_optuna_pruning=False,trial=None
+            enable_optuna_pruning=False,trial=None,**kwargs
             ):
     """
     Train the model using the specified training and testing datasets.
@@ -413,7 +416,9 @@ class Model_Advanced: # Scenario_Advanced
                                           label_smooth=self.label_smooth,
                                           backbone_dict=self.backbone_dict,
                                           enable_optuna_pruning=enable_optuna_pruning,
-                                          trial=trial)
+                                          trial=trial,
+                                          **kwargs
+                                          )
     
     count_subject_ids_train, count_y_train = tools.get_unique_subjects_and_classes(train_csv_path)
     if val_csv_path is not None:
