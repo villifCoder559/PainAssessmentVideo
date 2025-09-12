@@ -1285,7 +1285,7 @@ def generate_video_from_list_video_path(list_video_path, list_frames, list_subje
   out.release()
   print(f"Generated video saved to folder {saving_path}")
     
-def generate_video_from_list_frame(list_frame,path_video_output,fps=25):
+def generate_video_from_list_frame(list_frame,path_video_output,fps=25,resize=None):
   """
   Generates a video file from a list of frames.
 
@@ -1300,12 +1300,18 @@ def generate_video_from_list_frame(list_frame,path_video_output,fps=25):
 
   if not os.path.exists(os.path.split(path_video_output)[0]):
     os.makedirs(os.path.split(path_video_output)[0])
-  out = cv2.VideoWriter(path_video_output, cv2.VideoWriter_fourcc(*'avc1'), fps, (list_frame[0].shape[0], list_frame[0].shape[1]))
+  out_size = (list_frame[0].shape[1], list_frame[0].shape[0]) if resize is None else resize
+  out = cv2.VideoWriter(path_video_output, cv2.VideoWriter_fourcc(*'mp4v'), fps, out_size)
+  count = 0
   for frame in list_frame:
     if not isinstance(frame,np.ndarray):
       frame = np.array(frame,dtype=np.uint8)
     frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    if resize is not None:
+      frame = cv2.resize(frame, resize)
+    # print(f'Frame {count} size: {frame.shape}')
     out.write(frame)
+    count += 1
   out.release()
   print(f'Video saved to {path_video_output}')
 
