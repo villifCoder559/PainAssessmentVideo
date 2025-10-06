@@ -52,10 +52,14 @@ class Model_Advanced: # Scenario_Advanced
     
     self.n_workers = n_workers
     self.dict_augmented = dict_augmented
-    complete_df = self.generate_csv_augmented(original_csv_path=path_labels,
-                                dict_augmentation=dict_augmented,
-                                out_csv_path=new_csv_path)
-          
+    if os.path.exists(new_csv_path):
+      print(f'CSV file with augmentations already exists at {new_csv_path}. Using the existing file.')
+      complete_df = pd.read_csv(new_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
+    else:
+      complete_df = self.generate_csv_augmented(original_csv_path=path_labels,
+                                  dict_augmentation=dict_augmented,
+                                  out_csv_path=new_csv_path)
+            
     self.concatenate_temporal = concatenate_temporal
     self.path_to_extracted_features = features_folder_saving_path
     self.dataset_type = tools.get_dataset_type(self.path_to_extracted_features)
@@ -94,11 +98,17 @@ class Model_Advanced: # Scenario_Advanced
       if self.dataset_type == CUSTOM_DATASET_TYPE.AGGREGATED:
         T_S_S_shape = np.array(helper.dict_data['features'][0].shape[:3])
         if embedding_reduction.value is not None:
-          T_S_S_shape = np.mean(helper.dict_data['features'][0].shape,axis=embedding_reduction.value)[:3]
+          shape_feats = helper.dict_data['features'][0].numpy()
+          T_S_S_shape = np.mean(shape_feats, axis=embedding_reduction.value, keepdims=True).shape[:3]
+          print(f'\nApplied embedding reduction, T_S_S shape: {T_S_S_shape} ')
           # T_S_S_shape = T_S_S_shape.squeeze()
       elif self.dataset_type == CUSTOM_DATASET_TYPE.WHOLE:
         # T_S_S_shape = [8,16,16] if head_params['input_dim'] == 1408 else [8,14,14] # 1408 giant model
         T_S_S_shape = [self.backbone.frame_size // self.backbone.tubelet_size, self.backbone.out_spatial_size, self.backbone.out_spatial_size]
+        if embedding_reduction.value is not None:
+          for el in embedding_reduction.value:
+            T_S_S_shape[el - 1] = 1
+          print(f'\nApplied embedding reduction, T_S_S shape: {T_S_S_shape} ')
       elif self.dataset_type == CUSTOM_DATASET_TYPE.BASE:
         T_S_S_shape = [self.backbone.frame_size // self.backbone.tubelet_size, self.backbone.out_spatial_size, self.backbone.out_spatial_size]
         if embedding_reduction.value is not None:
@@ -123,6 +133,7 @@ class Model_Advanced: # Scenario_Advanced
                                           head_init_path=head_params['head_init_path'],
                                           num_queries=head_params['num_queries'],
                                           agg_method=head_params['agg_method'],
+                                          drop_path_mode=head_params['drop_path_mode'] if 'drop_path_mode' in head_params else 'row',
                                           use_sdpa=use_sdpa,
                                           embedding_reduction=helper.EMBEDDING_REDUCTION.get_embedding_reduction(head_params['embedding_reduction']),
                                           backbone=self.backbone if self.dataset_type == CUSTOM_DATASET_TYPE.BASE else None,
@@ -243,7 +254,7 @@ class Model_Advanced: # Scenario_Advanced
       else:
         raise ValueError(f'Unknown augmentation type: {type_augm}')
     list_df = []
-    df = pd.read_csv(original_csv_path,sep='\t')
+    df = pd.read_csv(original_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
     list_df.append(df)
     for type_augm, p in dict_augmentation.items():
       if p > 0 and p<= 1:
@@ -254,8 +265,8 @@ class Model_Advanced: # Scenario_Advanced
     df_merged.to_csv(out_csv_path, index=False, sep='\t')
     print(f'CSV file with augmentations saved to {out_csv_path}')
     return df_merged
-    
-  def test_pretrained_model(self,path_model_weights,state_dict, csv_path, criterion, concatenate_temporal,is_test):
+
+  def test_pretrained_model(self,path_model_weights,state_dict, csv_path, criterion, concatenate_temporal,is_test=True,**kwargs):
     """
     Evaluate the model using the specified dataset.
     Parameters:
@@ -272,8 +283,9 @@ class Model_Advanced: # Scenario_Advanced
     """
     if not is_test:
       raise Exception('Set is_test to True. Currently this function is only for testing.')
+    
     if path_model_weights is not None:
-      self.head.load_state_weights()
+      self.head.load_state_weights(path_model_weights)
     else:
       self.head.load_state_dict(state_dict) # TODO: change to self.head.load_state_dict()
     
@@ -300,7 +312,8 @@ class Model_Advanced: # Scenario_Advanced
                                                         soft_labels=self.soft_labels,
                                                         prefetch_factor=self.prefetch_factor,
                                                         label_smooth=self.label_smooth,
-                                                        n_workers=self.n_workers
+                                                        n_workers=self.n_workers,
+                                                        **kwargs
                                                         )
     unique_test_subjects = torch.tensor(test_dataset.get_unique_subjects())
     unique_classes = torch.tensor(test_dataset.get_unique_classes())
@@ -326,7 +339,8 @@ class Model_Advanced: # Scenario_Advanced
                                    is_test=is_test,
                                    is_coral_loss=is_coral_loss,
                                    epoch=0, # to get the right position for history_test_sample_predictions
-                                   history_val_sample_predictions=history_test_sample_predictions)
+                                   history_val_sample_predictions=history_test_sample_predictions,
+                                   **kwargs)
     
     dict_test['history_test_sample_predictions'] = history_test_sample_predictions
     dict_test['test_unique_subject_ids'] = unique_test_subjects.numpy()
