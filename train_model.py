@@ -12,6 +12,7 @@ from custom.head import earlyStoppingAccuracy, earlyStoppingLoss
 import custom.scripts as scripts
 import custom.helper as helper
 import platform
+from custom.head import CCCLoss
 import pandas as pd
 # import cProfile, pstats
 import numpy as np
@@ -126,6 +127,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   regulariz_lambda_L2 = _suggest(trial, 'regulariz_lambda_L2', kwargs['regulariz_lambda_L2'], kwargs['optuna_categorical'])
   label_smooth = trial.suggest_categorical('label_smooth', kwargs['label_smooth'])
   concatenate_temp_dim = trial.suggest_categorical('concatenate_temp_dim', kwargs['concatenate_temp_dim'])
+  concatenate_quadrants = trial.suggest_categorical('concatenate_quadrants', kwargs['concatenate_quadrants'])
   loss = trial.suggest_categorical('loss', kwargs['loss'])
   cdw_ce_alpha = _suggest(trial, 'cdw_ce_alpha', kwargs['cdw_ce_alpha'], kwargs['optuna_categorical'])
   cdw_ce_power_transform = trial.suggest_categorical('cdw_ce_power_transform', kwargs['cdw_ce_transform'])
@@ -150,6 +152,12 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   latent_masking = _suggest(trial, 'latent_masking', kwargs['latent_masking'], kwargs['optuna_categorical'])
   shift_augm = _suggest(trial, 'shift_augm', kwargs['shift_augm'], kwargs['optuna_categorical'])
   
+  emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
+  input_dim = emb_dim
+  if concatenate_temp_dim:
+    input_dim *= 8 # 8 temporal segments from 1 chunk
+  elif concatenate_quadrants:
+    input_dim *= 4 # 4 quadrants
   # choose head-specific hyperparameters
   head_name = kwargs['head']
   if head_name.upper() == 'GRU':
@@ -161,9 +169,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     GRU_dropout = _suggest(trial, 'GRU_dropout', kwargs['GRU_dropout'], kwargs['optuna_categorical'])
     GRU_round_output_loss = trial.suggest_categorical('GRU_round_output_loss', kwargs['GRU_round_output_loss'])
     # Build head parameters
-    emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
     head_params = {
-      'input_dim': emb_dim * 8 if concatenate_temp_dim else emb_dim,
+      'input_dim': input_dim,
       'hidden_size': GRU_hidden_size,
       'num_layers': GRU_num_layers,
       'output_size': GRU_output_size,
@@ -187,8 +194,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     queries_agg_method = trial.suggest_categorical('queries_agg_method', kwargs['queries_agg_method'])
     cross_block_after_transformers = trial.suggest_categorical('cross_block_after_transformers', kwargs['cross_block_after_transformers'])
     q_k_v_dim = trial.suggest_categorical('q_k_v_dim', kwargs['q_k_v_dim'])
-    emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
     custom_mlp = trial.suggest_categorical('custom_mlp', kwargs['custom_mlp'])
+    drop_path_mode = trial.suggest_categorical('drop_path_mode', kwargs['drop_path_mode'])
     if loss in ['l1', 'l2', 'huber']:
       num_classes = 1
       print(f"\nRegression task detected. Setting num_classes to 1 for {loss} loss.")
@@ -202,7 +209,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'num_adapters': trial.suggest_categorical('num_adapters', kwargs['num_adapters']),
     }
     head_params = {
-      'input_dim': emb_dim * 8 if concatenate_temp_dim else emb_dim,
+      'input_dim': input_dim,
       'q_k_v_dim': q_k_v_dim if q_k_v_dim != None else emb_dim,
       'num_classes': num_classes,
       'num_cross_heads': num_cross_head,
@@ -211,6 +218,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'attn_dropout': drop_attn,
       'head_init_path': kwargs['head_init_path'],
       'residual_dropout': drop_residual,
+      'drop_path_mode': drop_path_mode,
       'mlp_ratio': mlp_ratio,
       'custom_mlp': custom_mlp,
       'pos_enc': pos_enc,
@@ -262,7 +270,12 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   
   add_kwargs={
     'add_CCC_loss': add_CCC_loss,
+    'CCC_loss': CCCLoss() if add_CCC_loss > 0 else None,
+    'concatenate_quadrants': concatenate_quadrants,
+    'is_subject_independent': kwargs['is_subject_independent'],
   }
+    
+  print(f"\n[Trial {trial.number}] Params: {trial.params}")
   
   run_folder_path, results = scripts.run_train_test(
     load_dataset_in_memory=kwargs['load_dataset_in_memory'],
@@ -418,11 +431,10 @@ if __name__ == '__main__':
 
   # Data loading parameters
   parser.add_argument('--load_dataset_in_memory', type=int, default=0, help='Load the entire dataset into RAM memory. Default is 0 (False)')
+  parser.add_argument('--is_subject_independent', type=int, choices=[0,1], default=1, help='Subject-independent split. Default is 1 (True)')
   
   # Training parameters
   parser.add_argument('--validation_enabled', type=int, choices=[0,1], default=1, help='Enable validation set during training. Default is 1 (enabled)')
-  parser.add_argument('--save_best_model', action='store_true', help='Save the best model')
-  parser.add_argument('--save_last_epoch_model', action='store_true', help='Save the last epoch model')
   parser.add_argument('--train_amp_enabled', action='store_true', help='Enable AMP training')
   parser.add_argument('--train_amp_dtype', type=str, default=None, help='AMP training data type: bfloat16 or float16. Default is float16')
   parser.add_argument('--lr', type=float, nargs='*', default=[0.0001], help='Learning rate(s)')
@@ -435,6 +447,7 @@ if __name__ == '__main__':
   parser.add_argument('--clip_grad_norm', type=float, default=None, help='Clip gradient norm. Default is None (not applied)')
   parser.add_argument('--concatenate_temp_dim', type=int, nargs='*', default=[0],
                     help='Concatenate temporal dimension in input to the model. (ex: the embeddind is [temporal*emb_dim]=6144 if model base)')
+  parser.add_argument('--concatenate_quadrants',type=int, nargs='*', default=[0], help='Concatenate quadrants dimension in input to the model. (ex: the embeddind is [4*emb_dim]=3072 if model base)' )
   parser.add_argument('--loss', type=str, nargs='*', default='ce', help='Loss function: l1, l2, ce, cdw_ce,sim_loss,huber, coral, ce_weight. Default is ce')
   parser.add_argument('--add_CCC_loss', type=float, nargs='*', default=[0.0], help='Add CCC loss to the main loss with this weight. Default is 0.0 (not added)')
   parser.add_argument('--cdw_ce_alpha', type=float, nargs='*', default=[2], help='Alpha parameter for CDW loss.') 
@@ -451,7 +464,8 @@ if __name__ == '__main__':
   parser.add_argument('--num_cross_head',type=int, nargs='*',default=[8], help='Number of heads for cross-attention.')
   parser.add_argument('--model_dropout', type=float, nargs='*', default=[0.0], help='Model dropout rate(s). This is drop_mlp for AttentiveJepa')
   parser.add_argument('--drop_attn', type=float, nargs='*', default=[0.0], help='Attention dropout rate(s)')
-  parser.add_argument('--drop_residual', type=float, nargs='*', default=[0.0], help='Residual dropout rate(s)')
+  parser.add_argument('--drop_residual', type=float, nargs='*', default=[0.0], help='Residual dropPath rate(s)')
+  parser.add_argument('--drop_path_mode', type=str, nargs='*', default=['row'], help='Drop path mode: row or batch. Default is row')
   parser.add_argument('--mlp_ratio', type=float, nargs='*', default=[2.0], help='MLP ratio(s) for AttentiveJepa')
   parser.add_argument('--custom_mlp', type=int, nargs='*', default=[0],
                     help='Use custom MLP for AttentiveJepa head. Default is 0 (no custom MLP)')
@@ -519,6 +533,8 @@ if __name__ == '__main__':
   parser.add_argument('--log_xattn', action='store_true', help='Log cross attention weights')
   parser.add_argument('--log_grad_norm', action='store_true', help='Log gradient norm')
   parser.add_argument('--log_workers', action='store_true', help='Log time taken by each worker to load data')
+  parser.add_argument('--save_best_model', action='store_true', help='Save the best model during training')
+  parser.add_argument('--save_last_epoch_model', action='store_true', help='Save the last epoch model')
 
   # Optuna parameters
   parser.add_argument('--pruner_threshold_lower', type=float, default=0.20, help='Threshold for Optuna pruner. Default is 0.2')
@@ -544,18 +560,37 @@ if __name__ == '__main__':
   if dict_args['plot_live_loss']:
     helper.PLOT_LIVE_LOSS = True
   
+  if dict_args['save_best_model']:
+    helper.SAVE_PTH_MODEL = True
+  
   if dict_args['log_xattn']:
     helper.LOG_CROSS_ATTENTION['enable']= True 
     helper.LOG_HISTORY_SAMPLE = True  # is True to get the prediction accoridng to the cross attention, so it's possible to check if the prediction makes sense
   
+  if 'caer' in dict_args['csv']:
+    print("\n Detected CAER, FORCE SPLIT INDICES FOR TRAINING K-FOLD \n")
+    helper.step_shift = 13176 # CAER specific: to avoid collision with Biovid (otherwise it triggers athe augmentation used for Biovid)
+    helper.FORCE_SPLIT_K_FOLD = True
+    if dict_args['k_fold'] != 3:
+      raise ValueError("CAER dataset only supports 3-fold cross-validation. Set --k_fold 3 1.")
+    if dict_args['stop'][0] != 1 and dict_args['stop'][1] != 1:
+      raise ValueError("CAER dataset only supports 3-fold cross-validation with 1 subfold. Set --stop 3 1.")
+
   if dict_args['log_history_sample']:
     helper.LOG_HISTORY_SAMPLE = True
+  
+  if dict_args['concatenate_quadrants'][0] and not 'combined' in dict_args['ffsp']:
+    raise ValueError("To use quadrants concatenation, the feature folder must contain combined quadrants features. Please set --ffsp to the folder with combined quadrants features.")
   
   if dict_args['log_workers']:
     helper.time_profiling_enabled = True
   
   if dict_args['save_last_epoch_model']:
     helper.SAVE_LAST_EPOCH_MODEL = True
+    helper.SAVE_PTH_MODEL = True
+  
+  if dict_args['mlp_ratio'][0] == 0:
+    raise ValueError("mlp_ratio cannot be 0. Set it to a value greater than 0.")
   
   if dict_args['train_amp_enabled']:
     helper.AMP_ENABLED = True
@@ -564,7 +599,7 @@ if __name__ == '__main__':
   if dict_args['log_grad_norm']:
     helper.LOG_GRADIENT_NORM = True
   
-  if dict_args['add_CCC_loss'] and dict_args['loss'][0] not in ['l1','l2','huber']:
+  if dict_args['add_CCC_loss'][0] and dict_args['loss'][0] not in ['l1','l2','huber']:
     raise ValueError("CCC loss can only be added to 'l1', 'l2', or 'huber' loss. Set loss to one of these to use CCC loss.")
   
   for method in dict_args['queries_agg_method']:
@@ -598,6 +633,8 @@ if __name__ == '__main__':
   
   if dict_args['key_early_stopping'] not in ['val_accuracy','val_loss']:
     raise ValueError(f"Invalid key for early stopping: {dict_args['key_early_stopping']}. Must be 'val_accuracy' or 'val_loss'.")
+  
+  
   
   if not dict_args['validation_enabled']:
     helper.SAVE_LAST_EPOCH_MODEL = True
