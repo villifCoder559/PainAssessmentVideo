@@ -279,9 +279,11 @@ class FaceExtractor:
         if np_landmarks is not None:
           detection_result_list.append([[lm.x,lm.y,lm.z] for lm in np_landmarks])
         # detection_result_list.append(detection_result.face_landmarks[0] if len(detection_result.face_landmarks) > 0 else None)
+        else:
+          detection_result_list.append(None)
       else:
         detection_result_list.append(None)
-    return np.array(detection_result_list)
+    return detection_result_list
 
   def center_wrt_nose(self,landmarks):
     nose = landmarks[self.NOSE_INDEX]
@@ -334,6 +336,10 @@ class FaceExtractor:
       landmarks = self.convert_from_numpy_to_NormalizedLandmark(landmarks)
     routes_idx = self.FACE_OVAL
     routes = self._find_coords_point(routes_idx, landmarks, img)
+    # check if routes is empty
+    if len(routes) == 0:
+      print("No routes found.")
+      return None,None
     out_img,mask = self._extract_face_oval_from_img(img, routes)
     return out_img,mask
 
@@ -349,6 +355,8 @@ class FaceExtractor:
       landmarks = self.center_wrt_nose(landmarks)
       routes = self._find_coords_point(routes_idx, landmarks, img)
       out_img,_ = self._extract_face_oval_from_img(img, routes)
+      if out_img is None:
+        print("No face oval extracted.")
       # print(f'out_img shape: {out_img.shape}')
       new_video.append(out_img)
 
@@ -439,16 +447,18 @@ class FaceExtractor:
     print(f'shift_x: {shift_x}, shift_y: {shift_y}')
     return shift_x,shift_y
   
-  def frontalized_video(self,video_path,ref_landmarks,interpolation_mod_chunk=None,only_landmarks_crop=False,align_before_front=True,log_path=None,time_logs=False,extra_landmark_smoothing=None):
+  def frontalized_video(self,video_path,ref_landmarks,interpolation_mod_chunk=None,only_landmarks_crop=False,align_before_front=False,log_path=None,time_logs=False,extra_landmark_smoothing=None):
 
     def validate_frame_detection(list_to_validate):
       miss_detection = False
+      list_is_detected = []
       for idx, el in enumerate(list_to_validate):
-        list_no_detection_idx = []
         if el is None:
-          list_no_detection_idx.append(idx)
+          list_is_detected.append(False)
           miss_detection = True
-      return miss_detection, list_no_detection_idx
+        else:
+          list_is_detected.append(True)
+      return miss_detection, list_is_detected
 
     # start = time.time()
     list_frames,list_timestamp,fps = self._get_list_frame(video_path,align=align_before_front,return_tuple=False)
@@ -463,17 +473,26 @@ class FaceExtractor:
         raise ValueError(f'interpolation_mod_chunk must have len == 2, position 0 string for modality (spread_linearly or mirror_start_video), position 1 chunk size')
     # print("Time to get list frame: ",time.time()-start)
     tuple_frames_timestamp = list(zip(list_frames,list_timestamp))
-    miss_detection, list_no_detection_idx = validate_frame_detection(tuple_frames_timestamp)
+    miss_detection, list_is_detected = validate_frame_detection(tuple_frames_timestamp)
     
     if miss_detection:
-      raise DetectionError("No face detected in some frames during alignment", list_no_detection_idx)
+      raise DetectionError(f"No face detected in some frames during alignment in {video_path}", list_is_detected)
     else:
       list_landmarks = self.extract_facial_landmarks(tuple_frames_timestamp)
+      miss_detection, list_is_detected = validate_frame_detection(list_landmarks)
       
-      # list_landmarks = 
-      miss_detection, list_no_detection_idx = validate_frame_detection(list_landmarks)
+      # Filter out frames where no face was detected
       if miss_detection:
-        raise DetectionError("No face detected in some frames during landmarks detection", list_no_detection_idx)
+        list_frames = [frame for frame, is_detected in zip(list_frames, list_is_detected) if is_detected]
+        timestamp_list = [timestamp for timestamp, is_detected in zip(list_timestamp, list_is_detected) if is_detected]
+        list_landmarks = [landmarks for landmarks, is_detected in zip(list_landmarks, list_is_detected) if is_detected]
+        list_landmarks = np.array(list_landmarks)
+        tuple_frames_timestamp = list(zip(list_frames,timestamp_list))
+      else:
+        list_landmarks = np.array(list_landmarks)
+      
+      if miss_detection and False: # disable for now
+        raise DetectionError(f"No face detected in some frames during landmarks detection in {video_path}", list_is_detected)
       else:
         list_frontalized_img = []
         list_frontalized_landmarks = []
@@ -514,19 +533,35 @@ class FaceExtractor:
         else:
           for count, (frame, landmarks) in enumerate(zip(list_frames, list_landmarks)):
             frame,mask = self.extract_frame_oval_from_img(frame,landmarks)
+            if frame.size == 0:
+              print(f'Frame is empty after extracting face oval at count {count}')
             top_left_corner = (int(np.min(landmarks[:, 0]*frame.shape[1])),
                               int(np.min(landmarks[:, 1]*frame.shape[0])))
             bottom_right_corner = (int(np.max(landmarks[:, 0]*frame.shape[1])),
                               int(np.max(landmarks[:, 1]*frame.shape[0])))
+            # check top_left_corner and bottom_right_corner
+            if top_left_corner[0] < 0 or top_left_corner[1] < 0 or bottom_right_corner[0] > frame.shape[1] or bottom_right_corner[1] > frame.shape[0]:
+              # print(f'Invalid crop coordinates at count {count}: top_left_corner {top_left_corner}, bottom_right_corner {bottom_right_corner}, frame shape {frame.shape}')
+              top_left_corner = (max(0, top_left_corner[0]), max(0, top_left_corner[1]))
+              bottom_right_corner = (min(frame.shape[1], bottom_right_corner[0]), min(frame.shape[0], bottom_right_corner[1]))
+              # print(f'Corrected crop coordinates: top_left_corner {top_left_corner}, bottom_right_corner {bottom_right_corner}')
+            if frame.size == 0:
+              print(f'Frame is empty before cropping at count {count}')
             frame = self.post_process_frontalized_img(frontalized_img=frame,
                                                       top_left_corner=top_left_corner,
                                                       bottom_right_corner=bottom_right_corner,
                                                       landmarks=landmarks)
             list_frontalized_img.append(frame)
+            # check if array is empty
+            if frame.size == 0:
+              print("Empty frame after cropping.")
             list_frontalized_landmarks.append(landmarks)
+          print("dbe")
         return{
           'list_frontalized_frame': list_frontalized_img,
           'list_frontalized_landmarks': list_frontalized_landmarks,
+          'list_is_detected': list_is_detected,
+          'FPS': fps,
         } 
   
   def frontalize_img(self,frame,ref_landmarks,align=True,time_logs=False,v2=False,stop_after=-1,log_path=None):
