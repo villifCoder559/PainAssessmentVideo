@@ -34,7 +34,7 @@ from coral_pytorch.layers import CoralLayer
 from coral_pytorch.dataset import proba_to_label
 import custom.backbone as custom_backbone
 import multiprocessing as mp
-
+ 
 
 class BaseHead(nn.Module):
   def __init__(self, model,is_classification):
@@ -68,10 +68,11 @@ class BaseHead(nn.Module):
         for k,v in dict_kwarg.items():
           print(f'  {k}              : {v:.4f}' if isinstance(v,float) else f'  {k}              : {v}') 
       free_gpu_mem,total_gpu_mem = torch.cuda.mem_get_info()
+      peak_gpu_mem = torch.cuda.max_memory_allocated() / 1024 ** 3
       total_gpu_mem = total_gpu_mem / 1024 ** 3
       free_gpu_mem = free_gpu_mem / 1024 ** 3
       print(f'  GPU memory free  : {free_gpu_mem:.2f} GB')
-      
+      print(f'  GPU memory peak  : {peak_gpu_mem:.2f} GB')
       
   def check_and_apply_latent_augmentation_(self,features,list_sample_id):
     # polarity inversion + gaussian noise
@@ -125,7 +126,8 @@ class BaseHead(nn.Module):
                                                               is_coral_loss=is_coral_loss,
                                                               soft_labels=soft_labels,
                                                               label_smooth=label_smooth,
-                                                              n_workers=n_workers)
+                                                              n_workers=n_workers,
+                                                              **kwargs)
         
     if val_csv_path is not None:
       val_dataset, val_loader = get_dataset_and_loader(batch_size=batch_size,
@@ -144,7 +146,8 @@ class BaseHead(nn.Module):
                                                             is_coral_loss=is_coral_loss,
                                                             soft_labels=soft_labels,
                                                             label_smooth=label_smooth,
-                                                            n_workers=n_workers)
+                                                            n_workers=n_workers,
+                                                            **kwargs)
     
     if isinstance(self,AttentiveClassifierJEPA) and enable_scheduler: 
       optimizer, _, scheduler, wd_scheduler = jepa_eval.init_opt( 
@@ -169,7 +172,6 @@ class BaseHead(nn.Module):
         scheduler = None
         wd_scheduler = None
 
-    CCC_loss = CCCLoss() if kwargs['add_CCC_loss'] else None
     # train_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
     train_unique_classes = torch.tensor(train_dataset.get_unique_classes())
     train_unique_subjects = torch.tensor(train_dataset.get_unique_subjects())
@@ -198,6 +200,8 @@ class BaseHead(nn.Module):
     list_train_accuracy_per_subject = []
     list_train_losses_per_subject = []
     list_train_confusion_matricies = []
+    list_train_accuracy = []
+    list_val_accuracy = []
     list_val_losses = []
     list_val_losses_per_class = []
     list_val_accuracy_per_class = []
@@ -277,6 +281,7 @@ class BaseHead(nn.Module):
       dict_log_time = {}
       dict_log_time['pre_batch'] = dict_log_time.get('pre_batch',0) + time.time() - start_epoch
       start_load_batch = time.time()
+      torch.cuda.reset_peak_memory_stats(device)
       
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
         end_load_batch = time.time()
@@ -313,8 +318,8 @@ class BaseHead(nn.Module):
           if outputs.shape[1] == 1: # if regression I don't need to keep dim 1 
             outputs = outputs.squeeze(1)
           
-          if CCC_loss:
-            loss = criterion(outputs, batch_y) + (kwargs['add_CCC_loss'] * CCC_loss(outputs, batch_y) if CCC_loss else 0.0)
+          if kwargs['CCC_loss']:
+            loss = criterion(outputs, batch_y) + (kwargs['add_CCC_loss'] * kwargs['CCC_loss'](outputs, batch_y))
           else:
             loss = criterion(outputs, batch_y)
             
@@ -345,30 +350,33 @@ class BaseHead(nn.Module):
         dict_log_time['optimizer'] = dict_log_time.get('optimizer',0) + time.time()-start_optimizer
         train_loss += loss.item() 
         start_logs = time.time()
-        if helper.LOG_PER_CLASS_AND_SUBJECT:
+        if helper.LOG_PER_CLASS or helper.LOG_PER_SUBJECT or helper.LOG_CONFIDENCE_PREDICTION:
           if is_coral_loss:
             outputs = proba_to_label(torch.sigmoid(outputs)) # convert probabilities to labels for coral loss
             batch_y = torch.sum(batch_y, dim=1) # convert levels to labels for coral loss
-          tools.compute_loss_per_class_(batch_y=batch_y,
-                                      class_loss=class_loss if not is_coral_loss else None,
-                                      unique_train_val_classes=train_unique_classes,
-                                      outputs=outputs,
-                                      class_accuracy=class_accuracy,
-                                      criterion=criterion)
-          tools.compute_loss_per_subject_v2_(batch_subjects=batch_subjects,
-                                        criterion=criterion,
-                                        batch_y=batch_y,
+          if helper.LOG_PER_CLASS:
+            tools.compute_loss_per_class_(batch_y=batch_y,
+                                        class_loss=class_loss if not is_coral_loss else None,
+                                        unique_train_val_classes=train_unique_classes,
                                         outputs=outputs,
-                                        subject_loss=subject_loss if not is_coral_loss else None,
-                                        subject_accuracy=subject_accuracy,
-                                        unique_train_val_subjects=train_unique_subjects)
-          if not isinstance(criterion,torch.nn.L1Loss) and not isinstance(criterion,torch.nn.MSELoss) and not isinstance(criterion,torch.nn.HuberLoss) and not is_coral_loss:
-            tools.compute_confidence_predictions_(list_prediction_right_mean=batch_train_confidence_prediction_right_mean,
-                                                  list_prediction_right_std=batch_train_confidence_prediction_right_std,
-                                                  list_prediction_wrong_mean=batch_train_confidence_prediction_wrong_mean,
-                                                  list_prediction_wrong_std=batch_train_confidence_prediction_wrong_std,
-                                                  gt=batch_y,
-                                                  outputs=outputs)
+                                        class_accuracy=class_accuracy,
+                                        criterion=criterion)
+          if helper.LOG_PER_SUBJECT:
+            tools.compute_loss_per_subject_v2_(batch_subjects=batch_subjects,
+                                          criterion=criterion,
+                                          batch_y=batch_y,
+                                          outputs=outputs,
+                                          subject_loss=subject_loss if not is_coral_loss else None,
+                                          subject_accuracy=subject_accuracy,
+                                          unique_train_val_subjects=train_unique_subjects)
+          if helper.LOG_CONFIDENCE_PREDICTION:
+            if not isinstance(criterion,torch.nn.L1Loss) and not isinstance(criterion,torch.nn.MSELoss) and not isinstance(criterion,torch.nn.HuberLoss) and not is_coral_loss:
+              tools.compute_confidence_predictions_(list_prediction_right_mean=batch_train_confidence_prediction_right_mean,
+                                                    list_prediction_right_std=batch_train_confidence_prediction_right_std,
+                                                    list_prediction_wrong_mean=batch_train_confidence_prediction_wrong_mean,
+                                                    list_prediction_wrong_std=batch_train_confidence_prediction_wrong_std,
+                                                    gt=batch_y,
+                                                    outputs=outputs)
 
         if helper.LOG_GRADIENT_PER_MODULE:
           self.log_gradient_per_module(batch_dict_gradient_per_module)
@@ -409,12 +417,13 @@ class BaseHead(nn.Module):
                                   is_coral_loss=is_coral_loss,
                                   epoch=epoch,
                                   history_val_sample_predictions=history_val_sample_predictions,
-                                  CCC_loss=CCC_loss,
                                   **kwargs)
       dict_log_time['eval'] = dict_log_time.get('eval',0) + time.time()-time_eval
       # print(f'  Evaluation time: {dict_log_time["eval"]:.4f}')
       epoch_log_time = time.time()
-      if epoch == 0 or helper.SAVE_LAST_EPOCH_MODEL or (dict_eval is not None and dict_eval[key_for_early_stopping] < best_eval_loss if key_for_early_stopping == 'val_loss' else dict_eval[key_for_early_stopping] > best_eval_loss):
+      if   epoch == 0 or \
+           helper.SAVE_LAST_EPOCH_MODEL or \
+           (dict_eval is not None and dict_eval[key_for_early_stopping] < best_eval_loss if key_for_early_stopping == 'val_loss' else dict_eval[key_for_early_stopping] > best_eval_loss):
         best_eval_loss = dict_eval[key_for_early_stopping] if dict_eval is not None else 0.0
         best_model_state = copy.deepcopy(self.state_dict())
         best_model_state = {key: value.cpu() for key, value in best_model_state.items()}
@@ -425,7 +434,7 @@ class BaseHead(nn.Module):
       list_val_losses.append(dict_eval['val_loss'] if dict_eval is not None else 0.0)
       
       
-      if helper.LOG_PER_CLASS_AND_SUBJECT:
+      if helper.LOG_CONFIDENCE_PREDICTION:
         list_train_confidence_prediction_right_mean.append(np.mean(batch_train_confidence_prediction_right_mean) if len(batch_train_confidence_prediction_right_mean) > 0 else 0)
         list_train_confidence_prediction_wrong_mean.append(np.mean(batch_train_confidence_prediction_wrong_mean) if len(batch_train_confidence_prediction_wrong_mean) > 0 else 0)
         list_train_confidence_prediction_right_std.append(np.std(batch_train_confidence_prediction_right_mean) if len(batch_train_confidence_prediction_right_mean) > 0 else 0)
@@ -441,19 +450,19 @@ class BaseHead(nn.Module):
       
       if epoch % helper.saving_rate_training_logs == 0 or best_epoch:
         list_train_confusion_matricies.append(train_confusion_matrix)
-        if helper.LOG_PER_CLASS_AND_SUBJECT:
+        if helper.LOG_PER_CLASS:
           list_train_losses_per_class.append(class_loss[0] / class_loss[1]) # class_loss[0] is loss per class, class_loss[1] is total number of samples
-          # print(f'Loss mean per class: {torch.mean(list_train_losses_per_class[-1])}')
           list_train_accuracy_per_class.append(class_accuracy[0] / class_accuracy[1]) # class_accuracy[0] is correct predictions, class_accuracy[1] is total)
+          list_val_losses_per_class.append(dict_eval['val_loss_per_class'] if dict_eval is not None else None)
+          list_val_accuracy_per_class.append(dict_eval['val_accuracy_per_class'] if dict_eval is not None else None)
+        
+        if helper.LOG_PER_SUBJECT:
           list_train_losses_per_subject.append((subject_loss / sample_per_subject_count))
           list_train_accuracy_per_subject.append(subject_accuracy / sample_per_subject_count)
-          
-          list_val_losses_per_class.append(dict_eval['val_loss_per_class'] if dict_eval is not None else None)
           list_val_losses_per_subject.append(dict_eval['val_loss_per_subject'] if dict_eval is not None else None)
-          list_val_accuracy_per_class.append(dict_eval['val_accuracy_per_class'] if dict_eval is not None else None)
           list_val_accuracy_per_subject.append(dict_eval['val_accuracy_per_subject'] if dict_eval is not None else None)
         
-      if helper.LOG_PER_CLASS_AND_SUBJECT:
+      if helper.LOG_CONFIDENCE_PREDICTION:
         list_val_confidence_prediction_right_mean.append(dict_eval['val_prediction_confidence_right_mean'] if dict_eval is not None else 0.0)
         list_val_confidence_prediction_wrong_mean.append(dict_eval['val_prediction_confidence_wrong_mean'] if dict_eval is not None else 0.0)
         list_val_confidence_prediction_right_std.append(dict_eval['val_prediction_confidence_right_std'] if dict_eval is not None else 0.0)
@@ -464,8 +473,11 @@ class BaseHead(nn.Module):
       train_confusion_matrix.compute()
       train_dict_precision_recall = tools.evaluate_classification_from_confusion_matrix(confusion_matrix=train_confusion_matrix,list_real_classes=train_unique_classes)
       train_dict_precision_recall['loss'] = list_train_losses[-1]
+      list_train_accuracy.append(train_dict_precision_recall['accuracy'])
       list_train_performance_metric.append(train_dict_precision_recall[metric_for_stopping])
+      
       list_val_performance_metric.append(dict_eval[key_for_early_stopping] if dict_eval is not None else 0.0)
+      list_val_accuracy.append(dict_eval['val_accuracy'] if dict_eval is not None else 0.0)
       
       if scheduler:
         scheduler.step()
@@ -593,6 +605,8 @@ class BaseHead(nn.Module):
       'epochs_gradient_per_module': epochs_gradient_per_module,
       'history_train_sample_predictions': history_train_sample_predictions,
       'history_val_sample_predictions': history_val_sample_predictions,
+      'list_train_accuracy': list_train_accuracy,
+      'list_val_accuracy': list_val_accuracy,
       # 'train_accuracy_per_class': train_accuracy_per_class,
       # 'test_accuracy_per_class': test_accuracy_per_class,
       'train_confusion_matricies': list_train_confusion_matricies,
@@ -642,6 +656,7 @@ class BaseHead(nn.Module):
       
       amp_dtype = torch.bfloat16 if helper.AMP_DTYPE == 'bfloat16' else torch.float16
       enable_autocast = helper.AMP_ENABLED and amp_dtype == torch.bfloat16
+      
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(val_loader,total=len(val_loader),desc=f'{("Validation" if not is_test else "Test")}'):
         list_batch_size.append(len(batch_y))
         nr_samples += len(batch_y)
@@ -658,6 +673,7 @@ class BaseHead(nn.Module):
         
         # subject_batch_count[tmp] += 1
         helper.LOG_CROSS_ATTENTION['state'] = 'test' if is_test else 'val'
+        
         dict_batch_X['list_sample_id'] = sample_id
         with autocast(device_type=device, dtype=amp_dtype, enabled=enable_autocast): # Use autocast for mixed precision training
           outputs = self(**dict_batch_X)
@@ -676,13 +692,14 @@ class BaseHead(nn.Module):
           outputs = proba_to_label(torch.sigmoid(outputs)) # convert probabilities to labels for coral loss
           batch_y = torch.sum(batch_y, dim=1) # convert levels to labels for coral loss
         
-        if save_log and helper.LOG_PER_CLASS_AND_SUBJECT:
-          tools.compute_loss_per_class_(batch_y=batch_y, 
-                                        class_loss=loss_per_class if not is_coral_loss else None,
-                                        unique_train_val_classes=unique_val_classes,
-                                        outputs=outputs,
-                                        criterion=criterion,
-                                        class_accuracy=accuracy_per_class)
+        if save_log and helper.LOG_PER_CLASS:
+            tools.compute_loss_per_class_(batch_y=batch_y, 
+                                          class_loss=loss_per_class if not is_coral_loss else None,
+                                          unique_train_val_classes=unique_val_classes,
+                                          outputs=outputs,
+                                          criterion=criterion,
+                                          class_accuracy=accuracy_per_class)
+        if save_log and helper.LOG_PER_SUBJECT:  
           tools.compute_loss_per_subject_v2_(batch_subjects=batch_subjects, 
                                              criterion=criterion,
                                              batch_y=batch_y,
@@ -690,12 +707,13 @@ class BaseHead(nn.Module):
                                              subject_loss=subject_loss if not is_coral_loss else None,
                                              unique_train_val_subjects=unique_val_subjects,
                                              subject_accuracy=accuracy_per_subject)
-        if not isinstance(criterion,torch.nn.L1Loss) and not isinstance(criterion,torch.nn.MSELoss) and not isinstance(criterion,torch.nn.HuberLoss) and not is_coral_loss:  
-            tools.compute_confidence_predictions_(list_prediction_right_mean=batch_confidence_prediction_right_mean,
-                                                  list_prediction_wrong_mean=batch_confidence_prediction_wrong_mean,
-                                                  list_prediction_right_std=batch_confidence_prediction_right_std,
-                                                  list_prediction_wrong_std=batch_confidence_prediction_wrong_std,
-                                                  gt=batch_y, outputs=outputs)
+        if save_log and helper.LOG_CONFIDENCE_PREDICTION:
+          if not isinstance(criterion,torch.nn.L1Loss) and not isinstance(criterion,torch.nn.MSELoss) and not isinstance(criterion,torch.nn.HuberLoss) and not is_coral_loss:  
+              tools.compute_confidence_predictions_(list_prediction_right_mean=batch_confidence_prediction_right_mean,
+                                                    list_prediction_wrong_mean=batch_confidence_prediction_wrong_mean,
+                                                    list_prediction_right_std=batch_confidence_prediction_right_std,
+                                                    list_prediction_wrong_std=batch_confidence_prediction_wrong_std,
+                                                    gt=batch_y, outputs=outputs)
         if self.is_classification:
           if is_coral_loss:
             predictions = outputs.detach().cpu() # outputs are already labels for coral loss
@@ -720,10 +738,11 @@ class BaseHead(nn.Module):
       
       val_confusion_matricies.compute()
       val_loss = val_loss / len(val_loader)
-      if save_log and helper.LOG_PER_CLASS_AND_SUBJECT:
+      if save_log and helper.LOG_PER_CLASS:
         loss_per_class = loss_per_class[0] / loss_per_class[1] # loss_per_class[0] is loss per class, loss_per_class[1] is total number of samples
         # print(f'VAL Loss mean per class: {torch.mean(loss_per_class)}') 
         accuracy_per_class = accuracy_per_class[0] / accuracy_per_class[1] # accuracy_per_class[0] is correct predictions, accuracy_per_class[1] is total
+      if save_log and helper.LOG_PER_SUBJECT:  
         subject_loss = subject_loss / sample_per_subject_count
         accuracy_per_subject = accuracy_per_subject / sample_per_subject_count
         
@@ -834,13 +853,14 @@ class AttentiveHeadJEPA(BaseHead):
       num_classes=5,
       num_queries=1,
       agg_method='mean',
-      pos_enc=False,
+      pos_enc=0,
       use_sdpa=True,
       grid_size_pos=None,
       cross_block_after_transformers=True,
       coral_loss=False,
       custom_mlp=False,
       q_k_v_dim=None,
+      drop_path_mode='row',
       head_init_path=None,
       backbone: custom_backbone.BackboneBase = None,
       embedding_reduction: helper.EMBEDDING_REDUCTION = None,
@@ -862,6 +882,7 @@ class AttentiveHeadJEPA(BaseHead):
             qkv_bias=qkv_bias,
             custom_mlp=custom_mlp,
             complete_block=complete_block,
+            drop_path_mode=drop_path_mode,
             use_sdpa=use_sdpa,
             cross_block_after_transformers=cross_block_after_transformers
         )
@@ -895,19 +916,9 @@ class AttentiveHeadJEPA(BaseHead):
       else:
         raise NotImplementedError(f'Unknown aggregation method {agg_method}')
     
-    # Load pooler weights if there is an init. (head_init_path) 
-    if head_init_path is not None:
-      state_dict = torch.load(head_init_path, weights_only=True)
-      # Remove final linear layer for classification/regression 
-      layers = list(state_dict.keys())
-      for layer_name in layers:
-        if layer_name.startswith('linear.'):
-          del state_dict[layer_name]
-      state_dict = {k.replace('pooler.',''): v for k, v in state_dict.items() if k.startswith('pooler.')}  
-      self.pooler.load_state_dict(state_dict)
-      for param in self.pooler.parameters():
-        param.requires_grad = False
-      print(f'FROZEN Head weights loaded from {head_init_path}')
+      # for param in self.pooler.parameters():
+      #   param.requires_grad = False
+      # print(f'FROZEN Head weights loaded from {head_init_path}')
     
     # Init weights
     self._initialize_weights()  
@@ -1031,12 +1042,12 @@ class AttentiveHeadJEPA(BaseHead):
       else:
         x, key_padding_mask = self.elaborate_feats_from_backbone_v2(x, **kwargs)
       helper.train_time_logs['embedding_reshape'] = helper.train_time_logs.get('embedding_reshape',0) + (time.time() - time_reshape)
-    else:
-      # if features are already extracted, use them directly (key_padding_mask already computed in the dataloader)
-      time_reduction = time.time()
-      if self.embedding_reduction !=  helper.EMBEDDING_REDUCTION.NONE:
-        x = torch.mean(x,dim=self.embedding_reduction.value,keepdim=True)
-      helper.train_time_logs['embedding_reduction'] = helper.train_time_logs.get('embedding_reduction',0) + (time.time() - time_reduction)
+    # else:
+    #   # if features are already extracted, use them directly (key_padding_mask already computed in the dataloader)
+    #   time_reduction = time.time()
+    #   if self.embedding_reduction !=  helper.EMBEDDING_REDUCTION.NONE:
+    #     x = torch.mean(x,dim=self.embedding_reduction.value,keepdim=True)
+    #   helper.train_time_logs['embedding_reduction'] = helper.train_time_logs.get('embedding_reduction',0) + (time.time() - time_reduction)
 
     # Apply positional encoding if enabled
     time_pos_enc = time.time()
@@ -1066,17 +1077,32 @@ class AttentiveHeadJEPA(BaseHead):
       # self.backbone.load_pretrained_weights() 
       for adapter in self.backbone.model.adapters:
         adapter.init_weights()
+        
     if init_type == 'default':
       if self.head_init_path is None:
         trunc_normal_(self.pooler.query_tokens, std=self.pooler.init_std)
         self.pooler.apply(self.pooler._init_weights)
         self.pooler._rescale_blocks()
+      else: # Load pooler weights if there is an init. (head_init_path)
+        state_dict = torch.load(self.head_init_path, weights_only=True)
+        # Remove final linear layer for classification/regression 
+        layers = list(state_dict.keys())
+        for layer_name in layers:
+          if layer_name.startswith('linear.'):
+            del state_dict[layer_name]
+        state_dict = {k.replace('pooler.',''): v for k, v in state_dict.items() if k.startswith('pooler.')}  
+        self.pooler.load_state_dict(state_dict)
+        print(f'\nHead weights loaded from {self.head_init_path}')
+        
       if self.coral_loss:
         self.linear.coral_weights.reset_parameters()
       else:
         # self.linear.reset_parameters()
         torch.nn.init.xavier_uniform_(self.linear.weight,gain=0.1)
         torch.nn.init.zeros_(self.linear.bias)
+        # Load pooler weights if there is an init. (head_init_path) 
+    
+
     else:
       raise NotImplementedError(f'Initialization method {init_type} not implemented')
   
@@ -1084,7 +1110,7 @@ class AttentiveHeadJEPA(BaseHead):
     xattn = xattn.detach().cpu().numpy()
     if f"debug_xattn_{helper.LOG_CROSS_ATTENTION['state']}" not in helper.LOG_CROSS_ATTENTION:
         helper.LOG_CROSS_ATTENTION[f"debug_xattn_{helper.LOG_CROSS_ATTENTION['state']}"] = []
-    list_sample_id = kwargs['list_sample_id'].numpy().astype(np.uint16) # problem if use torch.uint16 -> no problem when save results.pkl using np.uint16
+    list_sample_id = kwargs['list_sample_id'].numpy() # problem if use torch.uint16 -> no problem when save results.pkl using np.uint16
     
     helper.LOG_CROSS_ATTENTION[f"debug_xattn_{helper.LOG_CROSS_ATTENTION['state']}"].append((list_sample_id,xattn))
     
@@ -1372,6 +1398,7 @@ class MeanMaxAggregator(nn.Module):
       # elementwise max
       return pooled_feats.max(dim=1)[0]  # [B, C]
 
+
 class CCCLoss(nn.Module):
   """
   Concordance Correlation Coefficient loss: returns (1 - CCC).
@@ -1431,4 +1458,3 @@ class CCCLoss(nn.Module):
       return loss.sum()
     else:  # 'none'
       return loss
-
