@@ -12,7 +12,7 @@ from pathlib import Path
 import argparse
 import logging
 from custom import helper
-
+from custom.head import CCCLoss # For pickle loading
 
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
 
@@ -27,6 +27,9 @@ def find_results_files(parent_folder):
           pkl_files = [f for f in os.listdir(os.path.join(parent_folder, folder, run)) if f.endswith('.pkl')]
           if len(pkl_files) == 1:
             results_files.append(os.path.join(parent_folder, folder, run, pkl_files[0]))
+          elif len(pkl_files) == 0:
+            # delete the folder if no .pkl files are found
+            shutil.rmtree(os.path.join(parent_folder, folder))
   return results_files
 
 def load_results(file_path):
@@ -64,15 +67,22 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
       # test_key = data['results'][key]['test']['dict_precision_recall'][metric_for_training] 
       train_losses = data['results'][key]['train_val'].get('train_losses', [])
       val_loss = data['results'][key]['train_val'].get('val_losses', [])
-      if 'list_train_performance_metric' in data['results'][key]['train_val']:
+      if 'list_train_accuracy' in data['results'][key]['train_val'] and 'list_val_accuracy' in data['results'][key]['train_val']:
+        train_accuracy = data['results'][key]['train_val'].get('list_train_accuracy', [])
+        val_accuracy = data['results'][key]['train_val'].get('list_val_accuracy', [])
+      
+      ###### TODO: To remove in future
+      elif 'list_train_performance_metric' in data['results'][key]['train_val']:
         train_accuracy = data['results'][key]['train_val'].get('list_train_performance_metric', [])
         val_accuracy = data['results'][key]['train_val'].get('list_val_performance_metric', [])
       elif 'list_train_macro_accuracy' in data['results'][key]['train_val']:
         train_accuracy = data['results'][key]['train_val'].get('list_train_macro_accuracy', []) # list_train_performance_metric
         val_accuracy = data['results'][key]['train_val'].get('list_val_macro_accuracy', [])
+      ######
+      
       else:
         raise ValueError('No train accuracy or val accuracy found in the data')
-      test_accuracy = data['results'][key]['test']['dict_precision_recall'][metric_for_training]
+      test_accuracy = data['results'][key]['test']['dict_precision_recall']['accuracy']
       test_loss = data['results'][key]['test']['test_loss']
       grad_norm_mean = data['results'][key]['train_val']['list_mean_total_norm_epoch']
       grad_norm_std = data['results'][key]['train_val']['list_std_total_norm_epoch']
@@ -102,7 +112,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
           'list_1':train_losses,
           'list_2':val_accuracy,
           'output_path':None,
-          'title':f'Train loss, validation {metric_for_training}, test {metric_for_training}',
+          'title':f'Train loss, validation accuracy, test accuracy',
           'point':{
             'value':test_accuracy,
             'epoch':data['results'][key]['train_val']['best_model_idx']
@@ -110,8 +120,8 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
           'ax':axs[0][0],
           'x_label':'Epochs',
           'y_label_1':'Train loss',
-          'y_label_2':f'Validation {metric_for_training}',
-          'y_label_3':f'Test {metric_for_training}',
+          'y_label_2':'Validation accuracy',
+          'y_label_3':'Test accuracy',
           'y_lim_1':[0, 5],
           'y_lim_2':[0, 1],
           'y_lim_3':[0, 1],
@@ -232,8 +242,8 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
           pass
         # Create a new symlink
         os.symlink(plot_path, symlink_path)
-      
-      if plot_loss_per_subject:
+
+      if plot_loss_per_subject and len(data['results']['k0_cross_val_sub_0']['train_val']['list_val_accuracy_per_subject']) > 0:
         y_lim = 3
         fig, axs = plt.subplots(3,1,figsize=(20,20))
         best_epoch = data['results'][key]['train_val']['best_model_idx']
@@ -265,8 +275,8 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         fig.tight_layout()
         fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_loss_per_subject_{key}.png'))
         plt.close(fig)
-        
-      if plot_acc_per_subject:
+
+      if plot_acc_per_subject and len(data['results'][key]['train_val']['train_loss_per_subject']) > 0:
         y_lim = 1
         fig, axs = plt.subplots(3,1,figsize=(20,20))
         best_epoch = data['results'][key]['train_val']['best_model_idx']
