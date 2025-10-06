@@ -15,7 +15,7 @@ import numpy as np
 import time
 import json
 import pickle
-from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 import os
 import random
 # import wandb
@@ -37,7 +37,7 @@ def set_seed(seed):
 
 def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced, k_fold, seed_random_state,
                           lr, epochs, optimizer_fn, round_output_loss, shuffle_training_batch, criterion,
-                          early_stopping, enable_scheduler, concatenate_temp_dim, init_network,
+                          early_stopping, enable_scheduler, concatenate_temp_dim, init_network,is_subject_independent,
                           regularization_lambda_L1, key_for_early_stopping, target_metric_best_model,stop_after_kth_fold,
                           clip_grad_norm,regularization_lambda_L2,trial,summary_res,run_folder_path,validate,**kwargs):
   """
@@ -65,7 +65,7 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
   sample_ids = csv_array[:, 4].astype(int)
   
   # Create stratified group k-fold splits
-  list_splits_idxs = create_stratified_splits(k_fold, seed_random_state, y_labels, subject_ids)
+  list_splits_idxs = create_stratified_splits(k_fold, seed_random_state, y_labels, subject_ids, is_subject_independent)
   # check_intersection_splits(k_fold, subject_ids, list_splits_idxs)
 
   # Perform k-fold cross-validation
@@ -91,12 +91,21 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
     if stop_after_kth_fold is not None and i == stop_after_kth_fold[0] - 1:
       break
 
-def create_stratified_splits(k_fold, seed_random_state, y_labels, subject_ids):
+def create_stratified_splits(k_fold, seed_random_state, y_labels, subject_ids, subject_independent=True):
   """Create stratified group k-fold splits"""
-  sgkf = StratifiedGroupKFold(n_splits=k_fold, random_state=seed_random_state, shuffle=True)
-  list_splits_idxs = []  # contains indices for all k splits
-  for _, test_index in sgkf.split(X=torch.zeros(y_labels.shape), y=y_labels, groups=subject_ids):
-    list_splits_idxs.append(test_index)
+  if subject_independent:
+    # no subjects in common between folds
+    sgkf = StratifiedGroupKFold(n_splits=k_fold, random_state=seed_random_state, shuffle=True)
+    list_splits_idxs = []  # contains indices for all k splits
+    for _, test_index in sgkf.split(X=torch.zeros(y_labels.shape), y=y_labels, groups=subject_ids):
+      list_splits_idxs.append(test_index)
+  else:
+    # If not subject independent, use regular StratifiedKFold
+    skf = StratifiedKFold(n_splits=k_fold, random_state=seed_random_state, shuffle=True)
+    list_splits_idxs = []  # contains indices for all k splits
+    for _, test_index in skf.split(X=torch.zeros(y_labels.shape), y=y_labels):
+      list_splits_idxs.append(test_index)
+  
   return list_splits_idxs
 
 def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_ids, subject_ids,
@@ -118,7 +127,12 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
   else:
     val_idx_split = None
   train_idxs_split = [j for j in range(k_fold) if j != test_idx_split and j != val_idx_split]
-  
+  if helper.FORCE_SPLIT_K_FOLD:
+    print('\n!!!!!!! ATTENTION: FORCE_SPLIT_K_FOLD is set to True in helper.py, using fixed splits !!!!!!!\n')
+    test_idx_split = 1
+    train_idxs_split = [2]
+    val_idx_split = 0
+    
   # Generate datasets
   split_indices = create_split_indices(test_idx_split, val_idx_split, train_idxs_split,
                                      list_splits_idxs, sample_ids)
@@ -181,8 +195,12 @@ def generate_fold_csv_files(split_indices, csv_array, cols, saving_path):
   """Generate CSV files for each split and return their paths"""
   path_csv_kth_fold = {}
   
-  for key, v in split_indices.items():
+  for key, v in split_indices.items(): # v[0]-> sample_ids, v[1]-> indices in csv_array
     if v is not None:  # Skip if no validation split
+      if key in ['test','val']:
+        max_val = v[0].max()
+        mask = v[0] <= helper.step_shift
+        v = np.array([v[0][mask], v[1][mask]])
       csv_data = csv_array[v[1]]
       path = os.path.join(saving_path, f'{key}.csv')
       tools.generate_csv(cols=cols, data=csv_data, saving_path=path)
@@ -282,6 +300,10 @@ def generate_subfold_csv_files(sub_idx, k_fold, sub_k_fold_list, csv_array, cols
   # Generate CSV files
   for key, v in split_indices.items():
     if v is not None: # Skip if no validation split
+      # Filter out samples augmnented in test and val (sampleid > helper.step_shift)
+      if key in ['val','test']:
+        mask = v[0] <= helper.step_shift
+        v = np.array([v[0][mask], v[1][mask]])
       csv_data = csv_array[v[1]]
       path = os.path.join(saving_path_kth_sub_fold, f'{key}.csv')
       tools.generate_csv(cols=cols, data=csv_data, saving_path=path)
@@ -337,7 +359,8 @@ def test_model(model_advanced, path_model_weights, test_csv_path,
     csv_path=test_csv_path,
     is_test=True,
     criterion=criterion,
-    concatenate_temporal=concatenate_temporal
+    concatenate_temporal=concatenate_temporal,
+    **kwargs
   )
   
   # # Plot confusion matrix
@@ -563,32 +586,34 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   if tools.get_dataset_type(features_folder_saving_path) != helper.CUSTOM_DATASET_TYPE.BASE:
     adapter_dict = None
     print(f'WARNING: adapter_dict is set to None because the dataset type is {tools.get_dataset_type(features_folder_saving_path)}\n')
+  model_advanced_params = {
+    "model_type": model_type,
+    "path_dataset": path_video_dataset,
+    "embedding_reduction": pooling_embedding_reduction,
+    "clips_reduction": pooling_clips_reduction,
+    "sample_frame_strategy": sample_frame_strategy,
+    "stride_window": stride_window_in_video,
+    "stride_inside_window": stride_inside_window,
+    "path_labels": path_csv_dataset,
+    "use_sdpa": use_sdpa,
+    "batch_size_training": batch_size_training,
+    "head": head.value,
+    "load_dataset_in_memory": load_dataset_in_memory,  # TODO: make it a parameter
+    "adapter_dict": adapter_dict,
+    "num_clips_per_video": num_clips_per_video,
+    "soft_labels": soft_labels,
+    "prefetch_factor": prefetch_factor,
+    "head_params": head_params,
+    "features_folder_saving_path": features_folder_saving_path,
+    "clip_length": clip_length,
+    "concatenate_temporal": concatenate_temp_dim,
+    "n_workers": n_workers,
+    "label_smooth": label_smooth,
+    "dict_augmented": dict_augmented,
+    "new_csv_path": new_csv_path if dict_augmented is not None else None,
+}
 
-  model_advanced = Model_Advanced(model_type=model_type,
-                                  path_dataset=path_video_dataset,
-                                  embedding_reduction=pooling_embedding_reduction,
-                                  clips_reduction=pooling_clips_reduction,
-                                  sample_frame_strategy=sample_frame_strategy,
-                                  stride_window=stride_window_in_video,
-                                  stride_inside_window = stride_inside_window,
-                                  path_labels=path_csv_dataset,
-                                  use_sdpa=use_sdpa,
-                                  batch_size_training=batch_size_training,
-                                  head=head.value,
-                                  load_dataset_in_memory=load_dataset_in_memory, # TODO: make it a parameter
-                                  adapter_dict=adapter_dict,
-                                  num_clips_per_video=num_clips_per_video,
-                                  soft_labels=soft_labels,
-                                  prefetch_factor=prefetch_factor,
-                                  head_params=head_params,
-                                  features_folder_saving_path= features_folder_saving_path,
-                                  clip_length=clip_length,
-                                  concatenate_temporal=concatenate_temp_dim,
-                                  n_workers=n_workers,
-                                  label_smooth=label_smooth,
-                                  dict_augmented=dict_augmented,
-                                  new_csv_path=new_csv_path if dict_augmented is not None else None,
-                                  )
+  model_advanced = Model_Advanced(**model_advanced_params)
   
   # print(f"Run folder created at {run_folder_path}")
   
@@ -614,6 +639,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   summary_res = {}
   summary_res['results'] = {} # fold_results['dict_k_fold_results']
   summary_res['config'] = get_obj_config()
+  summary_res['model_advanced_params'] = model_advanced_params
   summary_res['config']['head_params']['T_S_S_shape'] = model_advanced.T_S_S_shape                                   
   summary_res['time'] = 0 # for duration of the training phase
   
