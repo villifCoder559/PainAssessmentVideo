@@ -241,7 +241,7 @@ class VideoBackbone(BackboneBase):
   
   @torch.no_grad()
   def forward_features(self, x: torch.Tensor, return_embedding: bool = True,return_attn: bool = False) -> torch.Tensor:
-    """Extract features from video input. No preprocessing is applied, but the input tensor must be in the correct format.
+    """Extract features from video input. No preprocessing is applied, but the input tensor must be in the format [B,C,T,H,W].
     
     Args:
       x: Input tensor of shape [batch_size, channels, frames, height, width]
