@@ -53,12 +53,12 @@ def split_and_save_video(input_path, part_to_save, output_resolution):
   out.release()
   # print(f"Saved cropped video to {output_path}")
 
-def get_list_videos(video_folder):
+def get_list_videos(video_folder, video_extension):
   """Get a list of video files in the specified folder."""
   list_videos = []
   for root, dirs, files in os.walk(video_folder):
     for file in files:
-      if file.endswith('.mp4') and '$' not in file:
+      if file.endswith(video_extension) and '$' not in file:
         list_videos.append(os.path.join(root, file))
   return list_videos
 
@@ -68,9 +68,10 @@ if __name__ == "__main__":
   parser.add_argument("--video_folder", type=str, help="Path to the input video folder")
   parser.add_argument("--part", type=str, choices=['upper_left', 'upper_right', 'bottom_left', 'bottom_right'], help="Part of the video to save")
   parser.add_argument("--output_resolution", nargs='*', type=int, default=[224,224], help="Output resolution in format [WIDTH,HEIGHT]. Default is [224,224].")
+  parser.add_argument("--video_extension", type=str, default=".mp4", help="Video file extension to look for. Default is .mp4")
   args = vars(parser.parse_args())
-  
-  list_videos = get_list_videos(args['video_folder'])
+
+  list_videos = get_list_videos(args['video_folder'], args['video_extension'])
   for video_path in tqdm.tqdm(list_videos, desc="Processing videos"):
     split_and_save_video(video_path, args['part'], args['output_resolution'])
   print(f'{len(list_videos)} videos saved in {args["video_folder"]} with part {args["part"]} and resolution {args["output_resolution"]}')
