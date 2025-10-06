@@ -132,7 +132,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
             'value':test_loss,
             'epoch':data['results'][key]['train_val']['best_model_idx']
             },
-          'ax':axs[1][0],
+          'ax':axs[0][1],
           'x_label':'Epochs',
           'y_label_1':'Train loss',
           'y_label_2':'Validation loss',
@@ -150,10 +150,10 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         }
         input_dict_accuracy_gap={
           'list_1': np.array(train_accuracy) - np.array(val_accuracy),
-          'title':f'{metric_for_training} Gap in Train-Validation',
-          'ax':axs[0][1],
+          'title':f'Accuracy Gap in Train-Validation',
+          'ax':axs[1][0],
           'x_label':'Epochs',
-          'y_label_1':f'{metric_for_training} Gap',
+          'y_label_1':f'Accuracy Gap',
           'y_lim_1':[-1, 1],
           'color_1':'tab:orange',
         }
@@ -161,7 +161,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         tools.plot_losses_and_test_new(**input_dict_accuracy_gap)
         tools.plot_losses_and_test_new(**input_dict_loss)
         
-        axs[0][1].text(1.04, 0.0, dict_to_string, fontsize=12, color='black',transform=axs[0][1].transAxes,ha='left', va='center')
+        axs[0][1].text(1.14, -0.5, dict_to_string, fontsize=12, color='black',transform=axs[0][1].transAxes,ha='left', va='center')
         
         # Plot GRADIENT
         tools.plot_with_std(ax=axs[1][1],x=list(range(len(grad_norm_mean))),mean=grad_norm_mean,std=grad_norm_std,
@@ -741,7 +741,7 @@ def plot_accuray_per_class_across_epochs(data, run_output_folder, test_id, addit
 
       # Plot accuracy
       line2, = ax2.plot(val_accuracy[:, class_idx], color='tab:blue', label='Accuracy')
-      ax2.set_ylim(0, 1)
+      ax2.set_ylim(0, 1.1)
       ax2.set_ylabel('Accuracy', color='tab:blue')
       ax2.tick_params(axis='y', labelcolor='tab:blue')
 

@@ -59,7 +59,7 @@ def save_csv_file(cols,csv_array,saving_path,sliding_windows):
   return csv_path
 
 
-def save_dict_data(dict_data, saving_folder_path,save_as_safetensors=False):
+def save_dict_data(dict_data, saving_folder_path,save_as_safetensors=False,save_as_npy=False):
   """
   Save the dictionary containing numpy and torch elements to the specified path.
 
@@ -68,12 +68,13 @@ def save_dict_data(dict_data, saving_folder_path,save_as_safetensors=False):
     saving_path (str): Path to save the dictionary data.
   """
   print(f'Saving dictionary data to {saving_folder_path}...')
+    
   if save_as_safetensors:
     if not os.path.exists(os.path.dirname(saving_folder_path)):
       os.makedirs(os.path.dirname(saving_folder_path))
-    # Save the dictionary as a .safetensors file
+    # Save the dictionary as a .safetensors file 
     dict_data = {k:v for k,v in dict_data.items() if isinstance(v,torch.Tensor)} 
-    safetensors.torch.save_file(dict_data, saving_folder_path+'.safetensors')
+    safetensors.torch.save_file(dict_data, saving_folder_path+('.safetensors' if not saving_folder_path.endswith('.safetensors') else ''))
     print(f'Safetensors data saved to {saving_folder_path}')
   else:
     if not os.path.exists(saving_folder_path):
@@ -163,7 +164,9 @@ def load_dict_data(saving_folder_path):
       else:
         print(f"Unsupported file format: {file}")
   else:
-    dict_data = safetensors.torch.load_file(saving_folder_path, device='cpu')
+    assert os.path.exists(saving_folder_path), f"File missing: {saving_folder_path}"
+    assert os.path.isfile(saving_folder_path), f"Not a file: {saving_folder_path}"
+    dict_data = safetensors.torch.load_file(saving_folder_path)
 
   return dict_data
 
@@ -1282,7 +1285,7 @@ def generate_video_from_list_video_path(list_video_path, list_frames, list_subje
   out.release()
   print(f"Generated video saved to folder {saving_path}")
     
-def generate_video_from_list_frame(list_frame,path_video_output,fps=25):
+def generate_video_from_list_frame(list_frame,path_video_output,fps=25,resize=None):
   """
   Generates a video file from a list of frames.
 
@@ -1297,12 +1300,18 @@ def generate_video_from_list_frame(list_frame,path_video_output,fps=25):
 
   if not os.path.exists(os.path.split(path_video_output)[0]):
     os.makedirs(os.path.split(path_video_output)[0])
-  out = cv2.VideoWriter(path_video_output, cv2.VideoWriter_fourcc(*'avc1'), fps, (list_frame[0].shape[0], list_frame[0].shape[1]))
+  out_size = (list_frame[0].shape[1], list_frame[0].shape[0]) if resize is None else resize
+  out = cv2.VideoWriter(path_video_output, cv2.VideoWriter_fourcc(*'mp4v'), fps, out_size)
+  count = 0
   for frame in list_frame:
     if not isinstance(frame,np.ndarray):
       frame = np.array(frame,dtype=np.uint8)
     frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    if resize is not None:
+      frame = cv2.resize(frame, resize)
+    # print(f'Frame {count} size: {frame.shape}')
     out.write(frame)
+    count += 1
   out.release()
   print(f'Video saved to {path_video_output}')
 

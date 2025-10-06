@@ -464,6 +464,7 @@ class FaceExtractor:
     # print("Time to get list frame: ",time.time()-start)
     tuple_frames_timestamp = list(zip(list_frames,list_timestamp))
     miss_detection, list_no_detection_idx = validate_frame_detection(tuple_frames_timestamp)
+    
     if miss_detection:
       raise DetectionError("No face detected in some frames during alignment", list_no_detection_idx)
     else:
@@ -608,7 +609,7 @@ class FaceExtractor:
           frontalized_img[y,x] = frontalized_img[y,mirror_x]
     
     frontalized_img = frontalized_img[top_left_corner[1]:bottom_right_corner[1],top_left_corner[0]:bottom_right_corner[0]]
-    frontalized_img=cv2.resize(frontalized_img,(224,224))
+    # frontalized_img=cv2.resize(frontalized_img,(224,224))
 
     return frontalized_img
 

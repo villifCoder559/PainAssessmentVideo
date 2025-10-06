@@ -10,12 +10,14 @@ from custom.helper import CUSTOM_DATASET_TYPE, MODEL_TYPE, get_shift_for_sample_
 import pandas as pd
 import custom.helper as helper
 # import wandb
+import tqdm
 
 class Model_Advanced: # Scenario_Advanced
-  def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,
-              path_labels, sample_frame_strategy, head, head_params,
+  def __init__(self, model_type, embedding_reduction, clips_reduction, path_dataset,stride_inside_window,
+              path_labels, sample_frame_strategy, head, head_params, adapter_dict,num_clips_per_video, use_sdpa,
               batch_size_training,stride_window,clip_length,dict_augmented,prefetch_factor,soft_labels,
-              features_folder_saving_path,concatenate_temporal,label_smooth,n_workers,new_csv_path):
+              features_folder_saving_path,concatenate_temporal,label_smooth,n_workers,new_csv_path,
+              load_dataset_in_memory):
     """
     Initialize the custom model. 
     Parameters:
@@ -30,17 +32,21 @@ class Model_Advanced: # Scenario_Advanced
     stride_window (int, optional): Stride window for sampling frames. Defaults to 2.
     clip_length (int, optional): Length of each video clip. Defaults to 16.
     svr_params (dict, optional): Parameters for the Support Vector Regressor (SVR). Defaults to {'kernel': 'rbf', 'C': 1, 'epsilon': 0.1}.
-
     """
+    
     if model_type != MODEL_TYPE.ViT_image:
-      self.backbone = VideoBackbone(model_type)
+      self.backbone = VideoBackbone(model_type, adapter_dict=adapter_dict,use_sdpa=use_sdpa)
     else:
       self.backbone = VitImageBackbone()
+      if head_params.get('adapter_dict', None) is not None:
+        raise ValueError("Adapter dictionary is not supported for ViT image model type.")
     
     self.dataset = customDataset(path_dataset=path_dataset, 
                                  path_labels=path_labels, 
+                                 num_clips_per_video=num_clips_per_video,
                                  sample_frame_strategy=sample_frame_strategy, 
                                  stride_window=stride_window, 
+                                 stride_inside_window=stride_inside_window,
                                  clip_length=clip_length)
     self.batch_size_training = batch_size_training
     
@@ -53,15 +59,22 @@ class Model_Advanced: # Scenario_Advanced
     self.concatenate_temporal = concatenate_temporal
     self.path_to_extracted_features = features_folder_saving_path
     self.dataset_type = tools.get_dataset_type(self.path_to_extracted_features)
+    self.load_dataset_in_memory = load_dataset_in_memory
+    
     self.label_smooth = label_smooth
     self.soft_labels = soft_labels 
     self.prefetch_factor = prefetch_factor
     self.T_S_S_shape = None
     self.embedding_reduction = embedding_reduction
     self.clips_reduction = clips_reduction
-
+    
     # Get dataset type
-    if self.dataset_type == CUSTOM_DATASET_TYPE.AGGREGATED and helper.dict_data is None:
+    if self.dataset_type == CUSTOM_DATASET_TYPE.WHOLE and self.load_dataset_in_memory:
+      if helper.dict_data is None:
+        self.load_whole_dict_data_in_memory(complete_df=complete_df)
+        self._set_real_label_from_csv_(complete_df=complete_df)
+    
+    elif self.dataset_type == CUSTOM_DATASET_TYPE.AGGREGATED and helper.dict_data is None:
       self.set_global_dict_data_from_hdd_(complete_df=complete_df)
       # Set label according to the csv (ex: binary classification instead of multiclass)
       self._set_real_label_from_csv_(complete_df=complete_df)
@@ -111,6 +124,8 @@ class Model_Advanced: # Scenario_Advanced
                                           num_queries=head_params['num_queries'],
                                           agg_method=head_params['agg_method'],
                                           use_sdpa=use_sdpa,
+                                          embedding_reduction=helper.EMBEDDING_REDUCTION.get_embedding_reduction(head_params['embedding_reduction']),
+                                          backbone=self.backbone if self.dataset_type == CUSTOM_DATASET_TYPE.BASE else None,
                                           coral_loss=head_params['coral_loss'],
                                           complete_block=head_params['complete_block'],
                                           cross_block_after_transformers=head_params['cross_block_after_transformers'],
@@ -129,7 +144,42 @@ class Model_Advanced: # Scenario_Advanced
       }
     else:
       self.backbone_dict = None
+  
+  def load_whole_dict_data_in_memory(self,complete_df):
+    list_path_features = []
+    list_sample_name = complete_df['sample_name'].tolist()
+    
+    # Get all the paths to the features
+    for root,dir,files in os.walk(self.path_to_extracted_features):
+      for file in files:
+        sample_name = os.path.splitext(file)[0]
+        if '.safetensors' in file and sample_name in list_sample_name:
+          list_path_features.append(os.path.join(root, file))
+    
+    # Load all the data in RAM memory      
+    dict_data_original = {}
+    for path in tqdm.tqdm(list_path_features,desc="Loading features in memory"):
+      dict_data = tools.load_dict_data(saving_folder_path=path)
+      for k,v in dict_data.items():
+        if k not in dict_data_original:
+          dict_data_original[k] = []
+        dict_data_original[k].append(v)
+    
+    # Concatenate all the data
+    for k,v in dict_data_original.items():
+      if isinstance(v[0], np.ndarray):
+        dict_data_original[k] = np.concatenate(v, axis=0)
+      if isinstance(v[0], torch.Tensor):
+        dict_data_original[k] = torch.concat(v, dim=0)
+
+    for type_augm, p in self.dict_augmented.items():
+      if p > 0 and p<= 1 and not 'latent' in type_augm:
+        raise NotImplementedError("Loading augmented data in memory is not implemented yet.")
       
+    # Set the global dict_data
+    helper.dict_data = dict_data_original
+    
+    
   def set_global_dict_data_from_hdd_(self,complete_df):
     list_sample_id = complete_df['sample_id'].tolist()
     dict_data_original = tools.load_dict_data(saving_folder_path=self.path_to_extracted_features)
@@ -188,6 +238,8 @@ class Model_Advanced: # Scenario_Advanced
         return 73
       elif type_augm == 'latent_masking':
         return 83
+      elif type_augm == 'shift':
+        return 93
       else:
         raise ValueError(f'Unknown augmentation type: {type_augm}')
     list_df = []
@@ -237,9 +289,12 @@ class Model_Advanced: # Scenario_Advanced
                                                         concatenate_temporal=concatenate_temporal,
                                                         dataset_type=self.dataset_type,
                                                         is_training=False,
+                                                        num_clips_per_video=self.dataset.num_clips_per_video,
+                                                        sample_frame_strategy=self.dataset.type_sample_frame_strategy,
                                                         root_folder_features=self.path_to_extracted_features,
                                                         shuffle_training_batch=False,
                                                         backbone_dict=self.backbone_dict,
+                                                        stride_inside_window=self.dataset.stride_inside_window,
                                                         model=self.head,
                                                         is_coral_loss=is_coral_loss,
                                                         soft_labels=self.soft_labels,
@@ -292,7 +347,7 @@ class Model_Advanced: # Scenario_Advanced
             shuffle_training_batch,init_network,
             regularization_lambda_L1,key_for_early_stopping,early_stopping,
             enable_scheduler,concatenate_temporal,clip_grad_norm,regularization_lambda_L2,
-            enable_optuna_pruning=False,trial=None
+            enable_optuna_pruning=False,trial=None,**kwargs
             ):
     """
     Train the model using the specified training and testing datasets.
@@ -343,6 +398,9 @@ class Model_Advanced: # Scenario_Advanced
                                           saving_path=saving_path,
                                           init_network=init_network,
                                           dataset_type=self.dataset_type,
+                                          num_clips_per_video=self.dataset.num_clips_per_video,
+                                          sample_frame_strategy=self.dataset.type_sample_frame_strategy,
+                                          stride_inside_window=self.dataset.stride_inside_window,
                                           num_epochs=num_epochs,
                                           is_coral_loss=is_coral_loss,
                                           train_csv_path=train_csv_path,
@@ -358,7 +416,9 @@ class Model_Advanced: # Scenario_Advanced
                                           label_smooth=self.label_smooth,
                                           backbone_dict=self.backbone_dict,
                                           enable_optuna_pruning=enable_optuna_pruning,
-                                          trial=trial)
+                                          trial=trial,
+                                          **kwargs
+                                          )
     
     count_subject_ids_train, count_y_train = tools.get_unique_subjects_and_classes(train_csv_path)
     if val_csv_path is not None:

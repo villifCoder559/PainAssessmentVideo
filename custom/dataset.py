@@ -29,7 +29,7 @@ from torchvision import tv_tensors
 from torch.utils.data import BatchSampler
 from making_better_mistakes.better_mistakes.model import labels as soft_labels_generator
 from coral_pytorch.dataset import levels_from_labelbatch
-
+import multiprocessing as mp
 
 
 class customDataset(torch.utils.data.Dataset):
@@ -54,14 +54,17 @@ class customDataset(torch.utils.data.Dataset):
       video_labels=None,
       flip_horizontal=False,
       color_jitter=None,
+      spatial_shift=False,
       rotation=None,
       backbone_dict=None,
       image_resize_w=224,
       image_resize_h=224,
       smooth_labels= 0.0,
+      num_clips_per_video=1, # only for random sampling strategy
       coral_loss=None,
       soft_labels=None,
-      video_extension = '.mp4'
+      video_extension = '.mp4',
+      quadrant=None
   ):
     """
     Initialize the dataset with specified parameters.
@@ -80,7 +83,7 @@ class customDataset(torch.utils.data.Dataset):
         video_labels (pd.DataFrame, optional): DataFrame containing video labels
     """
     # Validate inputs
-    if backbone_dict is not None and not isinstance(backbone_dict['backbone'], BackboneBase):
+    if backbone_dict != None and not isinstance(backbone_dict['backbone'], BackboneBase):
       instances = [BackboneBase,INSTANCE_MODEL_NAME,bool, nn.Module]
       for key in ['backbone', 'instance_model_name', 'concatenate_temporal', 'model']:
         if key not in backbone_dict:
@@ -88,7 +91,7 @@ class customDataset(torch.utils.data.Dataset):
         if not isinstance(backbone_dict[key], instances.pop(0)):
           raise ValueError(f"backbone_dict['{key}'] must be an instance of {instances[0]}")
         
-    if video_labels is not None:
+    if video_labels != None:
       assert isinstance(video_labels, pd.DataFrame), "video_labels must be a pandas DataFrame."
       
     assert os.path.exists(path_dataset), f"Dataset path {path_dataset} does not exist."
@@ -114,7 +117,10 @@ class customDataset(torch.utils.data.Dataset):
     self.h_flip = flip_horizontal
     self.color_jitter = color_jitter
     self.rotation = rotation
+    self.spatial_shift = spatial_shift
     self.smooth_labels = smooth_labels
+    self.num_clips_per_video = num_clips_per_video
+    self.quadrant = quadrant
     
     # if rotation is not None:
     #   warnings.warn('The rotation is not implemented yet')
@@ -127,7 +133,7 @@ class customDataset(torch.utils.data.Dataset):
     self._set_sampling_strategy(sample_frame_strategy)
     
     # Set video labels
-    if video_labels is None and path_labels is not None:
+    if video_labels is None and path_labels != None:
       self.set_path_labels(path_labels)
     else:
       self.video_labels = video_labels
@@ -150,7 +156,9 @@ class customDataset(torch.utils.data.Dataset):
       )
     else:
       self.soft_labels = None
+      
     self.coral_loss = coral_loss
+    self.num_classes = len(self.get_unique_classes())
   
   def _set_sampling_strategy(self, strategy):
     """
@@ -159,6 +167,11 @@ class customDataset(torch.utils.data.Dataset):
     Args:
         strategy (str): The sampling strategy to use
     """
+    if self.num_clips_per_video is not None and self.num_clips_per_video != 1 and strategy != SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING:
+      raise ValueError(
+        f"num_clips_per_video must be None for sampling strategy {strategy}. "
+        f"Use {SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING} for multiple clips per video."
+      )
     if strategy == SAMPLE_FRAME_STRATEGY.UNIFORM:
       self.sample_frame_strategy = self._single_uniform_sampling
       warnings.warn(f"The {SAMPLE_FRAME_STRATEGY.UNIFORM} sampling strategy does not take into account the stride window.")
@@ -171,7 +184,7 @@ class customDataset(torch.utils.data.Dataset):
         
     elif strategy == SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING:
       self.sample_frame_strategy = self._random_sampling
-      warnings.warn(f"The {SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING} sampling strategy does not take into account the stride window.")
+      # warnings.warn(f"The {SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING} sampling strategy does not take into account the stride window.")
   
   def _load_reference_landmarks(self):
     """Load reference facial landmarks for face frontalization"""
@@ -196,7 +209,7 @@ class customDataset(torch.utils.data.Dataset):
     return len(self.video_labels)
   
   @staticmethod
-  def preprocess_images(tensors,crop_size=(224,224),to_visualize=False,get_params=False,h_flip=False,color_jitter=False,rotation=False):
+  def preprocess_images(tensors,crop_size=None,to_visualize=False,get_params=False,h_flip=False,color_jitter=False,rotation=False,spatial_shift=False):
     """
     Preprocess a batch of image tensors.
     
@@ -213,6 +226,8 @@ class customDataset(torch.utils.data.Dataset):
     tensors = tv_tensors.Video(tensors)
     # Define preprocessing constants
     # crop_size = (224, 224)
+    if not to_visualize and crop_size is None:
+      crop_size = (224, 224)
     rescale_factor = 1/255  
     image_mean = [0.485, 0.456, 0.406]
     image_std = [0.229, 0.224, 0.225]
@@ -223,18 +238,33 @@ class customDataset(torch.utils.data.Dataset):
     if h_flip:
       transform.append(v2.RandomHorizontalFlip(p=1))
       params['h_flip'] = True
+    
+    if spatial_shift:
+      transform.append(v2.RandomAffine(degrees=0, translate=(0.01, 0.01))) # 0.01 = 1% shift (256x256 -> +2.56 pixels)
+      angle, translation,_,_ = v2.RandomAffine.get_params(degrees=transform[-1].degrees, 
+                                                      translate=transform[-1].translate,
+                                                      scale_ranges=None,
+                                                      img_size=(tensors.shape[2], tensors.shape[3]),
+                                                      shears=None)
+      params['spatial_shift'] = {'translate': translation}
 
     if color_jitter:
       brightness = (0.7, 1.3)
       contrast = (0.7, 1.3)
       saturation = (0.7, 1.3)
       hue = (-0.05, 0.05)
-      transform.append(v2.ColorJitter(brightness=brightness, contrast=contrast, saturation=saturation, hue=hue)) #
-      params['color_jitter'] = {'brightness': brightness, 'contrast': contrast, 'saturation': saturation, 'hue': hue} 
+      transform.append(v2.ColorJitter(brightness=brightness, contrast=contrast, saturation=saturation, hue=hue)) 
+      params['color_jitter'] = {
+        'brightness': brightness,
+        'contrast': contrast,
+        'saturation': saturation,
+        'hue': hue
+      }
+
     if rotation:
-      degrees = (-10, 10)
+      degrees = (-7, 7) # degrees for rotation
       transform.append(v2.RandomRotation(degrees=degrees))
-      params['rotation'] = degrees
+      params['rotation'] = v2.RandomRotation.get_params(degrees=transform[-1].degrees)
       
     # Define transform pipeline
     if not to_visualize:
@@ -244,7 +274,8 @@ class customDataset(torch.utils.data.Dataset):
         v2.Normalize(mean=image_mean, std=image_std),  # Normalize
       ]
     else:
-      transform += [v2.Resize(crop_size)]
+      if crop_size is not None:
+        transform += [v2.Resize(crop_size)]
     transform = v2.Compose(transform)
     
     if get_params:
@@ -278,6 +309,8 @@ class customDataset(torch.utils.data.Dataset):
                                                 to_visualize=True,
                                                 get_params=True,
                                                 color_jitter=self.color_jitter,
+                                                spatial_shift=self.spatial_shift,
+                                                
                                                 h_flip=self.h_flip,
                                                 rotation=self.rotation) # [nr_clips, nr_frames, H, W, C] -> [B, C, H, W]
 
@@ -296,12 +329,14 @@ class customDataset(torch.utils.data.Dataset):
   def __standard_getitem__(self, idx, is_training):
     
     csv_array = self.video_labels.iloc[idx]
-    video_path = os.path.join(self.path_dataset, csv_array.iloc[1], csv_array.iloc[5] + self.video_extension)
+    if self.quadrant is not None:
+      video_path = os.path.join(self.path_dataset, csv_array.iloc[1], f'{csv_array.iloc[5]}${self.quadrant}{self.video_extension}')
+    else:
+      video_path = os.path.join(self.path_dataset, csv_array.iloc[1], csv_array.iloc[5] + self.video_extension)
 
     # Open video and get properties
     container = cv2.VideoCapture(video_path)
     tot_frames = int(container.get(cv2.CAP_PROP_FRAME_COUNT))
-    
     # Set frame dimensions based on preprocessing requirements
     width_frames = int(container.get(cv2.CAP_PROP_FRAME_WIDTH))
     height_frames = int(container.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -309,43 +344,56 @@ class customDataset(torch.utils.data.Dataset):
     if tot_frames == 0:
       raise ValueError(f"Video {video_path} has no frames. Please check the video file.")
     # Get frame indices based on sampling strategy
-    list_indices = self.sample_frame_strategy(tot_frames)
-
+    try:
+      list_indices = self.sample_frame_strategy(tot_frames)
+    except ValueError as e:
+      print(f"Error in sampling strategy for video {video_path}: {e}")
+      raise e
     # Read and process frames
+    time_read_video = time.perf_counter()
     frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames)
     container.release()
+    helper.train_time_logs['read_video'] = helper.train_time_logs.get('read_video',0) + (time.perf_counter() - time_read_video)
 
     # Reshape frames for preprocessing
     nr_clips, nr_frames = frames_list.shape[:2]
+    
     # Preprocess frames (considering only 1 video at time)
     # [nr_clips, nr_frames, H, W, C] -> [nr_clips * nr_frames, H, W, C] -> [B,C,H,W]
     frames_list = frames_list.reshape(-1, *frames_list.shape[2:]).permute(0, 3, 1, 2)
+    time_preprocess_video = time.perf_counter()
+    # Apply augmnentation based on training status
     if not is_training:
       preprocessed_tensors = self.preprocess_images(frames_list, 
                                                     crop_size=(self.image_resize_h, self.image_resize_w),
                                                     color_jitter = self.color_jitter,
                                                     h_flip = self.h_flip,
-                                                    rotation = self.rotation) # [B,C,H,W]
+                                                    rotation = self.rotation,
+                                                    spatial_shift=self.spatial_shift) # [B,C,H,W]
     else:
       # latent based augm. approaches are applied in _get_element function (at the end of file) 
       sample_id = csv_array.iloc[4]
-      color_jitter = helper.is_color_jitter_augmentation(sample_id)
       h_flip = helper.is_hflip_augmentation(sample_id)
+      color_jitter = helper.is_color_jitter_augmentation(sample_id)
       rotation = helper.is_rotation_augmentation(sample_id)
+      spatial_shift = helper.is_spatial_shift_augmentation(sample_id)
       preprocessed_tensors = self.preprocess_images(frames_list, 
                                                     crop_size=(self.image_resize_h, self.image_resize_w),
                                                     color_jitter=color_jitter,
                                                     h_flip=h_flip,
+                                                    spatial_shift=spatial_shift,
                                                     rotation=rotation)
     preprocessed_tensors = preprocessed_tensors.reshape(nr_clips, nr_frames, *preprocessed_tensors.shape[1:]) # [nr_clips, nr_frames, C, H, W]
     preprocessed_tensors = preprocessed_tensors.permute(0,2,1,3,4) # [B=nr_clips, T=nr_frames, C, H, W] -> [B, C, T, H, W]
+    helper.train_time_logs['preprocess_video'] = helper.train_time_logs.get('preprocess_video',0) + (time.perf_counter() - time_preprocess_video)
     
     # Create metadata tensors
+    time_metadata = time.perf_counter()
     sample_id = torch.full((nr_clips,), int(csv_array.iloc[4]), dtype=torch.int32)
     labels = torch.full((nr_clips,), int(csv_array.iloc[2]), dtype=torch.int32)
     subject_id = torch.full((nr_clips,), int(csv_array.iloc[0]), dtype=torch.int32)
     path = np.repeat(video_path, nr_clips)
-      
+    helper.train_time_logs['metadata'] = helper.train_time_logs.get('metadata',0) + (time.perf_counter() - time_metadata)  
     return {
         'preprocess': preprocessed_tensors, # [B,C,T,H,W]
         'labels': labels,
@@ -372,18 +420,23 @@ class customDataset(torch.utils.data.Dataset):
       else:
         # Training path
         dict_data = self.__standard_getitem__(idx,is_training=True)
-        features = self.backbone_dict['backbone'].forward_features(dict_data['preprocess'])
+        # features = self.backbone_dict['backbone'].forward_features(dict_data['preprocess'])
         
-        # Apply pooling if specified in backbone_dict
-        if self.backbone_dict['embedding_reduction'] is not EMBEDDING_REDUCTION.NONE:
-          features = torch.mean(features,dim=self.backbone_dict['embedding_reduction'].value,keepdim=True)
-        dict_data = {
-          'features': features,
-          'list_labels': dict_data['labels'],
-          'list_sample_id': dict_data['sample_id'],
-          'list_subject_id': dict_data['subject_id'],
-        }
-        return _get_element(dict_data=dict_data,df=self.video_labels,idx=idx,dataset_type=CUSTOM_DATASET_TYPE.BASE)
+        # # Apply pooling if specified in backbone_dict
+        # if self.backbone_dict['embedding_reduction'] is not EMBEDDING_REDUCTION.NONE:
+        #   features = torch.mean(features,dim=self.backbone_dict['embedding_reduction'].value,keepdim=True)
+        # dict_data = {
+        #   'features': features,
+        #   'list_labels': dict_data['labels'],
+        #   'list_sample_id': dict_data['sample_id'],
+        #   'list_subject_id': dict_data['subject_id'],
+        # }
+        return {
+              'features': dict_data['preprocess'],      # [B,C,frame_length,H,W]
+              'labels': dict_data['labels'],            # [8]
+              'subject_id': dict_data['subject_id'],    # [8]
+              'sample_id': dict_data['sample_id'][0]    # int
+          }
     else: # list case
       raise NotImplementedError("Batch processing is not implemented yet in this dataset class.")
       if self.backbone_dict is None:
@@ -450,20 +503,8 @@ class customDataset(torch.utils.data.Dataset):
       frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
       # Apply preprocessing if needed
-      if self.preprocess_align:
-        frame = self.face_extractor.align_face(frame)
-            
-      if self.preprocess_crop_detection:
-        frame = self.face_extractor.crop_face_detection(frame)
-            
-      if self.preprocess_frontalize:
-        frame, _ = self.face_extractor.frontalize_img(
-          frame=frame,
-          ref_landmarks=self.reference_landmarks,
-          frontalization_mode='SVD',
-          v2=True,
-          align=True
-        )
+      if self.preprocess_align or self.preprocess_frontalize or self.preprocess_crop_detection:
+        raise NotImplementedError("Face preprocessing is not implemented yet.")
         
       # Check if this frame should be included in any clip
       mask = np.any(np.isin(list_indices, frame_idx),axis=1)
@@ -489,11 +530,7 @@ class customDataset(torch.utils.data.Dataset):
     """
     # Combine preprocessed tensors from all samples
     data = torch.cat([item['preprocess'].squeeze() for item in batch], dim=0) # [chunks, C, clip_length, H, W]
-    # data = data.permute()
-    # data = data.reshape(
-    #   -1, self.image_channels, self.clip_length, 
-    #   self.image_resize_h, self.image_resize_w
-    # )  # 
+
     # Combine metadata from all samples
     labels = torch.cat([item['labels'] for item in batch], dim=0)
     path = np.concatenate([item['path'] for item in batch])
@@ -502,16 +539,38 @@ class customDataset(torch.utils.data.Dataset):
     list_frames = torch.cat([item['frame_list'] for item in batch], dim=0).squeeze()
 
     return data, labels, subject_id, sample_id, path, list_frames
+
   
   def _custom_collate(self, batch):
-    return _custom_collate(batch=batch,
-                           instance_model_name=self.backbone_dict['instance_model_name'],
-                           coral_loss=self.coral_loss,
-                           soft_labels_mat=self.soft_labels,
-                           concatenate_temporal=self.backbone_dict['concatenate_temporal'],
-                           model=self.backbone_dict['model'],
-                           smooth_labels=self.smooth_labels,
-                           num_classes=self.total_classes)
+    time_custom_collate = time.perf_counter()
+    labels = torch.stack([item['labels'][0] for item in batch], dim=0)
+    subject_id = torch.stack([item['subject_id'][0] for item in batch], dim=0)
+    sample_id = torch.stack([item['sample_id'] for item in batch], dim=0)
+    data = torch.cat([item['features'] for item in batch], dim=0)
+    lengths = torch.tensor([item['features'].shape[0] for item in batch]) 
+    # features = torch.nn.utils.rnn.pad_sequence(data,batch_first=True) # [batch_size,seq_len,emb_dim]
+    # lengths_tensor = torch.tensor(lengths, dtype=torch.int32)
+    # max_len = max(lengths)
+    # key_padding_mask = torch.arange(max_len).expand(len(batch), max_len) >= lengths_tensor.unsqueeze(1)
+    # key_padding_mask = ~key_padding_mask # set True for attention, if True means use the token to compute the attention, otherwise don't use it 
+      
+    if self.smooth_labels > 0.0: # and model.output_size > 1:
+      labels = smooth_labels_batch(gt_classes=labels, num_classes=self.num_classes, smoothing=self.smooth_labels)
+    elif self.soft_labels != None:
+      labels = self.soft_labels[labels].to(torch.float32) # soft labels
+    elif self.coral_loss:
+      labels = levels_from_labelbatch(labels, self.num_classes, dtype=torch.float32)
+    
+    helper.train_time_logs['custom_collate'] = helper.train_time_logs.get('custom_collate',0) + (time.perf_counter() - time_custom_collate)
+    # [B, C, T, H, W], padding applied in the model forward pass
+    return {'x':data, 
+           'key_padding_mask': None,
+           'lengths': lengths, 
+           }, \
+            labels, \
+            subject_id, \
+            sample_id, \
+
   
   def _single_uniform_sampling(self, video_len):
     """
@@ -576,8 +635,21 @@ class customDataset(torch.utils.data.Dataset):
     Returns:
         torch.Tensor: Frame indices
     """
-    indices = torch.randperm(video_len, dtype=torch.int16)[:self.clip_length]
-    return torch.sort(indices).values[None, :]
+    valid_starts = np.arange(0, video_len - self.clip_length * self.stride_inside_window + 1)
+    if valid_starts.size == 0:
+      raise ValueError(
+        f"Video length {video_len} is too short for the specified clip length {self.clip_length} "
+        f"and stride inside window {self.stride_inside_window}. "
+      )
+    try:
+      start_idxs = np.random.choice(valid_starts, size=self.num_clips_per_video, replace=False)
+    except ValueError as e:
+      start_idxs = np.random.choice(valid_starts, size=self.num_clips_per_video, replace=True) # If not enough unique starts, allow replacement
+    start_idxs = np.sort(start_idxs.astype(int))
+    indices = np.array([np.arange(start_idx, start_idx + self.clip_length * self.stride_inside_window, self.stride_inside_window) for start_idx in start_idxs])
+    indices = torch.tensor(indices, dtype=torch.int32)
+    # indices = torch.randperm(video_len, dtype=torch.int16)[:self.clip_length]
+    return indices  # [num_clips, clip_length]
   
   def _sliding_window_sampling(self, video_len):
     """
@@ -601,8 +673,12 @@ class customDataset(torch.utils.data.Dataset):
       )
     indices = torch.arange(0, video_len - self.clip_length * self.stride_inside_window + 1, self.stride_window)
     list_indices = torch.stack([torch.arange(start_idx, start_idx + self.clip_length * self.stride_inside_window, self.stride_inside_window) for start_idx in indices])
-    # print('Sliding shape', list_indices.shape)
-    return list_indices
+    
+    # Give importance to the end of the video (Biovid has important info at the end)
+    list_indices = video_len - list_indices - 1
+    list_indices = list_indices.flip(dims=(0, 1))  # row-wise + clip-wise flip
+    
+    return list_indices # shape [num_windows, clip_length]
   
   def get_unique_subjects(self):
     return np.sort(self.video_labels['subject_id'].unique().tolist())
@@ -621,7 +697,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
     self.concatenate_temporal = concatenate_temporal
     self.df = pd.read_csv(csv_path,sep='\t')
     self.num_classes = len(self.get_unique_classes())
-    
+    self.is_quadrant = True if 'combined' in root_folder_features else False
     if not is_train:
       # Keep only original samples if validation/test (sample_id<=8700)
       filter_mask = self.df['sample_id'] <= helper.step_shift
@@ -702,7 +778,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
   
   def __getitem__(self,idx):
     if isinstance(idx,int):
-      return _get_element(df=self.df,dict_data=helper.dict_data,idx=idx,dataset_type=CUSTOM_DATASET_TYPE.AGGREGATED)
+      return _get_element(df=self.df,dict_data=helper.dict_data,idx=idx,dataset_type=CUSTOM_DATASET_TYPE.AGGREGATED,is_quadrant=self.is_quadrant)
     else:
       raise NotImplementedError("Batch loading is not implemented for customDatasetAggregated")
       batch = [_get_element(df=self.df,dict_data=helper.dict_data,idx=idx) for idx in idx]
@@ -730,6 +806,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
   def get_all_sample_ids(self):
     return self.df['sample_id'].tolist()
 
+
 class customDatasetWhole(torch.utils.data.Dataset):
   def __init__(self,csv_path,root_folder_features,concatenate_temporal,model,smooth_labels,soft_labels,coral_loss):
     self.csv_path = csv_path
@@ -737,6 +814,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
     self.df = pd.read_csv(csv_path,sep='\t') # subject_id, subject_name, class_id, class_name, sample_id, sample_name
     self.concatenate_temporal = concatenate_temporal
     self.model = model
+    self.is_quadrant = True if 'combined' in root_folder_features else False
     self.instance_model_name = tools.get_instace_model_name(model)
     self.smooth_labels = smooth_labels
     self.num_classes = len(self.get_unique_classes())
@@ -756,30 +834,38 @@ class customDatasetWhole(torch.utils.data.Dataset):
     return len(self.df)
     
   def _load_element(self,idx):
+    pid = os.getpid()
+    # if pid not in helper.time_profile_dict:
+    #   helper.time_profile_dict[pid] = {}
     csv_row = self.df.iloc[idx]
-    folder_path = os.path.join(self.root_folder_features,csv_row['subject_name'],f"{csv_row['sample_name']}.safetensors")
-    # load_start = time.time()
-    features = tools.load_dict_data(folder_path)
-    features['list_labels'].fill_(csv_row['class_id']) # fill the labels with the class_id from csv
+    sample_id = csv_row['sample_id']
+    if sample_id > helper.step_shift:
+      aug_type = helper.get_augmentation_type(sample_id)
+      folder_path = os.path.join(f"{self.root_folder_features}_{aug_type}", csv_row['subject_name'], f"{csv_row['sample_name']}.safetensors")
+    else:
+      folder_path = os.path.join(self.root_folder_features,csv_row['subject_name'],f"{csv_row['sample_name']}.safetensors")
+    # load_start = time.perf_counter()
+    with profile_workers(f'{pid}_loading_dict_time',helper.time_profiling_enabled,helper.time_profile_dict):
+      features = tools.load_dict_data(folder_path)
     # if features['features'].shape[0] > 4:
     #   for k,v in features.items():
     #     features[k] = v[4:] # 3 chunks -> 1.92 secat the begin
 
-    # load_end = time.time()
+    # load_end = time.perf_counter()
     # print(f"Element {idx} loading time: {load_end - load_start:.2f} seconds")
-    return _get_element(dict_data=features,df=self.df,idx=idx, dataset_type=CUSTOM_DATASET_TYPE.WHOLE)
-  
+    return _get_element(dict_data=features,df=self.df,idx=idx, dataset_type=CUSTOM_DATASET_TYPE.WHOLE, is_quadrant=self.is_quadrant)
+
   def __getitem__(self,idx):
     if isinstance(idx,int):
       el = self._load_element(idx=idx)
       return el
     else:
       raise NotImplementedError("Batch loading is not implemented for customDatasetWhole")
-      batch_time_start = time.time()
+      batch_time_start = time.perf_counter()
       # batch = [_load_element(idx=idx) for idx in idx]
       with ThreadPoolExecutor(max_workers=len(idx)) as executor:
         batch = list(executor.map(self._load_element, idx))
-      batch_time_end = time.time()
+      batch_time_end = time.perf_counter()
       print(f"Batch {idx} loading time: {batch_time_end - batch_time_start:.2f} seconds")
       batch = self._custom_collate(batch)
       return batch
@@ -798,35 +884,113 @@ class customDatasetWhole(torch.utils.data.Dataset):
   def get_all_sample_ids(self):
     return self.df['sample_id'].tolist()
 
+# Alternative version with even more optimizations for large batches
+def highly_optimized_custom_collate(batch, pid, concatenate_temporal=False, smooth_labels=0.0,
+  soft_labels_mat=None, coral_loss=False, num_classes=None):
+  """Highly optimized version using vectorized operations where possible"""
+  
+  batch_size = len(batch)
+  
+  # Try to stack tensors directly if they have the same shape (more efficient)
+  try:
+    # Check if all features have the same shape
+    first_shape = batch[0]['features'].shape
+    # Stack all features at once - much faster
+    all_features = torch.stack([sample['features'] for sample in batch])
+    
+    if not concatenate_temporal:
+      features = all_features.view(batch_size, -1, all_features.shape[-1]).to(torch.float32)
+      # lengths = torch.full((batch_size,), features.size(1), dtype=torch.int32)
+    else:
+      features = all_features.permute(0,1,3,4,2,5).contiguous().view(
+        batch_size, -1, all_features.shape[-1] * all_features.shape[-2]).to(torch.float32)
+      # lengths = torch.full((batch_size,), features.size(1), dtype=torch.int32)
+    lengths = None
+  # else:
+  #     # Fall back to individual processing
+  #     raise ValueError("Shapes don't match")
+      
+  except (ValueError, RuntimeError):
+    # Fall back to the standard approach for variable shapes
+    features = []
+    lengths = []
+
+    for sample in batch:
+      feat = sample['features']
+      if not concatenate_temporal:
+        processed_feat = feat.view(-1, feat.shape[-1]).to(torch.float32)
+      else:
+        processed_feat = feat.permute(0,2,3,1,4).contiguous().view(
+          -1, feat.shape[-1] * feat.shape[-2]).to(torch.float32)
+      
+      features.append(processed_feat)
+      lengths.append(processed_feat.size(0))
+    
+    with profile_workers(f'{pid}_pad_sequence_time',helper.time_profiling_enabled,helper.time_profile_dict):
+      features = torch.nn.utils.rnn.pad_sequence(features, batch_first=True)
+      lengths = torch.tensor(lengths, dtype=torch.int32)
+      
+    helper.time_profile_dict[f'{pid}_pad_sequence_calls'] = helper.time_profile_dict.get(f'{pid}_pad_sequence_calls', 0) + 1
+  
+  # Build key_padding_mask for attention
+  if lengths is None:
+    # Case when shapes matched perfectly (no padding)
+    key_padding_mask = None
+  else:
+    # Variable lengths -> pad mask
+    max_len = features.size(1)
+    key_padding_mask = torch.arange(max_len)[None, :] < lengths[:, None]
+    key_padding_mask = key_padding_mask.unsqueeze(1).unsqueeze(1)
+  
+  # Vectorized extraction of labels, subject_ids, and sample_ids 
+  labels = torch.tensor([sample['labels'][0] for sample in batch], dtype=torch.int32)
+  subject_id = torch.tensor([sample['subject_id'][0] for sample in batch], dtype=torch.int32)
+  sample_id = torch.tensor([sample['sample_id'] for sample in batch], dtype=torch.int32)
+  
+  # Handle label transformations (same as before)
+  if smooth_labels > 0.0:
+    labels = smooth_labels_batch(gt_classes=labels, num_classes=num_classes,
+      smoothing=smooth_labels)
+  elif soft_labels_mat is not None:
+    labels = soft_labels_mat[labels].to(torch.float32)
+  elif coral_loss:
+    labels = levels_from_labelbatch(labels, num_classes, dtype=torch.float32)
+    
+  return {
+    'features': features,
+    'lengths': lengths,
+    'labels': labels,
+    'subject_id': subject_id,
+    'sample_id': sample_id,
+    'key_padding_mask': key_padding_mask,
+    # 'preprocessing_time': time_preprocess_end - time_preprocess_start
+  }
+
+
 def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_classes,smooth_labels, soft_labels_mat,coral_loss):
   # Pre-flatten features: reshape each sample to (sequence_length, emb_dim)
+  pid = os.getpid()
+  # if pid not in helper.time_profile_dict:
+  #   helper.time_profile_dict[pid] = 
+  
   if instance_model_name != helper.INSTANCE_MODEL_NAME.LINEARPROBE:
-    if not concatenate_temporal:
-      features = [sample['features'].reshape(-1,sample['features'].shape[-1]).to(torch.float32) for sample in batch] # [chunks,T,S,S,C] -> [chunks*T*S*S,C]
-    else:
-      features = [sample['features'].permute(0,2,3,1,4).reshape(-1,sample['features'].shape[-1]*sample['features'].shape[-2]).to(torch.float32) for sample in batch] # [chunks,T,S,S,C] ->[chunks,S,S,T,C]-> [chunks*S*S,C*T]
-    # features -> [seq_len,emb_dim]
-    lengths = [feat.size(0) for feat in features]
-    features = torch.nn.utils.rnn.pad_sequence(features,batch_first=True) # [batch_size,seq_len,emb_dim]
-    lengths_tensor = torch.tensor(lengths)  
-    labels = torch.tensor([sample['labels'][0] for sample in batch],dtype=torch.int32)
-    if smooth_labels > 0.0: # and model.output_size > 1:
-      labels = smooth_labels_batch(gt_classes=labels, num_classes=num_classes, smoothing=smooth_labels)
-    elif soft_labels_mat is not None:
-      labels = soft_labels_mat[labels].to(torch.float32) # soft labels
-    elif coral_loss:
-      labels = levels_from_labelbatch(labels, num_classes, dtype=torch.float32)
-    subject_id = torch.tensor([sample['subject_id'][0] for sample in batch])
-    sample_id = torch.tensor([sample['sample_id'] for sample in batch])
+    
+    with profile_workers(f'{pid}_collate_preprocess_time',helper.time_profiling_enabled,helper.time_profile_dict):
+      dict_res = highly_optimized_custom_collate(batch=batch,
+                                                pid=pid,
+                                                concatenate_temporal=concatenate_temporal,
+                                                smooth_labels=smooth_labels,
+                                                soft_labels_mat=soft_labels_mat,
+                                                coral_loss=coral_loss,
+                                                num_classes=num_classes)
+        
     if instance_model_name == helper.INSTANCE_MODEL_NAME.AttentiveClassifier or instance_model_name == helper.INSTANCE_MODEL_NAME.ATTENTIVEPROBE:
-      max_len = max(lengths)
-      key_padding_mask = torch.arange(max_len).expand(len(batch), max_len) >= lengths_tensor.unsqueeze(1)
-      key_padding_mask = ~key_padding_mask # set True for attention, if True means use the token to compute the attention, otherwise don't use it 
-      return {'x':features, 'key_padding_mask': key_padding_mask},\
-              labels,\
-              subject_id,\
-              sample_id
+      return {'x':dict_res['features'], 'key_padding_mask': dict_res['key_padding_mask']},\
+              dict_res['labels'],\
+              dict_res['subject_id'],\
+              dict_res['sample_id']
     elif instance_model_name == helper.INSTANCE_MODEL_NAME.GRUPROBE:
+      raise NotImplementedError("GRUPROBE not implemented in collate function.")
       packed_input = torch.nn.utils.rnn.pack_padded_sequence(features,lengths_tensor,batch_first=True,enforce_sorted=False)
       if model.output_size == 1:
         labels = labels.float()
@@ -845,8 +1009,8 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_cla
             labels,\
             subject_id, 
 
-def fake_collate(batch): # to avoid strange error when use customSampler
-  return batch[0]  
+# def fake_collate(batch): # to avoid strange error when use customSampler
+#   return batch[0]  
 
 class customBatchSampler(BatchSampler):
   def __init__(self, batch_size, shuffle,path_cvs_dataset=None, random_state=42,df=None):
@@ -873,6 +1037,7 @@ class customBatchSampler(BatchSampler):
     nr_samples = len(self.y_labels)
     self.skf = StratifiedKFold(n_splits = math.ceil(nr_samples/self.n_batch_size) , shuffle=self.shuffle, random_state=self.random_state)
     self.n_batches = self.skf.get_n_splits()
+    self.real_batch_size = math.ceil(nr_samples/self.n_batches)
     
   def __iter__(self):
     for _,test in self.skf.split(np.zeros(self.y_labels.shape[0]), self.y_labels):
@@ -913,7 +1078,7 @@ def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: f
 
  
 def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_training_batch,is_training,dataset_type,concatenate_temporal,model,
-                           label_smooth,soft_labels,is_coral_loss,n_workers=None,backbone_dict=None,prefetch_factor=None):
+                           label_smooth,soft_labels,is_coral_loss,stride_inside_window=1,num_clips_per_video=1,sample_frame_strategy=None,n_workers=None,backbone_dict=None,prefetch_factor=None):
   if dataset_type.value == CUSTOM_DATASET_TYPE.WHOLE.value:
     dataset_ = customDatasetWhole(csv_path,root_folder_features=root_folder_features,
                                   concatenate_temporal=concatenate_temporal,
@@ -922,7 +1087,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                   coral_loss=is_coral_loss)
     pin_memory = True
     persistent_workers = True
-    prefetch_factor = 10 if prefetch_factor is None else prefetch_factor
+    prefetch_factor = 2 if prefetch_factor is None else prefetch_factor
   elif dataset_type.value == CUSTOM_DATASET_TYPE.AGGREGATED.value:
     dataset_ = customDatasetAggregated(csv_path=csv_path,
                                         root_folder_features=root_folder_features,
@@ -939,11 +1104,12 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
   elif dataset_type.value == CUSTOM_DATASET_TYPE.BASE.value:
     if backbone_dict is not None:
       dataset_ = customDataset(path_dataset=root_folder_features,
-                              sample_frame_strategy=SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW,
+                              sample_frame_strategy=sample_frame_strategy,
+                              num_clips_per_video=num_clips_per_video,
                               path_labels=csv_path,
                               stride_window=16,
                               clip_length=16,
-                              stride_inside_window=1,
+                              stride_inside_window=stride_inside_window,
                               preprocess_align=False,
                               preprocess_frontalize=False,
                               preprocess_crop_detection=False,
@@ -960,36 +1126,36 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
       raise ValueError(f'backbone_dict must be provided for dataset_type: {dataset_type}')
   else:
     raise ValueError(f'Unknown dataset type: {dataset_type}. Choose one of {CUSTOM_DATASET_TYPE}')
-
+  
   if is_training:
-    # try:
-    customBatchSampler_train = customBatchSampler(df=dataset_.df, 
-                                        batch_size=batch_size,
-                                        shuffle=shuffle_training_batch)
-    if n_workers > 1:
-      loader_ = DataLoader(
-                          dataset=dataset_,
-                          batch_sampler=customBatchSampler_train,
-                          collate_fn=dataset_._custom_collate,
-                          # batch_size=1,
-                          num_workers=n_workers,
-                          persistent_workers= persistent_workers,
-                          prefetch_factor=prefetch_factor,
-                          pin_memory=pin_memory)
-      print(f'Use custom Dataloader with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
-    else:
-      loader_ = DataLoader(
-                          dataset=dataset_,
-                          batch_sampler=customBatchSampler_train,
-                          collate_fn=dataset_._custom_collate,
-                          # batch_size=1,
-                          pin_memory=True)
-      print(f'Use custom Dataloader!')
-    # except Exception as e:
-    #   raise ValueError(f'Error in customBatchSampler: {e}') from e
-    #   print(f'Err: {e}')
-    #   print(f'Use standard DataLoader')
-    #   loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate,persistent_workers=True)
+    try:
+      customBatchSampler_train = customBatchSampler(df=dataset_.df, 
+                                          batch_size=batch_size,
+                                          shuffle=shuffle_training_batch)
+      if n_workers > 1:
+        loader_ = DataLoader(
+                            dataset=dataset_,
+                            batch_sampler=customBatchSampler_train,
+                            collate_fn=dataset_._custom_collate,
+                            # batch_size=1,
+                            num_workers=n_workers,
+                            persistent_workers= persistent_workers,
+                            prefetch_factor=prefetch_factor,
+                            pin_memory=pin_memory)
+        print(f'Use custom Dataloader with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
+      else:
+        loader_ = DataLoader(
+                            dataset=dataset_,
+                            batch_sampler=customBatchSampler_train,
+                            collate_fn=dataset_._custom_collate,
+                            # batch_size=1,
+                            pin_memory=True)
+        print(f'Use custom Dataloader!')
+    except Exception as e:
+      # raise ValueError(f'Error in customBatchSampler: {e}') from e
+      print(f'Err: {e}')
+      print(f'Use standard DataLoader')
+      loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate,num_workers=n_workers,persistent_workers=True)
   else:
     if n_workers > 1:
       nr_batches = len(dataset_.df) // batch_size + 1
@@ -1007,36 +1173,50 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
   return dataset_,loader_
  
   
-def _get_element(dict_data,df,idx,dataset_type):
-  csv_row = df.iloc[idx]
-  sample_id = csv_row['sample_id']
-  # If AGGREGATED or WHOLE dataset, sample_id is the real sample_id
-  if dataset_type in [CUSTOM_DATASET_TYPE.AGGREGATED, CUSTOM_DATASET_TYPE.WHOLE]:
-    if sample_id > helper.step_shift * 4 and sample_id <= helper.step_shift * 6: # latent augm.
-      mask = dict_data['list_sample_id'] == ((sample_id - 1) % helper.step_shift + 1) # to get the real sample_id
-    else:
+def _get_element(dict_data,df,idx,dataset_type,is_quadrant=False):
+  pid = os.getpid()
+  # if pid not in helper.time_profile_dict:
+  #   helper.time_profile_dict[pid] = mp.Manager().dict()
+  with profile_workers(f'{pid}_get_element_time',helper.time_profiling_enabled,helper.time_profile_dict):
+    csv_row = df.iloc[idx]
+    sample_id = csv_row['sample_id']
+    # If AGGREGATED or WHOLE dataset, sample_id is the real sample_id
+    # start_time_mask = time.perf_counter()
+    mask = None
+    if dataset_type in [CUSTOM_DATASET_TYPE.AGGREGATED, CUSTOM_DATASET_TYPE.WHOLE]:
+      if helper.is_latent_basic_augmentation(sample_id) or helper.is_latent_masking_augmentation(sample_id): # latent augm.
+        mask = dict_data['list_sample_id'] == ((sample_id - 1) % helper.step_shift + 1) # to get the real sample_id
+      elif not is_quadrant and dataset_type == CUSTOM_DATASET_TYPE.AGGREGATED: # base aggregated dataset
+        mask = dict_data['list_sample_id'] == sample_id
+    else: # BASE dataset
       mask = dict_data['list_sample_id'] == sample_id
-  else: # BASE dataset
-    mask = dict_data['list_sample_id'] == sample_id
-  if mask.sum() == 0:
+
+  if mask is not None and mask.sum() == 0:
     print(f"Sample ID {sample_id} not found in the dataset.")
-  features = dict_data['features'][mask]
-  labels = dict_data['list_labels'][mask]
-  subject_id = dict_data['list_subject_id'][mask]
+    
+  with profile_workers(f'{pid}_selection_time',helper.time_profiling_enabled,helper.time_profile_dict):
+    if dataset_type != CUSTOM_DATASET_TYPE.AGGREGATED:
+      features = dict_data['features']
+      labels = dict_data['list_labels']
+      subject_id = dict_data['list_subject_id']
+    else:
+      features = dict_data['features'][mask]
+      labels = dict_data['list_labels'][mask]
+      subject_id = dict_data['list_subject_id'][mask]
   
-  # polarity inversion + gaussian noise
-  if sample_id > helper.step_shift * 4 and sample_id <= helper.step_shift * 5: 
-    gaussian_noise = torch.randn_like(features) * 0.1
-    features = (-1 * features) + gaussian_noise 
-  
-  # random masking patches
-  elif sample_id > helper.step_shift * 5 and sample_id <= helper.step_shift * 6:
-    B,T,S,S,C = features.shape
-    mask_grid = torch.rand(S,S) < 0.1 # 10% of the grid
-    mask_grid = mask_grid.unsqueeze(0).unsqueeze(0).unsqueeze(-1)
-    mask_grid = mask_grid.expand(B,T,S,S,C) # [B,T,S,S,C]
-    features = features.masked_fill(mask_grid, 0.0) # set to zero the masked values
-  
+  ###### LATENT AUGMENTATIONS ######
+  with profile_workers(f'{pid}_latent_augm_time',helper.time_profiling_enabled,helper.time_profile_dict):
+    if helper.is_latent_basic_augmentation(sample_id): # latent_basic_augmentation: invert the features + add gaussian noise
+      gaussian_noise = torch.randn_like(features) * 0.1
+      features = (-1 * features) + gaussian_noise
+
+    # random masking patches
+    elif helper.is_latent_masking_augmentation(sample_id):
+      B,T,S,S,C = features.shape # B->nr_frames, T->temporal, S->spatial, C->emb_dim
+      mask_grid = torch.rand(S,S,dtype=features.dtype) < 0.2 # 20% of the grid
+      mask_grid = mask_grid.view(1,1,S,S,1)
+      features = features.masked_fill(mask_grid, 0.0) # set to zero the masked values
+      
   return {
       'features': features,     # [8,8,1,1,768]-> [seq_len,Temporal,Space,Space,Emb]
       'labels': labels,         # [8]
@@ -1044,5 +1224,14 @@ def _get_element(dict_data,df,idx,dataset_type):
       'sample_id': sample_id    # int
   }    
     
-        
-      
+    
+from contextlib import contextmanager
+@contextmanager
+def profile_workers(name,enabled,profile_dict):
+  if enabled:
+    start_time = time.perf_counter()
+    yield
+    end_time = time.perf_counter()
+    profile_dict[name] = profile_dict.get(name,0) + (end_time - start_time)
+  else:
+    yield

@@ -6,7 +6,6 @@ import time
 from custom.tools import NpEncoder
 import custom.tools as tools
 import custom.helper as helper
-from custom.helper import HEAD, MODEL_TYPE, EMBEDDING_REDUCTION, SAMPLE_FRAME_STRATEGY
 import torch.nn as nn
 import torch.optim as optim
 import dataframe_image as dfi
@@ -40,7 +39,7 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
                           lr, epochs, optimizer_fn, round_output_loss, shuffle_training_batch, criterion,
                           early_stopping, enable_scheduler, concatenate_temp_dim, init_network,
                           regularization_lambda_L1, key_for_early_stopping, target_metric_best_model,stop_after_kth_fold,
-                          clip_grad_norm,regularization_lambda_L2,trial,summary_res,run_folder_path,validate):
+                          clip_grad_norm,regularization_lambda_L2,trial,summary_res,run_folder_path,validate,**kwargs):
   """
   Perform k-fold cross-validation on the dataset and train the model.
   
@@ -79,7 +78,7 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
       init_network, regularization_lambda_L1,
       key_for_early_stopping, early_stopping, enable_scheduler,
       target_metric_best_model, seed_random_state, clip_grad_norm,stop_after_kth_fold,
-      regularization_lambda_L2,trial,validate
+      regularization_lambda_L2,trial,validate,**kwargs
     )
     
     # Store results
@@ -106,7 +105,7 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
                    init_network, regularization_lambda_L1,
                    key_for_early_stopping, early_stopping, enable_scheduler,
                    target_metric_best_model, seed_random_state,clip_grad_norm,
-                   stop_after_kth_fold,regularization_lambda_L2,trial,validate=True):
+                   stop_after_kth_fold,regularization_lambda_L2,trial,validate=True,**kwargs):
   """Run a single fold of the cross-validation"""
   # Setup folder structure for this fold
   saving_path_kth_fold = os.path.join(train_folder_path, f'k{fold_idx}_cross_val')
@@ -141,7 +140,7 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
     init_network, regularization_lambda_L1,
     key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state,
     clip_grad_norm,stop_after_kth_fold,path_csv_kth_fold['test'],regularization_lambda_L2,
-    trial,validate
+    trial,validate,**kwargs
   )
     
   fold_results ={'fold_results':{}}
@@ -196,7 +195,7 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
                       concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
                       init_network, regularization_lambda_L1,
                       key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state,clip_grad_norm,
-                      stop_after_kth_fold,test_csv_path,regularization_lambda_L2,trial,validate):
+                      stop_after_kth_fold,test_csv_path,regularization_lambda_L2,trial,validate,**kwargs):
   """Train models on sub-folds"""
   if not isinstance(model_advanced, Model_Advanced):
     raise ValueError('model_advanced must be an instance of Model_Advanced')
@@ -223,7 +222,7 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
       criterion=criterion,
       saving_path=saving_path_kth_sub_fold,
       train_csv_path=sub_path_csv_kth_fold['train'],
-      val_csv_path=sub_path_csv_kth_fold['val'] if 'sub_val' in sub_path_csv_kth_fold else None,
+      val_csv_path=sub_path_csv_kth_fold['val'] if 'val' in sub_path_csv_kth_fold else None,
       round_output_loss=round_output_loss,
       shuffle_training_batch=shuffle_training_batch,
       init_network=init_network,
@@ -234,14 +233,16 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
       enable_scheduler=enable_scheduler,
       clip_grad_norm=clip_grad_norm,
       trial=trial,
-      enable_optuna_pruning = True if fold_idx == 0 and sub_idx == 0 else False
+      enable_optuna_pruning = True if fold_idx == 0 and sub_idx == 0 else False,
+      **kwargs
     )
     dict_test = test_model(
       model_advanced=model_advanced,
       path_model_weights=None, 
       test_csv_path=test_csv_path,
       state_dict=dict_train['dict_results']['best_model_state'],
-      criterion=criterion, concatenate_temporal=concatenate_temp_dim)
+      criterion=criterion, concatenate_temporal=concatenate_temp_dim,
+      **kwargs)
     # Remove unnecessary data to save space
     dict_train['dict_results']['best_model_state'] = None
     
@@ -325,7 +326,7 @@ def select_best_model(fold_results_kth, target_metric_best_model, saving_path_kt
 
 def test_model(model_advanced, path_model_weights, test_csv_path,
                    state_dict, criterion, concatenate_temporal,
-                   subfolder_idx=None,saving_path_kth_fold=None,fold_idx=None):
+                   subfolder_idx=None,saving_path_kth_fold=None,fold_idx=None,**kwargs):
   """Test the best model on the test set"""
   if not isinstance(model_advanced, Model_Advanced):
     raise ValueError('model_advanced must be an instance of Model_Advanced')
@@ -435,13 +436,19 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    concatenate_temp_dim,
                    stop_after_kth_fold,
                    n_workers,
+                   num_clips_per_video,
                    clip_grad_norm,
                    label_smooth,
+                   stride_inside_window,
                    dict_augmented,
+                   use_sdpa,
                    prefetch_factor,
                    soft_labels,
+                   adapter_dict,
+                   load_dataset_in_memory,
                    trial=None,
-                   validate=True
+                   validate=True,
+                   **kwargs
                   ):
  
 
@@ -469,6 +476,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
       'key_for_early_stopping': key_for_early_stopping,
       # 'stride_window_in_video': stride_window_in_video,
       'head_params': head_params,
+      'adapter_dict': adapter_dict,
+      'dataset_type': tools.get_dataset_type(features_folder_saving_path),
       'random_state': seed_random_state,
       'plot_dataset_distribution': is_plot_dataset_distribution,
       'round_output_loss': is_round_output_loss,
@@ -486,6 +495,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
       'soft_labels': soft_labels,
       **dict_augmented,
       'validate': validate,
+      **kwargs,
       'type_regul': 'elastic' if regularization_lambda_L1 > 0 and regularization_lambda_L2 > 0 else 'L1' if regularization_lambda_L1 > 0 else 'L2' if regularization_lambda_L2 > 0 else 'none'
       }
   def get_json_config():
@@ -518,6 +528,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'target_metric_best_model': target_metric_best_model,
     'early_stopping': str(early_stopping),
     'soft_labels': soft_labels,
+    'adapter_dict': adapter_dict,
+    **kwargs,
     'regularization_lambda_L2': regularization_lambda_L2,
     }
   ###############################
@@ -548,15 +560,24 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   #   helper.LOG_CROSS_ATTENTION['enable'] = False
   # else:
   #   helper.LOG_CROSS_ATTENTION['enable'] = True
+  if tools.get_dataset_type(features_folder_saving_path) != helper.CUSTOM_DATASET_TYPE.BASE:
+    adapter_dict = None
+    print(f'WARNING: adapter_dict is set to None because the dataset type is {tools.get_dataset_type(features_folder_saving_path)}\n')
+
   model_advanced = Model_Advanced(model_type=model_type,
                                   path_dataset=path_video_dataset,
                                   embedding_reduction=pooling_embedding_reduction,
                                   clips_reduction=pooling_clips_reduction,
                                   sample_frame_strategy=sample_frame_strategy,
                                   stride_window=stride_window_in_video,
+                                  stride_inside_window = stride_inside_window,
                                   path_labels=path_csv_dataset,
+                                  use_sdpa=use_sdpa,
                                   batch_size_training=batch_size_training,
                                   head=head.value,
+                                  load_dataset_in_memory=load_dataset_in_memory, # TODO: make it a parameter
+                                  adapter_dict=adapter_dict,
+                                  num_clips_per_video=num_clips_per_video,
                                   soft_labels=soft_labels,
                                   prefetch_factor=prefetch_factor,
                                   head_params=head_params,
@@ -621,7 +642,8 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                           trial=trial,
                                           summary_res=summary_res,
                                           run_folder_path=run_folder_path,
-                                          validate=validate
+                                          validate=validate,
+                                          **kwargs
                                           )
   if helper.LOG_CROSS_ATTENTION['enable']:
     summary_res['cross_attention_debug'] = helper.LOG_CROSS_ATTENTION

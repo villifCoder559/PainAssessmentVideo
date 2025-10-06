@@ -1,7 +1,7 @@
 import os
 os.environ["OPTUNA_DISABLE_TELEMETRY"] = "1"
 # os.environ["TMPDIR"] = "tmp"
-import cdw_cross_entropy_loss.cdw_cross_entropy_loss
+# import cdw_cross_entropy_loss.cdw_cross_entropy_loss
 from custom.helper import CLIPS_REDUCTION, EMBEDDING_REDUCTION, MODEL_TYPE, SAMPLE_FRAME_STRATEGY, HEAD, GLOBAL_PATH
 import time
 import math
@@ -15,6 +15,7 @@ import platform
 import pandas as pd
 # import cProfile, pstats
 import numpy as np
+import torch
 from pstats import SortKey
 import optuna
 from copy import deepcopy
@@ -23,7 +24,7 @@ from cdw_cross_entropy_loss import cdw_cross_entropy_loss
 import optunahub
 from sim_loss.age_estimation.loss import SimLoss # type: ignore
 from coral_pytorch.losses import coral_loss
-
+import sys
 
 # ------------ Helper Functions ------------
 
@@ -39,12 +40,28 @@ def get_optimizer(opt):
   if opt not in optimizers:
     raise ValueError(f'Optimizer not found: {opt}. Valid options: {list(optimizers.keys())}')
   return optimizers[opt]
+ 
+def get_sampling_frame_startegy(strategy):
+  """Get sampling strategy from string name."""
+  strategy = strategy.lower()
+  if strategy == SAMPLE_FRAME_STRATEGY.UNIFORM.value:
+    return SAMPLE_FRAME_STRATEGY.UNIFORM
+  elif strategy == SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW.value:
+    return SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
+  elif strategy == SAMPLE_FRAME_STRATEGY.CENTRAL_SAMPLING.value:
+    return SAMPLE_FRAME_STRATEGY.CENTRAL_SAMPLING
+  elif strategy == SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING.value:
+    return SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING 
+  else:
+    raise ValueError(f'Sampling strategy not found: {strategy}. Valid options: {list(SAMPLE_FRAME_STRATEGY)}')
   
 def get_loss(loss, dict_args=None):
   """Get loss function from string name using if/elif."""
   loss = loss.lower()
   if loss == 'l1':
     return nn.L1Loss()
+  elif loss == 'ce_weight':
+    return nn.CrossEntropyLoss(weight=torch.tensor(dict_args['class_weights'], dtype=torch.float32, device='cuda'))
   elif loss == 'huber':
     return nn.HuberLoss(delta=dict_args['delta_huber'])
   elif loss == 'l2':
@@ -117,6 +134,13 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   delta_huber = _suggest(trial, 'delta_huber', kwargs['delta_huber'], kwargs['optuna_categorical'])
   if loss == 'cdw_ce' and label_smooth > 0:
     raise ValueError('Label smoothing not supported for CDW loss. Use label_smooth=0.')
+  num_clips_per_video = trial.suggest_categorical('num_clips_per_video', kwargs['num_clips_per_video'])
+  sample_frame_strategy = trial.suggest_categorical('sample_frame_strategy', kwargs['sample_frame_strategy'])
+  stride_inside_window = trial.suggest_categorical('stride_inside_window', kwargs['stride_inside_window'])
+  use_sdpa = trial.suggest_categorical('use_sdpa', kwargs['use_sdpa'])
+  if use_sdpa and not hasattr(torch.nn.functional,"scaled_dot_product_attention"):
+    raise ValueError("SDPA (Scaled Dot Product Attention) is not available in this PyTorch version. Set use_sdpa=0 or update PyTorch")
+  add_CCC_loss = _suggest(trial, 'add_CCC_loss', kwargs['add_CCC_loss'], kwargs['optuna_categorical'])
   
   # augmentation
   hflip = _suggest(trial, 'hflip', kwargs['hflip'], kwargs['optuna_categorical'])
@@ -124,7 +148,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   rotation = _suggest(trial, 'rotation', kwargs['rotation'], kwargs['optuna_categorical'])
   latent_basic = _suggest(trial, 'latent_basic', kwargs['latent_basic'], kwargs['optuna_categorical'])  
   latent_masking = _suggest(trial, 'latent_masking', kwargs['latent_masking'], kwargs['optuna_categorical'])
-  
+  shift_augm = _suggest(trial, 'shift_augm', kwargs['shift_augm'], kwargs['optuna_categorical'])
   
   # choose head-specific hyperparameters
   head_name = kwargs['head']
@@ -150,7 +174,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     num_classes = GRU_output_size
 
   else:
-    # JEPA-attentive head parameters
+    # Attentive head parameters
     nr_blocks = _suggest(trial, 'nr_blocks', kwargs['nr_blocks'], kwargs['optuna_categorical'])
     num_heads = trial.suggest_categorical('num_heads', kwargs['num_heads'])
     num_cross_head = trial.suggest_categorical('num_cross_head', kwargs['num_cross_head'])
@@ -165,15 +189,21 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     q_k_v_dim = trial.suggest_categorical('q_k_v_dim', kwargs['q_k_v_dim'])
     emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
     custom_mlp = trial.suggest_categorical('custom_mlp', kwargs['custom_mlp'])
-    
     if loss in ['l1', 'l2', 'huber']:
       num_classes = 1
       print(f"\nRegression task detected. Setting num_classes to 1 for {loss} loss.")
     else:
       num_classes = pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique()
+    adapter_dict = {
+      'type': trial.suggest_categorical('adapter_type', kwargs['adapter_type']),
+      'mlp_ratio': trial.suggest_categorical('adpater_mlp_ratio', kwargs['adpater_mlp_ratio']),
+      'kernel_size': trial.suggest_categorical('adapter_kernel_size', kwargs['adapter_kernel_size']),
+      'dilation': trial.suggest_categorical('adapter_dilation', kwargs['adapter_dilation']),
+      'num_adapters': trial.suggest_categorical('num_adapters', kwargs['num_adapters']),
+    }
     head_params = {
       'input_dim': emb_dim * 8 if concatenate_temp_dim else emb_dim,
-      'q_k_v_dim': q_k_v_dim if q_k_v_dim is not None else emb_dim,
+      'q_k_v_dim': q_k_v_dim if q_k_v_dim != None else emb_dim,
       'num_classes': num_classes,
       'num_cross_heads': num_cross_head,
       'num_heads': num_heads or num_cross_head,
@@ -189,7 +219,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'cross_block_after_transformers': cross_block_after_transformers,
       'num_queries': num_queries,
       'agg_method': queries_agg_method,
-      'complete_block': trial.suggest_categorical('complete_block', kwargs['complete_block'])
+      'complete_block': trial.suggest_categorical('complete_block', kwargs['complete_block']),
+      'embedding_reduction': kwargs['embedding_reduction'],
     }
     head_enum = HEAD.ATTENTIVE_JEPA
 
@@ -203,33 +234,53 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     if past.params == trial.params:
       return past.value
 
-  if num_classes == 1 and (loss == 'cdw_ce' or loss == 'ce'):
+  if num_classes == 1 and (loss == 'cdw_ce' or loss == 'ce' or loss == 'ce_weight' or loss == 'sim_loss'):
     raise ValueError('Loss function not supported for regression. Use l1 or l2 loss.')
+
+  if loss == 'ce_weight':
+    df = pd.read_csv(kwargs['csv'], sep='\t')
+    class_counts = df['class_id'].value_counts(normalize=True).sort_index()
+    class_weights = 1.0 / class_counts.values  # Inverse of frequency
+    print(f"Class weights: {class_weights}")
+  else:
+    class_weights = None
+    
   dict_args_loss = {'num_classes': num_classes, 
                     'alpha': cdw_ce_alpha, 
                     'sim_loss_reduction': sim_loss_reduction,
                     'delta_huber': delta_huber,
+                    'class_weights': class_weights,
                     'transform': cdw_ce_power_transform}
   dict_augmented={
       'hflip': hflip,
       'jitter': color_jitter,
       'rotation': rotation,
       'latent_basic': latent_basic,
-      'latent_masking': latent_masking
+      'latent_masking': latent_masking,
+      'shift': shift_augm,
     }
   
+  add_kwargs={
+    'add_CCC_loss': add_CCC_loss,
+  }
+  
   run_folder_path, results = scripts.run_train_test(
+    load_dataset_in_memory=kwargs['load_dataset_in_memory'],
     model_type=model_type,
     soft_labels=soft_labels,
     criterion=get_loss(loss, dict_args=dict_args_loss),
     concatenate_temp_dim=concatenate_temp_dim,
     pooling_embedding_reduction=kwargs['pooling_embedding_reduction'],
     pooling_clips_reduction=kwargs['pooling_clips_reduction'],
-    sample_frame_strategy=kwargs['sample_frame_strategy'],
+    sample_frame_strategy=get_sampling_frame_startegy(sample_frame_strategy),
+    num_clips_per_video=num_clips_per_video,
     path_csv_dataset=kwargs['csv'],
     path_video_dataset=kwargs['path_video_dataset'],
     head=head_enum,
+    use_sdpa=use_sdpa,
+    adapter_dict=adapter_dict,
     stride_window_in_video=kwargs['stride_window_in_video'],
+    stride_inside_window=stride_inside_window,
     features_folder_saving_path=kwargs['ffsp'],
     head_params=head_params,
     k_fold=kwargs['k_fold'],
@@ -258,7 +309,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     dict_augmented=dict_augmented,
     trial=trial,
     prefetch_factor=kwargs['prefetch_factor'],
-    validate = kwargs['validation_enabled']
+    validate = kwargs['validation_enabled'],
+    **add_kwargs
   )
     # save_stats(pr, os.path.join(run_folder_path, 'profiling_results.txt'))
     # pr.dump_stats(os.path.join(run_folder_path, 'profiling_results.prof'))
@@ -310,7 +362,7 @@ def hyper_search(kwargs):
   except SystemError as e:
     print(f"Error loading sampler module: {e}. Using default TPE sampler.")
     sampler_module = optuna.samplers.TPESampler()
-  study = optuna.create_study(direction='maximize',
+  study = optuna.create_study(direction='maximize' if kwargs['key_early_stopping'] == 'val_accuracy' else 'minimize',
                               sampler=sampler_module,
                               storage=f'sqlite:///{os.path.join(kwargs["global_folder_name"],f"{study_name}.db")}',
                               study_name=study_name,
@@ -329,7 +381,7 @@ def hyper_search(kwargs):
   # Print the best hyperparameters and their corresponding accuracy
   print('Best hyperparameters:')
   print(study.best_params)
-  print('Best accuracy:', study.best_value)
+  print(f'Best {kwargs["key_early_stopping"]}:', study.best_value)
   # len of trials
   if len(study.trials) > 1:
     try:
@@ -363,6 +415,9 @@ if __name__ == '__main__':
                     help='Global folder name for saving results')
   parser.add_argument('--path_video_dataset', type=str, default=os.path.join('partA','video','video_frontalized'), 
                     help='Path to video dataset')
+
+  # Data loading parameters
+  parser.add_argument('--load_dataset_in_memory', type=int, default=0, help='Load the entire dataset into RAM memory. Default is 0 (False)')
   
   # Training parameters
   parser.add_argument('--validation_enabled', type=int, choices=[0,1], default=1, help='Enable validation set during training. Default is 1 (enabled)')
@@ -380,11 +435,16 @@ if __name__ == '__main__':
   parser.add_argument('--clip_grad_norm', type=float, default=None, help='Clip gradient norm. Default is None (not applied)')
   parser.add_argument('--concatenate_temp_dim', type=int, nargs='*', default=[0],
                     help='Concatenate temporal dimension in input to the model. (ex: the embeddind is [temporal*emb_dim]=6144 if model base)')
-  parser.add_argument('--loss', type=str, nargs='*', default='ce', help='Loss function: l1, l2, ce, cdw_ce,sim_loss,huber, coral. Default is ce')
+  parser.add_argument('--loss', type=str, nargs='*', default='ce', help='Loss function: l1, l2, ce, cdw_ce,sim_loss,huber, coral, ce_weight. Default is ce')
+  parser.add_argument('--add_CCC_loss', type=float, nargs='*', default=[0.0], help='Add CCC loss to the main loss with this weight. Default is 0.0 (not added)')
   parser.add_argument('--cdw_ce_alpha', type=float, nargs='*', default=[2], help='Alpha parameter for CDW loss.') 
   parser.add_argument('--cdw_ce_transform', type=str, nargs='*', default=['power'], help='Transform for CDW loss. Default is power, can Be also "huber" or "log"')
   parser.add_argument('--sim_loss_reduction', type=float, nargs='*', default=[0.0], help='Reduction factor for sim loss. Default is 0.0 (no reduction)')
   parser.add_argument('--delta_huber', type=float, nargs='*',default=[None], help='Delta parameter for Huber loss.')
+  parser.add_argument('--num_clips_per_video',type=int, nargs='*', default=[1], help='Number of clips per video for random sampling strategy. Default is 1')
+  parser.add_argument('--sample_frame_strategy', type=str, nargs='*', default=['sliding_window'],help=f'Sampling strategy for frames in a video when not use pre-computed feats: {list(SAMPLE_FRAME_STRATEGY)}. Default is sliding_window')
+  parser.add_argument('--stride_inside_window', type=int, nargs='*', default=[1], help='Stride inside the sampling window. Default is 1')
+  parser.add_argument('--use_sdpa', type=int, nargs='*', default=[1], help='Use SDPA (Scaled dot product attention) for backbone when feats are not precomputed. Default is 0 (not used)')
   
   # Attention parameters
   parser.add_argument('--num_heads', type=int, nargs='*',default=[8], help='Number of heads for attention in transformer (when nr_blocks >1). Default is 8')
@@ -405,6 +465,13 @@ if __name__ == '__main__':
                     help='Use complete block for Attentive head (after cross-attn there is MLP). Default is 1 (complete block), if 0 remove the MLP block after cross-attention')
   parser.add_argument('--q_k_v_dim', type=int, nargs='*', default=[None],
                     help='Dimension of query, key, value for Attentive head. Default is None (use input_dim)')
+  
+  # Adapter backbone finetuning parameters
+  parser.add_argument('--adpater_mlp_ratio', type=float, nargs='*', default=[0.25], help='MLP ratio(s) for backbone adapter. Default is 0.25')
+  parser.add_argument('--adapter_kernel_size', type=int, nargs='*', default=[3], help='Kernel size(s) for backbone adapter. Default is 3')
+  parser.add_argument('--adapter_dilation', type=int, nargs='*', default=[1], help='Dilation(s) for backbone adapter. Default is 1')
+  parser.add_argument('--adapter_type', type=str, nargs='*', default=['adapter'], help='Adapter type. Default is adapter (unique available)')
+  parser.add_argument('--num_adapters', type=int, nargs='*', default=[0], help='Number of adapters to use. Default is 0')
   
   # Linear parameters
   parser.add_argument('--linear_dim_reduction', type=str, default='spatial', help=f'Dimension reduction for Linear head. Can be {[d.name.lower() for d in EMBEDDING_REDUCTION]}')
@@ -435,11 +502,12 @@ if __name__ == '__main__':
   parser.add_argument('--jitter', type=float,nargs='*',default=[0.0], help='Jitter augmentation probability. Default is 0.0')
   parser.add_argument('--rotation', type=float, nargs='*',default=[0.0], help='Rotation augmentation probability. Default is 0.0')
   parser.add_argument('--latent_basic', type=float, nargs='*', default=[0.0], help='Latent basic augmentation probability. Default is 0.0')
-  parser.add_argument('--latent_masking', type=float, nargs='*', default=[0.0], help='Latent masking augmentation (0.2). Default is 0.0')
+  parser.add_argument('--latent_masking', type=float, nargs='*', default=[0.0], help='Latent masking augmentation (0.1). Default is 0.0')
+  parser.add_argument('--shift_augm', type=float, nargs='*', default=[0.0], help='Video shift augmentation probability. Default is 0.0 (not used)') 
   
   # Early stopping parameters
   parser.add_argument('--key_early_stopping', type=str, default='val_accuracy', 
-                    help='Metric for early stopping: val_accuracy. Default is val_accuracy')
+                    help='Metric for early stopping: val_accuracy, val_loss. Default is val_accuracy')
   parser.add_argument('--p_early_stop', type=int, default=2000, help='Patience for early stopping. Default is 2000')
   parser.add_argument('--min_delta', type=float, default=0.001, help='Minimum delta for early stopping. Default is 0.001')
   parser.add_argument('--threshold_mode', type=str, default='abs', help='Early stopping threshold mode: abs or rel. Default is abs')
@@ -449,7 +517,9 @@ if __name__ == '__main__':
   parser.add_argument('--log_history_sample', action='store_true', help='Log the train,val, test prediction of the model')
   parser.add_argument('--plot_live_loss', action='store_true', help='Plot live loss during training. Every 6 epochs')
   parser.add_argument('--log_xattn', action='store_true', help='Log cross attention weights')
-  
+  parser.add_argument('--log_grad_norm', action='store_true', help='Log gradient norm')
+  parser.add_argument('--log_workers', action='store_true', help='Log time taken by each worker to load data')
+
   # Optuna parameters
   parser.add_argument('--pruner_threshold_lower', type=float, default=0.20, help='Threshold for Optuna pruner. Default is 0.2')
   parser.add_argument('--pruner_n_warmup_steps', type=int, default=30, help='Number of warmup steps for Optuna pruner. Default is 30')
@@ -467,10 +537,8 @@ if __name__ == '__main__':
   clip_length = 16
   seed_random_state = 42
   pooling_clips_reduction = CLIPS_REDUCTION.NONE
-  sample_frame_strategy = SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
   dict_args['pooling_embedding_reduction'] = helper.EMBEDDING_REDUCTION.get_embedding_reduction(dict_args['embedding_reduction'])
   dict_args['pooling_clips_reduction'] = pooling_clips_reduction
-  dict_args['sample_frame_strategy'] = sample_frame_strategy
   dict_args['stride_window_in_video'] = 16 # To avoid errors but not used
   
   if dict_args['plot_live_loss']:
@@ -483,12 +551,21 @@ if __name__ == '__main__':
   if dict_args['log_history_sample']:
     helper.LOG_HISTORY_SAMPLE = True
   
+  if dict_args['log_workers']:
+    helper.time_profiling_enabled = True
+  
   if dict_args['save_last_epoch_model']:
     helper.SAVE_LAST_EPOCH_MODEL = True
   
   if dict_args['train_amp_enabled']:
     helper.AMP_ENABLED = True
     helper.AMP_DTYPE = dict_args['train_amp_dtype'].lower()
+    
+  if dict_args['log_grad_norm']:
+    helper.LOG_GRADIENT_NORM = True
+  
+  if dict_args['add_CCC_loss'] and dict_args['loss'][0] not in ['l1','l2','huber']:
+    raise ValueError("CCC loss can only be added to 'l1', 'l2', or 'huber' loss. Set loss to one of these to use CCC loss.")
   
   for method in dict_args['queries_agg_method']:
     if method not in helper.QUERIES_AGG_METHOD:
@@ -516,11 +593,11 @@ if __name__ == '__main__':
   if ('ce' not in dict_args['loss']) and (sum(dict_args['label_smooth']) > 0 or sum(dict_args['soft_labels']) > 0):
     raise ValueError("Label smoothing and soft labels are only supported for 'ce' loss. Set them to 0 for other losses.")
   
-  if dict_args['loss'] not in ['l1', 'l2', 'ce'] and (dict_args['train_amp_dtype'] == 'float16'):
-    raise ValueError("AMP training with float16 is only supported for 'l1', 'l2', or 'ce' loss.")
+  if dict_args['loss'][0] not in ['l1', 'l2', 'ce'] and (dict_args['train_amp_dtype'] == 'float16'):
+    raise ValueError(f"AMP training with float16 is only supported for 'l1', 'l2', or 'ce' loss. Found {dict_args['loss']}.")
   
-  if dict_args['key_early_stopping'] not in ['val_accuracy']:
-    raise ValueError(f"Invalid key for early stopping: {dict_args['key_early_stopping']}. Must be 'val_accuracy'.")
+  if dict_args['key_early_stopping'] not in ['val_accuracy','val_loss']:
+    raise ValueError(f"Invalid key for early stopping: {dict_args['key_early_stopping']}. Must be 'val_accuracy' or 'val_loss'.")
   
   if not dict_args['validation_enabled']:
     helper.SAVE_LAST_EPOCH_MODEL = True
@@ -567,7 +644,8 @@ if __name__ == '__main__':
   dict_augmented = {
       'hflip': args.hflip,
       'jitter': args.jitter,
-      'rotation': args.rotation
+      'rotation': args.rotation,
+      'shift': args.shift_augm,
     }
   # Create config summary for later reference
   config_prompt = {
@@ -576,7 +654,8 @@ if __name__ == '__main__':
     'early_stopping': early_stopping,
     'clip_length': clip_length,
     'dict_augmented': dict_augmented,
-    **dict_args
+    **dict_args,
+    'launch_command':" ".join(sys.argv), 
   }
   
   # Create output directory and save configuration
