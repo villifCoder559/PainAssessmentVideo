@@ -12,18 +12,23 @@ train_time_logs = {}
 
 # Profile workers in dataloader
 time_profile_dict = mp.Manager().dict()
-time_profiling_enabled = True
+time_profiling_enabled = False
 
 AMP_ENABLED = False
 AMP_DTYPE = None
 LOG_GRADIENT_PER_MODULE = False
-LOG_PER_CLASS_AND_SUBJECT = True
+LOG_PER_CLASS = True
+LOG_PER_SUBJECT = True
+LOG_CONFIDENCE_PREDICTION = False
 LOG_HISTORY_SAMPLE = False
 QUERIES_AGG_METHOD = ['mean','max']
 LOG_LOSS_ACCURACY = False
 LOG_GRADIENT_NORM = False
 SAVE_LAST_EPOCH_MODEL = False
+FORCE_SPLIT_K_FOLD = False # Only for CAER dataset!, turns on in the train_model.py script
+
 SAVE_PTH_MODEL = False
+
 LOG_CROSS_ATTENTION = {
   'enable': False,
   'state':'train'
@@ -42,7 +47,7 @@ def get_sampling_frame_startegy(strategy):
     return SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING 
   else:
     raise ValueError(f'Sampling strategy not found: {strategy}. Valid options: {list(SAMPLE_FRAME_STRATEGY)}')
-step_shift = 8700 # nr of samples in Biovid video dataset
+step_shift = 8700 # nr of samples in Biovid video dataset, set in train_model because depends on dataset
 
 def get_augmentation_type(sample_id):
   if is_hflip_augmentation(sample_id):
@@ -201,6 +206,14 @@ class ModelTypeEntry:
   def __init__(self, name, value):
     self.name = name
     self.value = value
+    
+  def __eq__(self, other):
+    if isinstance(other, ModelTypeEntry):
+      return self.name == other.name
+    return False
+  
+  def __hash__(self):
+    return hash(self.name)
 
 class MODEL_TYPE:
   _entries = {
@@ -218,7 +231,7 @@ class MODEL_TYPE:
   VIDEOMAE_v2_G     = _entries['VIDEOMAE_v2_G']
   VJEPA2_G_384      = _entries['VJEPA2_G_384']
   ViT_image         = _entries['ViT_image']
-
+  
   @classmethod
   def set_custom_model_type(cls, type, custom_model_path):
     mapping = {
