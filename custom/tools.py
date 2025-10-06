@@ -34,7 +34,7 @@ class NpEncoder(json.JSONEncoder):
       return obj.cpu().detach().numpy().tolist()
     if isinstance(obj,MulticlassConfusionMatrix):
       return obj.compute().cpu().detach().numpy().tolist()
-    return super(NpEncoder, self).default(obj)
+    return str(obj)
 
 
 def save_csv_file(cols,csv_array,saving_path,sliding_windows):
@@ -684,7 +684,7 @@ def plot_confusion_matrix(confusion_matrix, title, ax=None, saving_path=None):
     fig.savefig(saving_path)
 
 
-def get_unique_subjects_and_classes(csv_path):
+def get_unique_subjects_and_classes(df):
   """
   Get the number of times each unique subject ID and class ID appears in video_labels.
 
@@ -692,10 +692,10 @@ def get_unique_subjects_and_classes(csv_path):
     dict: A dictionary with keys 'subject_counts' and 'class_counts', each containing a dictionary
       where the keys are the unique IDs and the values are the counts.
   """
-  csv_array = pd.read_csv(csv_path).to_numpy()
-  list_samples = [entry[0].split("\t") for entry in csv_array]
-  list_samples = np.stack(list_samples)
+  if not isinstance(df, pd.DataFrame):
+    df = pd.read_csv(df,sep='\t')  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
   
+  list_samples = df.to_numpy()  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
   subject_ids = list_samples[:, 0].astype(int)
   class_ids = list_samples[:, 2].astype(int)
   
@@ -1073,7 +1073,8 @@ def get_array_from_csv(csv_path):
       - np.ndarray: Array where each row represents a sample from the CSV file.
       - np.ndarray: Array containing the column names from the CSV file.
   """
-  csv_array = pd.read_csv(csv_path)  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
+  print(f'Reading CSV file from: {csv_path}')
+  csv_array = pd.read_csv(csv_path,dtype={'subject_name':str,'sample_name':str,'class_id':int,'sample_id':int,'subject_id':int,'class_name':str})  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
   cols_array = csv_array.columns.to_numpy()[0].split('\t')
   csv_array = csv_array.to_numpy()
   list_entry = []
@@ -1300,8 +1301,21 @@ def generate_video_from_list_frame(list_frame,path_video_output,fps=25,resize=No
 
   if not os.path.exists(os.path.split(path_video_output)[0]):
     os.makedirs(os.path.split(path_video_output)[0])
+  heights = [frame.shape[0] for frame in list_frame]
+  widths  = [frame.shape[1] for frame in list_frame]
+
+  dict_frame_check = {
+    'max_width': max(widths),
+    'min_width': min(widths),
+    'max_height': max(heights),
+    'min_height': min(heights),
+  }
+  if dict_frame_check['max_width'] != dict_frame_check['min_width'] or dict_frame_check['max_height'] != dict_frame_check['min_height']:
+    resize = (dict_frame_check['max_width'], dict_frame_check['max_height'])
+    print(f'Warning: Frames have different sizes, resizing to (H={resize[1]}, W={resize[0]})')
+
   out_size = (list_frame[0].shape[1], list_frame[0].shape[0]) if resize is None else resize
-  out = cv2.VideoWriter(path_video_output, cv2.VideoWriter_fourcc(*'mp4v'), fps, out_size)
+  out = cv2.VideoWriter(path_video_output, cv2.VideoWriter_fourcc(*'avc1'), fps, out_size)
   count = 0
   for frame in list_frame:
     if not isinstance(frame,np.ndarray):
