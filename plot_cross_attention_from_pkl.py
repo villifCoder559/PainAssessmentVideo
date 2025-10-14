@@ -11,7 +11,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from io import BytesIO
 import argparse
-
+from pathlib import Path
 
 def plot_space_importance(xattn):
   xattn = xattn / xattn.sum()  # Normalize to sum to 1
@@ -68,10 +68,14 @@ def get_list_frames_from_sample(data, sample_id, create_video=False):
   feats_path = data['config_model']['model_advanced_params']['features_folder_saving_path']
 
   config_dict = os.path.join(feats_path, "config_dict.pkl")
+  if 'raid' in config_dict:
+    config_dict = config_dict.replace('raid','dune')
+  
   with open(config_dict, 'rb') as f:
     config = pickle.load(f)
-
   # Retrieve list frames for the sample id
+  if 'caer' in feats_path.lower():
+    config['video_extension'] = '.avi'
   custom_ds = customDataset(**config)
   dict_video = custom_ds.generate_video(sample_id=sample_id) # list_frames -> [B,H,W,C]
 
@@ -109,7 +113,7 @@ def get_resized_xattn(data, xattn, video_frames):
     print(f"Resized frame to {Hf}x{Wf} for quadrants")
   repeated_xattn = np.stack([[cv2.resize(repeated_xattn[q,t], (Wf, Hf), interpolation=cv2.INTER_LINEAR) # cv2.INTER_NEAREST, INTER_LINEAR
                           for t in range(nr_frames)] for q in range(quadrants)])  # shape (T, Hf, Wf)
-  repeated_xattn = np.round(repeated_xattn, decimals=6)
+  # repeated_xattn = np.round(repeated_xattn, decimals=6)
   
   # Compose quadrants if needed, otherwise squeeze
   if quadrants == 4:
@@ -135,7 +139,7 @@ def create_frame_with_overlaid_attention(list_indices, video_frames, xattn, samp
     ax.imshow(frame)
     im = ax.imshow(attn_map, cmap='jet', alpha=0.5)
     fig.colorbar(im, fraction=0.046, pad = 0.04)
-    ax.set_title(f"Head {head} - Sample {sample_id} - Frame {idx} - gt: {gt}, pred: {pred}")
+    ax.set_title(f"Head {head} - Sample {sample_id} - gt: {gt}, pred: {pred}")
     ax.axis('off')
     fig.tight_layout(pad=0)
     # plt.show()
@@ -151,7 +155,7 @@ def create_frame_with_overlaid_attention(list_indices, video_frames, xattn, samp
   if create_video:
     tools.generate_video_from_list_frame(list_frame=image_list,
                                         fps=2,
-                                        path_video_output=os.path.join(path_video_output, f"test_attention_{sample_id}.mp4"))
+                                        path_video_output=os.path.join(path_video_output, f"test_attention_{sample_id}_PA{gt}.mp4"))
   if return_overlaid_frames:
     return image_list
 
@@ -160,7 +164,8 @@ def get_data_from_pkl(xattn_path):
     data = pickle.load(f)
   if data['config_model']['config']['concatenate_quadrants']:
     raise NotImplementedError("Concatenate quadrants not implemented")
-  run_id = xattn_path.split('/')[-4].split('_')[0]
+  
+  run_id = Path(xattn_path).parts[-4].split('_')[0]
 
   return data, run_id
 
@@ -210,30 +215,18 @@ def multihead_video_creation(xattn,list_indices, video_frames, sample_id, gt, pr
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument('--xattn_path', type=str, help='Path to the pkl file with cross attention')
-  parser.add_argument('--sample_id', default = None, type=int, help='Sample ID to visualize. If none all samples will be processed')
-  dict_args = vars(parser.parse_args())
-  # # NO REGUL 
-  # xattn_path = "TRAIN_tests_CAER/history_run_filtered_CROPPED_CAER_reg_441775_ATTENTIVE_JEPA_lechuck_1758744831/1758744833192_VIDEOMAE_v2_S_NONE_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/k0_cross_val/test_with_cross_attention_1758815333.pkl"
 
-  # sample_id = dict_args['sample_id']
-  # xattn_path = dict_args['xattn_path']
-  # xattn_path = "TRAIN_tests_model/history_run_small_ATTN_high_drop_670666_ATTENTIVE_JEPA_targaryen_1758703044/1758703059114_VIDEOMAE_v2_S_NONE_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/k0_cross_val/test_with_cross_attention_1758715798.pkl"
-  path_video_output = os.path.join(*dict_args['xattn_path'].split('/')[:-1], 'video_attention') 
+  dict_args = vars(parser.parse_args())
+  path_video_output = os.path.join(*Path(dict_args['xattn_path']).parts[:-1], 'video_attention')
   
-  if dict_args['sample_id']:
-    list_sample_id = [dict_args['sample_id']]
-  else:
-    csv_path = os.path.join(*dict_args['xattn_path'].split('/')[:-1], 'csv_subset.csv')
-    df = pd.read_csv(csv_path,sep='\t')
-    list_sample_id = df['sample_id'].to_list()
-    print(f"Processing all {len(list_sample_id)} samples from csv {csv_path}")
-    
   # Get data from pkl
   data, run_id = get_data_from_pkl(dict_args['xattn_path'])
   
   # Get the df from csv
   csv_path = data['csv_path']
   df = pd.read_csv(csv_path,sep='\t')
+  list_sample_id = df['sample_id'].to_list()
+  print(f"Processing all {len(list_sample_id)} samples from csv {csv_path}")
   
   for sample_id in tqdm.tqdm(list_sample_id, desc="Processing samples"):
     if sample_id not in df['sample_id'].values:
