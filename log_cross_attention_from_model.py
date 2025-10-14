@@ -9,7 +9,7 @@ import pandas as pd
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model_pth_path', type=str, required=True, help='Path to the model checkpoint')
-parser.add_argument('--test_csv_path', type=str, default=None, help='Path to the CSV file for logging cross-attention')
+parser.add_argument('--csv_path', type=str, default=None, help='Path to the CSV file for logging cross-attention')
 parser.add_argument('--nr_samples', type=int, default=None, help='Number of samples to use from the CSV file (for quick testing)')
 dict_args = vars(parser.parse_args())
 
@@ -19,25 +19,25 @@ dict_args = vars(parser.parse_args())
 
 model_pth_path = dict_args['model_pth_path']
 
-config_model = os.path.join(*model_pth_path.split('/')[:-4], 'k_fold_results.pkl')
+config_model = os.path.join(*Path(model_pth_path).parts[:-4], 'k_fold_results.pkl')
 with open(config_model, 'rb') as f:
   config_model = pickle.load(f)
 
 uid = int(time.time())
-folder_out = os.path.join(*model_pth_path.split('/')[:-1],f'cross_attention_{uid}')
+folder_out = os.path.join(*Path(model_pth_path).parts[:-1],f'cross_attention_{uid}')
 os.makedirs(folder_out, exist_ok=True)
 config_model['model_advanced_params']['n_workers'] = 4  
 model_advanced_params = config_model['model_advanced_params']
 # model_advanced_params['new_csv_path'] = "TRAIN_tests_model/history_run_small_ATTN_high_drop_670666_ATTENTIVE_JEPA_targaryen_1758703044/1758703059114_VIDEOMAE_v2_S_NONE_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/augmented_samples.csv"
 # model_advanced_params['batch_size_training'] = 1
 model = Model_Advanced(**model_advanced_params)
-if dict_args['test_csv_path'] is not None:
-  test_csv_path = dict_args['test_csv_path']
+if dict_args['csv_path'] is not None:
+  test_csv_path = dict_args['csv_path']
 else:
-  test_csv_path = os.path.join(*model_pth_path.split('/')[:-2], 'test.csv')
+  test_csv_path = os.path.join(*Path(model_pth_path).parts[:-2], 'test.csv')
 
 if dict_args['nr_samples'] is not None: 
-  df = pd.read_csv(test_csv_path,sep='\t')
+  df = pd.read_csv(test_csv_path,sep='\t',dtype={'sample_name':str})
   df = df.iloc[:dict_args['nr_samples']]
   test_csv_path = os.path.join(folder_out, f'csv_subset.csv')
   df.to_csv(test_csv_path, index=False,sep='\t')
@@ -68,7 +68,7 @@ dict_res = {
   'csv_path': test_csv_path,
 }
 os.makedirs(folder_out, exist_ok=True)
-out_path = os.path.join(folder_out, f'{Path(test_csv_path).stem}_with_cross_attention_{csv_name}_{uid}.pkl')
+out_path = os.path.join(folder_out, f'{Path(test_csv_path).stem}_xattn_{uid}.pkl')
 with open(out_path, 'wb') as f:
   pickle.dump(dict_res, f)
   print(f'Saved results to {out_path}')
