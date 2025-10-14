@@ -8,6 +8,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision.ops import StochasticDepth
 
 
 class MLP(nn.Module):
@@ -176,11 +177,15 @@ class CrossAttention(nn.Module):
         self.q_k_v_dim = q_k_v_dim if q_k_v_dim is not None else dim
         self.attn_drop = nn.Dropout(attn_drop)
         self.attn_drop_value = attn_drop
+        # if q_k_v_dim is not None and q_k_v_dim != dim:
         self.proj = nn.Linear(dim if q_k_v_dim is None else q_k_v_dim, dim)
+        # else:
+        #     self.proj = nn.Identity()
+            
         self.proj_drop = nn.Dropout(proj_drop)
         self.use_sdpa = use_sdpa
 
-    def forward(self, q, x,mask=None,return_xattn=False): # q: [B, n, C], x: [B, N, C], mask: [B, N]
+    def forward(self, q, x,mask=None,return_xattn=False): # q: [B, n, C], x: [B, N, C], mask: [B, 1=q_seq_len, 1=key_seq_len, N]
         B, n, C = q.shape
         q = self.q(q).reshape(B, n, self.num_heads, self.q_k_v_dim // self.num_heads).permute(0, 2, 1, 3) # (batch_size, num_heads, query_len, feature_dim_per_head)
         B, N, C = x.shape
@@ -191,6 +196,8 @@ class CrossAttention(nn.Module):
                 mask = mask[:, None, None,:].expand(B, self.num_heads, n, N)
         if self.use_sdpa and not return_xattn:
             with torch.nn.attention.sdpa_kernel(backends=torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION):
+                # if mask is not None:
+                #     print("Debug")
                 q = F.scaled_dot_product_attention(q, k, v,
                                                    dropout_p=self.attn_drop_value if self.training else 0.0,
                                                    attn_mask=mask, # True -> consider to compute attention, False -> NOT consider to compute
@@ -222,6 +229,7 @@ class CrossAttentionBlock(nn.Module):
         qkv_bias=False,
         act_layer=nn.GELU,
         norm_layer=nn.LayerNorm,
+        drop_path_mode='row',
         custom_mlp=False,
         use_sdpa=False
     ):
@@ -245,7 +253,7 @@ class CrossAttentionBlock(nn.Module):
                                   reduction_ratio=mlp_ratio, 
                                   act_layer=act_layer, 
                                   drop=drop)
-        self.residual_drop = nn.Dropout(residual_drop)
+        self.residual_drop = StochasticDepth(residual_drop,drop_path_mode) if residual_drop > 0.0 else nn.Identity()
 
     def forward(self, q, x, mask=None, return_xattn=False):
         y,xattn = self.xattn(q, self.norm1(x), mask=mask, return_xattn=return_xattn)
