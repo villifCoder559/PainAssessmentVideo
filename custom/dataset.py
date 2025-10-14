@@ -306,6 +306,8 @@ class customDataset(torch.utils.data.Dataset):
     csv_array = self.video_labels.iloc[idx]
     video_path = os.path.join(self.path_dataset, csv_array.iloc[1], csv_array.iloc[5] + self.video_extension)
     container = cv2.VideoCapture(video_path)
+    if not container.isOpened():
+      raise ValueError(f"Video {video_path} cannot be opened. Please check the video file.")
     tot_frames = int(container.get(cv2.CAP_PROP_FRAME_COUNT))
     # Set frame dimensions based on preprocessing requirements
     width_frames = int(container.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -826,21 +828,21 @@ class customDatasetAggregated(torch.utils.data.Dataset):
 
 
 class customDatasetWhole(torch.utils.data.Dataset):
-  def __init__(self,csv_path,root_folder_features,concatenate_temporal,concatenate_quadrants,model,smooth_labels,soft_labels,coral_loss):
+  def __init__(self,csv_path,root_folder_features,concatenate_temporal,concatenate_quadrants,model,smooth_labels,soft_labels,coral_loss, xattn_mask):
     self.csv_path = csv_path
     if 'caer' in csv_path.lower():
       print("\n Detected CAER, Change step shift \n")
       helper.step_shift = 13176
-    
+    self.xattn_mask = xattn_mask
     self.root_folder_features = root_folder_features
     self.df = pd.read_csv(csv_path,sep='\t',dtype={'sample_name':str,'subject_name':str}) # subject_id, subject_name, class_id, class_name, sample_id, sample_name
     # count subject_id uniqueness
     unique_subject_ids, counts = np.unique(self.df['subject_id'], return_counts=True)
     print(f"\nUnique subject_ids: {len(unique_subject_ids)}, Total entries: {len(self.df)}")
-    if 'CAER' in root_folder_features:
-      # remove string in subject name
-      print("\nRemoving string after / in subject_name for caer dataset\n")
-      self.df['subject_name'] = self.df['subject_name'].apply(lambda x: x.split('/')[1])
+    # if 'CAER' in root_folder_features:
+    #   # remove string in subject name
+    #   print("\nRemoving string after / in subject_name for caer dataset\n")
+    #   self.df['subject_name'] = self.df['subject_name'].apply(lambda x: x.split('/')[1])
     self.concatenate_temporal = concatenate_temporal
     self.concatenate_quadrants = concatenate_quadrants
     self.model = model
@@ -894,7 +896,8 @@ class customDatasetWhole(torch.utils.data.Dataset):
     # print(f"Element {idx} loading time: {load_end - load_start:.2f} seconds")
     return _get_element(dict_data=features,df=self.df,idx=idx,
                         dataset_type=CUSTOM_DATASET_TYPE.WHOLE, is_quadrant=self.is_quadrant,
-                        embedding_reduction=self.model.embedding_reduction)
+                        embedding_reduction=self.model.embedding_reduction,
+                        xattn_mask=self.xattn_mask)
 
   def __getitem__(self,idx):
     if isinstance(idx,int):
@@ -912,7 +915,8 @@ class customDatasetWhole(torch.utils.data.Dataset):
       return batch
 
   def _custom_collate(self,batch):
-    return _custom_collate(batch,self.instance_model_name,self.concatenate_temporal,self.model,self.num_classes,self.smooth_labels,self.soft_labels,self.coral_loss,self.concatenate_quadrants)  
+    return _custom_collate(batch,self.instance_model_name,self.concatenate_temporal,self.model,self.num_classes,self.smooth_labels,self.soft_labels,self.coral_loss,self.concatenate_quadrants,
+                           self.xattn_mask)  
 
   def get_unique_subjects(self):
     return np.sort(self.df['subject_id'].unique().tolist())
@@ -927,11 +931,10 @@ class customDatasetWhole(torch.utils.data.Dataset):
 
 # Alternative version with even more optimizations for large batches
 def highly_optimized_custom_collate(batch, pid, concatenate_temporal=False, smooth_labels=0.0,
-  soft_labels_mat=None, coral_loss=False, num_classes=None,concatenate_quadrants=False):
+  soft_labels_mat=None, coral_loss=False, num_classes=None,concatenate_quadrants=False, xattn_mask=None):
   """Highly optimized version using vectorized operations where possible"""
   
   batch_size = len(batch)
-  
   # Try to stack tensors directly if they have the same shape (more efficient)
   try:
     # Check if all features have the same shape
@@ -971,12 +974,12 @@ def highly_optimized_custom_collate(batch, pid, concatenate_temporal=False, smoo
 
     for sample in batch:
       feat = sample['features'] # [quadrants*nr_chunks,T,S,S,Emb]
+      QnC, T, S1, S2, emb = feat.shape
       if concatenate_temporal:
         raise NotImplementedError("concatenate_temporal=True not implemented yet in highly_optimized_custom_collate")
         processed_feat = feat.permute(0,2,3,4,1).contiguous().view(
           -1, feat.shape[-1] * feat.shape[1]).to(torch.float32)
       elif concatenate_quadrants:
-        QnC, T, S1, S2, emb = feat.shape
         processed_feat = feat.view(4, QnC//4, T, S1, S2, emb).transpose(0,1) # [4=quadrants,QnC/4,T,S,S,Emb] -> [QnC/4,4,T,S,S,Emb]
         processed_feat = processed_feat.permute(0,2,3,4,1,5).contiguous().view(
           QnC//4*T*S1*S2,4*emb).to(torch.float32)
@@ -998,16 +1001,29 @@ def highly_optimized_custom_collate(batch, pid, concatenate_temporal=False, smoo
     helper.time_profile_dict[f'{pid}_pad_sequence_calls'] = helper.time_profile_dict.get(f'{pid}_pad_sequence_calls', 0) + 1
   
   # Build key_padding_mask for attention
+  max_len = features.size(1)
   if lengths is None:
     # Case when shapes matched perfectly (no padding)
     key_padding_mask = None
   else:
     # Variable lengths -> pad mask
-    max_len = features.size(1)
+    # max_len = features.size(1)
     key_padding_mask = torch.arange(max_len)[None, :] < lengths[:, None]
     key_padding_mask = key_padding_mask.unsqueeze(1).unsqueeze(1)
-  
-  # Vectorized extraction of labels, subject_ids, and sample_ids 
+
+  # Apply xattn_mask if provided (shape [S, S])
+  with profile_workers(f'{pid}_xattn_mask_time',helper.time_profiling_enabled,helper.time_profile_dict):
+    if xattn_mask is not None and not concatenate_quadrants:
+      nr_chunks = max_len // (T*S1*S2)
+      if key_padding_mask is not None:
+        tmp = xattn_mask.unsqueeze(0).unsqueeze(0).unsqueeze(0).repeat(key_padding_mask.shape[0],nr_chunks,T,1,1) # [B,nr_chunks,T,S,S]
+        tmp = tmp.reshape(tmp.shape[0],-1).unsqueeze(1).unsqueeze(1) # [B,1,1,nr_chunks*T*S*S]
+        key_padding_mask = key_padding_mask & tmp
+      else:
+        key_padding_mask = xattn_mask.unsqueeze(0).unsqueeze(0).unsqueeze(0).repeat(batch_size,nr_chunks,T,1,1) # [B,nr_chunks,T,S,S]
+        key_padding_mask = key_padding_mask.reshape(key_padding_mask.shape[0],-1) # [B,nr_chunks*T*S*S]
+
+  # Vectorized extraction of labels, subject_ids, and sample_ids
   labels = torch.tensor([sample['labels'][0] for sample in batch], dtype=torch.int32)
   subject_id = torch.tensor([sample['subject_id'][0] for sample in batch], dtype=torch.int32)
   sample_id = torch.tensor([sample['sample_id'] for sample in batch], dtype=torch.int32)
@@ -1032,7 +1048,7 @@ def highly_optimized_custom_collate(batch, pid, concatenate_temporal=False, smoo
   }
 
 
-def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_classes,smooth_labels, soft_labels_mat,coral_loss,concatenate_quadrants):
+def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_classes,smooth_labels, soft_labels_mat,coral_loss,concatenate_quadrants,xattn_mask=None):
   # Pre-flatten features: reshape each sample to (sequence_length, emb_dim)
   pid = os.getpid()
   # if pid not in helper.time_profile_dict:
@@ -1048,9 +1064,11 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_cla
                                                 soft_labels_mat=soft_labels_mat,
                                                 coral_loss=coral_loss,
                                                 concatenate_quadrants=concatenate_quadrants,
+                                                xattn_mask=xattn_mask,
                                                 num_classes=num_classes)
         
     if instance_model_name == helper.INSTANCE_MODEL_NAME.AttentiveClassifier or instance_model_name == helper.INSTANCE_MODEL_NAME.ATTENTIVEPROBE:
+
       return {'x':dict_res['features'], 'key_padding_mask': dict_res['key_padding_mask']},\
               dict_res['labels'],\
               dict_res['subject_id'],\
@@ -1151,6 +1169,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                   model=model,smooth_labels=label_smooth,
                                   concatenate_quadrants=kwargs['concatenate_quadrants'],
                                   soft_labels=soft_labels,
+                                  xattn_mask=kwargs['xattn_mask'],
                                   coral_loss=is_coral_loss)
     if 'caer' in csv_path.lower() and 'combined' in root_folder_features.lower():
       pin_memory = False
@@ -1244,13 +1263,14 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
   return dataset_,loader_
  
   
-def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,is_quadrant=False,concatenate_quadrants=False):
+def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,is_quadrant=False,concatenate_quadrants=False,xattn_mask=None):
   pid = os.getpid()
   # if pid not in helper.time_profile_dict:
   #   helper.time_profile_dict[pid] = mp.Manager().dict()
   with profile_workers(f'{pid}_get_element_time',helper.time_profiling_enabled,helper.time_profile_dict):
     csv_row = df.iloc[idx]
     sample_id = csv_row['sample_id']
+    csv_label = torch.tensor(csv_row['class_id'])
     subject_id = torch.tensor([csv_row['subject_id']])
     # If AGGREGATED or WHOLE dataset, sample_id is the real sample_id
     # start_time_mask = time.perf_counter()
@@ -1270,14 +1290,14 @@ def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,is_quadrant=F
   with profile_workers(f'{pid}_selection_time',helper.time_profiling_enabled,helper.time_profile_dict):
     if dataset_type != CUSTOM_DATASET_TYPE.AGGREGATED:
       features = dict_data['features']
-      labels = dict_data['list_labels']
+      labels = csv_label.repeat(features.shape[0])
       subject_id = subject_id.repeat(labels.shape[0])
       # subject_id = dict_data['list_subject_id'] # used the one from csv because in CAER is different from the data extracted previously
       # if subject_id.ndim == 0:
       #   subject_id = subject_id.unsqueeze(0)
     else:
       features = dict_data['features'][mask]
-      labels = dict_data['list_labels'][mask]
+      labels = csv_label.repeat(features.shape[0])
       # subject_id = dict_data['list_subject_id'][mask] # used the one from csv because in CAER is different from the data extracted previously
       subject_id = subject_id.repeat(labels.shape[0])
 
