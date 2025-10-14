@@ -13,6 +13,7 @@ import argparse
 import logging
 from custom import helper
 from custom.head import CCCLoss # For pickle loading
+import seaborn as sns
 
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
 
@@ -598,7 +599,7 @@ def generate_csv_row(data,config,time_, test_id):
   real_sub_fold = max(list_sub_fold) + 1
   
   # test_key = 'test_accuracy' if 'test_accuracy' in data[f'k{list_fold[0]}_cross_val_sub_{list_sub_fold[0]}']['test'] else 'test_macro_precision'
-  metric = config['key_for_early_stopping'].split('_')[1:]
+  metric = ['accuracy']
   test_key = f"test_{'_'.join(metric)}" 
   key_metric_train = 'list_train_performance_metric' if 'list_train_performance_metric' in data[f'k{list_fold[0]}_cross_val_sub_{list_sub_fold[0]}']['train_val'] else 'list_train_macro_accuracy'
   key_metric_val = 'list_val_performance_metric' if 'list_val_performance_metric' in data[f'k{list_fold[0]}_cross_val_sub_{list_sub_fold[0]}']['train_val'] else 'list_val_macro_accuracy'
@@ -685,6 +686,8 @@ def plot_confusion_matrices(data, root_output_folder, test_id, additional_info='
     dict_train_conf_matrix = dict_sub_fold['train_val']['train_confusion_matricies']
     dict_val_conf_matrix = dict_sub_fold['train_val']['val_confusion_matricies']
     dict_test_conf_matrix = {f'{best_epoch_idx}':dict_sub_fold['test']['test_confusion_matrix']}
+    
+    # Plot confusion matrix for each epoch
     for epoch in dict_train_conf_matrix.keys():
       if int(epoch) == best_epoch_idx:
         fig, axs = plt.subplots(3, 1, figsize=(5, 15))
@@ -695,9 +698,50 @@ def plot_confusion_matrices(data, root_output_folder, test_id, additional_info='
         tools.plot_confusion_matrix(dict_val_conf_matrix[epoch], ax=axs[1], title=f'VAL - Epoch {epoch}   - {test_id}')
       if int(epoch) == best_epoch_idx:
         tools.plot_confusion_matrix(dict_test_conf_matrix[epoch], ax=axs[2], title=f'TEST {test_id} - {key} - Epoch {epoch}')
-      fig.tight_layout()
+        fig.tight_layout()
       fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_confusion_matrix_{key}_epoch_{epoch}.png'))
       plt.close(fig)
+      
+  #### Plot only best epoch confusion matrix in percentage ####
+  fig, axs = plt.subplots(3, 1, figsize=(5, 15))
+  conf_matrix_test_percent = convert_conf_matrix_to_percent(dict_test_conf_matrix[str(best_epoch_idx)])
+
+  if str(best_epoch_idx) not in dict_train_conf_matrix.keys():
+    print(f"Test id {test_id}:   Best epoch {best_epoch_idx} not in training confusion matrix keys {list(dict_train_conf_matrix.keys())}, skipping best epoch confusion matrix plot")
+    return
+
+  conf_matrix_train_percent = convert_conf_matrix_to_percent(dict_train_conf_matrix[str(best_epoch_idx)])
+  conf_matrix_val_percent = convert_conf_matrix_to_percent(dict_val_conf_matrix[str(best_epoch_idx)])
+  cms = [conf_matrix_train_percent, conf_matrix_val_percent, conf_matrix_test_percent]
+  titles = [f'TRAIN - Epoch {best_epoch_idx}   - {test_id}',
+            f'VAL - Epoch {best_epoch_idx}   - {test_id}', 
+            f'TEST {test_id} - {key} - Epoch {best_epoch_idx}']
+  for ax, cm, title in zip(axs, cms, titles):
+    sns.heatmap(cm.cpu().numpy(), annot=True, fmt=".2f", cmap='Blues', cbar_kws={'label': 'Percentage (%)'}, ax=ax,
+                xticklabels=[str(i) for i in range(cm.shape[0])],
+                yticklabels=[str(i) for i in range(cm.shape[0])])
+    ax.set_title(title)
+    ax.set_xlabel('Predicted Label')
+    ax.set_ylabel('True Label')
+  fig.tight_layout()
+  fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_confusion_matrix_percentage_{key}_best_epoch_{best_epoch_idx}.png'))
+  plt.close(fig)
+    # ##########################################################
+
+import torch
+from torchmetrics.classification import MulticlassConfusionMatrix
+
+def convert_conf_matrix_to_percent(conf_matrix: MulticlassConfusionMatrix):
+    matrix = conf_matrix.confmat if hasattr(conf_matrix, "confmat") else conf_matrix
+    matrix = matrix.float()
+    # Calculate row sums
+    row_sums = matrix.sum(dim=1, keepdim=True)
+    row_sums[row_sums == 0] = 1
+
+    # Convert to percentages
+    percent_matrix = matrix / row_sums * 100    
+    return percent_matrix
+
 
 def get_best_result(data):
   config = data['config']
