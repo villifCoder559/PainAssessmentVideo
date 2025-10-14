@@ -421,7 +421,7 @@ class BaseHead(nn.Module):
       dict_log_time['eval'] = dict_log_time.get('eval',0) + time.time()-time_eval
       # print(f'  Evaluation time: {dict_log_time["eval"]:.4f}')
       epoch_log_time = time.time()
-      if   epoch == 0 or \
+      if epoch == 0 or \
            helper.SAVE_LAST_EPOCH_MODEL or \
            (dict_eval is not None and dict_eval[key_for_early_stopping] < best_eval_loss if key_for_early_stopping == 'val_loss' else dict_eval[key_for_early_stopping] > best_eval_loss):
         best_eval_loss = dict_eval[key_for_early_stopping] if dict_eval is not None else 0.0
