@@ -121,7 +121,7 @@ class PretrainVisionTransformerEncoder(nn.Module):
         self.head = nn.Linear(
             self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-    def forward_features(self, x, mask=None,return_embedding=None):
+    def forward_features(self, x, mask=None, **kwargs):
         x = self.patch_embed(x)
 
         x = x + self.pos_embed.type_as(x).to(x.device).clone().detach()
@@ -139,7 +139,7 @@ class PretrainVisionTransformerEncoder(nn.Module):
                 x_vis = blk(x_vis)
 
         x_vis = self.norm(x_vis)
-        return x_vis
+        return x_vis,None
 
     def forward(self, x, mask):
         x = self.forward_features(x, mask)
@@ -340,7 +340,7 @@ class PretrainVisionTransformer(nn.Module):
     def no_weight_decay(self):
         return {'pos_embed', 'cls_token', 'mask_token'}
 
-    def forward(self, x, mask, decode_mask=None):
+    def forward(self, x, mask, decode_mask=None, **kwargs):
         decode_vis = mask if decode_mask is None else ~decode_mask
 
         x_vis = self.encoder(x, mask)  # [B, N_vis, C_e]
