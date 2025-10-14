@@ -50,7 +50,10 @@ def process_one_video(video_path):
       video_path = GLOBAL_PATH.get_global_path(video_path)
 
     sample_id = os.path.split(video_path)[-1]
-    folder_id = Path(video_path).parts[-2]
+    if 'caer' not in video_path.lower():
+      folder_id = Path(video_path).parts[-2]
+    else:
+      folder_id = os.path.join(*Path(video_path).parts[-3:-1])
     out_path = os.path.join(worker_config['path_folder_output'], folder_id, sample_id)
     if worker_config.get('global_path'):
       out_path = GLOBAL_PATH.get_global_path(out_path)
@@ -89,7 +92,8 @@ def prepare_video_list(csv_path, video_folder_path, list_target_video, from_, to
   
   csv_list_video_path = np.array(
     tools.get_list_video_path_from_csv(csv_path=csv_path,
-                                       video_folder_path=video_folder_path)
+                                       video_folder_path=video_folder_path,
+                                       extension='.avi' if 'caer' in csv_path.lower() else '.mp4')
   )
   root_video_path = os.path.split(os.path.split(csv_list_video_path[0])[0])[0]
 
@@ -164,7 +168,7 @@ def main(generate_video, csv_path, path_folder_output, list_target_video,
 
   pool.close()
   pool.join()
-  with open(log_error_path, 'w') as f:
+  with open(os.path.join(log_error_path,f'frontalize_errors_{from_}_{to_}.log'), 'w') as f:
     for key in shared_dict.keys():
       f.write(f'{key}: {shared_dict[key]}\n')
   print(f'\nDone. Success: {success}, Errors: {errors}')
