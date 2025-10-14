@@ -21,6 +21,8 @@ from torchmetrics.classification import  MulticlassConfusionMatrix
 import torch.nn.functional as F
 import cdw_cross_entropy_loss.cdw_cross_entropy_loss as cdw
 import sys
+from pathlib import Path
+
 
 class NpEncoder(json.JSONEncoder):
   def default(self, obj):
@@ -1048,7 +1050,7 @@ def plot_tsne(X_tsne,
   return img
 
 
-def get_list_video_path_from_csv(csv_path, cols_csv_idx=[1,5], video_folder_path=None):
+def get_list_video_path_from_csv(csv_path, cols_csv_idx=[1,5], video_folder_path=None, extension='.mp4'):
   list_samples,_ = get_array_from_csv(csv_path) # subject_id, subject_name, class_id, class_name, sample_id, sample_name
   if video_folder_path is None:
     video_folder_path = os.path.join('partA','video','video')
@@ -1057,7 +1059,7 @@ def get_list_video_path_from_csv(csv_path, cols_csv_idx=[1,5], video_folder_path
     # sample_video = union_segment.join(sample[cols_csv_idx])
     sample_video = os.path.join(sample[cols_csv_idx[0]], sample[cols_csv_idx[1]])
     video_path = os.path.join(video_folder_path, sample_video)
-    video_path += '.mp4'
+    video_path += extension
     list_video_path.append(video_path)
   return list_video_path
 
@@ -2166,3 +2168,93 @@ def count_mispredictions(history_pred,df,return_miss_per_subject=None,top_k=None
     return misspredictions_per_label, misspredictions_per_sbj
   else:
     return misspredictions_per_label
+
+
+def plot_masked_attention(pkl_path, mask_threshold=7680, plot_all_subject=False,folder_plot_path=None):
+  def get_one_video_per_subject(video_path_folder):
+    folder_list = [f for f in os.listdir(video_path_folder) if os.path.isdir(os.path.join(video_path_folder, f))]
+    lst = []
+    for folder in tqdm.tqdm(folder_list, desc="Getting one video per subject"):
+      folder_path = os.path.join(video_path_folder, folder)
+      for file in os.listdir(folder_path):
+        if file.endswith(".mp4") and '$' not in file:
+          lst.append(os.path.join(folder_path, file))
+          break    
+    return lst
+
+                                                       
+  list_video_per_subject = []
+  # --- Load pickle ---
+  if not Path(pkl_path).exists():
+      raise FileNotFoundError(f"Pickle not found: {pkl_path}")
+  with open(pkl_path, "rb") as f:
+    pkl_file = pickle.load(f)
+
+  # --- Compute boolean mask ---
+  mask_small = np.mean(pkl_file['mean_value_matrix'], axis=0) < mask_threshold  # (14,14)
+
+  folder_plot_path = folder_plot_path / f"plots_grid_{mask_small.shape[0]}x{mask_small.shape[1]}_thr_{mask_threshold}"
+  if plot_all_subject:
+    list_video_per_subject = get_one_video_per_subject(Path(pkl_path).parent)
+    print(f"Found {len(list_video_per_subject)} videos, one per subject.")
+    os.makedirs(folder_plot_path, exist_ok=True)
+    print(f"Plots will be saved to: {folder_plot_path}")
+  else:
+    list_video_per_subject = [f"{Path(pkl_path).parent}/071309_w_21/071309_w_21-BL1-081.mp4"]
+    
+  # --- Load one video frame per subject ---
+  for ref_video_path in tqdm.tqdm(list_video_per_subject, desc="Processing videos"):
+    if not Path(ref_video_path).exists():
+      raise FileNotFoundError(f"Video not found: {ref_video_path}")
+    
+    cap = cv2.VideoCapture(ref_video_path)
+    if not cap.isOpened():
+      raise RuntimeError("Error opening video file")
+
+    ret, frame = cap.read()
+    cap.release()
+    if not ret or frame is None:
+      raise RuntimeError("Couldn't read first frame from video")
+
+    # Convert to RGBA
+    frame_rgba = cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA)
+    h, w = frame_rgba.shape[:2]
+
+    # --- Compute mask ---
+    mask_resized = cv2.resize(mask_small.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+
+    # --- Overlay coloring ---
+    overlay_alpha_value = 150
+    overlay = np.zeros_like(frame_rgba, dtype=np.uint8)
+    overlay[mask_resized] = [255, 0, 0, overlay_alpha_value]   # red semi-transparent
+    overlay[~mask_resized] = [0, 255, 0, overlay_alpha_value]  # green semi-transparent
+
+    alpha = overlay[..., 3:4].astype(np.float32) / 255.0
+    blended_rgb = (alpha * overlay[..., :3] + (1 - alpha) * frame_rgba[..., :3]).astype(np.uint8)
+    final_img = np.concatenate([blended_rgb, np.full((h, w, 1), 255, dtype=np.uint8)], axis=2)
+
+    # --- Draw grid borders (14×14) ---
+    num_rows, num_cols = mask_small.shape
+    step_y = h // num_rows
+    step_x = w // num_cols
+
+    grid_img = final_img.copy()
+    line_color = (0, 0, 0, 128)  # black lines
+    thickness = 1
+
+    # Vertical lines
+    for x in range(0, w, step_x):
+      cv2.line(grid_img, (x, 0), (x, h), line_color, thickness)
+
+    # Horizontal lines
+    for y in range(0, h, step_y):
+      cv2.line(grid_img, (0, y), (w, y), line_color, thickness)
+
+    # --- Display ---
+    plt.figure(figsize=(10, 6))
+    plt.imshow(grid_img)
+    plt.axis('off')
+    plt.title(f"Red = Masked, Green = Unmasked \nThreshold = {mask_threshold} Grid Size = {num_rows}x{num_cols}\n\{Path(ref_video_path).stem}\n{pkl_path}")
+    png_path = folder_plot_path / f"{Path(ref_video_path).stem}_grid_{num_rows}x{num_cols}_thr{mask_threshold}.png"
+    plt.savefig(png_path)
+    plt.close()
