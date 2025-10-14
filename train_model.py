@@ -26,6 +26,7 @@ import optunahub
 from sim_loss.age_estimation.loss import SimLoss # type: ignore
 from coral_pytorch.losses import coral_loss
 import sys
+from custom.tools import plot_masked_attention
 
 # ------------ Helper Functions ------------
 
@@ -196,6 +197,25 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     q_k_v_dim = trial.suggest_categorical('q_k_v_dim', kwargs['q_k_v_dim'])
     custom_mlp = trial.suggest_categorical('custom_mlp', kwargs['custom_mlp'])
     drop_path_mode = trial.suggest_categorical('drop_path_mode', kwargs['drop_path_mode'])
+    apply_xattn_mask = trial.suggest_categorical('apply_xattn_mask', kwargs['apply_xattn_mask'])
+    if apply_xattn_mask > 0:
+      grid_size = 16 if kwargs['mt'] == 'G' else 14
+      pkl_path = os.path.join(kwargs['path_video_dataset'], f'video_analysis_grid_{grid_size}_{grid_size}.pkl')
+      plot_masked_attention(pkl_path, 
+                            mask_threshold=apply_xattn_mask, 
+                            plot_all_subject=False,
+                            folder_plot_path=kwargs['global_folder_name'])
+      with open(pkl_path, 'rb') as f:
+        video_analysis_dict = pickle.load(f)
+      xattn_mask = torch.tensor(video_analysis_dict['mean_value_matrix']).mean(axis=0)  # Average over videos -> shape (grid_h, grid_w)
+      
+      # Mask cells with mean value below threshold, True=keep, False=mask
+      # (https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html)
+      xattn_mask = ~(xattn_mask < apply_xattn_mask)
+      print(f"\nATTENTION_MASK DETECTED!\n Applied with threshold {apply_xattn_mask}. Number of unmasked cells: {xattn_mask.sum().item()} out of {xattn_mask.numel()}({(xattn_mask.sum().item() / xattn_mask.numel() * 100):.2f}%)\n")
+      del video_analysis_dict
+    else:
+      xattn_mask = None
     if loss in ['l1', 'l2', 'huber']:
       num_classes = 1
       print(f"\nRegression task detected. Setting num_classes to 1 for {loss} loss.")
@@ -272,6 +292,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'add_CCC_loss': add_CCC_loss,
     'CCC_loss': CCCLoss() if add_CCC_loss > 0 else None,
     'concatenate_quadrants': concatenate_quadrants,
+    'xattn_mask': xattn_mask,
     'is_subject_independent': kwargs['is_subject_independent'],
   }
     
@@ -412,7 +433,7 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='Train video analysis model with various configurations')
   
   # Model configuration
-  parser.add_argument('--mt', type=str, default='B', help='Model type: B (Base), S (Small), or I (Image)')
+  parser.add_argument('--mt', type=str, default='B', help='Model type: G(Giant) B (Base), S (Small), or I (Image)')
   parser.add_argument('--head', type=str, default='ATTENTIVE_JEPA', help='Head type: GRU, ATTENTIVE, LINEAR, ATTENTIVE_JEPA')
   parser.add_argument('--n_workers', type=int, default=1, help='Number of workers for data loading. Default is 1')
   parser.add_argument('--prefetch_factor', type=int, default=2, help='Prefetch factor for data loading. Default is 2')
@@ -423,10 +444,10 @@ if __name__ == '__main__':
   parser.add_argument('--csv', type=str, default=os.path.join('partA','starting_point','samples_exc_no_detection.csv'), 
                     help='Path to CSV dataset file')
   parser.add_argument('--ffsp', type=str, default="partA/video/features/samples_16_frontalized_new", 
-                    help='Feature folder saving path')
+                    help='Feature folder saving path') 
   parser.add_argument('--global_folder_name', type=str, default=f'history_run', 
                     help='Global folder name for saving results')
-  parser.add_argument('--path_video_dataset', type=str, default=os.path.join('partA','video','video_frontalized'), 
+  parser.add_argument('--path_video_dataset', type=str, default=os.path.join('partA','video','video_frontalized_interpolated_mirror'), 
                     help='Path to video dataset')
 
   # Data loading parameters
@@ -479,6 +500,8 @@ if __name__ == '__main__':
                     help='Use complete block for Attentive head (after cross-attn there is MLP). Default is 1 (complete block), if 0 remove the MLP block after cross-attention')
   parser.add_argument('--q_k_v_dim', type=int, nargs='*', default=[None],
                     help='Dimension of query, key, value for Attentive head. Default is None (use input_dim)')
+  parser.add_argument('--apply_xattn_mask', type=int, nargs='*', default=[0],
+                    help='Apply mask to cross-attention for Attentive head. If >0 it will be used as threshold according to "mean_value_matrix" in video_analysis*.pkl file in path_video_dataset folder.')
   
   # Adapter backbone finetuning parameters
   parser.add_argument('--adpater_mlp_ratio', type=float, nargs='*', default=[0.25], help='MLP ratio(s) for backbone adapter. Default is 0.25')
@@ -634,11 +657,15 @@ if __name__ == '__main__':
   if dict_args['key_early_stopping'] not in ['val_accuracy','val_loss']:
     raise ValueError(f"Invalid key for early stopping: {dict_args['key_early_stopping']}. Must be 'val_accuracy' or 'val_loss'.")
   
-  
-  
   if not dict_args['validation_enabled']:
     helper.SAVE_LAST_EPOCH_MODEL = True
     print("\nValidation is disabled. Last epoch model will be used for testing \n")
+  
+  if dict_args['apply_xattn_mask'][0] and dict_args['head'].upper() != 'ATTENTIVE_JEPA':
+    raise ValueError("apply_xattn_mask can only be used with ATTENTIVE_JEPA head. Set head to ATTENTIVE_JEPA to use this option.")
+  
+  if dict_args['apply_xattn_mask'][0] and 'combined' in dict_args['ffsp']:
+    raise ValueError("apply_xattn_mask cannot be used with combined quadrants features. Use full frame features instead.")
   
   # Generate timestamp for unique folder name
   timestamp = int(time.time())
