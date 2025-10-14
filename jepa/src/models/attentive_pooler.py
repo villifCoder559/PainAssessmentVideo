@@ -45,6 +45,7 @@ class AttentivePooler(nn.Module):
         use_sdpa=False,
         cross_block_after_transformers=False,
         custom_mlp=False,
+        drop_path_mode='row',
         # grid_size_pos=None # [T, S, S] -> S depends on the model (Base,Giant,etc), while T is input dependent
     ):
         super().__init__()
@@ -66,6 +67,7 @@ class AttentivePooler(nn.Module):
                 residual_drop=residual_dropout,
                 use_sdpa=use_sdpa,
                 custom_mlp=custom_mlp,
+                drop_path_mode=drop_path_mode,
                 norm_layer=norm_layer)
         else:
             self.cross_attention_block = CrossAttention(
