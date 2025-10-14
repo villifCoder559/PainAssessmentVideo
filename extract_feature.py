@@ -60,7 +60,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
     feature = torch.cat(list_batch_data,dim=0)
     return feature
       
-  def _extract_features(dataset,batch_size_feat_extraction,n_workers,backbone):
+  def _extract_features(dataset,batch_size_feat_extraction,n_workers,backbone,df):
     device = 'cuda'
     print(f"extracting features using.... {device}")
     list_features = []
@@ -166,7 +166,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
           }
           # dict_data_size = dict_data["features"].element_size()*dict_data["features"].nelement()/1024/1024
           path = Path(list_path[0][0])
-          person_id = path.parts[-2]
+          person_id = path.parts[-2] if 'caer' not in str(path).lower() else os.path.join(*path.parts[-3:-1])
           sample_id = path.parts[-1][:-4]
           tools.save_dict_data(dict_data=dict_data,
                                save_as_safetensors=save_as_safetensors,
@@ -286,7 +286,8 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
   _extract_features(dataset=custom_ds,
                   batch_size_feat_extraction=batch_size_feat_extraction,
                   n_workers=n_workers,
-                  backbone=backbone_model)
+                  backbone=backbone_model,
+                  df=video_labels)
   gc.collect()
   torch.cuda.empty_cache()
   
