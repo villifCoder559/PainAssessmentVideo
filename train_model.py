@@ -12,7 +12,6 @@ from custom.head import earlyStoppingAccuracy, earlyStoppingLoss
 import custom.scripts as scripts
 import custom.helper as helper
 import platform
-from custom.head import CCCLoss
 import pandas as pd
 # import cProfile, pstats
 import numpy as np
@@ -27,6 +26,37 @@ from sim_loss.age_estimation.loss import SimLoss # type: ignore
 from coral_pytorch.losses import coral_loss
 import sys
 from custom.tools import plot_masked_attention
+import custom.loss as losses
+
+
+def get_composite_loss_module(loss_types,losses_weights, **kwargs):
+  list_losses = []
+  for loss_type,weight in zip(loss_types, losses_weights):
+    if loss_type == 'l1':
+      list_losses.append({'type':'l1', 'loss_weight':weight})
+    elif loss_type == 'l2':
+      list_losses.append({'type':'l2', 'loss_weight':weight})
+    elif loss_type == 'huber':
+      list_losses.append({'type':'huber', 'delta_huber':kwargs['delta_huber'], 'loss_weight':weight})
+    elif loss_type == 'ce':
+      list_losses.append({'type':'ce', 'loss_weight':weight})
+    elif loss_type == 'ce_weight':
+      class_weights = kwargs.get('class_weights', None)
+      if class_weights is None:
+        raise ValueError("class_weights must be provided for ce_weight loss")
+      list_losses.append({'type':'ce_weight', 'class_weights':class_weights, 'loss_weight':weight})
+    elif loss_type == 'contrastive_reg':
+      list_losses.append({'type':'contrastive_reg',
+                          'contrastive_loss_temp':kwargs['contrastive_loss_temp'],
+                          'contrastive_loss_theta':kwargs['contrastive_loss_theta'],
+                          'contrastive_lambda_weight':kwargs['contrastive_lambda_weight'],
+                          'loss_weight':weight})
+      
+    else:
+      raise ValueError(f"Unsupported loss type in composite loss: {loss_type}")
+    
+  return losses.CompositeLoss(list_losses)
+  
 
 # ------------ Helper Functions ------------
 
@@ -86,6 +116,12 @@ def get_loss(loss, dict_args=None):
       reduction_factor=dict_args['sim_loss_reduction'],
       device='cuda'
     )
+  elif loss == 'contrastive_reg':
+    return losses.RESupConLoss(
+      temperature=dict_args['contrastive_loss_temp'],
+      theta=dict_args['contrastive_loss_theta'],
+      lambda_weight=dict_args['contrastive_lambda_weight'],
+    )
   elif loss == 'coral':
     return coral_loss
   else:
@@ -94,6 +130,12 @@ def get_loss(loss, dict_args=None):
 # ------------ Main Entry Point ------------
 
 log_scale_optuna_hypers = ['lr','regulariz_lambda_L1','regulariz_lambda_L2']
+def get_class_weights(csv_path):
+  df = pd.read_csv(csv_path, sep='\t')
+  class_counts = df['class_id'].value_counts(normalize=True).sort_index()
+  class_weights = 1.0 / class_counts.values  # Inverse of frequency
+  return class_weights
+
 
 def _suggest(trial: optuna.trial.Trial, name, values, categorical):
   """Suggest a hyperparameter value based on the type of values provided."""
@@ -129,13 +171,28 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   label_smooth = trial.suggest_categorical('label_smooth', kwargs['label_smooth'])
   concatenate_temp_dim = trial.suggest_categorical('concatenate_temp_dim', kwargs['concatenate_temp_dim'])
   concatenate_quadrants = trial.suggest_categorical('concatenate_quadrants', kwargs['concatenate_quadrants'])
-  loss = trial.suggest_categorical('loss', kwargs['loss'])
   cdw_ce_alpha = _suggest(trial, 'cdw_ce_alpha', kwargs['cdw_ce_alpha'], kwargs['optuna_categorical'])
   cdw_ce_power_transform = trial.suggest_categorical('cdw_ce_power_transform', kwargs['cdw_ce_transform'])
   soft_labels = _suggest(trial, 'soft_labels', kwargs['soft_labels'], kwargs['optuna_categorical'])
   sim_loss_reduction = _suggest(trial, 'sim_loss_reduction', kwargs['sim_loss_reduction'], kwargs['optuna_categorical'])
   delta_huber = _suggest(trial, 'delta_huber', kwargs['delta_huber'], kwargs['optuna_categorical'])
-  if loss == 'cdw_ce' and label_smooth > 0:
+  contrastive_loss_temp = _suggest(trial, 'contrastive_loss_temp', kwargs['contrastive_loss_temp'], kwargs['optuna_categorical'])
+  contrastive_loss_theta = _suggest(trial, 'contrastive_loss_theta', kwargs['contrastive_loss_theta'], kwargs['optuna_categorical'])
+  contrastive_lambda_weight = trial.suggest_categorical('contrastive_lambda_weight', kwargs['contrastive_lambda_weight'])
+  composite_loss = None
+  loss = None
+  loss_args = {
+    'delta_huber': delta_huber,
+    'class_weights': get_class_weights(kwargs['csv']),
+    'contrastive_loss_temp': contrastive_loss_temp,
+    'contrastive_loss_theta': contrastive_loss_theta,
+    'contrastive_lambda_weight': contrastive_lambda_weight,
+  }
+  if kwargs['loss']:
+    loss = trial.suggest_categorical('loss', kwargs['loss'])
+  else:
+    composite_loss = get_composite_loss_module(kwargs['composite_loss'], kwargs['composite_loss_lambda'], **loss_args)
+  if loss and loss == 'cdw_ce' and label_smooth > 0:
     raise ValueError('Label smoothing not supported for CDW loss. Use label_smooth=0.')
   num_clips_per_video = trial.suggest_categorical('num_clips_per_video', kwargs['num_clips_per_video'])
   sample_frame_strategy = trial.suggest_categorical('sample_frame_strategy', kwargs['sample_frame_strategy'])
@@ -216,11 +273,19 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       del video_analysis_dict
     else:
       xattn_mask = None
-    if loss in ['l1', 'l2', 'huber']:
-      num_classes = 1
-      print(f"\nRegression task detected. Setting num_classes to 1 for {loss} loss.")
+    
+    if composite_loss is not None:
+      num_classes = 1  # regression
+      print(f"\nComposite loss detected. Setting num_classes to 1 for regression.\n")
+      if 'ce' in [l['type'] for l in composite_loss.config_losses]:
+        raise ValueError("Classification loss (ce) not supported in composite loss for regression. Remove 'ce' from composite_loss.") 
     else:
-      num_classes = pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique()
+      if loss in ['l1', 'l2', 'huber']:
+        num_classes = 1
+        print(f"\nRegression task detected. Setting num_classes to 1 for {loss} loss.")
+      else:
+        num_classes = pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique()
+      
     adapter_dict = {
       'type': trial.suggest_categorical('adapter_type', kwargs['adapter_type']),
       'mlp_ratio': trial.suggest_categorical('adpater_mlp_ratio', kwargs['adpater_mlp_ratio']),
@@ -244,6 +309,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'pos_enc': pos_enc,
       'coral_loss': True if loss == 'coral' else False,
       'depth': nr_blocks,
+      'remove_head': True if loss == 'contrastive_reg' else False,
       'cross_block_after_transformers': cross_block_after_transformers,
       'num_queries': num_queries,
       'agg_method': queries_agg_method,
@@ -265,10 +331,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   if num_classes == 1 and (loss == 'cdw_ce' or loss == 'ce' or loss == 'ce_weight' or loss == 'sim_loss'):
     raise ValueError('Loss function not supported for regression. Use l1 or l2 loss.')
 
-  if loss == 'ce_weight':
-    df = pd.read_csv(kwargs['csv'], sep='\t')
-    class_counts = df['class_id'].value_counts(normalize=True).sort_index()
-    class_weights = 1.0 / class_counts.values  # Inverse of frequency
+  if loss and loss == 'ce_weight':
+    class_weights = get_class_weights(kwargs['csv'])
     print(f"Class weights: {class_weights}")
   else:
     class_weights = None
@@ -276,9 +340,15 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   dict_args_loss = {'num_classes': num_classes, 
                     'alpha': cdw_ce_alpha, 
                     'sim_loss_reduction': sim_loss_reduction,
-                    'delta_huber': delta_huber,
-                    'class_weights': class_weights,
+                    **loss_args,
+                    # 'class_weights': class_weights,
                     'transform': cdw_ce_power_transform}
+  
+  if composite_loss is None:
+    criterion = get_loss(loss, dict_args=dict_args_loss)
+  else:
+    criterion = composite_loss
+  
   dict_augmented={
       'hflip': hflip,
       'jitter': color_jitter,
@@ -290,7 +360,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   
   add_kwargs={
     'add_CCC_loss': add_CCC_loss,
-    'CCC_loss': CCCLoss() if add_CCC_loss > 0 else None,
+    'CCC_loss': losses.CCCLoss() if add_CCC_loss > 0 else None,
     'concatenate_quadrants': concatenate_quadrants,
     'xattn_mask': xattn_mask,
     'is_subject_independent': kwargs['is_subject_independent'],
@@ -302,7 +372,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     load_dataset_in_memory=kwargs['load_dataset_in_memory'],
     model_type=model_type,
     soft_labels=soft_labels,
-    criterion=get_loss(loss, dict_args=dict_args_loss),
+    criterion=criterion,
     concatenate_temp_dim=concatenate_temp_dim,
     pooling_embedding_reduction=kwargs['pooling_embedding_reduction'],
     pooling_clips_reduction=kwargs['pooling_clips_reduction'],
@@ -366,8 +436,9 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
 def get_mean_val_accuracy(results):
   list_val_accuracy = []
   for k_fold,dict_log_k_fold in results['results'].items():
-    best_epoch = dict_log_k_fold['train_val']['best_model_idx']
-    list_val_accuracy.append(dict_log_k_fold['train_val']['list_val_performance_metric'][best_epoch])
+    if 'final' not in k_fold:
+      best_epoch = dict_log_k_fold['train_val']['best_model_idx']
+      list_val_accuracy.append(dict_log_k_fold['train_val']['list_val_performance_metric'][best_epoch])
   return np.mean(list_val_accuracy)
 
 def get_sampler_module(sampler_name,kwargs=None):
@@ -469,7 +540,7 @@ if __name__ == '__main__':
   parser.add_argument('--concatenate_temp_dim', type=int, nargs='*', default=[0],
                     help='Concatenate temporal dimension in input to the model. (ex: the embeddind is [temporal*emb_dim]=6144 if model base)')
   parser.add_argument('--concatenate_quadrants',type=int, nargs='*', default=[0], help='Concatenate quadrants dimension in input to the model. (ex: the embeddind is [4*emb_dim]=3072 if model base)' )
-  parser.add_argument('--loss', type=str, nargs='*', default='ce', help='Loss function: l1, l2, ce, cdw_ce,sim_loss,huber, coral, ce_weight. Default is ce')
+  parser.add_argument('--loss', type=str, nargs='*', default=None, help='Loss function: l1, l2, ce, cdw_ce,sim_loss,huber, coral, ce_weight. Default is ce')
   parser.add_argument('--add_CCC_loss', type=float, nargs='*', default=[0.0], help='Add CCC loss to the main loss with this weight. Default is 0.0 (not added)')
   parser.add_argument('--cdw_ce_alpha', type=float, nargs='*', default=[2], help='Alpha parameter for CDW loss.') 
   parser.add_argument('--cdw_ce_transform', type=str, nargs='*', default=['power'], help='Transform for CDW loss. Default is power, can Be also "huber" or "log"')
@@ -479,7 +550,11 @@ if __name__ == '__main__':
   parser.add_argument('--sample_frame_strategy', type=str, nargs='*', default=['sliding_window'],help=f'Sampling strategy for frames in a video when not use pre-computed feats: {list(SAMPLE_FRAME_STRATEGY)}. Default is sliding_window')
   parser.add_argument('--stride_inside_window', type=int, nargs='*', default=[1], help='Stride inside the sampling window. Default is 1')
   parser.add_argument('--use_sdpa', type=int, nargs='*', default=[1], help='Use SDPA (Scaled dot product attention) for backbone when feats are not precomputed. Default is 0 (not used)')
-  
+  parser.add_argument('--composite_loss', nargs='*', type=str, default=None, help='Composite loss type: l1, l2, ce, ce_weight, huber, contrastive. Default is None')
+  parser.add_argument('--composite_loss_lambda', nargs='*', type=float, default=None, help='Lambda for composite loss (only for attentive head). Default is None (not used)')
+  parser.add_argument('--contrastive_loss_temp', type=float, nargs='*', default=[0.07], help='Temperature for contrastive loss. Default is 0.07')
+  parser.add_argument('--contrastive_loss_theta', type=float, nargs='*', default=[1.1], help='Theta for contrastive loss. Distance between classes for positive pairs. Default is 1.1')
+  parser.add_argument('--contrastive_lambda_weight', type=float, nargs='*', default=[4.0], help='Lambda weight for contrastive loss. Default is 4.0')
   # Attention parameters
   parser.add_argument('--num_heads', type=int, nargs='*',default=[8], help='Number of heads for attention in transformer (when nr_blocks >1). Default is 8')
   parser.add_argument('--num_cross_head',type=int, nargs='*',default=[8], help='Number of heads for cross-attention.')
@@ -583,6 +658,9 @@ if __name__ == '__main__':
   if dict_args['plot_live_loss']:
     helper.PLOT_LIVE_LOSS = True
   
+  if dict_args['loss'] and dict_args['composite_loss'] is not None:
+    raise ValueError("Cannot use both primary loss and composite loss at the same time. Choose one.")
+  
   if dict_args['save_best_model']:
     helper.SAVE_PTH_MODEL = True
   
@@ -632,8 +710,11 @@ if __name__ == '__main__':
   if not None in dict_args['delta_huber'] and 'huber' not in dict_args['loss']:
     raise ValueError("delta_huber is set but loss is not 'huber'. Set loss to 'huber' to use delta_huber.")
   
-  if None in dict_args['delta_huber'] and 'huber' in dict_args['loss']:
-    raise ValueError("delta_huber is not set but loss is 'huber'. Set delta_huber to use Huber loss.")
+  # if None in dict_args['delta_huber'] and 'huber' in dict_args['loss']:
+  #   raise ValueError("delta_huber is not set but loss is 'huber'. Set delta_huber to use Huber loss.")
+  
+  if dict_args['loss'] is not None and 'huber' in dict_args['loss'] and any(d <=0 for d in dict_args['delta_huber'] if d is not None):
+    raise ValueError("delta_huber must be greater than 0 for Huber loss.")
   
   if dict_args['train_amp_dtype'] is not None and dict_args['train_amp_enabled'] is False:
     raise ValueError("train_amp_dtype is set but train_amp_enabled is False. Set train_amp_enabled to use AMP training.")
@@ -641,17 +722,17 @@ if __name__ == '__main__':
   if dict_args['label_smooth'] and dict_args['soft_labels']:
     if sum(dict_args['label_smooth']) > 0 and sum(dict_args['soft_labels']) > 0:
       raise ValueError("Label smoothing and soft labels cannot be used together. Choose one.")
-  
-  if dict_args['loss'] in ['l1', 'l2'] and (sum(dict_args['label_smooth']) > 0 or sum(dict_args['soft_labels']) > 0):
+
+  if dict_args['loss'] is not None and dict_args['loss'] in ['l1', 'l2'] and (sum(dict_args['label_smooth']) > 0 or sum(dict_args['soft_labels']) > 0):
     raise ValueError("Label smoothing and soft labels are not supported for 'l1' or 'l2' loss. Set them to 0.")
   
   if sum(dict_args['sim_loss_reduction']) != 0. and dict_args['loss'] != 'sim_loss':
     raise ValueError("Sim loss reduction is only supported for 'sim_loss'. Set it to 0 for other losses.")
   
-  if ('ce' not in dict_args['loss']) and (sum(dict_args['label_smooth']) > 0 or sum(dict_args['soft_labels']) > 0):
+  if dict_args['loss'] is not None and ('ce' not in dict_args['loss']) and (sum(dict_args['label_smooth']) > 0 or sum(dict_args['soft_labels']) > 0):
     raise ValueError("Label smoothing and soft labels are only supported for 'ce' loss. Set them to 0 for other losses.")
   
-  if dict_args['loss'][0] not in ['l1', 'l2', 'ce'] and (dict_args['train_amp_dtype'] == 'float16'):
+  if dict_args['loss'] is not None and dict_args['loss'][0] not in ['l1', 'l2', 'ce'] and (dict_args['train_amp_dtype'] == 'float16'):
     raise ValueError(f"AMP training with float16 is only supported for 'l1', 'l2', or 'ce' loss. Found {dict_args['loss']}.")
   
   if dict_args['key_early_stopping'] not in ['val_accuracy','val_loss']:
@@ -736,3 +817,6 @@ if __name__ == '__main__':
   #   hyper_search_gru(dict_args)
   # else:
   #   raise ValueError(f"Hyperparameter search not supported for head '{args.head}'")
+  
+
+
