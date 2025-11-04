@@ -13,7 +13,7 @@ from tqdm import tqdm
 import pickle
 from sklearn.metrics import silhouette_score, davies_bouldin_score
 from scipy.spatial.distance import pdist
-from custom.helper import CUSTOM_DATASET_TYPE,INSTANCE_MODEL_NAME
+from custom.helper import CUSTOM_DATASET_TYPE,INSTANCE_MODEL_NAME, desired_order_csv
 import av
 import safetensors.torch
 import torch
@@ -61,7 +61,7 @@ def save_csv_file(cols,csv_array,saving_path,sliding_windows):
   return csv_path
 
 
-def save_dict_data(dict_data, saving_folder_path,save_as_safetensors=False,save_as_npy=False):
+def save_dict_data(dict_data, saving_folder_path,save_as_safetensors=True,save_as_npy=False):
   """
   Save the dictionary containing numpy and torch elements to the specified path.
 
@@ -1076,13 +1076,14 @@ def get_array_from_csv(csv_path):
       - np.ndarray: Array containing the column names from the CSV file.
   """
   print(f'Reading CSV file from: {csv_path}')
-  csv_array = pd.read_csv(csv_path,dtype={'subject_name':str,'sample_name':str,'class_id':int,'sample_id':int,'subject_id':int,'class_name':str})  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
-  cols_array = csv_array.columns.to_numpy()[0].split('\t')
+  csv_array = pd.read_csv(csv_path, sep='\t', dtype={'subject_name':str,'sample_name':str,'class_id':int,'sample_id':int,'subject_id':int,'class_name':str})  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
+  csv_array = csv_array[desired_order_csv]
+
+  cols_array = csv_array.columns.to_numpy()
   csv_array = csv_array.to_numpy()
   list_entry = []
   for entry in csv_array:
-    tmp = entry[0].split("\t")
-    list_entry.append(tmp)
+    list_entry.append(entry)
   return np.stack(list_entry),cols_array
 
 def save_frames_as_video(list_input_video_path, list_frame_indices,sample_ids, output_video_path, all_predictions, list_ground_truth, output_fps=1):
@@ -1288,7 +1289,7 @@ def generate_video_from_list_video_path(list_video_path, list_frames, list_subje
   out.release()
   print(f"Generated video saved to folder {saving_path}")
     
-def generate_video_from_list_frame(list_frame,path_video_output,fps=25,resize=None):
+def generate_video_from_list_frame(list_frame,path_video_output,fps=25,resize=None,progress_bar=False,already_bgr=False):
   """
   Generates a video file from a list of frames.
 
@@ -1301,8 +1302,9 @@ def generate_video_from_list_frame(list_frame,path_video_output,fps=25,resize=No
     OSError: If the output directory cannot be created.
   """
 
-  if not os.path.exists(os.path.split(path_video_output)[0]):
-    os.makedirs(os.path.split(path_video_output)[0])
+  if not os.path.exists(os.path.dirname(path_video_output)) and os.path.dirname(path_video_output) != '':
+    os.makedirs(os.path.dirname(path_video_output))
+    
   heights = [frame.shape[0] for frame in list_frame]
   widths  = [frame.shape[1] for frame in list_frame]
 
@@ -1319,10 +1321,12 @@ def generate_video_from_list_frame(list_frame,path_video_output,fps=25,resize=No
   out_size = (list_frame[0].shape[1], list_frame[0].shape[0]) if resize is None else resize
   out = cv2.VideoWriter(path_video_output, cv2.VideoWriter_fourcc(*'avc1'), fps, out_size)
   count = 0
-  for frame in list_frame:
+  for frame in tqdm(list_frame, desc="Processing frames", disable=not progress_bar):
     if not isinstance(frame,np.ndarray):
       frame = np.array(frame,dtype=np.uint8)
-    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    if not already_bgr:
+      frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    
     if resize is not None:
       frame = cv2.resize(frame, resize)
     # print(f'Frame {count} size: {frame.shape}')
@@ -1733,114 +1737,297 @@ def log_predictions_per_sample_(dict_log_sample,tensor_predictions,tensor_sample
   #   tensor_sample_id: shape (N,)
   #   dict_log_sample: dict with keys as sample_id and values a tensor 
   
-  for id,prediction in zip(tensor_sample_id,tensor_predictions):
-    dict_log_sample[id.item()][epoch] = prediction.item() # .type(torch.uint8)
+  for sample_id, prediction in zip(tensor_sample_id, tensor_predictions):
+    sid = sample_id.item() if hasattr(sample_id, "item") else int(sample_id)
+    pred = prediction.item() if hasattr(prediction, "item") else float(prediction)
 
-def compute_loss_per_class_(criterion,
-                            unique_train_val_classes,
-                            batch_y,
-                            outputs,
-                            class_loss=None,
-                            class_accuracy=None):
+    # Initialize nested dict if needed
+    if sid not in dict_log_sample:
+      dict_log_sample[sid] = {}
+
+    if epoch not in dict_log_sample[sid]:
+      # First value, store directly
+      dict_log_sample[sid][epoch] = pred
+    else:
+      # Already have a value, switch to list if needed
+      existing = dict_log_sample[sid][epoch]
+      if isinstance(existing, list):
+        existing.append(pred)
+      else:
+        dict_log_sample[sid][epoch] = [existing, pred]
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional
+
+def _pick_effective_loss(criterion):
+  """
+  Returns (loss_module, mode) where mode ∈ {'ce','reg','argmax'}.
+  Accepts torch.nn loss or CompositeLoss-like (with `list_losses`).
+  """
+  if hasattr(criterion, 'list_losses'):
+    for lm in criterion.list_losses:
+      if isinstance(lm, nn.CrossEntropyLoss):
+        return lm, 'ce'
+    for lm in criterion.list_losses:
+      if isinstance(lm, (nn.MSELoss, nn.L1Loss, nn.HuberLoss, nn.SmoothL1Loss)):
+        return lm, 'reg'
+    return None, 'argmax'
+  else:
+    if isinstance(criterion, nn.CrossEntropyLoss):
+      return criterion, 'ce'
+    if isinstance(criterion, (nn.MSELoss, nn.L1Loss, nn.HuberLoss, nn.SmoothL1Loss)):
+      return criterion, 'reg'
+    return None, 'argmax'
+
+
+def compute_loss_per_class_(
+  criterion,
+  unique_train_val_classes: torch.Tensor,
+  batch_y: torch.Tensor,
+  outputs: torch.Tensor,
+  class_loss: Optional[torch.Tensor] = None,
+  class_accuracy: Optional[torch.Tensor] = None,
+):
+  """
+  Aggregates loss and accuracy per class.
+  Works with plain torch losses or CompositeLoss-like wrapper.
+  """
+  device = outputs.device
+  unique_train_val_classes = unique_train_val_classes.to(device)
+
   if batch_y.dim() != 1:
-    batch_y = torch.argmax(batch_y,1)
-  for cls in unique_train_val_classes:
-    mask = (batch_y == cls).reshape(-1)
-    if mask.any():
-      class_idx = np.where(unique_train_val_classes == cls)[0][0]
-      if class_accuracy is not None:
-        if isinstance(criterion, torch.nn.L1Loss) or isinstance(criterion, torch.nn.MSELoss):
-          predicted = torch.copysign(torch.floor(torch.abs(outputs[mask]) + 0.5), outputs[mask])  # round to nearest integer
-        else:
-          predicted = torch.argmax(outputs[mask], 1 if outputs.dim() == 2 else 0)
-        correct = (predicted == batch_y[mask]).sum().item() if batch_y.dim()== 1 else (predicted == batch_y[mask].argmax(1)).sum().item()
-        total = mask.sum().item()
-        class_accuracy[0,class_idx] += correct
-        class_accuracy[1,class_idx] += total 
-      if class_loss is not None:
-        # loss = criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
-        if isinstance(criterion, torch.nn.CrossEntropyLoss):
-          loss = F.cross_entropy(outputs[mask], batch_y[mask], reduction='sum').detach().cpu().item()
-        elif isinstance(criterion, torch.nn.MSELoss):
-          loss = F.mse_loss(outputs[mask], batch_y[mask], reduction='sum').detach().cpu().item()
-        elif isinstance(criterion, torch.nn.L1Loss):
-          loss = F.l1_loss(outputs[mask], batch_y[mask], reduction='sum').detach().cpu().item()
-        elif isinstance(criterion, torch.nn.HuberLoss):
-          loss = F.l1_loss(outputs[mask], batch_y[mask], reduction='sum').detach().cpu().item()
-        else:
-          loss = F.l1_loss(torch.argmax(outputs[mask],dim=1), batch_y[mask], reduction='sum').detach().cpu().item()
+    batch_y_labels = torch.argmax(batch_y, dim=1).to(device)
+  else:
+    batch_y_labels = batch_y.to(device)
 
-        class_loss[0,class_idx] += loss
-        class_loss[1,class_idx] += mask.sum().item()
+  subcrit, mode = _pick_effective_loss(criterion)
+
+  for cls in unique_train_val_classes:
+    mask = (batch_y_labels == cls).view(-1)
+    if not mask.any():
+      continue
+    class_idx = (unique_train_val_classes == cls).nonzero(as_tuple=True)[0].item()
+
+    # ----- Accuracy -----
+    if class_accuracy is not None:
+      if mode == 'reg':
+        out_masked = outputs[mask]
+        if out_masked.dim() > 1 and out_masked.size(1) == 1:
+          out_masked = out_masked.view(-1)
+        predicted = torch.copysign(torch.floor(torch.abs(out_masked) + 0.5), out_masked)
+      else:
+        if outputs.dim() == 2:
+          predicted = torch.argmax(outputs[mask], dim=1)
+        else:
+          predicted = outputs[mask].view(-1).long()
+      if batch_y.dim() == 1:
+        correct = (predicted == batch_y_labels[mask]).sum().item()
+      else:
+        correct = (predicted == batch_y_labels[mask]).sum().item()
+      total = int(mask.sum().item())
+      class_accuracy[0, class_idx] += correct
+      class_accuracy[1, class_idx] += total
+
+    # ----- Loss -----
+    if class_loss is not None:
+      out_masked = outputs[mask].to(device)
+      y_masked = batch_y_labels[mask].to(device)
+      if mode == 'ce':
+        loss_sum = F.cross_entropy(out_masked, y_masked, reduction='sum').detach().cpu().item()
+      elif mode == 'reg':
+        if isinstance(subcrit, nn.MSELoss):
+          loss_sum = F.mse_loss(out_masked, batch_y[mask].to(device).float(), reduction='sum').detach().cpu().item()
+        elif isinstance(subcrit, (nn.L1Loss, nn.SmoothL1Loss)):
+          loss_sum = F.l1_loss(out_masked, batch_y[mask].to(device).float(), reduction='sum').detach().cpu().item()
+        elif isinstance(subcrit, nn.HuberLoss):
+          loss_sum = F.l1_loss(out_masked, batch_y[mask].to(device).float(), reduction='sum').detach().cpu().item()
+        else:
+          loss_sum = F.l1_loss(out_masked, batch_y[mask].to(device).float(), reduction='sum').detach().cpu().item()
+      else:
+        preds = torch.argmax(out_masked, dim=1) if out_masked.dim() == 2 else out_masked.view(-1).long()
+        loss_sum = F.l1_loss(preds.to(device).float(), y_masked.to(device).float(), reduction='sum').detach().cpu().item()
+      class_loss[0, class_idx] += loss_sum
+      class_loss[1, class_idx] += int(mask.sum().item())
+
 
 def compute_loss_per_subject_v2_(
-    criterion,
-    unique_train_val_subjects: torch.Tensor,
-    batch_subjects: torch.Tensor,
-    batch_y: torch.Tensor,
-    outputs: torch.Tensor,
-    subject_loss: torch.Tensor = None,
-    subject_accuracy: torch.Tensor = None,
+  criterion,
+  unique_train_val_subjects: torch.Tensor,
+  batch_subjects: torch.Tensor,
+  batch_y: torch.Tensor,
+  outputs: torch.Tensor,
+  subject_loss: Optional[torch.Tensor] = None,
+  subject_accuracy: Optional[torch.Tensor] = None,
 ):
-    """
-    Updates subject_loss and subject_accuracy in place by accumulating
-    loss and accuracy for each subject in unique_train_val_subjects.
+  """
+  Updated to support CompositeLoss-like criterion.
+  """
+  device = outputs.device
+  S = unique_train_val_subjects.shape[0]
 
-    Args:
-      criterion: loss function. If its reduction != 'none', we'll fallback to F.cross_entropy(..., reduction='none').
-      unique_train_val_subjects: 1D tensor of shape (S,) with all subject IDs.
-      batch_subjects: 1D tensor of shape (N,) giving the subject ID for each sample.
-      batch_y:      labels, shape (N,) or one-hot (N, C).
-      outputs:      model logits, shape (N, C).
-      subject_loss:     1D float tensor of shape (S,). Will be incremented by per-sample losses.
-      subject_accuracy: 1D float tensor of shape (S,). Will be incremented by (correct/total) for each subject.
-    """
-    device = outputs.device
-    S = unique_train_val_subjects.shape[0]
+  subj_to_idx = {int(s.item()): i for i, s in enumerate(unique_train_val_subjects)}
+  batch_subjects_cpu = batch_subjects.detach().cpu().long()
+  idx_list = [subj_to_idx[int(s.item())] for s in batch_subjects_cpu]
+  idx = torch.tensor(idx_list, dtype=torch.long, device=device)
 
-    # Build a mapping from subject ID to index [0..S-1]
-    subj_to_idx = {int(s.item()): i for i, s in enumerate(unique_train_val_subjects)}
-    # Map each sample's subject to its index
-    idx = batch_subjects.detach().cpu().apply_(lambda s: subj_to_idx[int(s)]).to(device)  # shape (N,)
+  if batch_y.dim() != 1:
+    batch_y_labels = torch.argmax(batch_y, dim=1).to(device)
+  else:
+    batch_y_labels = batch_y.to(device)
 
-    # --- LOSS AGGREGATION ---
-    if subject_loss is not None:
-        # compute per-sample losses
-        # if getattr(criterion, 'reduction', None) == 'none': # check if the criterion has a reduction attribute
-        #     per_sample_losses = criterion(outputs, batch_y)          # (N,)
-        if (isinstance(criterion, torch.nn.CrossEntropyLoss)):
-            per_sample_losses = F.cross_entropy(outputs, batch_y, reduction='none')
-        elif (isinstance(criterion, torch.nn.MSELoss)):
-            per_sample_losses = F.mse_loss(outputs, batch_y, reduction='none')
-        elif (isinstance(criterion, torch.nn.L1Loss)):
-            per_sample_losses = F.l1_loss(outputs, batch_y, reduction='none')
-        elif isinstance(criterion, torch.nn.HuberLoss):
-            per_sample_losses = F.l1_loss(outputs, batch_y, reduction='none')
-        # elif (isinstance(criterion, cdw.CDW_CELoss)): # if chage remeber to change also in new_plot_res_from_server
-        else:
-          per_sample_losses = F.l1_loss(torch.argmax(outputs,dim=1), batch_y, reduction='none')
-        # else:
-        #   raise ValueError(f"Unsupported criterion in loss per subject computation: {criterion}")
-        # sum losses by subject index
-        loss_sum = torch.bincount(idx, weights=per_sample_losses, minlength=S)
-        subject_loss += loss_sum.detach().cpu()
+  subcrit, mode = _pick_effective_loss(criterion)
 
-    # --- ACCURACY AGGREGATION ---
-    if subject_accuracy is not None:
-        if isinstance(criterion, torch.nn.MSELoss) or isinstance(criterion, torch.nn.L1Loss) or isinstance(criterion, torch.nn.HuberLoss):
-            # For regression tasks, round the predictions to the nearest integer
-            preds = torch.copysign(torch.floor(torch.abs(outputs) + 0.5), outputs)
-        else:
-          _, preds = torch.max(outputs, dim=1 if outputs.dim() == 2 else 0)
-        if batch_y.dim() == 1:
-            correct = (preds == batch_y)
-        else:
-            correct = (preds == batch_y.argmax(dim=1))
-        correct = correct.to(torch.float32)
+  # --- LOSS ---
+  if subject_loss is not None:
+    if mode == 'ce':
+      per_sample_losses = F.cross_entropy(outputs.to(device), batch_y_labels.to(device), reduction='none')
+    elif mode == 'reg':
+      if isinstance(subcrit, nn.MSELoss):
+        per_sample_losses = F.mse_loss(outputs, batch_y_labels.float(), reduction='none')
+      elif isinstance(subcrit, (nn.L1Loss, nn.SmoothL1Loss)):
+        per_sample_losses = F.l1_loss(outputs, batch_y_labels.float(), reduction='none')
+      elif isinstance(subcrit, nn.HuberLoss):
+        per_sample_losses = F.l1_loss(outputs, batch_y_labels.float(), reduction='none')
+      else:
+        per_sample_losses = F.l1_loss(outputs.float(), batch_y_labels.float(), reduction='none')
+    else:
+      if outputs.dim() == 2:
+        preds = torch.argmax(outputs, dim=1)
+      else:
+        preds = outputs.view(-1).long()
+      per_sample_losses = (preds != batch_y_labels).to(torch.float32)
 
-        correct_sum   = torch.bincount(idx, weights=correct, minlength=S)
-        total_counts  = torch.bincount(idx, minlength=S).to(correct.dtype).clamp(min=1)
-        subject_accuracy += (correct_sum).detach().cpu()
+    loss_sum = torch.bincount(idx.cpu(), weights=per_sample_losses.detach().cpu(), minlength=S)
+    subject_loss += loss_sum.detach().cpu()
+
+  # --- ACCURACY ---
+  if subject_accuracy is not None:
+    if mode == 'reg':
+      preds = torch.copysign(torch.floor(torch.abs(outputs) + 0.5), outputs)
+      if preds.dim() > 1 and preds.size(1) == 1:
+        preds = preds.view(-1)
+    else:
+      if outputs.dim() == 2:
+        preds = torch.argmax(outputs, dim=1)
+      else:
+        preds = outputs.view(-1).long()
+    if batch_y.dim() == 1:
+      correct = (preds == batch_y_labels).to(torch.float32)
+    else:
+      correct = (preds == batch_y_labels).to(torch.float32)
+    correct_sum = torch.bincount(idx.cpu(), weights=correct.detach().cpu(), minlength=S)
+    subject_accuracy += correct_sum.detach().cpu()
+
+
+
+# def compute_loss_per_class_(criterion,
+#                             unique_train_val_classes,
+#                             batch_y,
+#                             outputs,
+#                             class_loss=None,
+#                             class_accuracy=None):
+#   if batch_y.dim() != 1:
+#     batch_y = torch.argmax(batch_y,1)
+#   for cls in unique_train_val_classes:
+#     mask = (batch_y == cls).reshape(-1)
+#     if mask.any():
+#       class_idx = np.where(unique_train_val_classes == cls)[0][0]
+#       if class_accuracy is not None:
+#         if isinstance(criterion, torch.nn.L1Loss) or isinstance(criterion, torch.nn.MSELoss):
+#           predicted = torch.copysign(torch.floor(torch.abs(outputs[mask]) + 0.5), outputs[mask])  # round to nearest integer
+#         else:
+#           predicted = torch.argmax(outputs[mask], 1 if outputs.dim() == 2 else 0)
+#         correct = (predicted == batch_y[mask]).sum().item() if batch_y.dim()== 1 else (predicted == batch_y[mask].argmax(1)).sum().item()
+#         total = mask.sum().item()
+#         class_accuracy[0,class_idx] += correct
+#         class_accuracy[1,class_idx] += total 
+#       if class_loss is not None:
+#         # loss = criterion(outputs[mask], batch_y[mask]).detach().cpu().item()
+#         if isinstance(criterion, torch.nn.CrossEntropyLoss):
+#           loss = F.cross_entropy(outputs[mask], batch_y[mask], reduction='sum').detach().cpu().item()
+#         elif isinstance(criterion, torch.nn.MSELoss):
+#           loss = F.mse_loss(outputs[mask], batch_y[mask], reduction='sum').detach().cpu().item()
+#         elif isinstance(criterion, torch.nn.L1Loss):
+#           loss = F.l1_loss(outputs[mask], batch_y[mask], reduction='sum').detach().cpu().item()
+#         elif isinstance(criterion, torch.nn.HuberLoss):
+#           loss = F.l1_loss(outputs[mask], batch_y[mask], reduction='sum').detach().cpu().item()
+#         else:
+#           loss = F.l1_loss(torch.argmax(outputs[mask],dim=1), batch_y[mask], reduction='sum').detach().cpu().item()
+
+#         class_loss[0,class_idx] += loss
+#         class_loss[1,class_idx] += mask.sum().item()
+
+# def compute_loss_per_subject_v2_(
+#     criterion,
+#     unique_train_val_subjects: torch.Tensor,
+#     batch_subjects: torch.Tensor,
+#     batch_y: torch.Tensor,
+#     outputs: torch.Tensor,
+#     subject_loss: torch.Tensor = None,
+#     subject_accuracy: torch.Tensor = None,
+# ):
+#     """
+#     Updates subject_loss and subject_accuracy in place by accumulating
+#     loss and accuracy for each subject in unique_train_val_subjects.
+
+#     Args:
+#       criterion: loss function. If its reduction != 'none', we'll fallback to F.cross_entropy(..., reduction='none').
+#       unique_train_val_subjects: 1D tensor of shape (S,) with all subject IDs.
+#       batch_subjects: 1D tensor of shape (N,) giving the subject ID for each sample.
+#       batch_y:      labels, shape (N,) or one-hot (N, C).
+#       outputs:      model logits, shape (N, C).
+#       subject_loss:     1D float tensor of shape (S,). Will be incremented by per-sample losses.
+#       subject_accuracy: 1D float tensor of shape (S,). Will be incremented by (correct/total) for each subject.
+#     """
+#     device = outputs.device
+#     S = unique_train_val_subjects.shape[0]
+
+#     # Build a mapping from subject ID to index [0..S-1]
+#     subj_to_idx = {int(s.item()): i for i, s in enumerate(unique_train_val_subjects)}
+#     # Map each sample's subject to its index
+#     idx = batch_subjects.detach().cpu().apply_(lambda s: subj_to_idx[int(s)]).to(device)  # shape (N,)
+
+#     # --- LOSS AGGREGATION ---
+#     if subject_loss is not None:
+#         # compute per-sample losses
+#         # if getattr(criterion, 'reduction', None) == 'none': # check if the criterion has a reduction attribute
+#         #     per_sample_losses = criterion(outputs, batch_y)          # (N,)
+#         if (isinstance(criterion, torch.nn.CrossEntropyLoss)):
+#             per_sample_losses = F.cross_entropy(outputs, batch_y, reduction='none')
+#         elif (isinstance(criterion, torch.nn.MSELoss)):
+#             per_sample_losses = F.mse_loss(outputs, batch_y, reduction='none')
+#         elif (isinstance(criterion, torch.nn.L1Loss)):
+#             per_sample_losses = F.l1_loss(outputs, batch_y, reduction='none')
+#         elif isinstance(criterion, torch.nn.HuberLoss):
+#             per_sample_losses = F.l1_loss(outputs, batch_y, reduction='none')
+#         # elif (isinstance(criterion, cdw.CDW_CELoss)): # if chage remeber to change also in new_plot_res_from_server
+#         else:
+#           per_sample_losses = F.l1_loss(torch.argmax(outputs,dim=1), batch_y, reduction='none')
+#         # else:
+#         #   raise ValueError(f"Unsupported criterion in loss per subject computation: {criterion}")
+#         # sum losses by subject index
+#         loss_sum = torch.bincount(idx, weights=per_sample_losses, minlength=S)
+#         subject_loss += loss_sum.detach().cpu()
+
+#     # --- ACCURACY AGGREGATION ---
+#     if subject_accuracy is not None:
+#         if isinstance(criterion, torch.nn.MSELoss) or isinstance(criterion, torch.nn.L1Loss) or isinstance(criterion, torch.nn.HuberLoss):
+#             # For regression tasks, round the predictions to the nearest integer
+#             preds = torch.copysign(torch.floor(torch.abs(outputs) + 0.5), outputs)
+#         else:
+#           _, preds = torch.max(outputs, dim=1 if outputs.dim() == 2 else 0)
+#         if batch_y.dim() == 1:
+#             correct = (preds == batch_y)
+#         else:
+#             correct = (preds == batch_y.argmax(dim=1))
+#         correct = correct.to(torch.float32)
+
+#         correct_sum   = torch.bincount(idx, weights=correct, minlength=S)
+#         total_counts  = torch.bincount(idx, minlength=S).to(correct.dtype).clamp(min=1)
+#         subject_accuracy += (correct_sum).detach().cpu()
 
 def compute_confidence_predictions_(list_prediction_right_mean,list_prediction_wrong_mean,list_prediction_right_std,list_prediction_wrong_std,outputs,gt,pred_before_softmax=True):
   if pred_before_softmax and outputs.dim() == 2:
@@ -1889,7 +2076,7 @@ def get_lr_and_weight_decay(optimizer):
 
 def plot_losses_and_test_new(list_1,title, list_2=None,output_path=None,point=None,ax=None,x_label='Epochs',
                          y_label_1='Training Loss',y_label_2='Val loss',y_label_3='Test loss', 
-                         y_lim_1=[0,5],y_lim_2=[0,1], y_lim_3 = [0,1],step_ylim_1=0.2,step_ylim_2=0.2,step_ylim_3=0.2,
+                         y_lim_1=[0,2],y_lim_2=[0,1], y_lim_3 = [0,1],step_ylim_1=0.2,step_ylim_2=0.2,step_ylim_3=0.2,
                          dict_to_string=None,color_1='tab:red',color_2='tab:blue', color_3='tab:green'):
   # plt.figure()
   if ax is None:
@@ -2174,7 +2361,7 @@ def plot_masked_attention(pkl_path, mask_threshold=7680, plot_all_subject=False,
   def get_one_video_per_subject(video_path_folder):
     folder_list = [f for f in os.listdir(video_path_folder) if os.path.isdir(os.path.join(video_path_folder, f))]
     lst = []
-    for folder in tqdm.tqdm(folder_list, desc="Getting one video per subject"):
+    for folder in tqdm(folder_list, desc="Getting one video per subject"):
       folder_path = os.path.join(video_path_folder, folder)
       for file in os.listdir(folder_path):
         if file.endswith(".mp4") and '$' not in file:
@@ -2193,17 +2380,18 @@ def plot_masked_attention(pkl_path, mask_threshold=7680, plot_all_subject=False,
   # --- Compute boolean mask ---
   mask_small = np.mean(pkl_file['mean_value_matrix'], axis=0) < mask_threshold  # (14,14)
 
-  folder_plot_path = folder_plot_path / f"plots_grid_{mask_small.shape[0]}x{mask_small.shape[1]}_thr_{mask_threshold}"
+  folder_plot_path = Path(folder_plot_path) / f"plots_grid_{mask_small.shape[0]}x{mask_small.shape[1]}_thr_{mask_threshold}"
+  os.makedirs(folder_plot_path, exist_ok=True)
+  
   if plot_all_subject:
     list_video_per_subject = get_one_video_per_subject(Path(pkl_path).parent)
     print(f"Found {len(list_video_per_subject)} videos, one per subject.")
-    os.makedirs(folder_plot_path, exist_ok=True)
     print(f"Plots will be saved to: {folder_plot_path}")
   else:
     list_video_per_subject = [f"{Path(pkl_path).parent}/071309_w_21/071309_w_21-BL1-081.mp4"]
     
   # --- Load one video frame per subject ---
-  for ref_video_path in tqdm.tqdm(list_video_per_subject, desc="Processing videos"):
+  for ref_video_path in tqdm(list_video_per_subject, desc="Processing videos"):
     if not Path(ref_video_path).exists():
       raise FileNotFoundError(f"Video not found: {ref_video_path}")
     
@@ -2224,7 +2412,7 @@ def plot_masked_attention(pkl_path, mask_threshold=7680, plot_all_subject=False,
     mask_resized = cv2.resize(mask_small.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
 
     # --- Overlay coloring ---
-    overlay_alpha_value = 150
+    overlay_alpha_value = 70
     overlay = np.zeros_like(frame_rgba, dtype=np.uint8)
     overlay[mask_resized] = [255, 0, 0, overlay_alpha_value]   # red semi-transparent
     overlay[~mask_resized] = [0, 255, 0, overlay_alpha_value]  # green semi-transparent
