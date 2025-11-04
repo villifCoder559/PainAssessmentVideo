@@ -7,7 +7,7 @@ import multiprocessing as mp
 stoic_subjects = [27,28,32,33,34,35,36,39,40,41,42,44,51,53,55,56,61,64,74,87]
 saving_rate_training_logs = 3
 dict_data = None
-
+desired_order_csv = ['subject_id', 'subject_name', 'class_id', 'class_name', 'sample_id', 'sample_name']
 train_time_logs = {}
 
 # Profile workers in dataloader
@@ -32,6 +32,13 @@ SAVE_PTH_MODEL = False
 LOG_CROSS_ATTENTION = {
   'enable': False,
   'state':'train'
+}
+LOG_VIDEO_EMBEDDINGS = {
+  'enable': False,
+  'embeddings':[],
+  'predictions':[],
+  'labels':[],
+  'sample_ids':[]
 }
 
 def get_sampling_frame_startegy(strategy):
@@ -221,7 +228,9 @@ class MODEL_TYPE:
     'VIDEOMAE_v2_S': ModelTypeEntry('VIDEOMAE_v2_S', os.path.join('VideoMAEv2', 'pretrained', "vit_s_k710_dl_from_giant.pth")),
     'VIDEOMAE_v2_B': ModelTypeEntry('VIDEOMAE_v2_B', os.path.join('VideoMAEv2', 'pretrained', "vit_b_k710_dl_from_giant.pth")),
     'VIDEOMAE_v2_G': ModelTypeEntry('VIDEOMAE_v2_G', os.path.join('VideoMAEv2', 'pretrained', "vit_g_hybrid_pt_1200e_k710_ft.pth")),
-    'VJEPA2_G_384': ModelTypeEntry('VJEPA2_G_384', os.path.join('vjepa2', 'pretrained', 'vitg-384.pt')),
+    # 'VJEPA2_G_384': ModelTypeEntry('VJEPA2_G_384', os.path.join('vjepa2', 'pretrained', 'vitg-384.pt')),
+    'vjepa2_L_fpc64_256': ModelTypeEntry('vjepa2_L_fpc64_256', 'facebook/vjepa2-vitl-fpc64-256'),
+    'vjepa2_G_fpc64_384': ModelTypeEntry('vjepa2_G_fpc64_384', 'facebook/vjepa2-vitg-fpc64-384'),
     'ViT_image': ModelTypeEntry('ViT_image', 'ViT_image'),
   }
 
@@ -229,7 +238,8 @@ class MODEL_TYPE:
   VIDEOMAE_v2_S     = _entries['VIDEOMAE_v2_S']
   VIDEOMAE_v2_B     = _entries['VIDEOMAE_v2_B']
   VIDEOMAE_v2_G     = _entries['VIDEOMAE_v2_G']
-  VJEPA2_G_384      = _entries['VJEPA2_G_384']
+  VJEPA_v2_L_fpc64_256 = _entries['vjepa2_L_fpc64_256'] 
+  VJEPA_v2_G_fpc64_384 = _entries['vjepa2_G_fpc64_384']
   ViT_image         = _entries['ViT_image']
   
   @classmethod
@@ -239,7 +249,9 @@ class MODEL_TYPE:
       'B': 'VIDEOMAE_v2_B',
       'G': 'VIDEOMAE_v2_G',
       'G_unl': 'VIDEOMAE_v2_G_unl',
-      'VJEPA2_G_384': 'VJEPA2_G_384',
+      # 'VJEPA2_G_384': 'VJEPA2_G_384',
+      'vjepa2_L_fpc64_256': 'vjepa2_L_fpc64_256',
+      'vjepa2_G_fpc64_384': 'vjepa2_G_fpc64_384',
       'ViT_image': 'ViT_image'
     }
     key = mapping.get(type)
@@ -254,7 +266,9 @@ class MODEL_TYPE:
       'B': 'VIDEOMAE_v2_B',
       'G': 'VIDEOMAE_v2_G',
       'G_unl': 'VIDEOMAE_v2_G_unl',
-      'VJEPA2_G_384': 'VJEPA2_G_384',
+      # 'VJEPA2_G_384': 'VJEPA2_G_384',
+      'vjepa2_L_fpc64_256': 'vjepa2_L_fpc64_256',
+      'vjepa2_G_fpc64_384': 'vjepa2_G_fpc64_384',
       'ViT_image': 'ViT_image'
     }
     key = mapping.get(type)
@@ -263,16 +277,32 @@ class MODEL_TYPE:
     raise ValueError(f"Model type '{type}' not found. Choose from: {list(mapping.keys())}")
 
   @classmethod
-  def get_embedding_size(cls, type):
-    if type == 'S':
+  def get_embedding_size(cls, typ):
+    if 'S' in typ:
       return 384
-    elif type in ['B', 'ViT_image']:
+    elif 'B' in typ:
       return 768
-    elif type == 'G':
+    elif 'G' in typ:
       return 1408
+    elif 'ViT_image' in typ:
+      return 768
+    elif 'L' in typ:
+      return 1024
+    elif 'H' in typ:
+      return 1280
     else:
       raise ValueError(
-        f"Model type '{type}' not supported for embedding size. Choose between 'S','B','G','ViT_image'")
+        f"Model type '{typ}' not supported for embedding size.")
+    # if type == 'S':
+    #   return 384
+    # elif type in ['B', 'ViT_image']:
+    #   return 768
+    # elif
+    # elif type == 'G':
+    #   return 1408
+    # else:
+    #   raise ValueError(
+    #     f"Model type '{type}' not supported for embedding size. Choose between 'S','B','G','ViT_image'")
 
 class EMBEDDING_REDUCTION(Enum):  
   # [B,t,p,p,emb] -> [B,1,p,p,emb] ex: [3,8,14,14,768] -> [3,1,14,14,768]
@@ -336,113 +366,3 @@ class CUSTOM_DATASET_TYPE(Enum):
   AGGREGATED = 'aggregated' # features reduced (spatial reduction) and saved in one folder 
   WHOLE = 'whole' # features not reduced and saved in more folders (like Biovid video)
   BASE = 'base' # video->frames->backbone->features
-class CSV:
-  sort_cols = [
-                'k_fold', 
-                'tot_test_accuracy',
-                'k-0_test-accurracy',
-                'k-1_test-accurracy',
-                'k-2_test-accurracy',
-                'k-0_val_accuracy',
-                'k-1_val_accuracy',
-                'k-2_val_accuracy',
-                'k-0_train_accuracy',
-                'k-1_train_accuracy',
-                'k-2_train_accuracy',
-                'epochs',
-                'optimizer_fn',
-                'lr',
-                'criterion',
-                'batch_size_training', 
-                'GRU_hidden_size',
-                'GRU_num_layers',
-                'GRU_dropout',
-                'GRU_input_size',
-                'regularization_lambda',
-                'regularization_loss',
-                'init_network',
-                'k-0_train-loss',
-                'k-0_val-loss',
-                'k-0_test-loss',
-                'k-1_train-loss',
-                'k-1_val-loss',
-                'k-1_test-loss',
-                'k-2_train-loss',
-                'k-2_val-loss',
-                'k-2_test-loss',
-                # 'pooling_embedding_reduction',
-                # 'pooling_clips_reduction',
-                # 'sample_frame_strategy',
-                # 'path_csv_dataset',
-                # 'path_video_dataset',
-                # 'head',
-                # 'model_type',
-                # 'stride_window_in_video',
-                # 'train_size',
-                # 'val_size', 
-                # 'test_size',
-                # 'random_state',
-                # 'round_output_loss',
-                # 'shuffle_video_chunks',
-                # 'shuffle_training_batch',
-                # 'k-0_s-0_val-loss',
-                # 'k-0_s-0_train-loss',
-                # 'k-0_s-0_val-loss-class-avg',
-                # 'k-0_s-0_val-loss-subject-avg',
-                # 'k-0_s-0_train-loss-class-avg',
-                # 'k-0_s-0_train-loss-subject-avg',
-                # 'k-0_s-1_val-loss',
-                # 'k-0_s-1_train-loss',
-                # 'k-0_s-1_val-loss-class-avg',
-                # 'k-0_s-1_val-loss-subject-avg',
-                # 'k-0_s-1_train-loss-class-avg',
-                # 'k-0_s-1_train-loss-subject-avg',
-                # 'k-0_test-loss-class-avg',
-                # 'k-0_test-loss-subject-avg',
-                # 'k-0_train-loss-class-avg',
-                # 'k-0_train-loss-subject-avg',
-                # 'k-0_val-loss-class-avg',
-                # 'k-0_val-loss-subject-avg',
-                # 'k-1_s-0_val-loss',
-                # 'k-1_s-0_train-loss',
-                # 'k-1_s-0_val-loss-class-avg',
-                # 'k-1_s-0_val-loss-subject-avg',
-                # 'k-1_s-0_train-loss-class-avg',
-                # 'k-1_s-0_train-loss-subject-avg',
-                # 'k-1_s-1_val-loss',
-                # 'k-1_s-1_train-loss',
-                # 'k-1_s-1_val-loss-class-avg',
-                # 'k-1_s-1_val-loss-subject-avg',
-                # 'k-1_s-1_train-loss-class-avg',
-                # 'k-1_s-1_train-loss-subject-avg',
-                # 'k-1_test-loss-class-avg',
-                # 'k-1_test-loss-subject-avg',
-                # 'k-1_train-loss-class-avg',
-                # 'k-1_train-loss-subject-avg',
-                # 'k-1_val-loss-class-avg',
-                # 'k-1_val-loss-subject-avg',
-                # 'k-2_s-0_val-loss',
-                # 'k-2_s-0_train-loss',
-                # 'k-2_s-0_val-loss-class-avg',
-                # 'k-2_s-0_val-loss-subject-avg',
-                # 'k-2_s-0_train-loss-class-avg',
-                # 'k-2_s-0_train-loss-subject-avg',
-                # 'k-2_s-1_val-loss', 
-                # 'k-2_s-1_train-loss',
-                # 'k-2_s-1_val-loss-class-avg',
-                # 'k-2_s-1_val-loss-subject-avg',
-                # 'k-2_s-1_train-loss-class-avg',
-                # 'k-2_s-1_train-loss-subject-avg',
-                # 'k-2_test-loss-class-avg',
-                # 'k-2_test-loss-subject-avg',
-                # 'k-2_train-loss-class-avg',
-                # 'k-2_train-loss-subject-avg',
-                # 'k-2_val-loss-class-avg',
-                # 'k-2_val-loss-subject-avg',
-                # 'tot_test_loss-avg',
-                # 'tot_test_loss-class-avg',
-                # 'tot_test_loss-subject-avg',
-                # 'time_taken_min',
-                # 'folder_path'
-                ] 
-              
