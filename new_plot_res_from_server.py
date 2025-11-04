@@ -12,7 +12,7 @@ from pathlib import Path
 import argparse
 import logging
 from custom import helper
-from custom.head import CCCLoss # For pickle loading
+import custom.loss as losses  # For pickle loading
 import seaborn as sns
 
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
@@ -28,9 +28,9 @@ def find_results_files(parent_folder):
           pkl_files = [f for f in os.listdir(os.path.join(parent_folder, folder, run)) if f.endswith('.pkl')]
           if len(pkl_files) == 1:
             results_files.append(os.path.join(parent_folder, folder, run, pkl_files[0]))
-          elif len(pkl_files) == 0:
-            # delete the folder if no .pkl files are found
-            shutil.rmtree(os.path.join(parent_folder, folder))
+          # elif len(pkl_files) == 0:
+          #   # delete the folder if no .pkl files are found
+          #   shutil.rmtree(os.path.join(parent_folder, folder))
   return results_files
 
 def load_results(file_path):
@@ -83,8 +83,23 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
       
       else:
         raise ValueError('No train accuracy or val accuracy found in the data')
-      test_accuracy = data['results'][key]['test']['dict_precision_recall']['accuracy']
-      test_loss = data['results'][key]['test']['test_loss']
+      if 'test' in data['results'][key] or 'final' in key:
+        test_accuracy = data['results'][key]['test']['dict_precision_recall'].get('accuracy', None)
+        test_loss = data['results'][key]['test']['test_loss']
+        if test_accuracy is not None:
+          point_accuracy = {
+              'value': test_accuracy,
+              'epoch': data['results'][key]['train_val']['best_model_idx']
+          }
+        else:
+          point_accuracy = None
+        point_loss = {
+            'value':test_loss,
+            'epoch':data['results'][key]['train_val']['best_model_idx']
+            }
+      else:
+        point_accuracy = None
+        point_loss = None
       grad_norm_mean = data['results'][key]['train_val']['list_mean_total_norm_epoch']
       grad_norm_std = data['results'][key]['train_val']['list_std_total_norm_epoch']
       if 'list_train_confidence_prediction_right_mean' in data['results'][key]['train_val']:
@@ -101,7 +116,14 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         fig, axs = plt.subplots(2,2,figsize=(20,15))
       
       # Plot train and val loss
-      if train_losses and val_accuracy:
+      if train_losses and val_loss:
+        xattn_mask = data['config'].get('xattn_mask', [False])
+        if xattn_mask is not None and any([xattn_mask]):
+          data['config']['xattn_mask'] = torch.any(xattn_mask) # compact view
+        else:
+          data['config']['xattn_mask'] = False
+        
+        
         dict_to_string = convert_dict_to_string(filter_dict(data['config']))
         dict_to_string = dict_to_string.replace('head_params', data['config']['head'].value)
             
@@ -109,15 +131,13 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         # add test_id in dict_to_string
         dict_to_string += f'\nTest ID: {test_id}'
         dict_to_string += f'\nfold_subfold: {key.split("_")[0]}_{key.split("_")[-1]}'
+        y_lim_loss = 5.1
         input_dict_loss_acc= {
           'list_1':train_losses,
           'list_2':val_accuracy,
           'output_path':None,
           'title':f'Train loss, validation accuracy, test accuracy',
-          'point':{
-            'value':test_accuracy,
-            'epoch':data['results'][key]['train_val']['best_model_idx']
-            },
+          'point':point_accuracy,
           'ax':axs[0][0],
           'x_label':'Epochs',
           'y_label_1':'Train loss',
@@ -139,18 +159,15 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
           'list_2':val_loss,
           'output_path':None,
           'title':'Train loss + validation and test loss',
-          'point':{
-            'value':test_loss,
-            'epoch':data['results'][key]['train_val']['best_model_idx']
-            },
+          'point':point_loss,
           'ax':axs[0][1],
           'x_label':'Epochs',
           'y_label_1':'Train loss',
           'y_label_2':'Validation loss',
           'y_label_3':'Test loss',
-          'y_lim_1':[0, 5],
-          'y_lim_2':[0, 5],
-          'y_lim_3':[0, 5],
+          'y_lim_1':[0, y_lim_loss],
+          'y_lim_2':[0, y_lim_loss],
+          'y_lim_3':[0, y_lim_loss],
           'step_ylim_1':0.25,
           'step_ylim_2':0.25,
           'step_ylim_3':0.25,
@@ -168,8 +185,8 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
           'y_lim_1':[-1, 1],
           'color_1':'tab:orange',
         }
-        tools.plot_losses_and_test_new(**input_dict_loss_acc)
         tools.plot_losses_and_test_new(**input_dict_accuracy_gap)
+        tools.plot_losses_and_test_new(**input_dict_loss_acc)
         tools.plot_losses_and_test_new(**input_dict_loss)
         
         axs[0][1].text(1.14, -0.5, dict_to_string, fontsize=12, color='black',transform=axs[0][1].transAxes,ha='left', va='center')
@@ -244,107 +261,146 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         # Create a new symlink
         os.symlink(plot_path, symlink_path)
 
-      if plot_loss_per_subject and len(data['results']['k0_cross_val_sub_0']['train_val']['list_val_accuracy_per_subject']) > 0:
-        y_lim = 3
-        fig, axs = plt.subplots(3,1,figsize=(20,20))
+      if not isinstance(data['config']['criterion'],losses.RESupConLoss) and plot_loss_per_subject and len(data['results']['k0_cross_val_sub_0']['train_val']['list_val_accuracy_per_subject']) > 0:
+        y_lim = 8 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3
+        
+        loss_per_subject_train = data['results'][key]['train_val'].get('train_loss_per_subject', None)
+        loss_per_subject_val = data['results'][key]['train_val'].get('val_loss_per_subject', None)
+        dict_per_subject_test = data['results'][key].get('test', None)
+        loss_list = [loss_per_subject_train, loss_per_subject_val, dict_per_subject_test]
+        total_plots = sum([1 for loss in loss_list if loss is not None])
+        fig, axs = plt.subplots(total_plots, 1, figsize=(20, 20))
+        count_axs = 0
+        
         best_epoch = data['results'][key]['train_val']['best_model_idx']
-
         # Train Loss
-        tools.plot_error_per_subject(loss_per_subject=data['results'][key]['train_val']['train_loss_per_subject'][best_epoch],
-                                     unique_subject_ids=data['results'][key]['train_val']['train_unique_subject_ids'],
-                                     title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
-                                     criterion=data['config']['criterion'],
-                                     list_stoic_subject=helper.stoic_subjects,
-                                     y_lim=y_lim,
-                                     ax=axs[0])
+        if loss_per_subject_train is not None:
+          tools.plot_error_per_subject(loss_per_subject=loss_per_subject_train[best_epoch],
+                                        unique_subject_ids=data['results'][key]['train_val']['train_unique_subject_ids'],
+                                        title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
+                                        criterion=data['config']['criterion'],
+                                        list_stoic_subject=helper.stoic_subjects,
+                                        y_lim=y_lim,
+                                        ax=axs[count_axs])
+          count_axs += 1
         # Val Loss
-        tools.plot_error_per_subject(loss_per_subject=data['results'][key]['train_val']['val_loss_per_subject'][best_epoch],
-                                     unique_subject_ids=data['results'][key]['train_val']['val_unique_subject_ids'],
-                                     title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
-                                     criterion=data['config']['criterion'],
-                                     list_stoic_subject=helper.stoic_subjects,
-                                     y_lim=y_lim,
-                                     ax=axs[1])
+        if loss_per_subject_val is not None:
+          tools.plot_error_per_subject(loss_per_subject=loss_per_subject_val[best_epoch],
+                                      unique_subject_ids=data['results'][key]['train_val']['val_unique_subject_ids'],
+                                      title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
+                                      criterion=data['config']['criterion'],
+                                      list_stoic_subject=helper.stoic_subjects,
+                                      y_lim=y_lim,
+                                      ax=axs[count_axs])
+          count_axs += 1
         # Test Loss
-        tools.plot_error_per_subject(loss_per_subject=data['results'][key]['test']['test_loss_per_subject'],
-                                   unique_subject_ids=data['results'][key]['test']['test_unique_subject_ids'],
-                                   title=f'TEST {key} - {test_id}',
-                                   criterion=data['config']['criterion'],
-                                   list_stoic_subject=helper.stoic_subjects,
-                                   y_lim=y_lim,
-                                   ax=axs[2])
+        if dict_per_subject_test is not None:
+          tools.plot_error_per_subject(loss_per_subject=dict_per_subject_test['test_loss_per_subject'],
+                                    unique_subject_ids=dict_per_subject_test['test_unique_subject_ids'],
+                                    title=f'TEST {key} - {test_id}',
+                                    criterion=data['config']['criterion'],
+                                    list_stoic_subject=helper.stoic_subjects,
+                                    y_lim=y_lim,
+                                    ax=axs[count_axs])
+
         fig.tight_layout()
         fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_loss_per_subject_{key}.png'))
         plt.close(fig)
 
-      if plot_acc_per_subject and len(data['results'][key]['train_val']['train_loss_per_subject']) > 0:
+      if not isinstance(data['config']['criterion'],losses.RESupConLoss) and plot_acc_per_subject and len(data['results'][key]['train_val']['train_loss_per_subject']) > 0:
         y_lim = 1
-        fig, axs = plt.subplots(3,1,figsize=(20,20))
+        accuracy_per_subject_train = data['results'][key]['train_val'].get('list_train_accuracy_per_subject', None)
+        accuracy_per_subject_val = data['results'][key]['train_val'].get('list_val_accuracy_per_subject', None)
+        dict_per_subject_test = data['results'][key].get('test', None)
+        acc_list = [accuracy_per_subject_train, accuracy_per_subject_val, dict_per_subject_test]
+        total_plots = sum([1 for acc in acc_list if acc is not None])
+        count_axs = 0
+        fig, axs = plt.subplots(total_plots,1,figsize=(20,20))
         best_epoch = data['results'][key]['train_val']['best_model_idx']
         # Train accuracy
-        tools.plot_error_per_subject(loss_per_subject=data['results'][key]['train_val']['list_train_accuracy_per_subject'][best_epoch],
-                                     unique_subject_ids=data['results'][key]['train_val']['train_unique_subject_ids'],
-                                     y_label='Train Accuracy',
-                                     title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
-                                     criterion=data['config']['criterion'],
-                                     list_stoic_subject=helper.stoic_subjects,
-                                     bar_color='blue',
-                                     step_y_axis=0.1, 
-                                     y_lim=y_lim,
-                                     ax=axs[0])
+        if accuracy_per_subject_train is not None:
+          tools.plot_error_per_subject(loss_per_subject=accuracy_per_subject_train[best_epoch],
+                                       unique_subject_ids=data['results'][key]['train_val']['train_unique_subject_ids'],
+                                       y_label='Train Accuracy',
+                                       title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
+                                       criterion=data['config']['criterion'],
+                                      list_stoic_subject=helper.stoic_subjects,
+                                      bar_color='blue',
+                                      step_y_axis=0.1, 
+                                      y_lim=y_lim,
+                                      ax=axs[count_axs])
+          count_axs += 1
         # Val accuracy
-        tools.plot_error_per_subject(loss_per_subject=data['results'][key]['train_val']['list_val_accuracy_per_subject'][best_epoch],
-                                     unique_subject_ids=data['results'][key]['train_val']['val_unique_subject_ids'],
-                                     y_label='Val Accuracy',
-                                     title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
-                                     criterion=data['config']['criterion'],
-                                     step_y_axis=0.1,
-                                     list_stoic_subject=helper.stoic_subjects,
-                                     bar_color='blue',
-                                     y_lim=y_lim,
-                                     ax=axs[1])
+        if accuracy_per_subject_val is not None:
+          tools.plot_error_per_subject(loss_per_subject=accuracy_per_subject_val[best_epoch],
+                                      unique_subject_ids=data['results'][key]['train_val']['val_unique_subject_ids'],
+                                      y_label='Val Accuracy',
+                                      title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
+                                      criterion=data['config']['criterion'],
+                                      step_y_axis=0.1,
+                                      list_stoic_subject=helper.stoic_subjects,
+                                      bar_color='blue',
+                                      y_lim=y_lim,
+                                      ax=axs[count_axs])
+          count_axs += 1
         # Test accuracy
-        tools.plot_error_per_subject(loss_per_subject=data['results'][key]['test']['test_accuracy_per_subject'],
-                              unique_subject_ids=data['results'][key]['test']['test_unique_subject_ids'],
-                              y_label='Test Accuracy',
-                              title=f'TEST Epoch_{best_epoch} {key} - {test_id}',
-                              criterion=data['config']['criterion'],
-                              step_y_axis=0.1,
-                              list_stoic_subject=helper.stoic_subjects,
-                              bar_color='blue',
-                              y_lim=y_lim,
-                              ax=axs[2])  
+        if dict_per_subject_test is not None:
+          tools.plot_error_per_subject(loss_per_subject=dict_per_subject_test['test_accuracy_per_subject'],
+                                unique_subject_ids=data['results'][key]['test']['test_unique_subject_ids'],
+                                y_label='Test Accuracy',
+                                title=f'TEST Epoch_{best_epoch} {key} - {test_id}',
+                                criterion=data['config']['criterion'],
+                                step_y_axis=0.1,
+                                list_stoic_subject=helper.stoic_subjects,
+                                bar_color='blue',
+                                y_lim=y_lim,
+                                ax=axs[count_axs])
         fig.tight_layout()
         fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_acc_per_subject_{key}.png'))
         plt.close(fig)
         
-      if plot_loss_per_class:
-        y_lim = 3
-        fig, axs = plt.subplots(3,1,figsize=(10,8))
+      if plot_loss_per_class and not isinstance(data['config']['criterion'],losses.RESupConLoss):
+        y_lim = 8 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3
+        train_loss_per_class = data['results'][key]['train_val'].get('train_loss_per_class', None)
+        val_loss_per_class = data['results'][key]['train_val'].get('val_loss_per_class', None)
+        dict_per_class_test = data['results'][key].get('test', None)
+        class_loss_list = [train_loss_per_class, val_loss_per_class, dict_per_class_test]
+        total_plots = sum([1 for class_loss in class_loss_list if class_loss is not None])
+        fig, axs = plt.subplots(total_plots,1,figsize=(10,8))
+        count_axs = 0
         best_epoch = data['results'][key]['train_val']['best_model_idx']
-        tools.plot_error_per_class(unique_classes=data['results'][key]['train_val']['y_unique'],
-                                   mae_per_class=data['results'][key]['train_val']['train_loss_per_class'][best_epoch],
-                                   title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
-                                   criterion=data['config']['criterion'],
-                                   accuracy_per_class=data['results'][key]['train_val']['list_train_accuracy_per_class'][best_epoch],
-                                   y_lim=y_lim,
-                                   ax=axs[0])
-        if data['config'].get('validate', True):
-          tools.plot_error_per_class(unique_classes=data['results'][key]['train_val']['y_unique'],
-                                    mae_per_class=data['results'][key]['train_val']['val_loss_per_class'][best_epoch],
+        # Train Loss
+        if train_loss_per_class is not None:
+          tools.plot_error_per_class(unique_classes=data['results'][key]['train_val']['train_unique_y'],
+                                      mae_per_class=train_loss_per_class[best_epoch],
+                                      title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
+                                      criterion=data['config']['criterion'],
+                                      accuracy_per_class=data['results'][key]['train_val']['list_train_accuracy_per_class'][best_epoch],
+                                      y_lim=y_lim,
+                                      ax=axs[count_axs])
+          count_axs += 1
+        # Val Loss
+        if val_loss_per_class is not None and val_loss_per_class[0] is not None:
+          if data['results'][key]['train_val']['val_unique_y'].shape[0] != val_loss_per_class[best_epoch].shape[0]:
+            
+            raise ValueError('Number of unique classes does not match number of classes in val_loss_per_class')
+          tools.plot_error_per_class(unique_classes=data['results'][key]['train_val']['val_unique_y'],
+                                    mae_per_class=val_loss_per_class[best_epoch],
                                     title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
                                     criterion=data['config']['criterion'],
                                     accuracy_per_class=data['results'][key]['train_val']['list_val_accuracy_per_class'][best_epoch],
                                     y_lim=y_lim,
-                                    ax=axs[1])
-        
-        tools.plot_error_per_class(mae_per_class=data['results'][key]['test']['test_loss_per_class'],
-                                 unique_classes=data['results'][key]['test']['test_unique_y'],
-                                 title=f'TEST {key} - {test_id}',
-                                 criterion=data['config']['criterion'],
-                                 accuracy_per_class=data['results'][key]['test']['test_accuracy_per_class'],
-                                 y_lim=y_lim,
-                                 ax=axs[2])
+                                    ax=axs[count_axs])
+          count_axs += 1
+        # Test Loss
+        if dict_per_class_test is not None:
+          tools.plot_error_per_class(mae_per_class=dict_per_class_test['test_loss_per_class'],
+                                  unique_classes=data['results'][key]['test']['test_unique_y'],
+                                  title=f'TEST {key} - {test_id}',
+                                  criterion=data['config']['criterion'],
+                                  accuracy_per_class=data['results'][key]['test']['test_accuracy_per_class'],
+                                  y_lim=y_lim,
+                                  ax=axs[count_axs])
         fig.tight_layout()
         fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_mae_per_class_{key}.png'))
         plt.close(fig)
@@ -593,8 +649,9 @@ def get_range_k_fold(data):
 
 def generate_csv_row(data,config,time_, test_id): 
 
-  list_fold = [int(k.split('_')[0][1:]) for k in data.keys()]
-  list_sub_fold = [int(k.split('_')[-1]) for k in data.keys()]
+  list_fold = [int(k.split('_')[0][1:]) for k in data.keys() if 'final' not in k]
+  list_sub_fold = [int(k.split('_')[-1]) for k in data.keys() if 'final' not in k]
+  list_final_test = [int(k.split('_')[0][1:]) for k in data.keys() if 'final' in k]
   real_k_fold = max(list_fold) + 1
   real_sub_fold = max(list_sub_fold) + 1
   
@@ -613,15 +670,21 @@ def generate_csv_row(data,config,time_, test_id):
   mean_val_accuracies_best_epoch = {f'mean_val_{metric}_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_val][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_val_losses_best_epoch = {f'mean_val_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   
-  mean_test_accuracies = {f'mean_test_{metric}_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test'][test_key] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  mean_test_losses = {f'mean_test_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_loss'] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  
+  if not list_final_test: 
+    mean_test_accuracies = {f'mean_test_{metric}_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test'][test_key] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+    mean_test_losses = {f'mean_test_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_loss'] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+    total_mean_test_accuracy_best_epoch = {f'total_mean_test_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test'][test_key] for i in range(real_k_fold) for j in range(real_sub_fold)])}
+    total_mean_test_losses_best_epoch = {f'total_mean_test_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_loss'] for i in range(real_k_fold) for j in range(real_sub_fold)])}
+  else:
+    mean_test_accuracies = {f'mean_all_test_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_final']['test'][test_key] for i in list_final_test])}
+    mean_test_losses = {f'mean_all_test_loss_best_ep': np.mean([data[f'k{i}_cross_val_final']['test']['test_loss'] for i in list_final_test])}
+    total_mean_test_accuracy_best_epoch = {}
+    total_mean_test_losses_best_epoch = {}
   total_mean_train_losses_best_epoch = {f'total_mean_train_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_train_accuracy_best_epoch = {f'total_mean_train_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_train][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_val_accuracy_best_epoch = {f'total_mean_val_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_val][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_val_losses_best_epoch = {f'total_mean_val_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-  total_mean_test_accuracy_best_epoch = {f'total_mean_test_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test'][test_key] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-  total_mean_test_losses_best_epoch = {f'total_mean_test_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_loss'] for i in range(real_k_fold) for j in range(real_sub_fold)])}
+  
   
   total_mean_train_losses_last_epoch = {f'total_mean_train_loss_last_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][-1] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   head_type = config['head'].name
@@ -681,11 +744,20 @@ def generate_csv_row(data,config,time_, test_id):
 def plot_confusion_matrices(data, root_output_folder, test_id, additional_info=''):
   test_output_folder = os.path.join(root_output_folder, test_id)
   os.makedirs(test_output_folder, exist_ok=True)
+  if isinstance(data['config']['criterion'],losses.RESupConLoss):
+    return  # No confusion matrix for RESupConLoss
+  
+  #### Plot confusion matrix for each epoch ####
   for key,dict_sub_fold in data['results'].items():
     best_epoch_idx =  dict_sub_fold['train_val']['best_model_idx']
     dict_train_conf_matrix = dict_sub_fold['train_val']['train_confusion_matricies']
-    dict_val_conf_matrix = dict_sub_fold['train_val']['val_confusion_matricies']
-    dict_test_conf_matrix = {f'{best_epoch_idx}':dict_sub_fold['test']['test_confusion_matrix']}
+    dict_val_conf_matrix = None
+    dict_test_conf_matrix = None
+    if 'final' not in key:
+      dict_val_conf_matrix = dict_sub_fold['train_val']['val_confusion_matricies']
+      
+    if 'final' in key or 'test' in data['results'][key]:
+      dict_test_conf_matrix = {f'{best_epoch_idx}':dict_sub_fold['test']['test_confusion_matrix']}
     
     # Plot confusion matrix for each epoch
     for epoch in dict_train_conf_matrix.keys():
@@ -693,29 +765,39 @@ def plot_confusion_matrices(data, root_output_folder, test_id, additional_info='
         fig, axs = plt.subplots(3, 1, figsize=(5, 15))
       else:
         fig, axs = plt.subplots(2, 1, figsize=(5, 10))
-      tools.plot_confusion_matrix(dict_train_conf_matrix[epoch], ax=axs[0], title=f'TRAIN - Epoch {epoch}   - {test_id}')
-      if data['config'].get('validate', True):
-        tools.plot_confusion_matrix(dict_val_conf_matrix[epoch], ax=axs[1], title=f'VAL - Epoch {epoch}   - {test_id}')
-      if int(epoch) == best_epoch_idx:
-        tools.plot_confusion_matrix(dict_test_conf_matrix[epoch], ax=axs[2], title=f'TEST {test_id} - {key} - Epoch {epoch}')
+      axs_count = 0
+      tools.plot_confusion_matrix(dict_train_conf_matrix[epoch], ax=axs[axs_count], title=f'TRAIN - Epoch {epoch}   - {test_id}')
+      axs_count += 1
+      if data['config'].get('validate', True) and dict_val_conf_matrix is not None:
+        tools.plot_confusion_matrix(dict_val_conf_matrix[epoch], ax=axs[axs_count], title=f'VAL - Epoch {epoch}   - {test_id}')
+        axs_count += 1
+      if int(epoch) == best_epoch_idx and dict_test_conf_matrix is not None:
+        tools.plot_confusion_matrix(dict_test_conf_matrix[epoch], ax=axs[axs_count], title=f'TEST {test_id} - {key} - Epoch {epoch}')
         fig.tight_layout()
       fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_confusion_matrix_{key}_epoch_{epoch}.png'))
       plt.close(fig)
       
   #### Plot only best epoch confusion matrix in percentage ####
   fig, axs = plt.subplots(3, 1, figsize=(5, 15))
-  conf_matrix_test_percent = convert_conf_matrix_to_percent(dict_test_conf_matrix[str(best_epoch_idx)])
 
   if str(best_epoch_idx) not in dict_train_conf_matrix.keys():
     print(f"Test id {test_id}:   Best epoch {best_epoch_idx} not in training confusion matrix keys {list(dict_train_conf_matrix.keys())}, skipping best epoch confusion matrix plot")
     return
 
+  cms = []
+  titles = []
   conf_matrix_train_percent = convert_conf_matrix_to_percent(dict_train_conf_matrix[str(best_epoch_idx)])
-  conf_matrix_val_percent = convert_conf_matrix_to_percent(dict_val_conf_matrix[str(best_epoch_idx)])
-  cms = [conf_matrix_train_percent, conf_matrix_val_percent, conf_matrix_test_percent]
-  titles = [f'TRAIN - Epoch {best_epoch_idx}   - {test_id}',
-            f'VAL - Epoch {best_epoch_idx}   - {test_id}', 
-            f'TEST {test_id} - {key} - Epoch {best_epoch_idx}']
+  cms.append(conf_matrix_train_percent)
+  titles.append(f'TRAIN - Epoch {best_epoch_idx}   - {test_id}')
+  if 'final' not in key and data['config'].get('validate', True):
+    conf_matrix_val_percent = convert_conf_matrix_to_percent(dict_val_conf_matrix[str(best_epoch_idx)])
+    cms.append(conf_matrix_val_percent)
+    titles.append(f'VAL - Epoch {best_epoch_idx}   - {test_id}')
+  if 'final' in key or 'test' in data['results'][key]:
+    conf_matrix_test_percent = convert_conf_matrix_to_percent(dict_test_conf_matrix[str(best_epoch_idx)])
+    cms.append(conf_matrix_test_percent)
+    titles.append(f'TEST {test_id} - {key} - Epoch {best_epoch_idx}')
+  
   for ax, cm, title in zip(axs, cms, titles):
     sns.heatmap(cm.cpu().numpy(), annot=True, fmt=".2f", cmap='Blues', cbar_kws={'label': 'Percentage (%)'}, ax=ax,
                 xticklabels=[str(i) for i in range(cm.shape[0])],
@@ -770,7 +852,11 @@ def get_best_result(data):
 
 def plot_accuray_per_class_across_epochs(data, run_output_folder, test_id, additional_info=''):
   # Assuming val_accuracy and val_loss are already stacked arrays of shape (n_epochs, n_classes)
+  if isinstance(data['config']['criterion'],losses.RESupConLoss):
+    return  # No accuracy per class for RESupConLoss
   for key in data['results'].keys():
+    if 'final' in key:
+      continue
     val_accuracy = np.stack(data['results'][key]['train_val']['list_val_accuracy_per_class'])
     val_loss = np.stack(data['results'][key]['train_val']['val_loss_per_class'])
 
@@ -820,6 +906,8 @@ def plot_accuray_per_class_across_epochs(data, run_output_folder, test_id, addit
   # plt.show()
 
 
+# def link_cross_attention_logs(data, run_output_folder, test_id):
+
 def plot_run_details(results_data, output_root,only_csv):
   list_row_csv = []
   for file, data in tqdm.tqdm(results_data.items()):
@@ -840,6 +928,7 @@ def plot_run_details(results_data, output_root,only_csv):
       plot_history_model_prediction(data, os.path.join(output_root), test_id,root_csv_path=os.path.dirname(file))
       if data['config'].get('validate', True):
         plot_accuray_per_class_across_epochs(data, os.path.join(output_root), test_id)
+      link_attention_logs(os.path.dirname(file), output_root, test_id)        
       # except Exception as e:
       #   print(f'Error in {file} - {e}')
   df = pd.DataFrame(list_row_csv)
@@ -849,6 +938,26 @@ def plot_run_details(results_data, output_root,only_csv):
   df.to_csv(os.path.join(output_root, 'summary.csv'), index=False)
   print(f'Summary CSV saved to {output_root}/summary.csv')
 
+def link_attention_logs(file_folder, output_root, test_id):
+  # folder name is cross_attention_*
+  cross_attention_folders = []
+  for root, dirs, files in os.walk(file_folder):
+    attention_log_folder = [d for d in dirs if ('cross_attention_' or 'video_embeddings') in d]
+    if len(attention_log_folder) > 0:
+      for d in attention_log_folder:
+        attention_log_folder_path = os.path.join(root, d)
+        cross_attention_folders.append(attention_log_folder_path)
+
+  # Create symlink in output_root/test_id/attention_logs
+  for attention_log_folder in cross_attention_folders:
+    output_attention_folder = os.path.join(output_root, test_id, Path(attention_log_folder).name)
+    if not os.path.exists(output_attention_folder):
+      os.makedirs(output_attention_folder, exist_ok=True)
+    for file in os.listdir(attention_log_folder):
+      src = os.path.join(attention_log_folder, file)
+      dst = os.path.join(output_attention_folder, file)
+      if not os.path.exists(dst):
+        os.symlink(src, dst)
 
 def plot_filtered_run_details(parent_folder, output_root, filter_dict,only_csv):
   """
