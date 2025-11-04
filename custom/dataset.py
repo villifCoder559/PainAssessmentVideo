@@ -43,6 +43,7 @@ class customDataset(torch.utils.data.Dataset):
       self,
       path_dataset,
       sample_frame_strategy,
+      model_type,
       path_labels=None,
       stride_window=16,
       clip_length=16,
@@ -111,6 +112,7 @@ class customDataset(torch.utils.data.Dataset):
     self.stride_inside_window = stride_inside_window
     self.saving_folder_path_extracted_video = saving_folder_path_extracted_video
     self.backbone_dict = backbone_dict
+    self.model_type = model_type
     
     # Preprocessing options
     self.preprocess_align = preprocess_align
@@ -142,7 +144,7 @@ class customDataset(torch.utils.data.Dataset):
     if video_labels is None and path_labels != None:
       self.set_path_labels(path_labels)
     else:
-      self.video_labels = video_labels
+      self.video_labels = video_labels[helper.desired_order_csv]
         
     # Get unique subjects and classes
     tmp = tools.get_unique_subjects_and_classes(self.video_labels)
@@ -207,7 +209,7 @@ class customDataset(torch.utils.data.Dataset):
     """
     self.path_labels = path
     self.video_labels = pd.read_csv(self.path_labels,sep='\t',dtype={'sample_name':str,'subject_name':str})
-    self.df = self.video_labels
+    self.df = self.video_labels[helper.desired_order_csv]
     print(f'Set path_labels: {self.path_labels}')
   
   def __len__(self):
@@ -303,8 +305,10 @@ class customDataset(torch.utils.data.Dataset):
     idx = self.video_labels[self.video_labels['sample_id'] == sample_id].index[0]
     if idx is None:
       raise ValueError(f"Sample ID {sample_id} not found in video labels {self.path_labels}.")
-    csv_array = self.video_labels.iloc[idx]
-    video_path = os.path.join(self.path_dataset, csv_array.iloc[1], csv_array.iloc[5] + self.video_extension)
+    subject_name = self.video_labels.iloc[idx]['subject_name'] # csv_array.iloc[1]
+    sample_name = self.video_labels.iloc[idx]['sample_name'] # csv_array.iloc[5]
+    # csv_array = self.video_labels.iloc[idx]
+    video_path = os.path.join(self.path_dataset, subject_name, sample_name + self.video_extension)
     container = cv2.VideoCapture(video_path)
     if not container.isOpened():
       raise ValueError(f"Video {video_path} cannot be opened. Please check the video file.")
@@ -332,17 +336,18 @@ class customDataset(torch.utils.data.Dataset):
       return {'params': params, 'list_frames': frames_list, 'list_indices': list_indices}
     else:
       os.makedirs(output_folder, exist_ok=True)
-      output_path = os.path.join(output_folder, f'{csv_array.iloc[5]}_inside_{self.stride_inside_window}_stride_{self.stride_window}_fps_{fps_out}{self.video_extension}')
+      output_path = os.path.join(output_folder, f'{sample_name}_inside_{self.stride_inside_window}_stride_{self.stride_window}_fps_{fps_out}{self.video_extension}')
       tools.generate_video_from_list_frame(list_frame=frames_list,path_video_output=output_path,fps=fps_out)
       return params   
   
   def __standard_getitem__(self, idx, is_training):
     
-    csv_array = self.video_labels.iloc[idx]
+    subject_name = self.video_labels.iloc[idx]['subject_name']
+    sample_name = self.video_labels.iloc[idx]['sample_name']
     if self.quadrant is not None:
-      video_path = os.path.join(self.path_dataset, csv_array.iloc[1], f'{csv_array.iloc[5]}${self.quadrant}{self.video_extension}')
+      video_path = os.path.join(self.path_dataset, subject_name, f'{sample_name}${self.quadrant}{self.video_extension}')
     else:
-      video_path = os.path.join(self.path_dataset, csv_array.iloc[1], f"{csv_array.iloc[5]}{self.video_extension}")
+      video_path = os.path.join(self.path_dataset, subject_name, f"{sample_name}{self.video_extension}")
 
     # Open video and get properties
     container = cv2.VideoCapture(video_path)
@@ -382,7 +387,7 @@ class customDataset(torch.utils.data.Dataset):
                                                     spatial_shift=self.spatial_shift) # [B,C,H,W]
     else:
       # latent based augm. approaches are applied in _get_element function (at the end of file) 
-      sample_id = csv_array.iloc[4]
+      sample_id = self.video_labels.iloc[idx]['sample_id'] # csv_array.iloc[4]
       h_flip = helper.is_hflip_augmentation(sample_id)
       color_jitter = helper.is_color_jitter_augmentation(sample_id)
       rotation = helper.is_rotation_augmentation(sample_id)
@@ -401,9 +406,9 @@ class customDataset(torch.utils.data.Dataset):
     
     # Create metadata tensors
     time_metadata = time.perf_counter()
-    sample_id = torch.full((nr_clips,), int(csv_array.iloc[4]), dtype=torch.int32)
-    labels = torch.full((nr_clips,), int(csv_array.iloc[2]), dtype=torch.int32)
-    subject_id = torch.full((nr_clips,), int(csv_array.iloc[0]), dtype=torch.int32)
+    sample_id = torch.full((nr_clips,), int(self.video_labels.iloc[idx]['sample_id']), dtype=torch.int32)
+    labels = torch.full((nr_clips,), int(self.video_labels.iloc[idx]['class_id']), dtype=torch.int32)
+    subject_id = torch.full((nr_clips,), int(self.video_labels.iloc[idx]['subject_id']), dtype=torch.int32)
     path = np.repeat(video_path, nr_clips)
     helper.train_time_logs['metadata'] = helper.train_time_logs.get('metadata',0) + (time.perf_counter() - time_metadata)  
     return {
@@ -542,7 +547,8 @@ class customDataset(torch.utils.data.Dataset):
     """
     # Combine preprocessed tensors from all samples
     data = torch.cat([item['preprocess'] for item in batch], dim=0) # [chunks, C, clip_length, H, W]
-
+    if 'vjepa2' in self.model_type.value.lower():
+      data = data.permute(0,2,1,3,4) # [chunks, clip_length, C, H, W]
     # Combine metadata from all samples
     labels = torch.cat([item['labels'] for item in batch], dim=0)
     path = np.concatenate([item['path'] for item in batch])
@@ -604,11 +610,13 @@ class customDataset(torch.utils.data.Dataset):
     Returns:
         list: A list of all sample_id values.
     """
-    csv_array = self.video_labels.to_numpy()
-    list_samples = [entry[0].split("\t") for entry in csv_array]
-    list_samples = np.stack(list_samples)
-    sample_ids = list_samples[:, 4].astype(int)
-    return sample_ids.tolist()
+    
+    # csv_array = self.video_labels.to_numpy()
+    # list_samples = [entry[0].split("\t") for entry in csv_array]
+    # list_samples = np.stack(list_samples)
+    # sample_ids = list_samples[:, 4].astype(int)
+    sample_ids = self.video_labels['sample_id'].tolist()
+    return np.array(sample_ids).astype(int)
   
   def _central_sampling(self, video_len):
     """
@@ -828,7 +836,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
 
 
 class customDatasetWhole(torch.utils.data.Dataset):
-  def __init__(self,csv_path,root_folder_features,concatenate_temporal,concatenate_quadrants,model,smooth_labels,soft_labels,coral_loss, xattn_mask):
+  def __init__(self,csv_path,root_folder_features,concatenate_temporal,concatenate_quadrants,model,smooth_labels,soft_labels,coral_loss, xattn_mask,split_chunks=False):
     self.csv_path = csv_path
     if 'caer' in csv_path.lower():
       print("\n Detected CAER, Change step shift \n")
@@ -850,6 +858,8 @@ class customDatasetWhole(torch.utils.data.Dataset):
     self.instance_model_name = tools.get_instace_model_name(model)
     self.smooth_labels = smooth_labels
     self.num_classes = len(self.get_unique_classes())
+    self.split_chunks = split_chunks
+    
     if soft_labels:
       classes = list(range(self.num_classes))
       distances = {(i, j): abs(i - j) for i in classes for j in classes}
@@ -916,7 +926,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
 
   def _custom_collate(self,batch):
     return _custom_collate(batch,self.instance_model_name,self.concatenate_temporal,self.model,self.num_classes,self.smooth_labels,self.soft_labels,self.coral_loss,self.concatenate_quadrants,
-                           self.xattn_mask)  
+                           self.xattn_mask,self.split_chunks)  
 
   def get_unique_subjects(self):
     return np.sort(self.df['subject_id'].unique().tolist())
@@ -931,74 +941,81 @@ class customDatasetWhole(torch.utils.data.Dataset):
 
 # Alternative version with even more optimizations for large batches
 def highly_optimized_custom_collate(batch, pid, concatenate_temporal=False, smooth_labels=0.0,
-  soft_labels_mat=None, coral_loss=False, num_classes=None,concatenate_quadrants=False, xattn_mask=None):
+  soft_labels_mat=None, coral_loss=False, num_classes=None,concatenate_quadrants=False, split_chunks=False,xattn_mask=None):
   """Highly optimized version using vectorized operations where possible"""
   
   batch_size = len(batch)
   # Try to stack tensors directly if they have the same shape (more efficient)
-  try:
-    # Check if all features have the same shape
-    first_shape = batch[0]['features'].shape
-    # Stack all features at once - much faster
-    # shape_array = torch.tensor([sample['features'].shape for sample in batch])
-    # print(f"Shapes in batch: {shape_array}")
-    all_features = torch.stack([sample['features'] for sample in batch]) # [B,quadrants*nr_chunks,T,S,S,Emb]
-    B, QnC, T, S1, S2, emb = all_features.shape
-    if concatenate_quadrants:
-      # features stacked as [upper_left,upper_left,upper_left,upper_left,
-      #                      upper_right,upper_right,...] # [quadrants * nr_chunks]
-      # So i have to reshape 1D vector [upp_left,upp_left,...,upp_right,...] into 2D matrix [[upp_left,upp_left,...],[upp_right,upp_right,...],[...],...] -> [quadrants, nr_chunks]
-      # from 2D matrix I want to concatenate different quadrants from the same chunk ->So from [quadrants,nr_chunks] to [nr_chunks, quadrants]
-      features = all_features.reshape(B, 4, QnC//4, T, S1, S2, emb).transpose(1,2) # [B,4=quadrants,QnC/4,T,S,S,Emb] -> [B,QnC/4,4,T,S,S,Emb]
-      # concatenate quadrants in channel dimension
-      features = features.permute(0,1,3,4,5,2,6).contiguous()
-      features = features.view(B, (QnC//4)*T*S1*S2, 4*emb).to(torch.float32)
-    elif concatenate_temporal:
-      raise NotImplementedError("concatenate_temporal=True not implemented yet in highly_optimized_custom_collate")
-      # features = all_features.reshape()
-      features = all_features.permute(0,2,3,4,1,5).contiguous().view(
-          batch_size, -1, all_features.shape[-1] * all_features.shape[1]).to(torch.float32)
-    else:
-      features = all_features.view(batch_size, -1, all_features.shape[-1]).to(torch.float32)
-      # lengths = torch.full((batch_size,), features.size(1), dtype=torch.int32)
-    
+  if split_chunks:
+    _, T, _, _, _ = batch[0]['features'].shape
+    features = torch.cat([sample['features'] for sample in batch], dim=0) # [B*quadrants*nr_chunks,T,S,S,Emb]
+    features = features.view(features.shape[0], -1, features.shape[-1]).to(torch.float32)
     lengths = None
-  # else:
-  #     # Fall back to individual processing
-  #     raise ValueError("Shapes don't match")
-      
-  except (ValueError, RuntimeError):
-    # Fall back to the standard approach for variable shapes
-    features = []
-    lengths = []
-
-    for sample in batch:
-      feat = sample['features'] # [quadrants*nr_chunks,T,S,S,Emb]
-      QnC, T, S1, S2, emb = feat.shape
-      if concatenate_temporal:
+    batch_size = features.shape[0]
+  else:
+    try:
+      # Check if all features have the same shape
+      # first_shape = batch[0]['features'].shape
+      # Stack all features at once - much faster
+      # shape_array = torch.tensor([sample['features'].shape for sample in batch])
+      # print(f"Shapes in batch: {shape_array}")
+      features = torch.stack([sample['features'] for sample in batch]) # [B,quadrants*nr_chunks,T,S,S,Emb]
+      B, QnC, T, S1, S2, emb = features.shape
+      if concatenate_quadrants:
+        # features stacked as [upper_left,upper_left,upper_left,upper_left,
+        #                      upper_right,upper_right,...] # [quadrants * nr_chunks]
+        # So i have to reshape 1D vector [upp_left,upp_left,...,upp_right,...] into 2D matrix [[upp_left,upp_left,...],[upp_right,upp_right,...],[...],...] -> [quadrants, nr_chunks]
+        # from 2D matrix I want to concatenate different quadrants from the same chunk ->So from [quadrants,nr_chunks] to [nr_chunks, quadrants]
+        features = features.reshape(B, 4, QnC//4, T, S1, S2, emb).transpose(1,2) # [B,4=quadrants,QnC/4,T,S,S,Emb] -> [B,QnC/4,4,T,S,S,Emb]
+        # concatenate quadrants in channel dimension
+        features = features.permute(0,1,3,4,5,2,6).contiguous()
+        features = features.view(batch_size, (QnC//4)*T*S1*S2, 4*emb).to(torch.float32)
+      elif concatenate_temporal:
         raise NotImplementedError("concatenate_temporal=True not implemented yet in highly_optimized_custom_collate")
-        processed_feat = feat.permute(0,2,3,4,1).contiguous().view(
-          -1, feat.shape[-1] * feat.shape[1]).to(torch.float32)
-      elif concatenate_quadrants:
-        processed_feat = feat.view(4, QnC//4, T, S1, S2, emb).transpose(0,1) # [4=quadrants,QnC/4,T,S,S,Emb] -> [QnC/4,4,T,S,S,Emb]
-        processed_feat = processed_feat.permute(0,2,3,4,1,5).contiguous().view(
-          QnC//4*T*S1*S2,4*emb).to(torch.float32)
+        # features = all_features.reshape()
+        features = all_features.permute(0,2,3,4,1,5).contiguous().view(
+            batch_size, -1, all_features.shape[-1] * all_features.shape[1]).to(torch.float32)
       else:
-        processed_feat = feat.view(-1, feat.shape[-1]).to(torch.float32)
-      # if not concatenate_temporal:
-      #   processed_feat = feat.view(-1, feat.shape[-1]).to(torch.float32)
-      # else:
-      #   processed_feat = feat.permute(0,2,3,1,4).contiguous().view(
-      #     -1, feat.shape[-1] * feat.shape[-2]).to(torch.float32)
+        features = features.view(batch_size, -1, features.shape[-1]).to(torch.float32)
+        # lengths = torch.full((batch_size,), features.size(1), dtype=torch.int32)
       
-      features.append(processed_feat)
-      lengths.append(processed_feat.size(0))
-    
-    with profile_workers(f'{pid}_pad_sequence_time',helper.time_profiling_enabled,helper.time_profile_dict):
-      features = torch.nn.utils.rnn.pad_sequence(features, batch_first=True)
-      lengths = torch.tensor(lengths, dtype=torch.int32)
+      lengths = None
+    # else:
+    #     # Fall back to individual processing
+    #     raise ValueError("Shapes don't match")
+        
+    except (ValueError, RuntimeError):
+      # Fall back to the standard approach for variable shapes
+      features = []
+      lengths = []
+
+      for sample in batch:
+        feat = sample['features'] # [quadrants*nr_chunks,T,S,S,Emb]
+        QnC, T, S1, S2, emb = feat.shape
+        if concatenate_temporal:
+          raise NotImplementedError("concatenate_temporal=True not implemented yet in highly_optimized_custom_collate")
+          processed_feat = feat.permute(0,2,3,4,1).contiguous().view(
+            -1, feat.shape[-1] * feat.shape[1]).to(torch.float32)
+        elif concatenate_quadrants:
+          processed_feat = feat.view(4, QnC//4, T, S1, S2, emb).transpose(0,1) # [4=quadrants,QnC/4,T,S,S,Emb] -> [QnC/4,4,T,S,S,Emb]
+          processed_feat = processed_feat.permute(0,2,3,4,1,5).contiguous().view(
+            QnC//4*T*S1*S2,4*emb).to(torch.float32)
+        else:
+          processed_feat = feat.view(-1, feat.shape[-1]).to(torch.float32)
+        # if not concatenate_temporal:
+        #   processed_feat = feat.view(-1, feat.shape[-1]).to(torch.float32)
+        # else:
+        #   processed_feat = feat.permute(0,2,3,1,4).contiguous().view(
+        #     -1, feat.shape[-1] * feat.shape[-2]).to(torch.float32)
+        
+        features.append(processed_feat)
+        lengths.append(processed_feat.size(0))
       
-    helper.time_profile_dict[f'{pid}_pad_sequence_calls'] = helper.time_profile_dict.get(f'{pid}_pad_sequence_calls', 0) + 1
+      with profile_workers(f'{pid}_pad_sequence_time',helper.time_profiling_enabled,helper.time_profile_dict):
+        features = torch.nn.utils.rnn.pad_sequence(features, batch_first=True)
+        lengths = torch.tensor(lengths, dtype=torch.int32)
+        
+      helper.time_profile_dict[f'{pid}_pad_sequence_calls'] = helper.time_profile_dict.get(f'{pid}_pad_sequence_calls', 0) + 1
   
   # Build key_padding_mask for attention
   max_len = features.size(1)
@@ -1014,20 +1031,29 @@ def highly_optimized_custom_collate(batch, pid, concatenate_temporal=False, smoo
   # Apply xattn_mask if provided (shape [S, S])
   with profile_workers(f'{pid}_xattn_mask_time',helper.time_profiling_enabled,helper.time_profile_dict):
     if xattn_mask is not None and not concatenate_quadrants:
-      nr_chunks = max_len // (T*S1*S2)
+      nr_chunks = max_len // (T*S1*S2) if not split_chunks else 1
       if key_padding_mask is not None:
         tmp = xattn_mask.unsqueeze(0).unsqueeze(0).unsqueeze(0).repeat(key_padding_mask.shape[0],nr_chunks,T,1,1) # [B,nr_chunks,T,S,S]
         tmp = tmp.reshape(tmp.shape[0],-1).unsqueeze(1).unsqueeze(1) # [B,1,1,nr_chunks*T*S*S]
         key_padding_mask = key_padding_mask & tmp
       else:
         key_padding_mask = xattn_mask.unsqueeze(0).unsqueeze(0).unsqueeze(0).repeat(batch_size,nr_chunks,T,1,1) # [B,nr_chunks,T,S,S]
-        key_padding_mask = key_padding_mask.reshape(key_padding_mask.shape[0],-1) # [B,nr_chunks*T*S*S]
+        if split_chunks:
+          key_padding_mask = key_padding_mask.reshape(key_padding_mask.shape[0]*key_padding_mask.shape[1],-1) # [B*nr_chunks,T*S*S]
+        else:
+          key_padding_mask = key_padding_mask.reshape(key_padding_mask.shape[0],-1) # [B,nr_chunks*T*S*S]
+        key_padding_mask = key_padding_mask.unsqueeze(1).unsqueeze(1) # [B,1,1,nr_chunks*T*S*S]
 
   # Vectorized extraction of labels, subject_ids, and sample_ids
   labels = torch.tensor([sample['labels'][0] for sample in batch], dtype=torch.int32)
   subject_id = torch.tensor([sample['subject_id'][0] for sample in batch], dtype=torch.int32)
   sample_id = torch.tensor([sample['sample_id'] for sample in batch], dtype=torch.int32)
   
+  if split_chunks:
+    repeats = torch.tensor([sample['features'].shape[0] for sample in batch], dtype=torch.int32)
+    subject_id = torch.repeat_interleave(subject_id, repeats=repeats, dim=0)
+    sample_id = torch.repeat_interleave(sample_id, repeats=repeats, dim=0)
+    labels = torch.repeat_interleave(labels, repeats=repeats, dim=0)
   # Handle label transformations (same as before)
   if smooth_labels > 0.0:
     labels = smooth_labels_batch(gt_classes=labels, num_classes=num_classes,
@@ -1048,7 +1074,7 @@ def highly_optimized_custom_collate(batch, pid, concatenate_temporal=False, smoo
   }
 
 
-def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_classes,smooth_labels, soft_labels_mat,coral_loss,concatenate_quadrants,xattn_mask=None):
+def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_classes,smooth_labels, soft_labels_mat,coral_loss,concatenate_quadrants,xattn_mask=None,split_chunks=False):
   # Pre-flatten features: reshape each sample to (sequence_length, emb_dim)
   pid = os.getpid()
   # if pid not in helper.time_profile_dict:
@@ -1063,6 +1089,7 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_cla
                                                 smooth_labels=smooth_labels,
                                                 soft_labels_mat=soft_labels_mat,
                                                 coral_loss=coral_loss,
+                                                split_chunks=split_chunks,
                                                 concatenate_quadrants=concatenate_quadrants,
                                                 xattn_mask=xattn_mask,
                                                 num_classes=num_classes)
@@ -1102,7 +1129,8 @@ class customBatchSampler(BatchSampler):
       csv_array,_ = tools.get_array_from_csv(path_cvs_dataset)
     else:
       csv_array = df.to_numpy()
-    self.y_labels = np.array(csv_array[:,2]).astype(int)
+    # self.y_labels = np.array(csv_array[:,2]).astype(int)
+    self.y_labels = df['class_id'].to_numpy().astype(int) if df is not None else np.array(csv_array[:,2]).astype(int)
     self.n_batch_size = batch_size
     self.random_state = random_state
     self.shuffle = shuffle
@@ -1162,7 +1190,7 @@ def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: f
 
  
 def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_training_batch,is_training,dataset_type,concatenate_temporal,model,
-                           label_smooth,soft_labels,is_coral_loss,stride_inside_window=1,num_clips_per_video=1,sample_frame_strategy=None,n_workers=None,backbone_dict=None,prefetch_factor=None,**kwargs):
+                           label_smooth,soft_labels,is_coral_loss,stride_inside_window=1,num_clips_per_video=1,sample_frame_strategy=None,n_workers=None,backbone_dict=None,split_chunks=False,prefetch_factor=None,**kwargs):
   if dataset_type.value == CUSTOM_DATASET_TYPE.WHOLE.value:
     dataset_ = customDatasetWhole(csv_path,root_folder_features=root_folder_features,
                                   concatenate_temporal=concatenate_temporal,
@@ -1170,11 +1198,12 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                   concatenate_quadrants=kwargs['concatenate_quadrants'],
                                   soft_labels=soft_labels,
                                   xattn_mask=kwargs['xattn_mask'],
+                                  split_chunks=split_chunks,
                                   coral_loss=is_coral_loss)
-    if 'caer' in csv_path.lower() and 'combined' in root_folder_features.lower():
+    if 'caer' in csv_path.lower() or 'combined' in root_folder_features.lower():
       pin_memory = False
     else:
-      pin_memory = True
+      pin_memory = False
     persistent_workers = True
     prefetch_factor = 2 if prefetch_factor is None else prefetch_factor
   elif dataset_type.value == CUSTOM_DATASET_TYPE.AGGREGATED.value:
@@ -1289,7 +1318,7 @@ def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,is_quadrant=F
     
   with profile_workers(f'{pid}_selection_time',helper.time_profiling_enabled,helper.time_profile_dict):
     if dataset_type != CUSTOM_DATASET_TYPE.AGGREGATED:
-      features = dict_data['features']
+      features = dict_data['features'] # shape [nr_chunks,T,S,S,Emb] 
       labels = csv_label.repeat(features.shape[0])
       subject_id = subject_id.repeat(labels.shape[0])
       # subject_id = dict_data['list_subject_id'] # used the one from csv because in CAER is different from the data extracted previously
@@ -1320,7 +1349,7 @@ def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,is_quadrant=F
   ##################################
     
   return {
-      'features': features,     # [8,8,1,1,768]-> [seq_len,Temporal,Space,Space,Emb]
+      'features': features,     # [8,8,1,1,768]-> [chunks,Temporal,Space,Space,Emb]
       'labels': labels,         # [8]
       'subject_id': subject_id, # [8]
       'sample_id': sample_id    # int
