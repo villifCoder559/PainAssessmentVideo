@@ -18,6 +18,7 @@ import pickle
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 import os
 import random
+import custom.loss as losses
 # import wandb
 def check_intersection_splits(k_fold,subject_ids,list_splits_idxs):
   for i in range(k_fold):
@@ -145,6 +146,15 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
   if val_idx_split is not None: # If validation split is needed, add it to the sub-folds
     sub_k_fold_list.append(list_splits_idxs[val_idx_split])
   
+  fast_train = False
+  if stop_after_kth_fold[0] == 1 and stop_after_kth_fold[1] == 1:
+    kwargs['return_best_model_state'] = True
+    kwargs['skip_all_train'] = True
+    fast_train = True
+  else:
+    kwargs['return_best_model_state'] = False
+  
+  kwargs['all_fold_train'] = False
   # Train sub-fold models
   # AUGMENTAION: val and test csv will be filtered in function get_dataset_and_loader (dataset.py)  
   fold_results_kth = train_subfold_models(
@@ -153,21 +163,78 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
     concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
     init_network, regularization_lambda_L1,
     key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state,
-    clip_grad_norm,stop_after_kth_fold,path_csv_kth_fold['test'],regularization_lambda_L2,
+    clip_grad_norm,stop_after_kth_fold,regularization_lambda_L2,
     trial,validate,**kwargs
   )
+  all_best_epochs = [fold_results_kth[f'k{fold_idx}_cross_val_sub_{i}']['train']['dict_results']['best_model_idx'] for i in range(len(fold_results_kth))]
+  epochs = np.mean(all_best_epochs)
+  epochs = max(int(epochs + epochs * 0.1), 2) # add 10% more epochs
+  if kwargs['return_best_model_state']:
+    state_dict = fold_results_kth[f'k{fold_idx}_cross_val_sub_0']['train']['dict_results']['best_model_state']
     
+  if not kwargs.get('skip_all_train',False):
+    kwargs['return_best_model_state'] = True
+    kwargs['all_fold_train'] = True
+    
+    all_results = train_subfold_models(
+        validate=False,
+        fold_idx=fold_idx,
+        k_fold=k_fold,
+        sub_k_fold_list=sub_k_fold_list,
+        csv_array=csv_array,
+        cols=cols,
+        sample_ids=sample_ids,
+        saving_path_kth_fold=saving_path_kth_fold,
+        model_advanced=model_advanced,
+        lr=lr,
+        epochs=epochs,
+        optimizer_fn=optimizer_fn,
+        concatenate_temp_dim=concatenate_temp_dim,
+        criterion=criterion,
+        round_output_loss=round_output_loss,
+        shuffle_training_batch=shuffle_training_batch,
+        init_network=init_network,
+        regularization_lambda_L1=regularization_lambda_L1,
+        key_for_early_stopping=key_for_early_stopping,
+        early_stopping=early_stopping,
+        enable_scheduler=enable_scheduler,
+        seed_random_state=seed_random_state,
+        clip_grad_norm=clip_grad_norm,
+        stop_after_kth_fold=stop_after_kth_fold,
+        regularization_lambda_L2=regularization_lambda_L2,
+        trial=trial,
+        **kwargs
+      )
+    state_dict = all_results[f'k{fold_idx}_cross_val_final']['train']['dict_results']['best_model_state']
+  if kwargs.get('skip_test',False):
+    dict_test = {}
+  else:
+    dict_test = test_model(
+      model_advanced=model_advanced,
+      state_dict=state_dict,
+      path_model_weights=None, 
+      test_csv_path=path_csv_kth_fold['test'],
+      criterion=criterion,
+      concatenate_temporal=concatenate_temp_dim,
+      **kwargs)
   fold_results ={'fold_results':{}}
   # Add sub-fold results
+  is_resupcon_loss = isinstance(criterion, losses.RESupConLoss)
   for sub_idx in range(k_fold - 1):
     if sub_idx < len(fold_results_kth):
-      reduced_dict = reduce_logs_for_subfold(fold_results_kth[f'k{fold_idx}_cross_val_sub_{sub_idx}']['train'])
+      reduced_dict = reduce_logs_for_subfold(fold_results_kth[f'k{fold_idx}_cross_val_sub_{sub_idx}']['train'], skip_reduction=is_resupcon_loss)
       if f'k{fold_idx}_cross_val_sub_{sub_idx}' not in fold_results['fold_results']:
         fold_results['fold_results'][f'k{fold_idx}_cross_val_sub_{sub_idx}'] = {}
       fold_results['fold_results'][f'k{fold_idx}_cross_val_sub_{sub_idx}']['train_val'] = reduced_dict
-      fold_results['fold_results'][f'k{fold_idx}_cross_val_sub_{sub_idx}']['test'] = fold_results_kth[f'k{fold_idx}_cross_val_sub_{sub_idx}']['test']
+      if fast_train:
+        fold_results['fold_results'][f'k{fold_idx}_cross_val_sub_{sub_idx}']['test'] = dict_test
     else:
       break
+  if not kwargs.get('skip_test',False) and not kwargs.get('skip_all_train',False):
+    fold_results['fold_results'][f'k{fold_idx}_cross_val_final']={'test':dict_test, 
+                                                                  'train_val':reduce_logs_for_subfold(all_results[f'k{fold_idx}_cross_val_final']['train'], skip_reduction=is_resupcon_loss)}
+  
+  
     
   return fold_results
 
@@ -213,7 +280,7 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
                       concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
                       init_network, regularization_lambda_L1,
                       key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state,clip_grad_norm,
-                      stop_after_kth_fold,test_csv_path,regularization_lambda_L2,trial,validate,**kwargs):
+                      stop_after_kth_fold, regularization_lambda_L2, trial, validate, **kwargs):
   """Train models on sub-folds"""
   if not isinstance(model_advanced, Model_Advanced):
     raise ValueError('model_advanced must be an instance of Model_Advanced')
@@ -221,7 +288,10 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
   
   for sub_idx in range(k_fold - 1):
     # Create subfold directory
-    saving_path_kth_sub_fold = os.path.join(saving_path_kth_fold, f'k{fold_idx}_cross_val_sub_{sub_idx}')
+    if not kwargs['all_fold_train']:
+      saving_path_kth_sub_fold = os.path.join(saving_path_kth_fold, f'k{fold_idx}_cross_val_sub_{sub_idx}')
+    else:
+      saving_path_kth_sub_fold = os.path.join(saving_path_kth_fold, f'k{fold_idx}_cross_val_final')
     os.makedirs(saving_path_kth_sub_fold, exist_ok=True)
     
     # Generate train/val split for this subfold
@@ -254,20 +324,28 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
       enable_optuna_pruning = True if fold_idx == 0 and sub_idx == 0 else False,
       **kwargs
     )
-    dict_test = test_model(
-      model_advanced=model_advanced,
-      path_model_weights=None, 
-      test_csv_path=test_csv_path,
-      state_dict=dict_train['dict_results']['best_model_state'],
-      criterion=criterion, concatenate_temporal=concatenate_temp_dim,
-      **kwargs)
+    # dict_test = test_model(
+    #   model_advanced=model_advanced,
+    #   path_model_weights=None, 
+    #   test_csv_path=test_csv_path,
+    #   state_dict=dict_train['dict_results']['best_model_state'],
+    #   criterion=criterion, concatenate_temporal=concatenate_temp_dim,
+    #   **kwargs)
     # Remove unnecessary data to save space
-    dict_train['dict_results']['best_model_state'] = None
+    if not kwargs['return_best_model_state']:
+      dict_train['dict_results']['best_model_state'] = None
     
-    fold_results_kth[f'k{fold_idx}_cross_val_sub_{sub_idx}']={'train':dict_train,'test':dict_test}
+    if not kwargs['all_fold_train']:
+      fold_results_kth[f'k{fold_idx}_cross_val_sub_{sub_idx}']={'train':dict_train,
+                                                                # 'test':dict_test
+                                                                }
+    else:
+      fold_results_kth[f'k{fold_idx}_cross_val_final']={'train':dict_train,
+                                                                # 'test':dict_test
+                                                                }
     
     # Stop to make the tests faster
-    if stop_after_kth_fold is not None and sub_idx == stop_after_kth_fold[1] - 1:
+    if (kwargs['all_fold_train']) or (stop_after_kth_fold is not None and sub_idx == stop_after_kth_fold[1] - 1):
       break
   
   return fold_results_kth
@@ -375,30 +453,34 @@ def test_model(model_advanced, path_model_weights, test_csv_path,
   
   return dict_test
 
-def reduce_logs_for_subfold(dict_train):
+def reduce_logs_for_subfold(dict_train, skip_reduction=False):
   """Reduce logs to save space, keeping only results every count_epochs//10 and the best model epoch"""
   list_to_reduce_for_logs = [
     'train_confusion_matricies', 'val_confusion_matricies'
   ]
   
-  count_epochs = dict_train['dict_results']['epochs']
+  count_epochs = dict_train['dict_results']['epochs'] +1
   best_model_idx = dict_train['dict_results']['best_model_idx']
   reduced_dict_train = {}
   
   # At least 12 logs are saved for each epoch
   target_nr_matricies = count_epochs//10 if count_epochs > 10 else 1
+  reduced_dict_train = dict_train
   for key, v in dict_train['dict_results'].items():
     if key != 'best_model_state':
       if key in list_to_reduce_for_logs:
         # Keep results every target_nr_matricies epochs
-        reduced_dict_train[key] = {f'{epoch}': v[epoch] for epoch in range(0, count_epochs, target_nr_matricies)}
-        if count_epochs - 1 not in reduced_dict_train[key]:
-          reduced_dict_train[key].update({f'{count_epochs - 1}': v[count_epochs - 1]})
-        # Also keep the best model epoch if not already included
-        if best_model_idx % target_nr_matricies != 0:
-          reduced_dict_train[key].update({f'{best_model_idx}': v[best_model_idx]})
+        if not skip_reduction:
+          reduced_dict_train[key] = {f'{epoch}': v[epoch] for epoch in range(0, count_epochs, target_nr_matricies)}
+          if str(count_epochs - 1) not in reduced_dict_train[key].keys():
+            reduced_dict_train[key].update({f'{count_epochs - 1}': v[count_epochs - 1]})
+          
+          # Also keep the best model epoch if not already included
+          if best_model_idx % target_nr_matricies != 0:
+            reduced_dict_train[key].update({f'{best_model_idx}': v[best_model_idx]})
       else:
         reduced_dict_train[key] = v
+    
   # save only the last matrix
   return reduced_dict_train
 
