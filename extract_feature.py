@@ -86,6 +86,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
         print(f'extracting features from {path[0]}')
         data = data.to(device)
         with torch.no_grad():
+          
           feature = backbone.forward_features(x=data) # [1,8,14,14,768]
         if isinstance(backbone,VideoBackbone) and pooling_embedding_reduction != EMBEDDING_REDUCTION.NONE:
           if adaptive_avg_pool3d_out_shape is not None and pooling_embedding_reduction == EMBEDDING_REDUCTION.ADAPTIVE_POOLING_3D:
@@ -230,6 +231,9 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
                 image_resize_h=backbone_model.img_size,
                 stride_window=stride_window,
                 clip_length=clip_length,
+                model_type=model_type,
+                # image_resize_w=image_resize,
+                # image_resize_h=image_resize,
                 video_labels=video_labels,
                 h_flip=dict_augmentation['h_flip'],
                 color_jitter=dict_augmentation['color_jitter'],
@@ -310,7 +314,7 @@ if __name__ == "__main__":
   parser.add_argument('--from_', type=int, default=None, help='START idx (included) extracting features from (--path_labels) row. Start from 0')
   parser.add_argument('--to_', type=int, default=None, help='STOP idx (excluded) extracting features from (--path_labels) row')
   parser.add_argument('--path_dataset', type=str, default=os.path.join('partA','video','video'), help='Path to dataset')
-  parser.add_argument('--path_labels', type=str, default=os.path.join('partA','starting_point','samples_exc_no_detection.csv'), help='Path to csv file')
+  parser.add_argument('--path_labels', type=str, default=os.path.join('partA','starting_point','samples.csv'), help='Path to csv file')
   parser.add_argument('--saving_folder_path', type=str, default=os.path.join('partA','video','features',f'samples_16_{timestamp}'), help='Path to saving folder')
   parser.add_argument('--log_file_path', type=str, default=None, help='Path to log file')
   parser.add_argument('--backbone_type', type=str, default='video', help='Type of backbone. Can be video or image')
@@ -320,6 +324,7 @@ if __name__ == "__main__":
   parser.add_argument('--stride_window', type=int, default=16, help='Stride window')
   parser.add_argument('--stride_inside_window', type=int, default=1, help='Stride inside window')
   parser.add_argument('--clip_length', type=int, default=16, help='Clip length')
+  # parser.add_argument('--image_resize', type=int, default=None, help='Image resize for backbone')
   parser.add_argument('--h_flip', action='store_true', help='Apply Horizontal flip')
   parser.add_argument('--shift_frame_idx', type=int, default=0, help='Shift frame index to change the last frame sampled')
   parser.add_argument('--color_jitter', action='store_true', help='Apply color jitter')
@@ -395,6 +400,7 @@ if __name__ == "__main__":
        backbone_model_path=args.backbone_model_path,
        quadrant=args.quadrant,
        shift_frame_idx=args.shift_frame_idx,
+      #  image_resize=args.image_resize,
       #  **dict_args
        )
   
