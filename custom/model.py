@@ -43,6 +43,7 @@ class Model_Advanced: # Scenario_Advanced
     
     self.dataset = customDataset(path_dataset=path_dataset, 
                                  path_labels=path_labels, 
+                                 model_type=model_type,
                                  num_clips_per_video=num_clips_per_video,
                                  sample_frame_strategy=sample_frame_strategy, 
                                  stride_window=stride_window, 
@@ -126,6 +127,7 @@ class Model_Advanced: # Scenario_Advanced
                                           attn_dropout=head_params['attn_dropout'],
                                           residual_dropout=head_params['residual_dropout'],
                                           mlp_ratio=head_params['mlp_ratio'],
+                                          remove_head=head_params['remove_head'] if 'remove_head' in head_params else False,
                                           pos_enc=head_params['pos_enc'],
                                           custom_mlp=head_params['custom_mlp'],
                                           grid_size_pos=T_S_S_shape, # [T, S, S]
@@ -295,33 +297,39 @@ class Model_Advanced: # Scenario_Advanced
     except AttributeError:
       is_coral_loss = False
       print('No coral loss. Using standard loss function.')
+    args_get_dataset = {
+      'csv_path': csv_path,
+      'batch_size': self.batch_size_training,
+      'dataset_type': self.dataset_type,
+      'is_training': False,
+      'num_clips_per_video': self.dataset.num_clips_per_video,
+      'sample_frame_strategy': self.dataset.type_sample_frame_strategy,
+      'root_folder_features': self.path_to_extracted_features,
+      'concatenate_temporal': concatenate_temporal,
+      'shuffle_training_batch': False,
+      'backbone_dict': self.backbone_dict,
+      'stride_inside_window': self.dataset.stride_inside_window,
+      'model': self.head,
+      'is_coral_loss': is_coral_loss,
+      'soft_labels': self.soft_labels,
+      'prefetch_factor': self.prefetch_factor,
+      'label_smooth': self.label_smooth,
+      'n_workers': self.n_workers,
+    }
+    wargs = {k:v for k,v in kwargs.items() if k not in args_get_dataset.keys()}
     
-    test_dataset, test_loader = get_dataset_and_loader(csv_path=csv_path,
-                                                        batch_size=self.batch_size_training,
-                                                        concatenate_temporal=concatenate_temporal,
-                                                        dataset_type=self.dataset_type,
-                                                        is_training=False,
-                                                        num_clips_per_video=self.dataset.num_clips_per_video,
-                                                        sample_frame_strategy=self.dataset.type_sample_frame_strategy,
-                                                        root_folder_features=self.path_to_extracted_features,
-                                                        shuffle_training_batch=False,
-                                                        backbone_dict=self.backbone_dict,
-                                                        stride_inside_window=self.dataset.stride_inside_window,
-                                                        model=self.head,
-                                                        is_coral_loss=is_coral_loss,
-                                                        soft_labels=self.soft_labels,
-                                                        prefetch_factor=self.prefetch_factor,
-                                                        label_smooth=self.label_smooth,
-                                                        n_workers=self.n_workers,
-                                                        **kwargs
+    test_dataset, test_loader = get_dataset_and_loader(**args_get_dataset,
+                                                        **wargs
                                                         )
     unique_test_subjects = torch.tensor(test_dataset.get_unique_subjects())
     unique_classes = torch.tensor(test_dataset.get_unique_classes())
     
     # LOG HISTORY SAMPLE -> check is is possible to use npint
+
     if helper.LOG_HISTORY_SAMPLE and torch.min(unique_classes)>=0 and torch.max(unique_classes)<=255:
-      list_test_sample = test_dataset.get_all_sample_ids()
-      history_test_sample_predictions = {id: torch.zeros(1) for id in list_test_sample}
+      # list_test_sample = test_dataset.get_all_sample_ids()
+      # history_test_sample_predictions = {id: torch.zeros(1) for id in list_test_sample}
+      history_test_sample_predictions = {}
     else:
       history_test_sample_predictions = None
     
@@ -331,7 +339,17 @@ class Model_Advanced: # Scenario_Advanced
     except AttributeError:
       is_coral_loss = False
       print('No coral loss. Using standard loss function.')
-    
+    evaluate_args = {
+      'val_loader': test_loader,
+      'criterion': criterion,
+      'unique_val_subjects': unique_test_subjects,
+      'unique_val_classes': unique_classes,
+      'is_test': is_test,
+      'is_coral_loss': is_coral_loss,
+      'epoch': 0, # to get the right position for history_test_sample_predictions
+      'history_val_sample_predictions': history_test_sample_predictions,
+    }
+    wargs = {k:v for k,v in kwargs.items() if k not in evaluate_args.keys()}
     dict_test = self.head.evaluate(val_loader=test_loader, 
                                    criterion=criterion,
                                    unique_val_subjects=unique_test_subjects,
@@ -340,7 +358,7 @@ class Model_Advanced: # Scenario_Advanced
                                    is_coral_loss=is_coral_loss,
                                    epoch=0, # to get the right position for history_test_sample_predictions
                                    history_val_sample_predictions=history_test_sample_predictions,
-                                   **kwargs)
+                                   **wargs)
     
     dict_test['history_test_sample_predictions'] = history_test_sample_predictions
     dict_test['test_unique_subject_ids'] = unique_test_subjects.numpy()
