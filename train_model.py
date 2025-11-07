@@ -357,12 +357,13 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'latent_masking': latent_masking,
       'shift': shift_augm,
     }
-  
+  stratified_training = kwargs['stratified_training']
   add_kwargs={
     'add_CCC_loss': add_CCC_loss,
     'CCC_loss': losses.CCCLoss() if add_CCC_loss > 0 else None,
     'concatenate_quadrants': concatenate_quadrants,
     'xattn_mask': xattn_mask,
+    'stratified_training': stratified_training,
     'is_subject_independent': kwargs['is_subject_independent'],
   }
     
@@ -555,6 +556,8 @@ if __name__ == '__main__':
   parser.add_argument('--contrastive_loss_temp', type=float, nargs='*', default=[0.07], help='Temperature for contrastive loss. Default is 0.07')
   parser.add_argument('--contrastive_loss_theta', type=float, nargs='*', default=[1.1], help='Theta for contrastive loss. Distance between classes for positive pairs. Default is 1.1')
   parser.add_argument('--contrastive_lambda_weight', type=float, nargs='*', default=[4.0], help='Lambda weight for contrastive loss. Default is 4.0')
+  parser.add_argument('--stratified_training', type=int, choices=[0,1], default=0, help='Use stratified sampling for training batches. Default is 0 (False). Only for UNBC-McMaster dataset')
+  
   # Attention parameters
   parser.add_argument('--num_heads', type=int, nargs='*',default=[8], help='Number of heads for attention in transformer (when nr_blocks >1). Default is 8')
   parser.add_argument('--num_cross_head',type=int, nargs='*',default=[8], help='Number of heads for cross-attention.')
