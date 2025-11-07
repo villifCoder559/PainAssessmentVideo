@@ -1,3 +1,4 @@
+from sklearn.utils import resample
 import torch
 from custom.backbone import VideoBackbone, VitImageBackbone
 from custom.dataset import customDataset
@@ -96,6 +97,7 @@ class Model_Advanced: # Scenario_Advanced
       else:
         use_sdpa = False
         print('SDPA not available. Using standard attention.')
+        
       if self.dataset_type == CUSTOM_DATASET_TYPE.AGGREGATED:
         T_S_S_shape = np.array(helper.dict_data['features'][0].shape[:3])
         if embedding_reduction.value is not None:
@@ -118,6 +120,9 @@ class Model_Advanced: # Scenario_Advanced
       print(f"Shape of T_S_S_shape: {T_S_S_shape}\n")
       print(f'\n num_heads: {head_params["num_heads"]},\n num_cross_heads: {head_params["num_cross_heads"]}\n')
       self.T_S_S_shape = T_S_S_shape
+      # check if head_params['head_init_path'] is a folder or .pt/.safetensors file
+      
+      self.head_init_path = head_params['head_init_path'] if 'head_init_path' in head_params else None
       self.head = AttentiveHeadJEPA(embed_dim=head_params['input_dim'],
                                           num_classes=head_params['num_classes'],
                                           num_heads=head_params['num_heads'],
@@ -180,8 +185,8 @@ class Model_Advanced: # Scenario_Advanced
     
     # Concatenate all the data
     for k,v in dict_data_original.items():
-      if isinstance(v[0], np.ndarray):
-        dict_data_original[k] = np.concatenate(v, axis=0)
+      # if isinstance(v[0], np.ndarray):
+      #   dict_data_original[k] = np.concatenate(v, axis=0)
       if isinstance(v[0], torch.Tensor):
         dict_data_original[k] = torch.concat(v, dim=0)
 
@@ -373,7 +378,36 @@ class Model_Advanced: # Scenario_Advanced
     # self.head.model.to('cpu')
     self.backbone.model.to('cpu')
     torch.cuda.empty_cache()
+  
+  def train_stratification_(self, csv_path):
+
+    df = pd.read_csv(csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
     
+    # double last 3 minority classes
+    count = df['class_id'].value_counts().nsmallest(3)
+    
+    minority_classes = count.index.tolist()
+    df_minority = df[df['class_id'].isin(minority_classes)]
+    
+    # --- 2. Oversample to balance bins ---
+    balanced_frames = []
+
+    count_class_id = df['class_id'].value_counts()
+    for class_id in df_minority['class_id'].unique():
+      subset = df[df['class_id'] == class_id]
+      subset_bal = resample(subset,
+                            replace=True,         # sample with replacement
+                            n_samples=int(count_class_id[class_id]) * 2,  # to double the samples
+                            random_state=2)
+      balanced_frames.append(subset_bal)
+
+    df_balanced = pd.concat(balanced_frames)
+    df_final = pd.concat([df[~df['class_id'].isin(minority_classes)], df_balanced]).reset_index(drop=True)
+    df_final.to_csv(csv_path, index=False, sep='\t')
+    df.to_csv(os.path.basename(csv_path).replace('.csv','_original.csv'), index=False, sep='\t')
+    print(f"Original class distribution:\n{df['class_id'].value_counts().sort_index()}")
+    print(f"Stratification completed. New class distribution:\n{df_final['class_id'].value_counts().sort_index()}")
+  
   def train(self, train_csv_path, val_csv_path, num_epochs, criterion,
             optimizer_fn, lr,saving_path,round_output_loss,
             shuffle_training_batch,init_network,
@@ -381,42 +415,16 @@ class Model_Advanced: # Scenario_Advanced
             enable_scheduler,concatenate_temporal,clip_grad_norm,regularization_lambda_L2,
             enable_optuna_pruning=False,trial=None,**kwargs
             ):
-    """
-    Train the model using the specified training and testing datasets.
-    Parameters:
-      train_csv_path (str): Path to the CSV file containing the training data.
-      test_csv_path (str): Path to the CSV file containing the testing data.
-      num_epochs (int, optional): Number of epochs for training. Default is 10.
-      batch_size (int, optional): Batch size for training. Default is 1.
-      criterion (torch.nn.Module, optional): Loss function to be used. Default is nn.L1Loss().
-      optimizer_fn (torch.optim.Optimizer, optional): Optimizer function to be used. Default is optim.Adam.
-      lr (float, optional): Learning rate for the optimizer. Default is 0.0001.
-      saving_path (str, optional): Path to save the trained model. Default is None.
-      init_weights (bool, optional): Flag to initialize the weights. Default is True.
-    Returns:
-      dict: A dictionary containing the results of the training process, including:
-      - 'dict_results': {
-                      - 'train_losses': List of training losses.
-                      - 'train_loss_per_class': Training loss per class, reshaped to (1, -1).
-                      - 'train_loss_per_subject': Training loss per subject, reshaped to (1, -1).
-                      - 'test_losses': List of test losses.
-                      - 'test_loss_per_class': Test loss per class, reshaped to (1, -1).
-                      - 'test_loss_per_subject': Test loss per subject, reshaped to (1, -1).
-                      - 'subject_ids_unique': Unique subject IDs in the combined training and test subject IDs.
-                      - 'y_unique': Unique classes in the combined training and test labels.
-                      - 'best_model_idx': best_model_epoch
-                      }
-      - 'count_y_train': Count of unique classes in the training set.
-      - 'count_y_test': Count of unique classes in the testing set.
-      - 'count_subject_ids_train': Count of unique subject IDs in the training set.
-      - 'count_subject_ids_test': Count of unique subject IDs in the testing set.
-    """
+
         # CHeck if the criterion is coral_loss
     try:
       is_coral_loss = True if criterion.__name__ == 'coral_loss' else False
     except AttributeError:
       is_coral_loss = False
       print('No coral loss. Using standard loss function.')
+    
+    if 'unbc' in train_csv_path.lower() and kwargs.get('stratified_training', False):
+      self.train_stratification_(train_csv_path)
       
     dict_results = self.head.start_train(batch_size=self.batch_size_training,
                                           criterion=criterion,
