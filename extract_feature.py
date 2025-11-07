@@ -116,9 +116,9 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
       elif dict_augmentation['color_jitter']:
         list_sample_id.append(sample_id+helper.get_shift_for_sample_id('jitter'))
       elif dict_augmentation['rotation']:
-        list_sample_id.append(sample_id+helper.get_shift_for_sample_id('rotate'))
+        list_sample_id.append(sample_id+helper.get_shift_for_sample_id('rotation'))
       elif dict_augmentation['spatial_shift']:
-        list_sample_id.append(sample_id+helper.get_shift_for_sample_id('spatial_shift'))
+        list_sample_id.append(sample_id+helper.get_shift_for_sample_id('shift'))
       else:
         list_sample_id.append(sample_id)
       print(f'sample_id: {list_sample_id[-1]}')
