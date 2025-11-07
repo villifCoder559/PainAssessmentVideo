@@ -12,7 +12,7 @@ train_time_logs = {}
 
 # Profile workers in dataloader
 time_profile_dict = mp.Manager().dict()
-time_profiling_enabled = False
+time_profiling_enabled = True
 
 AMP_ENABLED = False
 AMP_DTYPE = None
@@ -54,23 +54,19 @@ def get_sampling_frame_startegy(strategy):
     return SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING 
   else:
     raise ValueError(f'Sampling strategy not found: {strategy}. Valid options: {list(SAMPLE_FRAME_STRATEGY)}')
-step_shift = 8700 # nr of samples in Biovid video dataset, set in train_model because depends on dataset
+  
+step_shift = None 
 
-def get_augmentation_type(sample_id):
-  if is_hflip_augmentation(sample_id):
-    return 'hflip'
-  elif is_color_jitter_augmentation(sample_id):
-    return 'jitter'
-  elif is_rotation_augmentation(sample_id):
-    return 'rotation'
-  elif is_latent_basic_augmentation(sample_id):
-    return 'latent_basic'
-  elif is_latent_masking_augmentation(sample_id):
-    return 'latent_masking'
-  elif is_spatial_shift_augmentation(sample_id):
-    return 'shift'
+def set_step_shift(folder_feature):
+  global step_shift
+  if 'unbc' in folder_feature.lower(): # UNBC-McMaster dataset
+    step_shift = 200
+  elif 'caer' in folder_feature.lower(): # CAER dataset
+    step_shift = 13176
+  elif 'parta' in folder_feature.lower() or 'biovid' in folder_feature.lower(): # Biovid Part A
+    step_shift = 8700
   else:
-    raise ValueError(f'Augmentation type not found for sample_id: {sample_id}')
+    raise ValueError(f'Dataset not recognized in folder_feature: {folder_feature}')
 
 def is_hflip_augmentation(sample_id):
   return sample_id > step_shift and sample_id <= step_shift * 2
@@ -90,10 +86,25 @@ def is_latent_masking_augmentation(sample_id):
 def is_spatial_shift_augmentation(sample_id):
   return sample_id > step_shift * 10 and sample_id <= step_shift * 11
 
+def get_augmentation_type(sample_id): # folder based on cvs_path, so must contain dataset name to
+  if is_hflip_augmentation(sample_id):
+    return 'hflip'
+  elif is_color_jitter_augmentation(sample_id):
+    return 'jitter'
+  elif is_rotation_augmentation(sample_id):
+    return 'rotation'
+  elif is_latent_basic_augmentation(sample_id):
+    return 'latent_basic'
+  elif is_latent_masking_augmentation(sample_id):
+    return 'latent_masking'
+  elif is_spatial_shift_augmentation(sample_id):
+    return 'shift'
+  else:
+    return False
+
+
 def get_shift_for_sample_id(folder_feature):
-  # step_shift * 4 => gaussian_noise in feats space
-  # step_shift * 5 => masking in feats space
-  if 'hflip' in folder_feature:
+  if 'hflip' in folder_feature or 'h_flip' in folder_feature:
     return step_shift * 1
   if 'jitter' in folder_feature:
     return step_shift * 2
