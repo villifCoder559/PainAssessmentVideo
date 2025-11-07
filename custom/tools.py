@@ -172,70 +172,163 @@ def load_dict_data(saving_folder_path):
 
   return dict_data
 
-def plot_error_per_class(unique_classes, mae_per_class, criterion, title='', accuracy_per_class=None,y_label=None,
-                         count_classes=None, saving_path=None, y_lim=None, ax=None):
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
+
+try:
+  import torch
+except Exception:
+  torch = None
+
+
+def plot_error_per_class(
+  unique_classes,
+  criterion,
+  mae_per_class=None,
+  title='',
+  accuracy_per_class=None,
+  y_label=None,
+  count_classes=None,
+  saving_path=None,
+  y_lim=None,
+  ax=None,
+):
   """
-  If `ax` is provided, the plot is drawn on that axis; otherwise, a new figure and axis are created.
-  If `accuracy_per_class` is provided, it also plots accuracy for the same class.
+  Plot MAE (or other loss/metric named by `criterion`) per class and optionally accuracy per class.
+  - If `ax` is provided, the plot is drawn on that axis; otherwise a new figure/axis is created.
+  - If both mae_per_class and accuracy_per_class are provided, accuracy is plotted on a second y-axis.
+  - Returns (fig, ax) where fig is None if an external axis was provided.
   """
-  # Create a new figure and axis if none is provided
-  
+
+  # --- Convert tensors to numpy arrays if needed ---
+  if torch is not None:
+    if isinstance(unique_classes, torch.Tensor):
+      unique_classes = unique_classes.cpu().detach().numpy()
+    if mae_per_class is not None and isinstance(mae_per_class, torch.Tensor):
+      mae_per_class = mae_per_class.cpu().detach().numpy()
+    if accuracy_per_class is not None and isinstance(accuracy_per_class, torch.Tensor):
+      accuracy_per_class = accuracy_per_class.cpu().detach().numpy()
+
+  if mae_per_class is not None:
+    mae_per_class = np.asarray(mae_per_class)
+  if accuracy_per_class is not None:
+    accuracy_per_class = np.asarray(accuracy_per_class)
+  unique_classes = np.asarray(unique_classes)
+
+  n = len(unique_classes)
+  if mae_per_class is not None and len(mae_per_class) != n:
+    raise ValueError(f"Length mismatch: mae_per_class has length {len(mae_per_class)} but unique_classes has length {n}.")
+  if accuracy_per_class is not None and len(accuracy_per_class) != n:
+    raise ValueError(f"Length mismatch: accuracy_per_class has length {len(accuracy_per_class)} but unique_classes has length {n}.")
+
+  # Create figure and axis if needed
+  fig = None
   if ax is None:
     fig, ax = plt.subplots(figsize=(10, 5))
-  
-  # Set y-axis limit if provided
-  if y_lim:
+
+  if y_lim is not None:
     ax.set_ylim(0, y_lim)
-  
-  # Define bar width
-  bar_width = 0.4  
-  indices = np.arange(len(unique_classes))  # X positions for bars
 
-  # Plot the MAE (loss) per class
-  ax.bar(indices - bar_width/2, mae_per_class, color='blue', width=bar_width,
-         label='Loss per Class', edgecolor='black')
-  ax.tick_params(axis='y', labelcolor='blue')
-  
-  # Plot accuracy per class if provided
+  bar_width = 0.4
+  indices = np.arange(n)
+
+  plotted_handles = []
+  plotted_labels = []
+
+  # Plot main metric (MAE or similar)
+  if mae_per_class is not None:
+    if accuracy_per_class is None:
+      centers_mae = indices 
+    else:
+      centers_mae = indices - bar_width / 2
+    h_mae = ax.bar(
+      centers_mae, mae_per_class, width=bar_width,
+      edgecolor='black', label=f'{criterion} per Class'
+    )
+    plotted_handles.append(h_mae)
+    plotted_labels.append(f'{criterion} per Class')
+    ax.tick_params(axis='y', labelcolor='blue')
+    ax.set_ylabel(y_label if y_label is not None else criterion)
+
+  # Plot accuracy
+  ax2 = None
   if accuracy_per_class is not None:
-    ax2 = ax.twinx()  # Create a second y-axis for accuracy
-    ax2.bar(indices + bar_width/2, accuracy_per_class, color='orange', width=bar_width,
-           label='Accuracy per Class', edgecolor='black')
-    ax2.set_ylabel('Accuracy')
-    ax2.set_ylim(0, 1)  # Set y-axis limit for accuracy
-    ax2.yaxis.set_major_locator(MaxNLocator(integer=True))  # Set y-ticks to be integers
-    ax2.tick_params(axis='y', labelcolor='orange')
-    ax2.set_yticks(np.arange(0, 1.1, 0.1))  # Set y-ticks for accuracy
-    
-  # Set axis labels and title
-  ax.set_xlabel('Class')
-  ax.set_ylabel(criterion)
-  ax.set_title(f'{criterion} per Class {title}')
-  
-  # Set x-ticks with class names
-  ax.set_xticks(indices)
-  ax.set_xticklabels(unique_classes)
+    if mae_per_class is None:
+      centers_acc = indices
+      h_acc = ax.bar(
+        centers_acc, accuracy_per_class, width=bar_width,
+        edgecolor='black', label='Accuracy per Class'
+      )
+      plotted_handles.append(h_acc)
+      plotted_labels.append('Accuracy per Class')
+      ax.set_ylabel('Accuracy')
+      ax.set_ylim(0, 1)
+      ax.yaxis.set_major_locator(MaxNLocator(integer=False))
+      ax.set_yticks(np.arange(0, 1.01, 0.1))
+      ax.tick_params(axis='y', labelcolor='orange')
+    else:
+      ax2 = ax.twinx()
+      centers_acc = indices + bar_width / 2
+      h_acc = ax2.bar(
+        centers_acc, accuracy_per_class, width=bar_width,
+        edgecolor='black', label='Accuracy per Class'
+      )
+      plotted_handles.append(h_acc)
+      plotted_labels.append('Accuracy per Class')
+      ax2.set_ylabel('Accuracy')
+      ax2.set_ylim(0, 1)
+      ax2.yaxis.set_major_locator(MaxNLocator(integer=False))
+      ax2.set_yticks(np.arange(0, 1.01, 0.1))
+      ax2.tick_params(axis='y', labelcolor='orange')
 
-  # Add count text above each bar if count_classes is provided
+  # Titles and labels
+  ax.set_xlabel('Class')
+  ax.set_title(f'{criterion} per Class {title}'.strip())
+  ax.set_xticks(indices)
+  ax.set_xticklabels([str(x) for x in unique_classes], rotation=0)
+
+  # Add counts if provided
   if count_classes is not None:
     for i, cls in enumerate(unique_classes):
-      if cls in count_classes:
-        ax.text(indices[i] - bar_width/2, mae_per_class[i], str(count_classes[cls]),
-                ha='center', va='bottom', fontsize=10)
-  
-  # Add legend
+      count = None
+      if isinstance(count_classes, dict):
+        if cls in count_classes:
+          count = count_classes[cls]
+        else:
+          try:
+            count = count_classes.get(int(cls), None)
+          except Exception:
+            count = None
+      if mae_per_class is not None:
+        x_pos = indices[i] - (bar_width / 2 if accuracy_per_class is not None else 0)
+        height = float(mae_per_class[i])
+      elif accuracy_per_class is not None:
+        x_pos = indices[i]
+        height = float(accuracy_per_class[i])
+      else:
+        x_pos, height = indices[i], 0.0
+      if count is not None:
+        ax.text(x_pos, height, str(count), ha='center', va='bottom', fontsize=9)
+
+  # Combine legends
   handles, labels = ax.get_legend_handles_labels()
-  if accuracy_per_class is not None:
-      handles2, labels2 = ax2.get_legend_handles_labels()
-      handles += handles2
-      labels += labels2
-  ax.legend(handles, labels, loc='upper right')
-  
-  # Save or show the plot
+  if ax2 is not None:
+    h2, l2 = ax2.get_legend_handles_labels()
+    handles += h2
+    labels += l2
+  if handles:
+    ax.legend(handles, labels, loc='upper right')
+
+  # Save if requested
   if saving_path is not None:
-    plt.savefig(saving_path)
-  
-  plt.close()
+    fig_to_save = fig if fig is not None else ax.get_figure()
+    fig_to_save.tight_layout()
+    fig_to_save.savefig(saving_path, bbox_inches='tight')
+    if fig is not None:
+      plt.close(fig)
+
+  return fig, ax
 
 
 def evaluate_classification_from_confusion_matrix(confusion_matrix,list_real_classes=None):
@@ -445,6 +538,8 @@ def plot_error_per_subject(unique_subject_ids, criterion, loss_per_subject,
   str_unique_subject_ids = [str(id) for id in unique_subject_ids]
   
   # Plot the bar chart (all bars are green)
+  if isinstance(loss_per_subject, dict):
+    loss_per_subject = [loss_per_subject[id] for id in unique_subject_ids]
   ax.bar(str_unique_subject_ids, loss_per_subject, width=0.8,
     color=bar_color, edgecolor='black')
   
