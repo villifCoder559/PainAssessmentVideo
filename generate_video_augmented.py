@@ -5,14 +5,31 @@ import os
 import numpy as np
 import tqdm
 
-video_root = "/equilibrium/fvilli/PainAssessmentVideo/partA/video/video_frontalized_interpolated_resolution_original"
-video_output_root = "/equilibrium/fvilli/PainAssessmentVideo/partA/video/video_frontalized_interpolated_resolution_original"
+import argparse
+
+argument_parser = argparse.ArgumentParser()
+argument_parser.add_argument('--video_root', type=str, required=False)
+argument_parser.add_argument('--video_extension', type=str, default='.mp4')
+argument_parser.add_argument('--shift', action='store_true')
+argument_parser.add_argument('--color_jitter', action='store_true')
+argument_parser.add_argument('--h_flip', action='store_true')
+argument_parser.add_argument('--rotation', action='store_true')
+args = argument_parser.parse_args()
+
+video_root = args.video_root
+video_output_root = args.video_root + "_augmented"
+if not os.path.exists(video_root):
+  raise ValueError(f"Video root does not exist: {video_root}")
+
 augmentation_dict = {
-  'shift': False,
-  'color_jitter': False,
-  'h_flip': False,
-  'rotation': False,
+  'shift': args.shift,
+  'color_jitter': args.color_jitter,
+  'h_flip': args.h_flip,
+  'rotation': args.rotation,
   }
+
+if np.all([not v for v in augmentation_dict.values()]):
+  raise ValueError("At least one augmentation must be enabled")
 
 for k,v in augmentation_dict.items():
   if v:
@@ -29,7 +46,7 @@ os.makedirs(video_output_root, exist_ok=True)
 list_video_path = []
 for root, dirs, files in os.walk(video_root):
   for file in files:
-    if file.endswith(".mp4") and '$' not in file:
+    if file.endswith(args.video_extension) and '$' not in file:
       list_video_path.append(os.path.join(root,file))
 
 # Process each video
@@ -80,6 +97,12 @@ import json
 with open(os.path.join(video_output_root, "augmentation_params.json"), 'w') as f:
   json.dump(params_all, f, indent=2)
   print(f"Saved augmentation parameters to {f.name}")
-  
+
+# save augmentation info
+with open(os.path.join(video_output_root, "augmentation_info.txt"), 'w') as f:
+  f.write("Augmentation settings used:\n")
+  for k,v in augmentation_dict.items():
+    f.write(f"{k}: {v}\n")
+  print(f"Saved augmentation info to {f.name}")
 
 
