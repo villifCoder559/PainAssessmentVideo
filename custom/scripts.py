@@ -175,7 +175,8 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
   if not kwargs.get('skip_all_train',False):
     kwargs['return_best_model_state'] = True
     kwargs['all_fold_train'] = True
-    
+    # Train final model on all training data of the fold
+    helper.SAVE_LAST_EPOCH_MODEL = True
     all_results = train_subfold_models(
         validate=False,
         fold_idx=fold_idx,
@@ -205,6 +206,7 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
         trial=trial,
         **kwargs
       )
+    helper.SAVE_LAST_EPOCH_MODEL = False
     state_dict = all_results[f'k{fold_idx}_cross_val_final']['train']['dict_results']['best_model_state']
   if kwargs.get('skip_test',False):
     dict_test = {}
@@ -275,6 +277,27 @@ def generate_fold_csv_files(split_indices, csv_array, cols, saving_path):
   
   return path_csv_kth_fold
 
+def get_pth_models_from_folder(folder_path):
+  """Get all .pth model files from a folder"""
+  pth_files = []
+  for file in os.listdir(folder_path):
+    if file.endswith(".pth"):
+      pth_files.append(os.path.join(folder_path, file))
+  return pth_files
+
+def set_frozen_head_from_pth_folder(model_advanced: Model_Advanced, saving_path_kth_sub_fold: str):
+  pth_files = get_pth_models_from_folder(model_advanced.head_init_path)
+  pth_model = None
+  saving_kth = os.path.basename(saving_path_kth_sub_fold)
+  for pth in pth_files:
+    if saving_kth in pth:
+      pth_model = pth
+      break
+  if pth_model is not None:
+    model_advanced.head.set_init_path(pth_model)
+  else:
+    raise ValueError(f'No .pth model found for {saving_kth} in {model_advanced.head_init_path}')
+
 def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sample_ids,
                       saving_path_kth_fold, model_advanced, lr, epochs, optimizer_fn,
                       concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
@@ -299,8 +322,12 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
       sub_idx, k_fold, sub_k_fold_list, csv_array, cols, 
       sample_ids, saving_path_kth_sub_fold, validate
     )
+    ## set correct init_path_head if criterion is RESupConLoss, head_init_path is the general folder that contains all models for the k-fold
+    if isinstance(criterion, losses.RESupConLoss) and model_advanced.head_init_path is not None:
+      if os.path.isdir(model_advanced.head_init_path):
+        set_frozen_head_from_pth_folder(model_advanced, saving_path_kth_sub_fold)
     
-    # Train model
+    ## Train model
     set_seed(seed=seed_random_state)
     dict_train = model_advanced.train(
       lr=lr,
@@ -324,13 +351,7 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
       enable_optuna_pruning = True if fold_idx == 0 and sub_idx == 0 else False,
       **kwargs
     )
-    # dict_test = test_model(
-    #   model_advanced=model_advanced,
-    #   path_model_weights=None, 
-    #   test_csv_path=test_csv_path,
-    #   state_dict=dict_train['dict_results']['best_model_state'],
-    #   criterion=criterion, concatenate_temporal=concatenate_temp_dim,
-    #   **kwargs)
+
     # Remove unnecessary data to save space
     if not kwargs['return_best_model_state']:
       dict_train['dict_results']['best_model_state'] = None
