@@ -164,7 +164,8 @@ class customDataset(torch.utils.data.Dataset):
       )
     else:
       self.soft_labels = None
-      
+    helper.set_step_shift(path_dataset)
+    print(f"\ncustomDataset: Using step shift = {helper.step_shift} for dataset {path_dataset}\n")
     self.coral_loss = coral_loss
     self.num_classes = len(self.get_unique_classes())
   
@@ -257,9 +258,9 @@ class customDataset(torch.utils.data.Dataset):
       params['spatial_shift'] = {'translate': translation}
 
     if color_jitter:
-      brightness = (0.7, 1.3)
-      contrast = (0.7, 1.3)
-      saturation = (0.7, 1.3)
+      brightness = (0.8, 1.2)
+      contrast = (0.8, 1.2)
+      saturation = (0.8, 1.2)
       hue = (-0.05, 0.05)
       transform.append(v2.ColorJitter(brightness=brightness, contrast=contrast, saturation=saturation, hue=hue)) 
       params['color_jitter'] = {
@@ -270,8 +271,12 @@ class customDataset(torch.utils.data.Dataset):
       }
 
     if rotation:
-      degrees = (-7, 7) # degrees for rotation
-      transform.append(v2.RandomRotation(degrees=degrees))
+      pos_degrees = (0.5, 4)
+      neg_degrees = (-4, -0.5)
+      # avoid 0 degree rotation
+      angle = np.random.choice([np.random.uniform(pos_degrees[0], pos_degrees[1]),
+                               np.random.uniform(neg_degrees[0], neg_degrees[1])])
+      transform.append(v2.RandomRotation(degrees=(angle, angle)))
       params['rotation'] = v2.RandomRotation.get_params(degrees=transform[-1].degrees)
       
     # Define transform pipeline
@@ -388,10 +393,11 @@ class customDataset(torch.utils.data.Dataset):
     else:
       # latent based augm. approaches are applied in _get_element function (at the end of file) 
       sample_id = self.video_labels.iloc[idx]['sample_id'] # csv_array.iloc[4]
-      h_flip = helper.is_hflip_augmentation(sample_id)
-      color_jitter = helper.is_color_jitter_augmentation(sample_id)
-      rotation = helper.is_rotation_augmentation(sample_id)
-      spatial_shift = helper.is_spatial_shift_augmentation(sample_id)
+      augmentation_type = helper.get_augmentation_type(sample_id)
+      h_flip = True if augmentation_type == 'h_flip' else False
+      color_jitter = True if augmentation_type == 'jitter' else False
+      rotation = True if augmentation_type == 'rotation' else False
+      spatial_shift = True if augmentation_type == 'shift' else False
       preprocessed_tensors = self.preprocess_images(frames_list, 
                                                     crop_size=(self.image_resize_h, self.image_resize_w),
                                                     color_jitter=color_jitter,
@@ -715,9 +721,8 @@ class customDatasetAggregated(torch.utils.data.Dataset):
   def __init__(self,root_folder_features,concatenate_temporal,concatenate_quadrants,model,is_train,csv_path,smooth_labels,soft_labels,coral_loss):
     self.root_folder_feature = root_folder_features
     self.csv_path = csv_path
-    if 'caer' in csv_path.lower():
-      print("\n Detected CAER, Change step shift \n")
-      helper.step_shift = 13176
+    helper.set_step_shift(root_folder_features)
+    print(f"Using step shift = {helper.step_shift} for dataset {root_folder_features}")
     self.concatenate_temporal = concatenate_temporal
     self.concatenate_quadrants = concatenate_quadrants
     self.df = pd.read_csv(csv_path,sep='\t')
@@ -756,7 +761,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
       f'': sample_id_list[sample_id_list <= helper.step_shift], # from 1 to 8700 inclusive
       f'_hflip': sample_id_list[(sample_id_list > get_shift_for_sample_id('hflip'))   * (sample_id_list <= get_shift_for_sample_id('hflip')+helper.step_shift)],
       f'_jitter': sample_id_list[(sample_id_list > get_shift_for_sample_id('jitter')) * (sample_id_list <= get_shift_for_sample_id('jitter')+helper.step_shift)],
-      f'_rotate': sample_id_list[(sample_id_list > get_shift_for_sample_id('rotate')) * (sample_id_list <= get_shift_for_sample_id('rotate')+helper.step_shift)],
+      f'_rotate': sample_id_list[(sample_id_list > get_shift_for_sample_id('rotation')) * (sample_id_list <= get_shift_for_sample_id('rotation')+helper.step_shift)],
     }
     list_dict_data = []
     for aug_type, aug_mask_sample_id in dict_samples.items():
@@ -838,9 +843,8 @@ class customDatasetAggregated(torch.utils.data.Dataset):
 class customDatasetWhole(torch.utils.data.Dataset):
   def __init__(self,csv_path,root_folder_features,concatenate_temporal,concatenate_quadrants,model,smooth_labels,soft_labels,coral_loss, xattn_mask,split_chunks=False):
     self.csv_path = csv_path
-    if 'caer' in csv_path.lower():
-      print("\n Detected CAER, Change step shift \n")
-      helper.step_shift = 13176
+    helper.set_step_shift(root_folder_features)
+    print(f"\n CustomDatasetWhole: Using step shift = {helper.step_shift} for dataset {root_folder_features} \n")
     self.xattn_mask = xattn_mask
     self.root_folder_features = root_folder_features
     self.df = pd.read_csv(csv_path,sep='\t',dtype={'sample_name':str,'subject_name':str}) # subject_id, subject_name, class_id, class_name, sample_id, sample_name
@@ -1012,8 +1016,8 @@ def highly_optimized_custom_collate(batch, pid, concatenate_temporal=False, smoo
         lengths.append(processed_feat.size(0))
       
       with profile_workers(f'{pid}_pad_sequence_time',helper.time_profiling_enabled,helper.time_profile_dict):
-        features = torch.nn.utils.rnn.pad_sequence(features, batch_first=True)
         lengths = torch.tensor(lengths, dtype=torch.int32)
+        features = torch.nn.utils.rnn.pad_sequence(features, batch_first=True)
         
       helper.time_profile_dict[f'{pid}_pad_sequence_calls'] = helper.time_profile_dict.get(f'{pid}_pad_sequence_calls', 0) + 1
   
