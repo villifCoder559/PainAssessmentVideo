@@ -308,7 +308,7 @@ class BaseHead(nn.Module):
         transfer_to_device = time.time() 
         # HuberLoss requires float32 inputs
         if batch_y.dtype == torch.int32: # if ce not has label smoothing
-          if isinstance(criterion, torch.nn.HuberLoss):
+          if isinstance(criterion, (torch.nn.HuberLoss, torch.nn.MSELoss, torch.nn.L1Loss)):
             batch_y = batch_y.float()
           elif isinstance(criterion, torch.nn.CrossEntropyLoss):
             batch_y = batch_y.long()
@@ -795,7 +795,7 @@ class BaseHead(nn.Module):
                                                                        list_real_classes=unique_val_classes)
       else:
         dict_precision_recall = {}
-        
+
       if is_test:
         self.log_performance(stage='Test', loss=val_loss, accuracy=dict_precision_recall.get('accuracy', 0.0))
         return {
@@ -1125,6 +1125,9 @@ class AttentiveHeadJEPA(BaseHead):
     else:
       return {'logits': logits,'embeddings': None}
   
+  def set_init_path(self, head_init_path):
+    self.head_init_path = head_init_path
+    
   def _initialize_weights(self,init_type='default'):
     if self.backbone is not None:
       # self.backbone.load_pretrained_weights() 
@@ -1145,6 +1148,7 @@ class AttentiveHeadJEPA(BaseHead):
             del state_dict[layer_name]
         state_dict = {k.replace('pooler.',''): v for k, v in state_dict.items() if k.startswith('pooler.')}  
         self.pooler.load_state_dict(state_dict)
+        print(f'LOADED Head weights from {self.head_init_path}\n  {state_dict.keys()}')
         print(f'\nHead weights loaded from {self.head_init_path}')
         # freeze pooler weights
         for param in self.pooler.parameters():
