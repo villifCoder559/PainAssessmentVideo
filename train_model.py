@@ -435,12 +435,12 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   return mean_val_accuracy
 
 def get_mean_val_accuracy(results):
-  list_val_accuracy = []
+  list_val_metric = []
   for k_fold,dict_log_k_fold in results['results'].items():
     if 'final' not in k_fold:
       best_epoch = dict_log_k_fold['train_val']['best_model_idx']
-      list_val_accuracy.append(dict_log_k_fold['train_val']['list_val_performance_metric'][best_epoch])
-  return np.mean(list_val_accuracy)
+      list_val_metric.append(dict_log_k_fold['train_val']['list_val_performance_metric'][best_epoch])
+  return np.mean(list_val_metric)
 
 def get_sampler_module(sampler_name,kwargs=None):
   if sampler_name.lower() == 'tpe':
