@@ -18,7 +18,7 @@ class Model_Advanced: # Scenario_Advanced
               path_labels, sample_frame_strategy, head, head_params, adapter_dict,num_clips_per_video, use_sdpa,
               batch_size_training,stride_window,clip_length,dict_augmented,prefetch_factor,soft_labels,
               features_folder_saving_path,concatenate_temporal,label_smooth,n_workers,new_csv_path,
-              load_dataset_in_memory):
+              load_dataset_in_memory,stratified_training=False):
     """
     Initialize the custom model. 
     Parameters:
@@ -58,8 +58,9 @@ class Model_Advanced: # Scenario_Advanced
       print(f'CSV file with augmentations already exists at {new_csv_path}. Using the existing file.')
       complete_df = pd.read_csv(new_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
     else:
-      complete_df = self.generate_csv_augmented(original_csv_path=path_labels,
+      complete_df = self.dataset.generate_csv_augmented(original_csv_path=path_labels,
                                   dict_augmentation=dict_augmented,
+                                  stratified_training=stratified_training,
                                   out_csv_path=new_csv_path)
             
     self.concatenate_temporal = concatenate_temporal
@@ -244,7 +245,7 @@ class Model_Advanced: # Scenario_Advanced
       csv_labels = torch.full((nr_values,),real_csv_label,dtype=helper.dict_data['list_labels'].dtype) 
       helper.dict_data['list_labels'][mask] = csv_labels
     
-  def generate_csv_augmented(self, original_csv_path, dict_augmentation, out_csv_path):
+  def generate_csv_augmented(self, original_csv_path, dict_augmentation, out_csv_path,startified_training=False):
     def _get_rnd_from_type(type_augm):
       if type_augm == 'hflip':
         return 42
@@ -260,14 +261,26 @@ class Model_Advanced: # Scenario_Advanced
         return 93
       else:
         raise ValueError(f'Unknown augmentation type: {type_augm}')
+      
+    
     list_df = []
     df = pd.read_csv(original_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
     list_df.append(df)
-    for type_augm, p in dict_augmentation.items():
-      if p > 0 and p<= 1:
-        df_sampled = df.sample(frac=p, random_state=_get_rnd_from_type(type_augm))
-        df_sampled['sample_id'] = df_sampled['sample_id'].apply(lambda x: x + get_shift_for_sample_id(type_augm))
-        list_df.append(df_sampled)
+    
+    if startified_training and 'unbc' in self.path_to_extracted_features.lower():
+      augmented_list = ['hflip','jitter','rotation','shift']
+      minority_classes = df['class_id'].nsmallest(5)
+      df_minority = df[df['class_id'].isin(minority_classes)]
+      for type_augm in augmented_list:
+        copy_df = df_minority.copy(deep=True)
+        copy_df['sample_id'] = df_minority['sample_id'].apply(lambda x: x + get_shift_for_sample_id(type_augm))
+        list_df.append(copy_df)
+    else:
+      for type_augm, p in dict_augmentation.items():
+        if p > 0 and p<= 1:
+          df_sampled = df.sample(frac=p, random_state=_get_rnd_from_type(type_augm))
+          df_sampled['sample_id'] = df_sampled['sample_id'].apply(lambda x: x + get_shift_for_sample_id(type_augm))
+          list_df.append(df_sampled)
     df_merged = pd.concat(list_df, ignore_index=True)
     df_merged.to_csv(out_csv_path, index=False, sep='\t')
     print(f'CSV file with augmentations saved to {out_csv_path}')
