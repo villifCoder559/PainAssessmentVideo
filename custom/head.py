@@ -181,6 +181,10 @@ class BaseHead(nn.Module):
     # if val_csv_path is not None:
     val_unique_classes = torch.tensor(val_dataset.get_unique_classes()) if val_csv_path is not None else torch.tensor([])
     val_unique_subjects = torch.tensor(val_dataset.get_unique_subjects()) if val_csv_path is not None else torch.tensor([])
+    
+    # train_all_classes_conf_mat = torch.tensor(train_dataset.get_unique_classes(return_all=True))
+    # val_all_classes_conf_mat = torch.tensor(val_dataset.get_unique_classes(return_all=True)) if val_csv_path is not None else torch.tensor([])
+    
     if helper.LOG_HISTORY_SAMPLE and torch.min(train_unique_classes)>=0 and torch.max(train_unique_classes)<=255 and torch.min(val_unique_classes)>=0 and torch.max(val_unique_classes)<=255:
       list_train_sample = train_dataset.get_all_sample_ids()
       history_train_sample_predictions = {id: torch.zeros(num_epochs, dtype=torch.uint8) for id in list_train_sample}
@@ -262,7 +266,7 @@ class BaseHead(nn.Module):
     
     is_composite_loss = isinstance(criterion, losses.CompositeLoss)
     is_resupcon_loss = isinstance(criterion, losses.RESupConLoss)
-    
+    max_train_class = train_unique_classes.max().item()
     for epoch in range(num_epochs):
       start_epoch = time.time()
       self.train() 
@@ -276,7 +280,7 @@ class BaseHead(nn.Module):
       subject_loss = torch.zeros(train_unique_subjects.shape[0])
       subject_accuracy = torch.zeros(train_unique_subjects.shape[0])
       sample_per_subject_count = torch.zeros(train_unique_subjects.shape[0])
-      train_confusion_matrix = ConfusionMatrix(task='multiclass',num_classes=train_unique_classes.shape[0]+1)
+      train_confusion_matrix = ConfusionMatrix(task='multiclass',num_classes=max_train_class+1)
       train_loss = 0.0
       # subject_count_batch = torch.zeros(train_unique_subjects.shape[0])
       count_batch=0
@@ -670,7 +674,7 @@ class BaseHead(nn.Module):
       accuracy_per_subject = torch.zeros(unique_val_subjects.shape[0])
       # subject_batch_count = torch.zeros(unique_val_subjects.shape[0])
       sample_per_subject_count = torch.zeros(unique_val_subjects.shape[0])
-      val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=len(val_loader.dataset.get_unique_classes())+1) # last class is for bad_classified in regression
+      val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=val_loader.dataset.get_unique_classes().max().item()+1) # last class is for bad_classified in regression
       batch_confidence_prediction_right_mean = []
       batch_confidence_prediction_wrong_mean = []
       batch_confidence_prediction_right_std = []
