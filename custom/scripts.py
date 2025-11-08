@@ -713,6 +713,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     "n_workers": n_workers,
     "label_smooth": label_smooth,
     "dict_augmented": dict_augmented,
+    'stratified_training':kwargs.get('stratified_training', False),
     "new_csv_path": new_csv_path if dict_augmented is not None else None,
 }
 
