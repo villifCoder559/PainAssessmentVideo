@@ -716,6 +716,12 @@ class customDataset(torch.utils.data.Dataset):
   def get_unique_classes(self):
     return np.sort(self.video_labels['class_id'].unique().tolist())
 
+  def generate_csv_augmented(self,original_csv_path,out_csv_path,dict_augmentation,stratified_training=False):
+    return generate_csv_augmented(original_csv_path=original_csv_path,
+                           out_csv_path=out_csv_path,
+                           dict_augmentation=dict_augmentation,
+                           path_to_extracted_features=self.path_dataset,
+                           stratified_training=stratified_training)
 
 class customDatasetAggregated(torch.utils.data.Dataset):
   def __init__(self,root_folder_features,concatenate_temporal,concatenate_quadrants,model,is_train,csv_path,smooth_labels,soft_labels,coral_loss):
@@ -838,6 +844,13 @@ class customDatasetAggregated(torch.utils.data.Dataset):
     return np.sort(self.df['class_id'].unique().tolist())
   def get_all_sample_ids(self):
     return self.df['sample_id'].tolist()
+  
+  def generate_csv_augmented(self,original_csv_path,out_csv_path,dict_augmentation,stratified_training=False):
+    return generate_csv_augmented(original_csv_path=original_csv_path,
+                           out_csv_path=out_csv_path,
+                           dict_augmentation=dict_augmentation,
+                           path_to_extracted_features=self.root_folder_feature,
+                           stratified_training=stratified_training)
 
 
 class customDatasetWhole(torch.utils.data.Dataset):
@@ -938,11 +951,23 @@ class customDatasetWhole(torch.utils.data.Dataset):
     return np.unique(self.df['subject_id'],return_counts=True)[1]
   def get_count_classes(self):
     return np.unique(self.df['class_id'],return_counts=True)[1]
-  def get_unique_classes(self):
-    return np.sort(self.df['class_id'].unique().tolist())
+  def get_unique_classes(self,return_all=False):
+    list_unique_classes = self.df['class_id'].unique().tolist()
+    max_class = max(list_unique_classes)
+    if not return_all:
+      return np.sort(list_unique_classes)
+    else:
+      return np.sort(list(range(max_class+1))) # in case some class is missing
   def get_all_sample_ids(self):
     return self.df['sample_id'].tolist()
 
+  def generate_csv_augmented(self,original_csv_path,out_csv_path,dict_augmentation,stratified_training=False):
+    return generate_csv_augmented(original_csv_path=original_csv_path,
+                           out_csv_path=out_csv_path,
+                           dict_augmentation=dict_augmentation,
+                           path_to_extracted_features=self.root_folder_features,
+                           stratified_training=stratified_training)
+  
 # Alternative version with even more optimizations for large batches
 def highly_optimized_custom_collate(batch, pid, concatenate_temporal=False, smooth_labels=0.0,
   soft_labels_mat=None, coral_loss=False, num_classes=None,concatenate_quadrants=False, split_chunks=False,xattn_mask=None):
@@ -1165,6 +1190,7 @@ class customBatchSampler(BatchSampler):
 
   def __len__(self):
     return self.n_batches
+
   
 def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: float = 0.1) -> torch.Tensor:
   """
@@ -1192,6 +1218,50 @@ def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: f
   
   return smoothed_labels
 
+
+def generate_csv_augmented(original_csv_path, dict_augmentation, out_csv_path,path_to_extracted_features,stratified_training=False):
+  def _get_rnd_from_type(type_augm):
+    if type_augm == 'hflip':
+      return 42
+    elif type_augm == 'jitter':
+      return 53
+    elif type_augm == 'rotation':
+      return 63
+    elif type_augm == 'latent_basic':
+      return 73
+    elif type_augm == 'latent_masking':
+      return 83
+    elif type_augm == 'shift':
+      return 93
+    else:
+      raise ValueError(f'Unknown augmentation type: {type_augm}')
+  list_df = []
+  df = pd.read_csv(original_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
+  list_df.append(df)
+  
+  if stratified_training and 'unbc' in path_to_extracted_features.lower():
+    augmented_list = ['hflip','jitter','rotation','shift']
+    # get 5 class with less samples
+    minority_classes = df['class_id'].value_counts().nsmallest(5).index
+    df_minority = df[df['class_id'].isin(minority_classes)].copy()
+    print(f'Stratified training: augmenting minority classes {minority_classes.tolist()} with all augmentations: {augmented_list}')
+    for type_augm in augmented_list:
+      copy_df = df_minority.copy(deep=True)
+      # if type_augm == 'shift' keep only the 2 lowest minority classes
+      if type_augm == 'shift' or type_augm == 'jitter':
+        copy_df = df_minority.nsmallest(2, 'class_id')
+      copy_df['sample_id'] = copy_df['sample_id'].apply(lambda x: x + get_shift_for_sample_id(type_augm))
+      list_df.append(copy_df)
+  else:
+    for type_augm, p in dict_augmentation.items():
+      if p > 0 and p<= 1:
+        df_sampled = df.sample(frac=p, random_state=_get_rnd_from_type(type_augm))
+        df_sampled['sample_id'] = df_sampled['sample_id'].apply(lambda x: x + get_shift_for_sample_id(type_augm))
+        list_df.append(df_sampled)
+  df_merged = pd.concat(list_df, ignore_index=True)
+  df_merged.to_csv(out_csv_path, index=False, sep='\t')
+  print(f'CSV file with augmentations saved to {out_csv_path}')
+  return df_merged
  
 def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_training_batch,is_training,dataset_type,concatenate_temporal,model,
                            label_smooth,soft_labels,is_coral_loss,stride_inside_window=1,num_clips_per_video=1,sample_frame_strategy=None,n_workers=None,backbone_dict=None,split_chunks=False,prefetch_factor=None,**kwargs):
