@@ -266,7 +266,7 @@ class BaseHead(nn.Module):
     
     is_composite_loss = isinstance(criterion, losses.CompositeLoss)
     is_resupcon_loss = isinstance(criterion, losses.RESupConLoss)
-    max_train_class = train_unique_classes.max().item()
+    max_train_class = train_unique_classes.max().item() + 1 # start from 0
     for epoch in range(num_epochs):
       start_epoch = time.time()
       self.train() 
@@ -416,8 +416,13 @@ class BaseHead(nn.Module):
           batch_y = batch_y.detach().cpu()
           if batch_y.dim() > 1:
             batch_y = torch.argmax(batch_y, dim=1).reshape(-1)
-          train_confusion_matrix.update(predictions, batch_y)
-          
+          try:
+            train_confusion_matrix.update(predictions, batch_y)
+          except Exception as e:
+            print(f"Error updating confusion matrix: {e}")
+            print(f"  predictions: {predictions}")
+            print(f"  batch_y: {batch_y}")
+            print(f' train_confusion_matrix shape: {train_confusion_matrix.confusion_matrix.shape}')
           if history_train_sample_predictions is not None: 
             tools.log_predictions_per_sample_(dict_log_sample=history_train_sample_predictions,
                                               tensor_sample_id=sample_id,
@@ -674,7 +679,7 @@ class BaseHead(nn.Module):
       accuracy_per_subject = torch.zeros(unique_val_subjects.shape[0])
       # subject_batch_count = torch.zeros(unique_val_subjects.shape[0])
       sample_per_subject_count = torch.zeros(unique_val_subjects.shape[0])
-      val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=val_loader.dataset.get_unique_classes().max().item()+1) # last class is for bad_classified in regression
+      val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=val_loader.dataset.get_unique_classes().max().item()+2) # start from 0 (so +1) and additive class(last) is for bad_classified in regression
       batch_confidence_prediction_right_mean = []
       batch_confidence_prediction_wrong_mean = []
       batch_confidence_prediction_right_std = []
