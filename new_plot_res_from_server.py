@@ -162,11 +162,11 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
                                   title=f'Mean TRAIN Loss per Subject - {k_fold} - {test_id}',
                                   ax=ax[0],
                                   y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
-
+    title_plt = 'VAL' if 'subject_val_loss' in grouped_losses else 'TEST'
     tools.plot_error_per_subject(loss_per_subject=[val_subject_loss[k] for k in sorted(val_subject_loss.keys())],
                                   unique_subject_ids=sorted(val_subject_loss.keys()),
                                   criterion=data['config']['criterion'],
-                                  title=f'Mean VAL Loss per Subject - {k_fold} - {test_id}',
+                                  title=f'Mean {title_plt} Loss per Subject - {k_fold} - {test_id}',
                                   ax=ax[1],
                                   y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
     fig.tight_layout()
@@ -187,7 +187,7 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
                                 unique_classes=sorted(val_class_loss.keys()),
                                 criterion=data['config']['criterion'],
                                 ax=ax[1],
-                                title=f'Mean VAL Loss per Class - {k_fold} - {test_id}',
+                                title=f'Mean {title_plt} Loss per Class - {k_fold} - {test_id}',
                                 y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
     fig.tight_layout()
     fig.savefig(os.path.join(grouped_output_folder, f'{test_id}{additional_info}_grouped_loss_per_class_{k_fold}.png'))
@@ -453,8 +453,8 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         fig.tight_layout()
         fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_loss_per_subject_{key}.png'))
         plt.close(fig)
-
-      if not isinstance(data['config']['criterion'],losses.RESupConLoss) and plot_acc_per_subject and len(data['results'][key]['train_val']['train_loss_per_subject']) > 0:
+      is_unbc = 'unbc' in "".join(data['config']['path_csv_dataset']).lower()
+      if not is_unbc and not isinstance(data['config']['criterion'],losses.RESupConLoss) and plot_acc_per_subject and len(data['results'][key]['train_val']['train_loss_per_subject']) > 0:
         y_lim = 1
         accuracy_per_subject_train = data['results'][key]['train_val'].get('list_train_accuracy_per_subject', None)
         accuracy_per_subject_val = data['results'][key]['train_val'].get('list_val_accuracy_per_subject', None)
@@ -552,7 +552,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_mae_per_class_{key}.png'))
         plt.close(fig)
         
-    if plot_loss_per_class and not isinstance(data['config']['criterion'],losses.RESupConLoss):
+    if not is_unbc and plot_loss_per_class and not isinstance(data['config']['criterion'],losses.RESupConLoss):
         y_lim = 10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3
         train_accuracy_per_class = data['results'][key]['train_val']['list_train_accuracy_per_class'][best_epoch]
         val_accuracy_per_class = data['results'][key]['train_val']['list_val_accuracy_per_class'][best_epoch]
@@ -1118,8 +1118,9 @@ def plot_run_details(results_data, output_root,only_csv):
       # try:
       plot_grouped_k_fold(data, os.path.join(output_root), test_id)
       plot_losses(data, os.path.join(output_root), test_id)
-      plot_confusion_matrices(data, os.path.join(output_root), test_id)
-      plot_gradient_per_module(data, os.path.join(output_root), test_id)
+      if not 'unbc' in "".join(data['config']['path_csv_dataset']).lower():
+        plot_confusion_matrices(data, os.path.join(output_root), test_id)
+        plot_gradient_per_module(data, os.path.join(output_root), test_id)
       plot_history_model_prediction(data, os.path.join(output_root), test_id,root_csv_path=os.path.dirname(file))
       if data['config'].get('validate', True):
         plot_accuray_per_class_across_epochs(data, os.path.join(output_root), test_id)
