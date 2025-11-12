@@ -159,14 +159,14 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
     tools.plot_error_per_subject(loss_per_subject=[train_subject_loss[k] for k in sorted(train_subject_loss.keys())],
                                   unique_subject_ids=sorted(train_subject_loss.keys()),
                                   criterion=data['config']['criterion'],
-                                  title=f'Mean TRAIN Loss per Subject - {k_fold} - {test_id}',
+                                  title=f'Grouped mean TRAIN Loss per Subject - {k_fold} - {test_id}',
                                   ax=ax[0],
                                   y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
     title_plt = 'VAL' if 'subject_val_loss' in grouped_losses else 'TEST'
     tools.plot_error_per_subject(loss_per_subject=[val_subject_loss[k] for k in sorted(val_subject_loss.keys())],
                                   unique_subject_ids=sorted(val_subject_loss.keys()),
                                   criterion=data['config']['criterion'],
-                                  title=f'Mean {title_plt} Loss per Subject - {k_fold} - {test_id}',
+                                  title=f'Grouped mean {title_plt} Loss per Subject - {k_fold} - {test_id}',
                                   ax=ax[1],
                                   y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
     fig.tight_layout()
@@ -181,13 +181,13 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
                                unique_classes=sorted(train_class_loss.keys()),
                                criterion=data['config']['criterion'],
                                ax=ax[0],
-                               title=f'Mean TRAIN Loss per Class - {k_fold} - {test_id}',
+                               title=f'Grouped mean TRAIN Loss per Class - {k_fold} - {test_id}',
                                 y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
     tools.plot_error_per_class(mae_per_class=[val_class_loss[k] for k in sorted(val_class_loss.keys())],
                                 unique_classes=sorted(val_class_loss.keys()),
                                 criterion=data['config']['criterion'],
                                 ax=ax[1],
-                                title=f'Mean {title_plt} Loss per Class - {k_fold} - {test_id}',
+                                title=f'Grouped mean {title_plt} Loss per Class - {k_fold} - {test_id}',
                                 y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
     fig.tight_layout()
     fig.savefig(os.path.join(grouped_output_folder, f'{test_id}{additional_info}_grouped_loss_per_class_{k_fold}.png'))
@@ -249,7 +249,8 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         point_loss = None
       grad_norm_mean = data['results'][key]['train_val']['list_mean_total_norm_epoch']
       grad_norm_std = data['results'][key]['train_val']['list_std_total_norm_epoch']
-      if 'list_train_confidence_prediction_right_mean' in data['results'][key]['train_val']:
+      is_unbc = 'unbc' in "".join(data['config']['path_csv_dataset']).lower()
+      if 'list_train_confidence_prediction_right_mean' in data['results'][key]['train_val'] and data['results'][key]['train_val']['list_val_confidence_prediction_right_mean']:
         val_prediction_confidence_right_mean = data['results'][key]['train_val']['list_val_confidence_prediction_right_mean']
         val_prediction_confidence_right_std = data['results'][key]['train_val']['list_val_confidence_prediction_right_std']
         val_prediction_confidence_wrong_mean = data['results'][key]['train_val']['list_val_confidence_prediction_wrong_mean']
@@ -260,9 +261,13 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         train_prediction_confidence_wrong_std = data['results'][key]['train_val']['list_train_confidence_prediction_wrong_std']
         fig, axs = plt.subplots(3,2,figsize=(20,15))
       else:
-        fig, axs = plt.subplots(2,2,figsize=(20,15))
-      
+        if not is_unbc:
+          fig, axs = plt.subplots(2,2,figsize=(20,15))
+        else:
+          fig, axs = plt.subplots(3,2,figsize=(20,15))
       # Plot train and val loss
+      # set global title
+      fig.suptitle(f'Losses for {key} - id: {test_id}', fontsize=24,y=0.93,fontstyle='italic',fontweight='bold',color='darkred')
       if train_losses and val_loss:
         xattn_mask = data['config'].get('xattn_mask', [False])
         if xattn_mask is not None and any([xattn_mask]):
@@ -285,7 +290,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
           'output_path':None,
           'title':f'Train loss, validation accuracy, test accuracy',
           'point':point_accuracy,
-          'ax':axs[0][0],
+          'ax':axs[0][1],
           'x_label':'Epochs',
           'y_label_1':'Train loss',
           'y_label_2':'Validation accuracy',
@@ -307,7 +312,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
           'output_path':None,
           'title':'Train loss + validation and test loss',
           'point':point_loss,
-          'ax':axs[0][1],
+          'ax':axs[0][0],
           'x_label':'Epochs',
           'y_label_1':'Train loss',
           'y_label_2':'Validation loss',
@@ -332,19 +337,66 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
           'y_lim_1':[-1, 1],
           'color_1':'tab:orange',
         }
-        tools.plot_losses_and_test_new(**input_dict_accuracy_gap)
-        tools.plot_losses_and_test_new(**input_dict_loss_acc)
+        if not is_unbc:
+          tools.plot_losses_and_test_new(**input_dict_accuracy_gap)
+          tools.plot_losses_and_test_new(**input_dict_loss_acc)
+        else:
+          dict_count_labels_val = data['results'][key]['train_val']['count_y_val'] if not 'final' in key else dict(zip(data['results']['k0_cross_val_final']['test']['test_unique_y'].numpy(), data['results']['k0_cross_val_final']['test']['test_count_y']))
+          dict_count_sbjs_val = data['results'][key]['train_val']['count_subject_ids_val'] if not 'final' in key else dict(zip(data['results']['k0_cross_val_final']['test']['test_unique_subject_ids'], data['results']['k0_cross_val_final']['test']['test_count_subject_ids']))
+          y_lim_train = 40
+          y_limit_val = 20
+          tools.plot_distribution(
+            data_dict=data['results'][key]['train_val']['count_y_train'],
+            x_label='Pain intensity labels',
+            title='Dataset distribution on TRAIN set - Pain intensity labels',
+            color='blue',
+            y_lim=y_lim_train,
+            show_missing=(0,10),
+            ax=axs[1][0],
+          )
+          tools.plot_distribution(
+            data_dict=data['results'][key]['train_val']['count_subject_ids_train'],
+            x_label='Subject IDs',
+            title='Dataset distribution on TRAIN set - Subject IDs',
+            color='green',
+            y_lim=y_lim_train,
+            ax=axs[2][0],
+          )
+          tools.plot_distribution(
+            data_dict=dict_count_labels_val,
+            x_label='Pain intensity labels',
+            title=f'Dataset distribution on {"TEST" if "final" in key else "VAL"} set - Pain intensity labels',
+            color='blue',
+            y_lim=y_limit_val,
+            show_missing=(0,10),
+            ax=axs[1][1],
+          )
+          tools.plot_distribution(
+            data_dict=dict_count_sbjs_val,
+            x_label='Subject IDs',
+            title=f'Dataset distribution on {"TEST" if "final" in key else "VAL"} set - Subject IDs',
+            color='green',
+            y_lim=y_limit_val,
+            ax=axs[2][1],
+          )
         tools.plot_losses_and_test_new(**input_dict_loss)
         
         axs[0][1].text(1.14, -0.5, dict_to_string, fontsize=12, color='black',transform=axs[0][1].transAxes,ha='left', va='center')
+        # data['results']['k0_cross_val_sub_0']['train_val']['count_y_train']
+        # data['results']['k0_cross_val_sub_0']['train_val']['count_y_val']
+        # data['results']['k0_cross_val_sub_0']['train_val']['count_subject_ids_train']
+        # data['results']['k0_cross_val_sub_0']['train_val']['count_subject_ids_val']
+        # Plot dataset distribution on train and val set per class and subject
         
         # Plot GRADIENT
-        tools.plot_with_std(ax=axs[1][1],x=list(range(len(grad_norm_mean))),mean=grad_norm_mean,std=grad_norm_std,
-                            title='Mean and std of GRADIENT norm',x_label='Epochs',y_label='Gradient norm',y_lim=[0, 15],
-                            cap_line=data['config']['clip_grad_norm'] if data['config']['clip_grad_norm'] else None,
-                            )
-        
-        if 'list_train_confidence_prediction_right_mean' in data['results'][key]['train_val']:
+        if (grad_norm_mean > 0).any():
+          tools.plot_with_std(ax=axs[1][1],x=list(range(len(grad_norm_mean))),mean=grad_norm_mean,std=grad_norm_std,
+                              title='Mean and std of GRADIENT norm',x_label='Epochs',y_label='Gradient norm',y_lim=[0, 15],
+                              cap_line=data['config']['clip_grad_norm'] if data['config']['clip_grad_norm'] else None,
+                              )
+          
+        # Plot prediction confidence if available
+        if 'list_train_confidence_prediction_right_mean' in data['results'][key]['train_val'] and data['results'][key]['train_val']['list_val_confidence_prediction_right_mean']:
           tools.plot_with_std(ax=axs[2][0],x=list(range(len(train_prediction_confidence_right_mean))),
                               mean=train_prediction_confidence_right_mean,
                               std=train_prediction_confidence_right_std,
@@ -413,13 +465,14 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         
         loss_per_subject_train = data['results'][key]['train_val'].get('train_loss_per_subject', None)
         loss_per_subject_val = data['results'][key]['train_val'].get('val_loss_per_subject', None)
+        loss_per_subject_val = loss_per_subject_val if (loss_per_subject_val != None).all() else None
         dict_per_subject_test = data['results'][key].get('test', None)
         loss_list = [loss_per_subject_train, loss_per_subject_val, dict_per_subject_test]
         total_plots = sum([1 for loss in loss_list if loss is not None])
         fig, axs = plt.subplots(total_plots, 1, figsize=(20, 20))
         count_axs = 0
-        
         best_epoch = data['results'][key]['train_val']['best_model_idx']
+        
         # Train Loss
         if loss_per_subject_train is not None:
           tools.plot_error_per_subject(loss_per_subject=loss_per_subject_train[best_epoch],
@@ -453,11 +506,11 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         fig.tight_layout()
         fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_loss_per_subject_{key}.png'))
         plt.close(fig)
-      is_unbc = 'unbc' in "".join(data['config']['path_csv_dataset']).lower()
       if not is_unbc and not isinstance(data['config']['criterion'],losses.RESupConLoss) and plot_acc_per_subject and len(data['results'][key]['train_val']['train_loss_per_subject']) > 0:
         y_lim = 1
         accuracy_per_subject_train = data['results'][key]['train_val'].get('list_train_accuracy_per_subject', None)
         accuracy_per_subject_val = data['results'][key]['train_val'].get('list_val_accuracy_per_subject', None)
+        accuracy_per_subject_val = accuracy_per_subject_val if (accuracy_per_subject_val != None).all() else None
         dict_per_subject_test = data['results'][key].get('test', None)
         acc_list = [accuracy_per_subject_train, accuracy_per_subject_val, dict_per_subject_test]
         total_plots = sum([1 for acc in acc_list if acc is not None])
@@ -510,6 +563,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         y_lim = 10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3
         train_loss_per_class = data['results'][key]['train_val'].get('train_loss_per_class', None)
         val_loss_per_class = data['results'][key]['train_val'].get('val_loss_per_class', None)
+        val_loss_per_class = val_loss_per_class if (val_loss_per_class != None).all() else None
         accuracy_per_class_test = data['results'][key].get('test', None)
         class_loss_list = [train_loss_per_class, val_loss_per_class, accuracy_per_class_test]
         total_plots = sum([1 for class_loss in class_loss_list if class_loss is not None])
@@ -1101,6 +1155,32 @@ def plot_accuray_per_class_across_epochs(data, run_output_folder, test_id, addit
 
 
 # def link_cross_attention_logs(data, run_output_folder, test_id):
+import cv2
+
+def generate_video_from_loss_plots(run_output_folder, test_id):
+  test_output_folder = os.path.join(run_output_folder, test_id)
+  png_files_val = sorted([f for f in os.listdir(test_output_folder) if f.endswith('.png') and '_losses_' in f and 'final' not in f])
+  png_files_final = sorted([f for f in os.listdir(test_output_folder) if f.endswith('.png') and '_losses_' in f and 'final' in f])
+  png_files = png_files_val + png_files_final
+  if len(png_files) == 0:
+    print(f'No loss plot PNG files found for {test_id}, skipping video generation.')
+    return
+  video_path = os.path.join(test_output_folder, f'{test_id}_losses_over_epochs.mp4')
+  list_images = []
+  for png_file in png_files:
+    image_path = os.path.join(test_output_folder, png_file)
+    image = cv2.imread(image_path)
+    list_images.append(image)
+  height, width, layers = list_images[0].shape
+  video = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'avc1'), 1, (width, height))
+  for image in list_images:
+    if image.shape != (height, width, layers):
+      print(f'Image {image} has different shape, resizing to {(height, width)}')
+      image = cv2.resize(image, (width, height))
+    video.write(image)
+  video.release()
+  # print(f'Generated loss video at {video_path}')
+
 
 def plot_run_details(results_data, output_root,only_csv):
   list_row_csv = []
@@ -1113,14 +1193,18 @@ def plot_run_details(results_data, output_root,only_csv):
     grid_search_folder = Path(file).parts[-3]
     test_id = test_folder.split('_')[0]
     # run_output_folder = os.path.join(output_root)
+    is_unbc = 'unbc' in "".join(data['config']['path_csv_dataset']).lower()
     list_row_csv.append(generate_csv_row(data['results'],data['config'],data['time'], test_id))
     if not only_csv:
       # try:
       plot_grouped_k_fold(data, os.path.join(output_root), test_id)
       plot_losses(data, os.path.join(output_root), test_id)
-      if not 'unbc' in "".join(data['config']['path_csv_dataset']).lower():
+      if is_unbc:
+        generate_video_from_loss_plots(os.path.join(output_root), test_id)
+      if not is_unbc:
         plot_confusion_matrices(data, os.path.join(output_root), test_id)
         plot_gradient_per_module(data, os.path.join(output_root), test_id)
+      
       plot_history_model_prediction(data, os.path.join(output_root), test_id,root_csv_path=os.path.dirname(file))
       if data['config'].get('validate', True):
         plot_accuray_per_class_across_epochs(data, os.path.join(output_root), test_id)
