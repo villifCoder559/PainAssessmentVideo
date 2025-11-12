@@ -224,8 +224,11 @@ def plot_error_per_class(
 
   # Create figure and axis if needed
   fig = None
+   
   if ax is None:
     fig, ax = plt.subplots(figsize=(10, 5))
+  # on y axis plot horizonal dotted bars
+  ax.yaxis.grid(True, linestyle='--', which='major', color='grey', alpha=0.5)
 
   if y_lim is not None:
     ax.set_ylim(0, y_lim)
@@ -525,7 +528,6 @@ def plot_error_per_subject(unique_subject_ids, criterion, loss_per_subject,
   # Create a new figure and axis if none is provided
   if ax is None:
     fig, ax = plt.subplots(figsize=(15, 5))
-  
   # Set y-axis limit if provided
   if y_lim:
     ax.set_ylim(0, y_lim)
@@ -533,6 +535,7 @@ def plot_error_per_subject(unique_subject_ids, criterion, loss_per_subject,
   if step_y_axis:
     ax.yaxis.set_major_locator(MultipleLocator(step_y_axis))
     
+  ax.yaxis.grid(True, linestyle='--', which='major', color='grey', alpha=0.5)
   
   # Convert subject IDs to strings for the x-axis
   str_unique_subject_ids = [str(id) for id in unique_subject_ids]
@@ -576,6 +579,54 @@ def plot_error_per_subject(unique_subject_ids, criterion, loss_per_subject,
     plt.savefig(saving_path)
 
   plt.close()
+
+import matplotlib.pyplot as plt
+
+def plot_distribution(data_dict, x_label,title,show_missing=False, color=None,ax=None,y_lim=None):
+  """
+  Plots a bar chart of label/subject distribution.
+
+  Parameters:
+  -----------
+  data_dict : dict
+      Dictionary mapping labels/subjects to counts, e.g. {0: 19, 1: 18, 2: 17}.
+  title : str
+      Title for the plot (e.g., 'Train Label Distribution').
+  ax : matplotlib.axes.Axes, optional
+      Axis object to draw the plot on. If None, a new figure and axis are created.
+  """
+
+  if ax is None:
+    fig, ax = plt.subplots(figsize=(6, 4))
+
+  # Extract keys and values
+  if not show_missing:
+    filtered_data = {k: v for k, v in data_dict.items() if v != 0}
+    keys = list(filtered_data.keys())
+    values = [filtered_data[k] for k in keys]
+  else:
+    # add dummy keys for lower (show_missing[0]) and upper (show_missing[1]) bounds if they don't exist
+    for k in range(show_missing[0], show_missing[1]+1):
+      if k not in data_dict:
+        data_dict[k] = 0
+    keys = list(data_dict.keys())
+    values = list(data_dict.values())
+  # Plot bars
+  ax.bar([str(k) for k in keys] if not show_missing else keys, values, color=color if color is not None else 'steelblue', edgecolor='black', alpha=0.8)
+  # Add labels and title
+  ax.set_title(title, fontsize=12, fontweight='bold')
+  ax.set_xlabel(x_label)
+  ax.set_ylabel('Count')
+
+  # Optional styling
+  y_lim = (0,y_lim) if y_lim is not None else (0, max(values) * 1.1)
+  ax.set_ylim(y_lim)
+  ax.set_xticks([str(k) for k in keys] if not show_missing else keys)
+  ax.grid(axis='y', linestyle='--', alpha=0.6)
+  ax.set_axisbelow(True)
+  ax.yaxis.grid(True, linestyle='--', which='major', color='grey', alpha=0.5)
+
+  return ax
 
 
 def plot_losses_and_test(train_losses, val_losses, saving_path=None):
@@ -2225,6 +2276,7 @@ def plot_losses_and_test_new(list_1,title, list_2=None,output_path=None,point=No
   # plt.title(f'{title}')
   ax1.grid(True)
   ax1.title.set_text(title)
+  ax1.title.set_fontweight('bold')
   if ax is None and output_path is not None:
   # Save plot and close
     plt.savefig(output_path, bbox_inches='tight')
