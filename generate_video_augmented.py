@@ -8,12 +8,13 @@ import tqdm
 import argparse
 
 argument_parser = argparse.ArgumentParser()
-argument_parser.add_argument('--video_root', type=str, required=False)
+argument_parser.add_argument('--video_root', type=str, required=True)
 argument_parser.add_argument('--video_extension', type=str, default='.mp4')
 argument_parser.add_argument('--shift', action='store_true')
 argument_parser.add_argument('--color_jitter', action='store_true')
 argument_parser.add_argument('--h_flip', action='store_true')
 argument_parser.add_argument('--rotation', action='store_true')
+argument_parser.add_argument('--zoom', action='store_true')
 args = argument_parser.parse_args()
 
 video_root = args.video_root
@@ -26,7 +27,8 @@ augmentation_dict = {
   'color_jitter': args.color_jitter,
   'h_flip': args.h_flip,
   'rotation': args.rotation,
-  }
+  'zoom': args.zoom
+}
 
 if np.all([not v for v in augmentation_dict.values()]):
   raise ValueError("At least one augmentation must be enabled")
@@ -73,6 +75,7 @@ for video_path in tqdm.tqdm(list_video_path, desc="Processing videos..."):
                                     color_jitter=augmentation_dict['color_jitter'],
                                     h_flip=augmentation_dict['h_flip'],
                                     rotation=augmentation_dict['rotation'],
+                                    zoom=augmentation_dict['zoom'],
                                     spatial_shift=augmentation_dict['shift'])
   video_id = os.path.splitext(os.path.basename(video_path))[0]
   params_all[video_id] = params
