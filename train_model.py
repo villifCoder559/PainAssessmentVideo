@@ -25,7 +25,7 @@ import optunahub
 from sim_loss.age_estimation.loss import SimLoss # type: ignore
 from coral_pytorch.losses import coral_loss
 import sys
-from custom.tools import plot_masked_attention
+from custom.tools import plot_masked_attention, get_pth_path_from_project_folder
 import custom.loss as losses
 
 
@@ -368,11 +368,19 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   }
     
   print(f"\n[Trial {trial.number}] Params: {trial.params}")
-  
+  if isinstance(criterion, losses.RESupConLoss) and kwargs['head_init_path']:
+    list_pth_path = get_pth_path_from_project_folder(kwargs['head_init_path'])
+    dict_pth_path = {}
+    for path in list_pth_path:
+      dict_pth_path[os.path.basename(path)] = path # i.e. 'k0_cross_val_sub_0' : '/path/to/k0_cross_val_sub_0.pth', ....
+    total_models = len(dict_pth_path)
+    if total_models < np.prod(kwargs['stop']):
+      raise ValueError(f"Not enough pretrained models found in {kwargs['head_init_path']}. Found {total_models}, required at least {np.prod(kwargs['stop'])} models for k-fold={kwargs['k_fold']} and stop={kwargs['stop']}.")
+      
   run_folder_path, results = scripts.run_train_test(
     load_dataset_in_memory=kwargs['load_dataset_in_memory'],
     model_type=model_type,
-    soft_labels=soft_labels,
+    soft_labels=soft_labels, 
     criterion=criterion,
     concatenate_temp_dim=concatenate_temp_dim,
     pooling_embedding_reduction=kwargs['pooling_embedding_reduction'],
@@ -499,9 +507,18 @@ def hyper_search(kwargs):
       print(f"Error generating hyperparameter importance plot: {e}")
   
   
+def generate_pymp_folder():
+  # Create a hidden folder for pymp shared memory files
+  hidden_tmp_dir = os.path.join(os.getcwd(), ".pymp_tmp")
+  os.makedirs(hidden_tmp_dir, exist_ok=True)
+
+  # Tell pymp to use that folder for shared memory files
+  os.environ["PYMP_TEMP_DIR"] = hidden_tmp_dir
+  
 if __name__ == '__main__':
   # mp.set_start_method('spawn', force=True)
   # Set up argument parser
+  # generate_pymp_folder()
   parser = argparse.ArgumentParser(description='Train video analysis model with various configurations')
   
   # Model configuration
@@ -556,7 +573,7 @@ if __name__ == '__main__':
   parser.add_argument('--contrastive_loss_temp', type=float, nargs='*', default=[0.07], help='Temperature for contrastive loss. Default is 0.07')
   parser.add_argument('--contrastive_loss_theta', type=float, nargs='*', default=[1.1], help='Theta for contrastive loss. Distance between classes for positive pairs. Default is 1.1')
   parser.add_argument('--contrastive_lambda_weight', type=float, nargs='*', default=[4.0], help='Lambda weight for contrastive loss. Default is 4.0')
-  parser.add_argument('--stratified_training', type=int, choices=[0,1], default=0, help='Use stratified sampling for training batches. Default is 0 (False). Only for UNBC-McMaster dataset')
+  parser.add_argument('--stratified_training', type=int, default=0, help='Use stratified sampling for training batches. Default is 0 (False). Values > 0 will set the number of samples for each class in training (reached using augmentation) for UNBC-McMaster dataset')
   
   # Attention parameters
   parser.add_argument('--num_heads', type=int, nargs='*',default=[8], help='Number of heads for attention in transformer (when nr_blocks >1). Default is 8')
