@@ -2,7 +2,9 @@ from enum import Enum
 import os
 from pathlib import Path
 import multiprocessing as mp
-
+from copy import deepcopy
+import pandas as pd
+import numpy as np
 
 stoic_subjects = [27,28,32,33,34,35,36,39,40,41,42,44,51,53,55,56,61,64,74,87]
 saving_rate_training_logs = 3
@@ -86,7 +88,24 @@ def is_latent_masking_augmentation(sample_id):
 def is_spatial_shift_augmentation(sample_id):
   return sample_id > step_shift * 10 and sample_id <= step_shift * 11
 
+def is_zoom_augmentation(sample_id):
+  return sample_id > step_shift * 11 and sample_id <= step_shift * 12
+
+def is_shift_hflip_augmentation(sample_id):
+  return sample_id > step_shift * 12 and sample_id <= step_shift * 13
+
+def is_jitter_shift_augmentation(sample_id):
+  return sample_id > step_shift * 13 and sample_id <= step_shift * 14
+
+def is_jitter_rotation_augmentation(sample_id):
+  return sample_id > step_shift * 14 and sample_id <= step_shift * 15
+
+def is_rotation_zoom_augmentation(sample_id):
+  return sample_id > step_shift * 15 and sample_id <= step_shift * 16
+
 def get_augmentation_type(sample_id): # folder based on cvs_path, so must contain dataset name to
+  if sample_id <= step_shift:
+    return False
   if is_hflip_augmentation(sample_id):
     return 'hflip'
   elif is_color_jitter_augmentation(sample_id):
@@ -99,32 +118,119 @@ def get_augmentation_type(sample_id): # folder based on cvs_path, so must contai
     return 'latent_masking'
   elif is_spatial_shift_augmentation(sample_id):
     return 'shift'
+  elif is_zoom_augmentation(sample_id):
+    return 'zoom'
+  elif is_shift_hflip_augmentation(sample_id):
+    return 'shift_hflip'
+  elif is_jitter_shift_augmentation(sample_id):
+    return 'jitter_shift'
+  elif is_jitter_rotation_augmentation(sample_id):
+    return 'jitter_rotation'
+  elif is_rotation_zoom_augmentation(sample_id):
+    return 'rotation_zoom'
   else:
-    return False
+    raise ValueError(f"Sample id {sample_id} not recognized for augmentation type")
+
+augmentations_list = ['hflip','jitter','rotation','latent_basic','latent_masking','shift','zoom']
+
+def get_augmentation_availables(fold_feature_path):
+  folder_name = os.path.basename(fold_feature_path)
+  list_folder = os.listdir(os.path.dirname(fold_feature_path))
+  augment_available = [f.replace(folder_name+'_',"") for f in list_folder if ((folder_name in f) and (f != folder_name))]
+  return augment_available
+
+
+def get_sample_augmented(pain, list_subject, orig_df, dict_augmentation_per_sample, new_df):
+  for sbj in list_subject:
+    if orig_df[(orig_df['subject_id']==sbj) & (orig_df['class_id']==pain)].shape[0]>0:
+      # filter by subject and pain class
+      all_candidate_samples = orig_df[(orig_df['subject_id']==sbj) & (orig_df['class_id']==pain)]
+      while all_candidate_samples.shape[0]>0:  
+        # pick the lowest count existing as selection criteria
+        count_existing = (all_candidate_samples['sample_name'].values == new_df['sample_name'].values[:, None]).sum(axis=0)
+        min_count = count_existing.min()
+        all_candidate_samples = all_candidate_samples[count_existing == min_count]
+        candidate = all_candidate_samples.sample(n=1).iloc[0].copy()
+        id_candidate = candidate['sample_id']
+        
+        # check if there are augmentations available for this sample, if yes pick one randomly
+        if len(dict_augmentation_per_sample[id_candidate]) > 0:
+          augm = np.random.choice(dict_augmentation_per_sample[id_candidate], size=1)[0]
+          candidate['sample_id'] = id_candidate + get_shift_for_sample_id(augm)
+          dict_augmentation_per_sample[id_candidate].remove(augm)
+          return candidate.to_dict()
+        else:
+          # no augmentations available, remove from candidates
+          all_candidate_samples = all_candidate_samples[all_candidate_samples['sample_id'] != id_candidate]
+  return None
+
+def generate_balanced_dataframe(df_original,list_augmentations_available,target_samples_per_class):
+  # Deepcopy to modify each key separately
+  dict_augm_available = {id: deepcopy(list_augmentations_available) for id in df_original['sample_id'].values}
+  target_samples_distribution = {class_id: target_samples_per_class for class_id in df_original['class_id'].unique()}
+  dict_class_upsample = {}
+  original_class_distribution = df_original['class_id'].value_counts().sort_index()
+  
+  # Determine how many samples to upsample per class
+  for class_id, count in original_class_distribution.items():
+    if count < target_samples_distribution[class_id]:
+      dict_class_upsample[class_id] = target_samples_distribution[class_id] - count    
+  upsample = np.array(list(dict_class_upsample.keys()))
+  upsample = np.repeat(upsample, list(dict_class_upsample.values()))
+
+  # Generate new balanced dataframe
+  new_df = df_original.copy(deep=True)
+  for pain in upsample:
+    list_subject = new_df['subject_id'].value_counts().sort_values(ascending=True).keys().to_list()
+    sample = get_sample_augmented(pain,
+                                list_subject,
+                                df_original,
+                                new_df=new_df,
+                                dict_augmentation_per_sample=dict_augm_available)
+    if sample is not None:
+      new_df = pd.concat([new_df, pd.DataFrame([sample])], ignore_index=True)
+  return new_df
 
 
 def get_shift_for_sample_id(folder_feature):
-  if 'hflip' in folder_feature or 'h_flip' in folder_feature:
-    return step_shift * 1
-  if 'jitter' in folder_feature:
-    return step_shift * 2
-  if 'rotation' in folder_feature:
-    return step_shift * 3
-  if 'latent_basic' in folder_feature:
-    return step_shift * 4
-  if 'latent_masking' in folder_feature:
-    return step_shift * 5
-  if 'bottom_left' in folder_feature:
-    return step_shift * 6
-  if 'bottom_right' in folder_feature:
-    return step_shift * 7
-  if 'upper_left' in folder_feature:
-    return step_shift * 8
-  if 'upper_right' in folder_feature:
-    return step_shift * 9
-  if 'shift' in folder_feature:
-    return step_shift * 10
-  return 0
+  ### Mixed augmentations ###
+  is_composed = len([aug for aug in augmentations_list if aug in folder_feature]) > 1
+  if is_composed:
+    if 'hflip' in folder_feature and 'shift' in folder_feature:
+      return step_shift * 12
+    elif 'jitter' in folder_feature and 'shift' in folder_feature:
+      return step_shift * 13
+    elif 'rotation' in folder_feature and 'jitter' in folder_feature:
+      return step_shift * 14
+    elif 'rotation' in folder_feature and 'zoom' in folder_feature:
+      return step_shift * 15
+    else:
+      raise ValueError(f"Mixed augmentation not recognized in folder_feature: {folder_feature}")
+  else:
+    ### Single augmentations ###
+    if 'hflip' in folder_feature or 'h_flip' in folder_feature:
+      return step_shift * 1
+    if 'jitter' in folder_feature:
+      return step_shift * 2
+    if 'rotation' in folder_feature:
+      return step_shift * 3
+    if 'latent_basic' in folder_feature:
+      return step_shift * 4
+    if 'latent_masking' in folder_feature:
+      return step_shift * 5
+    if 'bottom_left' in folder_feature:
+      return step_shift * 6
+    if 'bottom_right' in folder_feature:
+      return step_shift * 7
+    if 'upper_left' in folder_feature:
+      return step_shift * 8
+    if 'upper_right' in folder_feature:
+      return step_shift * 9
+    if 'shift' in folder_feature:
+      return step_shift * 10
+    if 'zoom' in folder_feature:
+      return step_shift * 11
+    return 0
   
 class SAMPLE_FRAME_STRATEGY(Enum):
   UNIFORM = 'uniform'
@@ -132,94 +238,6 @@ class SAMPLE_FRAME_STRATEGY(Enum):
   CENTRAL_SAMPLING = 'central'
   RANDOM_SAMPLING = 'random' 
   
-# class MODEL_TYPE(Enum):
-#   # VideoMAEv2
-#   VIDEOMAE_v2_G_unl = os.path.join("VideoMAEv2","pretrained","vit_g_hybrid_pt_1200e.pth")
-#   VIDEOMAE_v2_S = os.path.join('VideoMAEv2','pretrained',"vit_s_k710_dl_from_giant.pth")
-#   VIDEOMAE_v2_B = os.path.join('VideoMAEv2','pretrained',"vit_b_k710_dl_from_giant.pth")
-#   VIDEOMAE_v2_G = os.path.join('VideoMAEv2','pretrained',"vit_g_hybrid_pt_1200e_k710_ft.pth")
-  
-#   # V-Jepa 2
-#   VJEPA2_G_384 = os.path.join('vjepa2','pretrained','vitg-384.pt')
-  
-#   # standard ViT
-#   ViT_image = 'ViT_image'
-#   def set_custom_model_type(type,custom_model_path):
-#     if type == 'S':
-#       MODEL_TYPE.VIDEOMAE_v2_S = custom_model_path
-#     elif type == 'B':
-#       MODEL_TYPE.VIDEOMAE_v2_B = custom_model_path
-#     elif type == 'G':
-#       MODEL_TYPE.VIDEOMAE_v2_G = custom_model_path
-#     elif type == 'G_unl':
-#       MODEL_TYPE.VIDEOMAE_v2_G_unl = custom_model_path
-#     elif type == 'VJEPA2_G_384':
-#       MODEL_TYPE.VJEPA2_G_384 = custom_model_path
-#     elif type == 'ViT_image':
-#       MODEL_TYPE.ViT_image = custom_model_path
-#     else:
-#       raise ValueError(f"Model type {type} not found. Choose between 'S','B','G','G_unl', 'VJEPA2_G_384' or 'ViT_image'")
-#   def get_model_type(type):
-#     """
-#     Retrieves the corresponding model type based on the provided type identifier.
-
-#     Args:
-#       type (str): A string representing the model type. 
-#             Accepted values are:
-#             - 'S': Corresponds to MODEL_TYPE.VIDEOMAE_v2_S
-#             - 'B': Corresponds to MODEL_TYPE.VIDEOMAE_v2_B
-#             - 'G': Corresponds to MODEL_TYPE.VIDEOMAE_v2_G
-#             - 'ViT_image': Corresponds to MODEL_TYPE.ViT_image
-
-#     Returns:
-#       MODEL_TYPE: The corresponding model type constant.
-
-#     Raises:
-#       ValueError: If the provided type is not one of the accepted values.
-#     """
-#     if type == 'S':
-#       return MODEL_TYPE.VIDEOMAE_v2_S
-#     elif type == 'B':
-#       return MODEL_TYPE.VIDEOMAE_v2_B
-#     elif type == 'G':
-#       return MODEL_TYPE.VIDEOMAE_v2_G
-#     elif type == 'G_unl':
-#       return MODEL_TYPE.VIDEOMAE_v2_G_unl
-#     elif type == 'VJEPA2_G_384':
-#       return MODEL_TYPE.VJEPA2_G_384
-#     elif type == 'ViT_image':
-#       return MODEL_TYPE.ViT_image
-#     else:
-#       raise ValueError(f"Model type {type} not found. Choose between 'S','B','G' or 'ViT_image'")
-#   def get_embedding_size(type):
-#     """
-#     Returns the embedding size for a given model type.
-
-#     Parameters:
-#     type (str): The type of the model. Accepted values are:
-#           - 'S': Small model, returns an embedding size of 384.
-#           - 'B': Base model, returns an embedding size of 768.
-#           - 'G': Large model, returns an embedding size of 1408.
-#           - 'ViT_image': Vision Transformer model, returns an embedding size of 768.
-
-#     Returns:
-#     int: The embedding size corresponding to the specified model type.
-
-#     Raises:
-#     ValueError: If the provided model type is not one of the accepted values.
-#     """
-#     if type == 'S':
-#       return 384
-#     elif type == 'B':
-#       return 768
-#     elif type == 'G':
-#       return 1408
-#     elif type == 'ViT_image':
-#       return 768
-#     else:
-#       raise ValueError(f"Model type {type} not found. Choose between 'S','B','G' or 'ViT_image'")
-
-
 class ModelTypeEntry:
   def __init__(self, name, value):
     self.name = name
@@ -304,16 +322,6 @@ class MODEL_TYPE:
     else:
       raise ValueError(
         f"Model type '{typ}' not supported for embedding size.")
-    # if type == 'S':
-    #   return 384
-    # elif type in ['B', 'ViT_image']:
-    #   return 768
-    # elif
-    # elif type == 'G':
-    #   return 1408
-    # else:
-    #   raise ValueError(
-    #     f"Model type '{type}' not supported for embedding size. Choose between 'S','B','G','ViT_image'")
 
 class EMBEDDING_REDUCTION(Enum):  
   # [B,t,p,p,emb] -> [B,1,p,p,emb] ex: [3,8,14,14,768] -> [3,1,14,14,768]
