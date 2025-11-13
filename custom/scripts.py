@@ -322,6 +322,7 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
       sub_idx, k_fold, sub_k_fold_list, csv_array, cols, 
       sample_ids, saving_path_kth_sub_fold, validate
     )
+    
     ## set correct init_path_head if criterion is RESupConLoss, head_init_path is the general folder that contains all models for the k-fold
     if isinstance(criterion, losses.RESupConLoss) and model_advanced.head_init_path is not None:
       if os.path.isdir(model_advanced.head_init_path):
