@@ -18,6 +18,7 @@ import numpy as np
 import tqdm
 import pandas as pd
 import sys
+import time
 # import torch.nn as nn
 
 def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,enable_batch_extraction,batch_size_feat_extraction,n_workers,saving_chunk_size=100,  preprocess_align = False,
@@ -79,6 +80,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
     backbone.model.eval()
 
     start = time.time()
+    str_augmentation = '_'.join([f'{k}' for k,v in dict_augmentation.items() if v])
     for data, labels, subject_id, sample_id, path, list_sampled_frames in dataloader:
       if enable_batch_extraction:
         feature = batch_extraction(data=data,device=device,backbone=backbone)
@@ -111,16 +113,17 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
       sample_id = sample_id + base_shift
       
       # update sample_id based on augmentation
-      if dict_augmentation['h_flip']:
-        list_sample_id.append(sample_id+helper.get_shift_for_sample_id('hflip')) # if h_flip, add 8700 to sample_id
-      elif dict_augmentation['color_jitter']:
-        list_sample_id.append(sample_id+helper.get_shift_for_sample_id('jitter'))
-      elif dict_augmentation['rotation']:
-        list_sample_id.append(sample_id+helper.get_shift_for_sample_id('rotation'))
-      elif dict_augmentation['spatial_shift']:
-        list_sample_id.append(sample_id+helper.get_shift_for_sample_id('shift'))
-      else:
-        list_sample_id.append(sample_id)
+      list_sample_id.append(sample_id + (helper.get_shift_for_sample_id(str_augmentation) if str_augmentation != '' else 0))
+      # if dict_augmentation['h_flip']:
+      #   list_sample_id.append(sample_id+helper.get_shift_for_sample_id('hflip')) # if h_flip, add 8700 to sample_id
+      # elif dict_augmentation['color_jitter']:
+      #   list_sample_id.append(sample_id+helper.get_shift_for_sample_id('jitter'))
+      # elif dict_augmentation['rotation']:
+      #   list_sample_id.append(sample_id+helper.get_shift_for_sample_id('rotation'))
+      # elif dict_augmentation['spatial_shift']:
+      #   list_sample_id.append(sample_id+helper.get_shift_for_sample_id('shift'))
+      # else:
+      #   list_sample_id.append(sample_id)
       print(f'sample_id: {list_sample_id[-1]}')
       print(f'list_frames: {list_sampled_frames[-1] if list_sampled_frames.ndim > 1 else list_sampled_frames}')
       list_subject_id.append(subject_id)
@@ -232,13 +235,14 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
                 stride_window=stride_window,
                 clip_length=clip_length,
                 model_type=model_type,
-                # image_resize_w=image_resize,
-                # image_resize_h=image_resize,
                 video_labels=video_labels,
-                h_flip=dict_augmentation['h_flip'],
-                color_jitter=dict_augmentation['color_jitter'],
-                rotation=dict_augmentation['rotation'],
-                spatial_shift=dict_augmentation['spatial_shift'],
+                # NO AUGMENTATION during feature extraction#############################
+                h_flip=False, 
+                color_jitter=False,
+                rotation=False,
+                spatial_shift=False,
+                zoom=False,
+                ########################################################################
                 shift_frame_idx=shift_frame_idx,
                 video_extension=video_extension,
                 preprocess_align=preprocess_align,
@@ -324,12 +328,17 @@ if __name__ == "__main__":
   parser.add_argument('--stride_window', type=int, default=16, help='Stride window')
   parser.add_argument('--stride_inside_window', type=int, default=1, help='Stride inside window')
   parser.add_argument('--clip_length', type=int, default=16, help='Clip length')
-  # parser.add_argument('--image_resize', type=int, default=None, help='Image resize for backbone')
-  parser.add_argument('--h_flip', action='store_true', help='Apply Horizontal flip')
   parser.add_argument('--shift_frame_idx', type=int, default=0, help='Shift frame index to change the last frame sampled')
+  
+  #################### DON'T USE AUGMENTATION FLAGS, EXTRACT VIDEO AUGMENTED FIRST USING generate_video_augmented.py     #############################
+  #################### and then EXTRACT FEATURES with this script. Put in the dataset_path the keywords for augmentation #############################
+  parser.add_argument('--h_flip', action='store_true', help='Apply Horizontal flip')
   parser.add_argument('--color_jitter', action='store_true', help='Apply color jitter')
   parser.add_argument('--spatial_shift', action='store_true', help='Apply spatial shift to video')
   parser.add_argument('--rotation', action='store_true', help='Apply rotation')
+  parser.add_argument('--zoom', action='store_true', help='Apply zoom')
+  #################################################################################################################################
+  
   parser.add_argument('--float_16', action='store_true', help='Use float 16')
   parser.add_argument('--save_as_safetensors', action='store_true', help='Save as safetensors')
   parser.add_argument('--adaptive_avg_pool3d_out_shape', type=int, nargs='*', default=[2,2,2], help='3d pooling kernel size')
@@ -361,12 +370,20 @@ if __name__ == "__main__":
   if args.save_big_feature:
     args.saving_after = 1
   dict_augmentation = {
-    'h_flip': args.h_flip,
-    'color_jitter': args.color_jitter,
+    'hflip': args.h_flip,
+    'jitter': args.color_jitter,
     'rotation': args.rotation,
-    'spatial_shift': args.spatial_shift
+    'shift': args.spatial_shift,
+    'zoom': args.zoom
   }
-  
+  for k,v in dict_augmentation.items():
+    if k in args.path_dataset:
+      dict_augmentation[k] = True
+  print(f'\nData augmentation used for feature extraction:\n')
+  for k,v in dict_augmentation.items():
+    print(f'  {k}: {v}')
+  # sleep 10 seconds to let user see the args
+  time.sleep(10)
   if args.log_file_path is None:
     args.log_file_path = os.path.join(args.saving_folder_path,'log_file.txt')
   dict_args = vars(args)  
