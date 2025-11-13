@@ -218,7 +218,7 @@ class customDataset(torch.utils.data.Dataset):
     return len(self.video_labels)
   
   @staticmethod
-  def preprocess_images(tensors,crop_size=None,to_visualize=False,get_params=False,h_flip=False,color_jitter=False,rotation=False,spatial_shift=False):
+  def preprocess_images(tensors,crop_size=None,to_visualize=False,get_params=False,h_flip=False,color_jitter=False,rotation=False,spatial_shift=False,zoom=False):
     """
     Preprocess a batch of image tensors.
     
@@ -269,7 +269,20 @@ class customDataset(torch.utils.data.Dataset):
         'saturation': saturation,
         'hue': hue
       }
-
+    if zoom:
+      zoom_range_min = 0.85
+      zoom_range_max = 1.15
+      zoom_val = np.random.choice([np.random.uniform(zoom_range_min, 0.95),np.random.uniform(1.05, zoom_range_max)])
+      zoom_range = (zoom_val, zoom_val)
+      if crop_size is None:
+        crop_size = (tensors.shape[2], tensors.shape[3])
+      transform.append(v2.RandomResizedCrop(size=crop_size, scale=zoom_range))
+      params['zoom'] = v2.RandomResizedCrop.get_params(
+        img=tensors,
+        scale=transform[-1].scale,
+        ratio=transform[-1].ratio
+      )
+      
     if rotation:
       pos_degrees = (0.5, 4)
       neg_degrees = (-4, -0.5)
@@ -1239,7 +1252,8 @@ def generate_csv_augmented(original_csv_path, dict_augmentation, out_csv_path,pa
   df = pd.read_csv(original_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
   list_df.append(df)
   
-  if stratified_training and 'unbc' in path_to_extracted_features.lower():
+  if stratified_training == -1 and 'unbc' in path_to_extracted_features.lower():
+    # if False:
     augmented_list = ['hflip','jitter','rotation','shift']
     # get 5 class with less samples
     minority_classes = df['class_id'].value_counts().nsmallest(5).index
