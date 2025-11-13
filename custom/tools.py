@@ -2593,3 +2593,11 @@ def plot_masked_attention(pkl_path, mask_threshold=7680, plot_all_subject=False,
     png_path = folder_plot_path / f"{Path(ref_video_path).stem}_grid_{num_rows}x{num_cols}_thr{mask_threshold}.png"
     plt.savefig(png_path)
     plt.close()
+
+def get_pth_path_from_project_folder(project_folder):
+  pth_path_list = []
+  for root, dirs, files in os.walk(project_folder):
+    for file in files:
+      if file.endswith('.pth'):
+        pth_path_list.append(os.path.join(root, file))
+  return pth_path_list
