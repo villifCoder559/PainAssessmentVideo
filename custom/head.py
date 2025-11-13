@@ -1144,11 +1144,12 @@ class AttentiveHeadJEPA(BaseHead):
         adapter.init_weights()
         
     if init_type == 'default':
+      ## Initialize pooler ##
       if self.head_init_path is None:
         trunc_normal_(self.pooler.query_tokens, std=self.pooler.init_std)
         self.pooler.apply(self.pooler._init_weights)
         self.pooler._rescale_blocks()
-      else: # Load pooler weights if there is an init. (head_init_path)
+      else: 
         state_dict = torch.load(self.head_init_path, weights_only=True)
         # Remove final linear layer for classification/regression 
         layers = list(state_dict.keys())
@@ -1163,15 +1164,14 @@ class AttentiveHeadJEPA(BaseHead):
         for param in self.pooler.parameters():
           param.requires_grad = False
         print(f'======== FROZEN Head weights loaded from {self.head_init_path}========\n')
+      
+      ## Initialize linear layer ##
       if self.coral_loss:
         self.linear.coral_weights.reset_parameters()
       else:
-        # self.linear.reset_parameters()
         if self.linear is not None and not isinstance(self.linear, nn.Identity):
           torch.nn.init.xavier_uniform_(self.linear.weight,gain=0.1)
           torch.nn.init.zeros_(self.linear.bias)
-        # Load pooler weights if there is an init. (head_init_path)
-
     else:
       raise NotImplementedError(f'Initialization method {init_type} not implemented')
   
