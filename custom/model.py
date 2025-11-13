@@ -244,47 +244,6 @@ class Model_Advanced: # Scenario_Advanced
       # create a tensor with the same label
       csv_labels = torch.full((nr_values,),real_csv_label,dtype=helper.dict_data['list_labels'].dtype) 
       helper.dict_data['list_labels'][mask] = csv_labels
-    
-  def generate_csv_augmented(self, original_csv_path, dict_augmentation, out_csv_path,startified_training=False):
-    def _get_rnd_from_type(type_augm):
-      if type_augm == 'hflip':
-        return 42
-      elif type_augm == 'jitter':
-        return 53
-      elif type_augm == 'rotation':
-        return 63
-      elif type_augm == 'latent_basic':
-        return 73
-      elif type_augm == 'latent_masking':
-        return 83
-      elif type_augm == 'shift':
-        return 93
-      else:
-        raise ValueError(f'Unknown augmentation type: {type_augm}')
-      
-    
-    list_df = []
-    df = pd.read_csv(original_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
-    list_df.append(df)
-    
-    if startified_training and 'unbc' in self.path_to_extracted_features.lower():
-      augmented_list = ['hflip','jitter','rotation','shift']
-      minority_classes = df['class_id'].nsmallest(5)
-      df_minority = df[df['class_id'].isin(minority_classes)]
-      for type_augm in augmented_list:
-        copy_df = df_minority.copy(deep=True)
-        copy_df['sample_id'] = df_minority['sample_id'].apply(lambda x: x + get_shift_for_sample_id(type_augm))
-        list_df.append(copy_df)
-    else:
-      for type_augm, p in dict_augmentation.items():
-        if p > 0 and p<= 1:
-          df_sampled = df.sample(frac=p, random_state=_get_rnd_from_type(type_augm))
-          df_sampled['sample_id'] = df_sampled['sample_id'].apply(lambda x: x + get_shift_for_sample_id(type_augm))
-          list_df.append(df_sampled)
-    df_merged = pd.concat(list_df, ignore_index=True)
-    df_merged.to_csv(out_csv_path, index=False, sep='\t')
-    print(f'CSV file with augmentations saved to {out_csv_path}')
-    return df_merged
 
   def test_pretrained_model(self,path_model_weights,state_dict, csv_path, criterion, concatenate_temporal,is_test=True,**kwargs):
     """
@@ -392,35 +351,7 @@ class Model_Advanced: # Scenario_Advanced
     self.backbone.model.to('cpu')
     torch.cuda.empty_cache()
   
-  def train_stratification_(self, csv_path):
 
-    df = pd.read_csv(csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
-    
-    # double last 3 minority classes
-    count = df['class_id'].value_counts().nsmallest(3)
-    
-    minority_classes = count.index.tolist()
-    df_minority = df[df['class_id'].isin(minority_classes)]
-    
-    # --- 2. Oversample to balance bins ---
-    balanced_frames = []
-
-    count_class_id = df['class_id'].value_counts()
-    for class_id in df_minority['class_id'].unique():
-      subset = df[df['class_id'] == class_id]
-      subset_bal = resample(subset,
-                            replace=True,         # sample with replacement
-                            n_samples=int(count_class_id[class_id]) * 2,  # to double the samples
-                            random_state=2)
-      balanced_frames.append(subset_bal)
-
-    df_balanced = pd.concat(balanced_frames)
-    df_final = pd.concat([df[~df['class_id'].isin(minority_classes)], df_balanced]).reset_index(drop=True)
-    df_final.to_csv(csv_path, index=False, sep='\t')
-    df.to_csv(os.path.basename(csv_path).replace('.csv','_original.csv'), index=False, sep='\t')
-    print(f"Original class distribution:\n{df['class_id'].value_counts().sort_index()}")
-    print(f"Stratification completed. New class distribution:\n{df_final['class_id'].value_counts().sort_index()}")
-  
   def train(self, train_csv_path, val_csv_path, num_epochs, criterion,
             optimizer_fn, lr,saving_path,round_output_loss,
             shuffle_training_batch,init_network,
@@ -436,9 +367,17 @@ class Model_Advanced: # Scenario_Advanced
       is_coral_loss = False
       print('No coral loss. Using standard loss function.')
     
-    if 'unbc' in train_csv_path.lower() and kwargs.get('stratified_training', False):
-      self.train_stratification_(train_csv_path)
+    if 'unbc' in self.path_to_extracted_features.lower() and kwargs.get('stratified_training', False):
+      df_original = pd.read_csv(train_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
+      df_final = helper.generate_balanced_dataframe(df_original=df_original,
+                                         list_augmentations_available=helper.get_augmentation_availables(self.path_to_extracted_features),
+                                         target_samples_per_class=kwargs['stratified_training'])
       
+      df_original.to_csv(os.path.basename(train_csv_path).replace('.csv','_original.csv'), index=False, sep='\t')
+      df_final.to_csv(train_csv_path, index=False, sep='\t')
+      print(f"Original class distribution:\n{df_original['class_id'].value_counts().sort_index()}")
+      print(f"Stratification completed. New class distribution:\n{df_final['class_id'].value_counts().sort_index()}")
+          
     dict_results = self.head.start_train(batch_size=self.batch_size_training,
                                           criterion=criterion,
                                           optimizer=optimizer_fn,
