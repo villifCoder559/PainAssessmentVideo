@@ -57,7 +57,7 @@ def get_sampling_frame_startegy(strategy):
   else:
     raise ValueError(f'Sampling strategy not found: {strategy}. Valid options: {list(SAMPLE_FRAME_STRATEGY)}')
   
-step_shift = None 
+step_shift = None  ## keep none to force setting it before use
 
 def set_step_shift(folder_feature):
   global step_shift

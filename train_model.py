@@ -127,7 +127,7 @@ def get_loss(loss, dict_args=None):
   else:
     raise ValueError(f'Loss not found: {loss}. Valid options: l1, l2, ce, cdw_ce, sim_loss, coral')
 
-# ------------ Main Entry Point ------------
+# ------------ Main Entry Point ------------#
 
 log_scale_optuna_hypers = ['lr','regulariz_lambda_L1','regulariz_lambda_L2']
 def get_class_weights(csv_path):
