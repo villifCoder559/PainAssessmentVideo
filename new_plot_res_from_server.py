@@ -47,7 +47,7 @@ def retrieve_subject_ids(data, key, best_epoch):
     uniqie_subject_ids_val = data[key]['val_unique_subject_ids']
   return uniqie_subject_ids_train, uniqie_subject_ids_val
 
-def get_grouped_losses(dict_grouped_k_fold):
+def get_grouped_losses(dict_grouped_k_fold, config):
   
   def update_dict_grouped_losses(k_fold, res, best_epoch, key, value, key_target_dict, upper_dict = 'train_val'):
     # convert to numpy if tensor
@@ -93,36 +93,39 @@ def get_grouped_losses(dict_grouped_k_fold):
         dict_grouped_losses[k_fold]['val_loss'].append(res['train_val']['val_losses'][best_epoch])
       else:
         dict_grouped_losses[k_fold]['test_loss'].append(res['test']['test_loss'])
-        
-      # Get train loss per class
-      update_dict_grouped_losses(key='train_unique_y',value='train_loss_per_class',key_target_dict='class_train_loss',
-                                 k_fold=k_fold, res=res, best_epoch=best_epoch)
-       
-      # Get val/test loss per class
-      update_dict_grouped_losses(key='val_unique_y' if not final_flag else 'test_unique_y',
-                                 value='val_loss_per_class' if not final_flag else 'test_loss_per_class',
-                                 key_target_dict='class_val_loss' if not final_flag else 'class_test_loss',
-                                 upper_dict= 'train_val' if not final_flag else 'test',
-                                 k_fold=k_fold, res=res, best_epoch=best_epoch)      
-      # Get train loss per subject
-      update_dict_grouped_losses(k_fold=k_fold, res=res, best_epoch=best_epoch,
-                                 key='train_unique_subject_ids', value='train_loss_per_subject', key_target_dict='subject_train_loss')
       
-      # Get val/test loss per subject
-      update_dict_grouped_losses(k_fold=k_fold, res=res, best_epoch=best_epoch,
-                                 key='val_unique_subject_ids' if not final_flag else 'test_unique_subject_ids',
-                                 value='val_loss_per_subject' if not final_flag else 'test_loss_per_subject',
-                                 upper_dict='train_val' if not final_flag else 'test',
-                                 key_target_dict='subject_val_loss' if not final_flag else 'subject_test_loss')
+      if not isinstance(config['criterion'],losses.RESupConLoss):
+        
+        # Get train loss per class
+        update_dict_grouped_losses(key='train_unique_y',value='train_loss_per_class',key_target_dict='class_train_loss',
+                                  k_fold=k_fold, res=res, best_epoch=best_epoch)
+        
+        # Get val/test loss per class
+        update_dict_grouped_losses(key='val_unique_y' if not final_flag else 'test_unique_y',
+                                  value='val_loss_per_class' if not final_flag else 'test_loss_per_class',
+                                  key_target_dict='class_val_loss' if not final_flag else 'class_test_loss',
+                                  upper_dict= 'train_val' if not final_flag else 'test',
+                                  k_fold=k_fold, res=res, best_epoch=best_epoch)      
+        # Get train loss per subject
+        update_dict_grouped_losses(k_fold=k_fold, res=res, best_epoch=best_epoch,
+                                  key='train_unique_subject_ids', value='train_loss_per_subject', key_target_dict='subject_train_loss')
+        
+        # Get val/test loss per subject
+        update_dict_grouped_losses(k_fold=k_fold, res=res, best_epoch=best_epoch,
+                                  key='val_unique_subject_ids' if not final_flag else 'test_unique_subject_ids',
+                                  value='val_loss_per_subject' if not final_flag else 'test_loss_per_subject',
+                                  upper_dict='train_val' if not final_flag else 'test',
+                                  key_target_dict='subject_val_loss' if not final_flag else 'subject_test_loss')
       
     # compute the mean loss per class and subject
     for k,v in dict_grouped_losses[k_fold].items():
       if 'loss' in k:
-        if isinstance(v, list):
-          dict_grouped_losses[k_fold][k] = np.mean(v)
-        elif isinstance(v, dict):
-          for key_inner, list_loss in v.items():
-            dict_grouped_losses[k_fold][k][key_inner] = np.mean(list_loss)
+        if len(v) != 0:
+          if isinstance(v, list):
+            dict_grouped_losses[k_fold][k] = np.mean(v)
+          elif isinstance(v, dict):
+            for key_inner, list_loss in v.items():
+              dict_grouped_losses[k_fold][k][key_inner] = np.mean(list_loss)
   return dict_grouped_losses
         
 
@@ -146,7 +149,7 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
     for key in keys:
       dict_grouped_k_fold[f'k{k}'][key] = data['results'][key]
   dict_grouped_k_fold['final'] = {key:data['results'][key] for key in final_key}
-  dict_grouped_losses = get_grouped_losses(dict_grouped_k_fold)
+  dict_grouped_losses = get_grouped_losses(dict_grouped_k_fold, data['config'])
   
   # Plot grouped losses per subject and class
   for k_fold, grouped_losses in dict_grouped_losses.items():
@@ -284,6 +287,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         dict_to_string += f'\nTest ID: {test_id}'
         dict_to_string += f'\nfold_subfold: {key.split("_")[0]}_{key.split("_")[-1]}'
         y_lim_loss = 5.1
+        x_lim_loss = -1.1 if isinstance(data['config']['criterion'],losses.RESupConLoss) else 0
         input_dict_loss_acc= {
           'list_1':train_losses,
           'list_2':val_accuracy,
@@ -317,9 +321,9 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
           'y_label_1':'Train loss',
           'y_label_2':'Validation loss',
           'y_label_3':'Test loss',
-          'y_lim_1':[0, y_lim_loss],
-          'y_lim_2':[0, y_lim_loss],
-          'y_lim_3':[0, y_lim_loss],
+          'y_lim_1':[x_lim_loss, y_lim_loss],
+          'y_lim_2':[x_lim_loss, y_lim_loss],
+          'y_lim_3':[x_lim_loss, y_lim_loss],
           'step_ylim_1':0.25,
           'step_ylim_2':0.25,
           'step_ylim_3':0.25,
@@ -337,6 +341,8 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
           'y_lim_1':[-1, 1],
           'color_1':'tab:orange',
         }
+        
+        # Plot accuracy gap and dataset distribution if not UNBC dataset
         if not is_unbc:
           tools.plot_losses_and_test_new(**input_dict_accuracy_gap)
           tools.plot_losses_and_test_new(**input_dict_loss_acc)
