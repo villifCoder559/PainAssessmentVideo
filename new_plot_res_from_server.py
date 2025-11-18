@@ -203,7 +203,51 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
     fig.savefig(os.path.join(grouped_output_folder, f'{test_id}{additional_info}_grouped_loss_per_class_{k_fold}.png'))
     plt.close(fig)
     
+def plot_CCC_ICC_pearson(data, run_output_folder, test_id, additional_info=''):
+  def plot_metric(dict_value_to_plot, metric_name, ax: plt.Axes, epochs, title_suffix='', y_lim_bottom = -1, y_lim_top = 1):
+    for phase in dict_value_to_plot[metric_name]:
+      values = dict_value_to_plot[metric_name][phase]
+      if isinstance(values, float) or isinstance(values, int):
+        ax.plot(epochs,values,marker='o', label=phase)
+      else:
+        ax.plot(values, label=phase)
+    ax.set_title(f'{metric_name} over Epochs {title_suffix}')
+    ax.set_xlabel('Epochs')
+    ax.set_ylabel(metric_name)
+    ax.set_ylim([y_lim_bottom, y_lim_top])
+    ax.legend()
+    return ax
+  
+  for k in data['results'].keys():
+    if 'ICC' not in data['results'][k].get('train_val', {}):
+      continue
+    dict_value_to_plot = {}
+    if 'train_val' in data['results'][k]:
+      dict_value_to_plot['ICC'] = {'train':data['results'][k]['train_val']['list_train_ICC'],
+                                  'val':data['results'][k]['train_val']['list_val_ICC']}
+
+      dict_value_to_plot['CCC'] = {'train':data['results'][k]['train_val']['list_train_CCC'],
+                                  'val':data['results'][k]['train_val']['list_val_CCC']}
+
+      dict_value_to_plot['pearson_correlation'] = {'train':[val for val,pval in data['results'][k]['train_val']['list_train_pearson_correlation']],
+                                  'val':[val for val,pval in data['results'][k]['train_val']['list_val_pearson_correlation']]}
     
+    if 'final' in k:
+      dict_value_to_plot['ICC'].update({'test':data['results'][k]['test']['test_ICC']})
+      dict_value_to_plot['CCC'].update({'test':data['results'][k]['test']['test_CCC']})
+      dict_value_to_plot['pearson_correlation'].update({'test':data['results'][k]['test']['test_pearson_correlation'][0]})
+    
+    nr_plots = 3
+    fig, axs = plt.subplots(nr_plots, figsize=(10, 15))
+    axs = axs.flatten()
+    nr_epochs = len(dict_value_to_plot['ICC']['train']) - 1
+    for i, metric_name in enumerate(['ICC', 'CCC', 'pearson_correlation']):
+      plot_metric(dict_value_to_plot, metric_name, axs[i],epochs=nr_epochs, title_suffix=f'for {k}')
+      out_path = os.path.join(run_output_folder, test_id, f'{test_id}{additional_info}_{metric_name}_over_epochs_{k}.png')
+      plt.tight_layout()
+      fig.savefig(out_path)
+    plt.close(fig)
+
 
 def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_per_subject=True,plot_acc_per_subject=True, plot_loss_per_class=True,plot_train_loss_val_acc=True):
   # Adjust run_output_folder to store plots
@@ -1223,7 +1267,8 @@ def plot_run_details(results_data, output_root,only_csv):
       if not is_unbc:
         plot_confusion_matrices(data, os.path.join(output_root), test_id)
         plot_gradient_per_module(data, os.path.join(output_root), test_id)
-      
+        
+      plot_CCC_ICC_pearson(data, os.path.join(output_root), test_id)
       plot_history_model_prediction(data, os.path.join(output_root), test_id,root_csv_path=os.path.dirname(file))
       if data['config'].get('validate', True):
         plot_accuray_per_class_across_epochs(data, os.path.join(output_root), test_id)
