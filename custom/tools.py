@@ -22,6 +22,7 @@ import torch.nn.functional as F
 import cdw_cross_entropy_loss.cdw_cross_entropy_loss as cdw
 import sys
 from pathlib import Path
+from scipy import stats
 
 
 class NpEncoder(json.JSONEncoder):
@@ -2601,3 +2602,80 @@ def get_pth_path_from_project_folder(project_folder):
       if file.endswith('.pth'):
         pth_path_list.append(os.path.join(root, file))
   return pth_path_list
+
+def concordance_ccc(y_true, y_pred):
+  """Compute the Concordance Correlation Coefficient (CCC) between two 1-D arrays.
+
+  CCC = 2 * cov(x, y) / (var(x) + var(y) + (mean(x) - mean(y))^2)
+
+  Parameters
+  ----------
+  y_true, y_pred : array-like, shape (n,)
+
+  Returns
+  -------
+  ccc : float
+  """
+  y_true = np.asarray(y_true).astype(np.float64)
+  y_pred = np.asarray(y_pred).astype(np.float64)
+  if y_true.shape != y_pred.shape:
+    raise ValueError("y_true and y_pred must have the same shape")
+  x_mean = y_true.mean()
+  y_mean = y_pred.mean()
+  x_var = y_true.var(ddof=0)
+  y_var = y_pred.var(ddof=0)
+  cov = np.mean((y_true - x_mean) * (y_pred - y_mean))
+  numerator = 2.0 * cov
+  denominator = x_var + y_var + (x_mean - y_mean) ** 2
+  if denominator == 0:
+    return 1.0 if np.allclose(y_true, y_pred) else np.nan
+  return numerator / denominator
+
+
+def pearson_r(y_true, y_pred):
+  """Compute Pearson correlation coefficient between two 1-D arrays.
+
+  Returns Pearson's r (float) and p-value (float).
+  """
+  y_true = np.asarray(y_true).astype(np.float64)
+  y_pred = np.asarray(y_pred).astype(np.float64)
+  if y_true.shape != y_pred.shape:
+    raise ValueError("y_true and y_pred must have the same shape")
+  if y_true.size < 2:
+    return np.nan, np.nan
+  rval, pval = stats.pearsonr(y_true, y_pred)
+  return (rval, pval)
+
+
+def intraclass_icc(data, icc_type='ICC2'):
+  """Compute Intraclass Correlation Coefficient (ICC) for data shaped (n_subjects, n_raters).
+
+  Supports ICC(2,1) (two-way random effects, single measures).
+  """
+  arr = np.asarray(data, dtype=np.float64)
+  if arr.ndim != 2:
+    raise ValueError('data must be 2-D: shape (n_subjects, n_raters)')
+  n, k = arr.shape
+  if n < 2:
+    raise ValueError('Need at least 2 subjects to compute ICC')
+
+  mean_per_subject = arr.mean(axis=1)
+  mean_per_rater = arr.mean(axis=0)
+  grand_mean = arr.mean()
+
+  ss_total = np.sum((arr - grand_mean) ** 2)
+  ss_between_subjects = k * np.sum((mean_per_subject - grand_mean) ** 2)
+  ss_between_raters = n * np.sum((mean_per_rater - grand_mean) ** 2)
+  ss_residual = ss_total - ss_between_subjects - ss_between_raters
+
+  msr = ss_between_subjects / (n - 1)
+  msc = ss_between_raters / (k - 1) if k > 1 else 0.0
+  mse = ss_residual / ((n - 1) * (k - 1)) if (n > 1 and k > 1) else 0.0
+
+  if icc_type.upper() in ('ICC2', 'ICC(2,1)'):
+    denom = msr + (k - 1) * mse + (k * (msc - mse) / n)
+    if denom == 0:
+      return np.nan
+    return (msr - mse) / denom
+  else:
+    raise NotImplementedError(f"icc_type '{icc_type}' not implemented. Only 'ICC2' is available.")
