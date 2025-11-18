@@ -365,6 +365,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'xattn_mask': xattn_mask,
     'stratified_training': stratified_training,
     'is_subject_independent': kwargs['is_subject_independent'],
+    'skip_test': kwargs['skip_test'],
   }
     
   print(f"\n[Trial {trial.number}] Params: {trial.params}")
@@ -527,7 +528,7 @@ if __name__ == '__main__':
   parser.add_argument('--n_workers', type=int, default=1, help='Number of workers for data loading. Default is 1')
   parser.add_argument('--prefetch_factor', type=int, default=2, help='Prefetch factor for data loading. Default is 2')
   parser.add_argument('--embedding_reduction', type=str, default='none', help='Embedding reduction method: spatial, temporal, all, adaptive_pooling_3d, none. Default is spatial')
-    
+  
   # Path configuration
   parser.add_argument('--gp', action='store_true', help='Use global path prefix for file paths')
   parser.add_argument('--csv', type=str, default=os.path.join('partA','starting_point','samples_exc_no_detection.csv'), 
@@ -542,6 +543,7 @@ if __name__ == '__main__':
   # Data loading parameters
   parser.add_argument('--load_dataset_in_memory', type=int, default=0, help='Load the entire dataset into RAM memory. Default is 0 (False)')
   parser.add_argument('--is_subject_independent', type=int, choices=[0,1], default=1, help='Subject-independent split. Default is 1 (True)')
+  parser.add_argument('--skip_test', type=int, default=0, help='Skip test phase after training. Default is 0 (False)')
   
   # Training parameters
   parser.add_argument('--validation_enabled', type=int, choices=[0,1], default=1, help='Enable validation set during training. Default is 1 (enabled)')
