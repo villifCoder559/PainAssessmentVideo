@@ -86,9 +86,12 @@ def get_grouped_losses(dict_grouped_k_fold, config):
       }
      
     for sub_k, res in sub_k_dict.items():
-      best_epoch = res['train_val']['best_model_idx']
-      # Get overall train and val loss
-      dict_grouped_losses[k_fold]['train_loss'].append(res['train_val']['train_losses'][best_epoch])
+
+      if 'train_val' in res:
+        best_epoch = res['train_val']['best_model_idx']
+        # Get overall train and val loss
+        dict_grouped_losses[k_fold]['train_loss'].append(res['train_val']['train_losses'][best_epoch])
+        
       if not final_flag:
         dict_grouped_losses[k_fold]['val_loss'].append(res['train_val']['val_losses'][best_epoch])
       else:
@@ -97,8 +100,9 @@ def get_grouped_losses(dict_grouped_k_fold, config):
       if not isinstance(config['criterion'],losses.RESupConLoss):
         
         # Get train loss per class
-        update_dict_grouped_losses(key='train_unique_y',value='train_loss_per_class',key_target_dict='class_train_loss',
-                                  k_fold=k_fold, res=res, best_epoch=best_epoch)
+        if 'train_val' in res:
+          update_dict_grouped_losses(key='train_unique_y',value='train_loss_per_class',key_target_dict='class_train_loss',
+                                    k_fold=k_fold, res=res, best_epoch=best_epoch)
         
         # Get val/test loss per class
         update_dict_grouped_losses(key='val_unique_y' if not final_flag else 'test_unique_y',
@@ -106,9 +110,11 @@ def get_grouped_losses(dict_grouped_k_fold, config):
                                   key_target_dict='class_val_loss' if not final_flag else 'class_test_loss',
                                   upper_dict= 'train_val' if not final_flag else 'test',
                                   k_fold=k_fold, res=res, best_epoch=best_epoch)      
+        
         # Get train loss per subject
-        update_dict_grouped_losses(k_fold=k_fold, res=res, best_epoch=best_epoch,
-                                  key='train_unique_subject_ids', value='train_loss_per_subject', key_target_dict='subject_train_loss')
+        if 'train_val' in res:
+          update_dict_grouped_losses(k_fold=k_fold, res=res, best_epoch=best_epoch,
+                                    key='train_unique_subject_ids', value='train_loss_per_subject', key_target_dict='subject_train_loss')
         
         # Get val/test loss per subject
         update_dict_grouped_losses(k_fold=k_fold, res=res, best_epoch=best_epoch,
@@ -148,7 +154,8 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
     dict_grouped_k_fold[f'k{k}'] = {} 
     for key in keys:
       dict_grouped_k_fold[f'k{k}'][key] = data['results'][key]
-  dict_grouped_k_fold['final'] = {key:data['results'][key] for key in final_key}
+  if final_key != []:
+    dict_grouped_k_fold['final'] = {key:data['results'][key] for key in final_key}
   dict_grouped_losses = get_grouped_losses(dict_grouped_k_fold, data['config'])
   
   # Plot grouped losses per subject and class
@@ -213,7 +220,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
     os.makedirs(only_losses_folder_per_k, exist_ok=True)
     # class_subject_loss_folder = os.path.join(run_output_folder, f'class_subject_loss_{key.split("_")[0]}_{key.split("_")[1]}')
     # os.makedirs(class_subject_loss_folder, exist_ok=True)
-    if plot_train_loss_val_acc:
+    if plot_train_loss_val_acc and 'train_val' in data['results'][key]:
       # test_key = 'test_accuracy' if 'test_accuracy' in data['results'][key]['test'] else 'test_macro_precision'
       # test_key = data['results'][key]['test']['dict_precision_recall'][metric_for_training] 
       train_losses = data['results'][key]['train_val'].get('train_losses', [])
@@ -783,7 +790,7 @@ def plot_history_model_prediction(data, run_output_folder, test_id, root_csv_pat
   df = pd.read_csv(os.path.join(root_csv_path,csv_file),sep='\t')
   top_k = 20
   for key in data['results'].keys():
-    if data['results'][key]['train_val']['history_train_sample_predictions'] is None:
+    if (not 'train_val' in data['results'][key]) or data['results'][key]['train_val']['history_train_sample_predictions'] is None:
       continue
     best_epoch = data['results'][key]['train_val']['best_model_idx']
     num_epochs = len(data['results'][key]['train_val']['train_losses'])
@@ -924,14 +931,20 @@ def generate_csv_row(data,config,time_, test_id):
   mean_val_accuracies_best_epoch = {f'mean_val_{metric}_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_val][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_val_losses_best_epoch = {f'mean_val_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   
-  if not list_final_test: 
-    mean_test_accuracies = {f'mean_test_{metric}_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test'][test_key] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-    mean_test_losses = {f'mean_test_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_loss'] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-    total_mean_test_accuracy_best_epoch = {f'total_mean_test_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test'][test_key] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-    total_mean_test_losses_best_epoch = {f'total_mean_test_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_loss'] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-  else:
+  # if list_final_test != []: 
+  #   mean_test_accuracies = {f'mean_test_{metric}_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test'][test_key] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  #   mean_test_losses = {f'mean_test_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_loss'] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  #   total_mean_test_accuracy_best_epoch = {f'total_mean_test_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test'][test_key] for i in range(real_k_fold) for j in range(real_sub_fold)])}
+  #   total_mean_test_losses_best_epoch = {f'total_mean_test_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_loss'] for i in range(real_k_fold) for j in range(real_sub_fold)])}
+  # else:
+  if list_final_test != []:
     mean_test_accuracies = {f'mean_all_test_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_final']['test'][test_key] for i in list_final_test])}
     mean_test_losses = {f'mean_all_test_loss_best_ep': np.mean([data[f'k{i}_cross_val_final']['test']['test_loss'] for i in list_final_test])}
+    total_mean_test_accuracy_best_epoch = {f'total_mean_all_test_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_final']['test'][test_key] for i in list_final_test])}
+    total_mean_test_losses_best_epoch = {f'total_mean_all_test_loss_best_ep': np.mean([data[f'k{i}_cross_val_final']['test']['test_loss'] for i in list_final_test])}
+  else:
+    mean_test_accuracies = {}
+    mean_test_losses = {}
     total_mean_test_accuracy_best_epoch = {}
     total_mean_test_losses_best_epoch = {}
   total_mean_train_losses_best_epoch = {f'total_mean_train_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
