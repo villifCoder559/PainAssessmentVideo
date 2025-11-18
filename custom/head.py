@@ -230,6 +230,12 @@ class BaseHead(nn.Module):
     list_train_confidence_prediction_wrong_std = []
     list_val_confidence_prediction_right_std = []
     list_val_confidence_prediction_wrong_std = []
+    list_train_ICC = []
+    list_val_ICC = []
+    list_train_CCC = []
+    list_val_CCC = []
+    list_train_pearson_correlation = []
+    list_val_pearson_correlation = []
     epochs_gradient_per_module = {}
     early_stopping.reset()
     # list_memory_snap= []
@@ -273,6 +279,8 @@ class BaseHead(nn.Module):
       lrs, wds = tools.get_lr_and_weight_decay(optimizer)
       list_lrs.append(lrs)
       list_wds.append(wds)
+      list_train_epoch_predictions = []
+      list_train_ground_truths = []
       class_loss = torch.zeros(2,train_unique_classes.shape[0])
       class_accuracy = torch.zeros(2,train_unique_classes.shape[0])
       # subject_loss = np.zeros(train_unique_subjects.shape[0])
@@ -303,7 +311,6 @@ class BaseHead(nn.Module):
         _,count_sample_per_subject = torch.unique(batch_subjects, return_counts=True)
         sample_per_subject_count[tmp] += count_sample_per_subject
         dict_log_time['count_subjects'] = dict_log_time.get('count_subjects',0) + time.time() - time_to_count_subjects
-        
         # Latent augmentation
         # time_for_latent_augmentation = time.time()
         # self.check_and_apply_latent_augmentation_(dict_batch_X['x'], sample_id)
@@ -368,7 +375,8 @@ class BaseHead(nn.Module):
         scaler.step(optimizer)  # Use scaler to step the optimizer
         scaler.update()
         dict_log_time['optimizer'] = dict_log_time.get('optimizer',0) + time.time()-start_optimizer
-        train_loss += loss.item() 
+        train_loss += loss.item()
+        
         start_logs = time.time()
         if not is_resupcon_loss and (helper.LOG_PER_CLASS or helper.LOG_PER_SUBJECT or helper.LOG_CONFIDENCE_PREDICTION):
           if is_coral_loss:
@@ -402,6 +410,8 @@ class BaseHead(nn.Module):
           self.log_gradient_per_module(batch_dict_gradient_per_module)
         
         count_batch+=1
+        
+        
         if not is_resupcon_loss:
           if self.is_classification:
             if is_coral_loss:
@@ -414,8 +424,14 @@ class BaseHead(nn.Module):
             predictions[~mask] = train_unique_classes.shape[0] # put prediction in the last class (bad_classified)
             
           batch_y = batch_y.detach().cpu()
+          
+          
           if batch_y.dim() > 1:
             batch_y = torch.argmax(batch_y, dim=1).reshape(-1)
+          
+          list_train_epoch_predictions.append(outputs.detach().cpu().numpy() if not self.is_classification else predictions.numpy())
+          list_train_ground_truths.append(batch_y.numpy())
+          
           try:
             train_confusion_matrix.update(predictions, batch_y)
           except Exception as e:
@@ -446,6 +462,7 @@ class BaseHead(nn.Module):
                                   **kwargs)
       dict_log_time['eval'] = dict_log_time.get('eval',0) + time.time()-time_eval
       # print(f'  Evaluation time: {dict_log_time["eval"]:.4f}')
+      
       epoch_log_time = time.time()
       if epoch == 0 or \
            helper.SAVE_LAST_EPOCH_MODEL or \
@@ -459,6 +476,19 @@ class BaseHead(nn.Module):
       list_train_losses.append(train_loss / len(train_loader))
       list_val_losses.append(dict_eval['val_loss'] if dict_eval is not None else 0.0)
       
+      if not is_resupcon_loss:
+        np_list_train_epoch_predictions = np.concatenate(list_train_epoch_predictions, axis=0)
+        np_list_train_ground_truths = np.concatenate(list_train_ground_truths, axis=0)
+        train_ICC = tools.intraclass_icc(np.column_stack((np_list_train_ground_truths, np_list_train_epoch_predictions)))
+        train_CCC = tools.concordance_ccc(y_true=np_list_train_ground_truths, y_pred=np_list_train_epoch_predictions)
+        train_pearson_correlation = tools.pearson_r(y_true=np_list_train_ground_truths, y_pred=np_list_train_epoch_predictions)
+        list_train_ICC.append(train_ICC)
+        list_train_CCC.append(train_CCC)
+        list_train_pearson_correlation.append(train_pearson_correlation)
+        if dict_eval is not None:
+          list_val_ICC.append(dict_eval['val_ICC'])
+          list_val_CCC.append(dict_eval['val_CCC'])
+          list_val_pearson_correlation.append(dict_eval['val_pearson_correlation'])
       
       if helper.LOG_CONFIDENCE_PREDICTION and not is_resupcon_loss:
         list_train_confidence_prediction_right_mean.append(np.mean(batch_train_confidence_prediction_right_mean) if len(batch_train_confidence_prediction_right_mean) > 0 else 0)
@@ -659,6 +689,12 @@ class BaseHead(nn.Module):
       'optimizer': optimizer.state_dict()['param_groups'],
       'wd_scheduler': wd_scheduler.get_config() if wd_scheduler else None,
       'scheduler': scheduler.state_dict() if scheduler else None,
+      'list_train_ICC': list_train_ICC,
+      'list_val_ICC': list_val_ICC,
+      'list_train_CCC': list_train_CCC,
+      'list_val_CCC': list_val_CCC,
+      'list_train_pearson_correlation': list_train_pearson_correlation,
+      'list_val_pearson_correlation': list_val_pearson_correlation,
       # 'list_samples': list_list_samples,
       # 'list_y': list_list_y
     }
@@ -671,6 +707,9 @@ class BaseHead(nn.Module):
     self.eval() 
     is_composite_loss = isinstance(criterion, losses.CompositeLoss)
     is_resupcon_loss = isinstance(criterion, losses.RESupConLoss)
+    
+    list_val_epoch_predictions = []
+    list_val_ground_truths = []
     with torch.no_grad():
       val_loss = 0.0
       loss_per_class = torch.zeros(2,len(val_loader.dataset.get_unique_classes()))
@@ -776,7 +815,6 @@ class BaseHead(nn.Module):
             mask = torch.isin(predictions, unique_val_classes)
             predictions[~mask] = loss_per_class.shape[1] # put prediction in the last class (bad_classified)
           
-            
           if history_val_sample_predictions is not None:
             tools.log_predictions_per_sample_(dict_log_sample=history_val_sample_predictions,
                                               tensor_sample_id=sample_id,
@@ -785,6 +823,9 @@ class BaseHead(nn.Module):
           batch_y = batch_y.detach().cpu()
           if batch_y.dim() > 1:
             batch_y = torch.argmax(batch_y, dim=1).reshape(-1)
+            
+          list_val_epoch_predictions.append(outputs.detach().cpu().numpy() if not self.is_classification else predictions.numpy())
+          list_val_ground_truths.append(batch_y.numpy())
           
           val_confusion_matricies.update(predictions, batch_y)
         count += 1
@@ -802,8 +843,19 @@ class BaseHead(nn.Module):
           
         dict_precision_recall = tools.evaluate_classification_from_confusion_matrix(confusion_matrix=val_confusion_matricies,
                                                                        list_real_classes=unique_val_classes)
+        list_val_epoch_predictions = np.concatenate(list_val_epoch_predictions, axis=0)
+        list_val_ground_truths = np.concatenate(list_val_ground_truths, axis=0)
+        pearson_corr = tools.pearson_r(y_pred=list_val_epoch_predictions,
+                                      y_true=list_val_ground_truths)
+        CCC = tools.concordance_ccc(y_pred=list_val_epoch_predictions,
+                                    y_true=list_val_ground_truths)
+        ICC = tools.intraclass_icc(data=np.column_stack((list_val_ground_truths, list_val_epoch_predictions)),
+                                  icc_type='ICC2')
       else:
         dict_precision_recall = {}
+        pearson_corr = 0.0
+        CCC = 0.0
+        ICC = 0.0
 
       if is_test:
         self.log_performance(stage='Test', loss=val_loss, accuracy=dict_precision_recall.get('accuracy', 0.0))
@@ -816,6 +868,9 @@ class BaseHead(nn.Module):
           'test_macro_precision': dict_precision_recall.get("macro_precision",0.0),
           'test_accuracy': dict_precision_recall.get("accuracy",0.0),
           'test_confusion_matrix': val_confusion_matricies,
+          'test_pearson_correlation': pearson_corr,
+          'test_CCC': CCC,
+          'test_ICC': ICC,
           'test_prediction_confidence_right_mean': np.mean(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
           'test_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
           'test_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
@@ -832,6 +887,9 @@ class BaseHead(nn.Module):
           'val_macro_precision': dict_precision_recall.get("macro_precision",0.0),
           'val_accuracy': dict_precision_recall.get("accuracy",0.0),
           'val_confusion_matrix': val_confusion_matricies,
+          'val_pearson_correlation': pearson_corr,
+          'val_CCC': CCC,
+          'val_ICC': ICC,
           'val_prediction_confidence_right_mean': np.mean(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
           'val_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
           'val_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
