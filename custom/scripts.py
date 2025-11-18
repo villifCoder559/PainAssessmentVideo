@@ -19,6 +19,7 @@ from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 import os
 import random
 import custom.loss as losses
+import copy
 # import wandb
 def check_intersection_splits(k_fold,subject_ids,list_splits_idxs):
   for i in range(k_fold):
@@ -122,7 +123,11 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
   os.makedirs(saving_path_kth_fold, exist_ok=True)
   
   # Create train/val/test splits for this fold
-  test_idx_split = fold_idx % k_fold
+  if not kwargs['skip_test']:
+    test_idx_split = fold_idx % k_fold
+  else:
+    test_idx_split = None
+    
   if validate:
     val_idx_split = (fold_idx + 1) % k_fold
   else:
@@ -147,18 +152,18 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
     sub_k_fold_list.append(list_splits_idxs[val_idx_split])
   
   fast_train = False
+  kwargs['return_best_model_state'] = True
   if stop_after_kth_fold[0] == 1 and stop_after_kth_fold[1] == 1:
-    kwargs['return_best_model_state'] = True
-    kwargs['skip_all_train'] = True
+    # kwargs['skip_all_train'] = True
     fast_train = True
-  else:
-    kwargs['return_best_model_state'] = False
+  # else:
+  #   kwargs['return_best_model_state'] = False
   
   kwargs['all_fold_train'] = False
   # Train sub-fold models
   # AUGMENTAION: val and test csv will be filtered in function get_dataset_and_loader (dataset.py)  
   fold_results_kth = train_subfold_models(
-    fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sample_ids,
+    fold_idx, sub_k_fold_list, csv_array, cols, sample_ids,
     saving_path_kth_fold, model_advanced, lr, epochs, optimizer_fn,
     concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
     init_network, regularization_lambda_L1,
@@ -166,48 +171,12 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
     clip_grad_norm,stop_after_kth_fold,regularization_lambda_L2,
     trial,validate,**kwargs
   )
-  all_best_epochs = [fold_results_kth[f'k{fold_idx}_cross_val_sub_{i}']['train']['dict_results']['best_model_idx'] for i in range(len(fold_results_kth))]
-  epochs = np.mean(all_best_epochs)
-  epochs = max(int(epochs + epochs * 0.1), 2) # add 10% more epochs
+  # all_best_epochs = [fold_results_kth[f'k{fold_idx}_cross_val_sub_{i}']['train']['dict_results']['best_model_idx'] for i in range(len(fold_results_kth))]
+  # epochs = np.mean(all_best_epochs)
+  # epochs = max(int(epochs + epochs * 0.1), 2) # add 10% more epochs
   if kwargs['return_best_model_state']:
-    state_dict = fold_results_kth[f'k{fold_idx}_cross_val_sub_0']['train']['dict_results']['best_model_state']
+    state_dict = fold_results_kth[f'k{fold_idx}_cross_val']['best_model']['best_model_state']
     
-  if not kwargs.get('skip_all_train',False):
-    kwargs['return_best_model_state'] = True
-    kwargs['all_fold_train'] = True
-    # Train final model on all training data of the fold
-    helper.SAVE_LAST_EPOCH_MODEL = True
-    all_results = train_subfold_models(
-        validate=False,
-        fold_idx=fold_idx,
-        k_fold=k_fold,
-        sub_k_fold_list=sub_k_fold_list,
-        csv_array=csv_array,
-        cols=cols,
-        sample_ids=sample_ids,
-        saving_path_kth_fold=saving_path_kth_fold,
-        model_advanced=model_advanced,
-        lr=lr,
-        epochs=epochs,
-        optimizer_fn=optimizer_fn,
-        concatenate_temp_dim=concatenate_temp_dim,
-        criterion=criterion,
-        round_output_loss=round_output_loss,
-        shuffle_training_batch=shuffle_training_batch,
-        init_network=init_network,
-        regularization_lambda_L1=regularization_lambda_L1,
-        key_for_early_stopping=key_for_early_stopping,
-        early_stopping=early_stopping,
-        enable_scheduler=enable_scheduler,
-        seed_random_state=seed_random_state,
-        clip_grad_norm=clip_grad_norm,
-        stop_after_kth_fold=stop_after_kth_fold,
-        regularization_lambda_L2=regularization_lambda_L2,
-        trial=trial,
-        **kwargs
-      )
-    helper.SAVE_LAST_EPOCH_MODEL = False
-    state_dict = all_results[f'k{fold_idx}_cross_val_final']['train']['dict_results']['best_model_state']
   if kwargs.get('skip_test',False):
     dict_test = {}
   else:
@@ -220,10 +189,13 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
       concatenate_temporal=concatenate_temp_dim,
       **kwargs)
   fold_results ={'fold_results':{}}
+  
   # Add sub-fold results
   is_resupcon_loss = isinstance(criterion, losses.RESupConLoss)
-  for sub_idx in range(k_fold - 1):
+  for sub_idx in range(len(fold_results_kth)):
     if sub_idx < len(fold_results_kth):
+      if f'k{fold_idx}_cross_val_sub_{sub_idx}' not in list(fold_results_kth.keys()):
+        continue
       reduced_dict = reduce_logs_for_subfold(fold_results_kth[f'k{fold_idx}_cross_val_sub_{sub_idx}']['train'], skip_reduction=is_resupcon_loss)
       if f'k{fold_idx}_cross_val_sub_{sub_idx}' not in fold_results['fold_results']:
         fold_results['fold_results'][f'k{fold_idx}_cross_val_sub_{sub_idx}'] = {}
@@ -232,17 +204,22 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
         fold_results['fold_results'][f'k{fold_idx}_cross_val_sub_{sub_idx}']['test'] = dict_test
     else:
       break
-  if not kwargs.get('skip_test',False) and not kwargs.get('skip_all_train',False):
-    fold_results['fold_results'][f'k{fold_idx}_cross_val_final']={'test':dict_test, 
-                                                                  'train_val':reduce_logs_for_subfold(all_results[f'k{fold_idx}_cross_val_final']['train'], skip_reduction=is_resupcon_loss)}
   
-  
+  if not kwargs.get('skip_test',False):
+    _, best_sub_idx = fold_results_kth[f'k{fold_idx}_cross_val']['best_model']['fold_sub_fold_idx']
+    fold_results['fold_results'][f'k{fold_idx}_cross_val_final']={'test':dict_test,
+                                                                  'best_model': fold_results_kth[f'k{fold_idx}_cross_val']['best_model'],
+                                                                  'train_val': fold_results['fold_results'][f'k{fold_idx}_cross_val_sub_{best_sub_idx}']['train_val']}
+
     
   return fold_results
 
 def create_split_indices(test_idx_split, val_idx_split, train_idxs_split, list_splits_idxs, sample_ids):
   """Create train/val/test split indices"""
-  test_sample_ids = sample_ids[list_splits_idxs[test_idx_split]]
+  if test_idx_split is None: # if no test split is needed
+    test_sample_ids = None
+  else:
+    test_sample_ids = sample_ids[list_splits_idxs[test_idx_split]]
   if val_idx_split is None: # if no validation split is needed
     val_sample_ids = None
   else:
@@ -253,7 +230,7 @@ def create_split_indices(test_idx_split, val_idx_split, train_idxs_split, list_s
     train_sample_ids.extend(sample_ids[list_splits_idxs[idx]])
   
   return {
-    'test': np.array([test_sample_ids, list_splits_idxs[test_idx_split]]),
+    'test': np.array([test_sample_ids, list_splits_idxs[test_idx_split]]) if test_idx_split is not None else None,
     'val': np.array([val_sample_ids, list_splits_idxs[val_idx_split]]) if val_idx_split is not None else None,
     'train': np.array([
       train_sample_ids, np.concatenate([list_splits_idxs[idx] for idx in train_idxs_split])
@@ -298,7 +275,7 @@ def set_frozen_head_from_pth_folder(model_advanced: Model_Advanced, saving_path_
   else:
     raise ValueError(f'No .pth model found for {saving_kth} in {model_advanced.head_init_path}')
 
-def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sample_ids,
+def train_subfold_models(fold_idx, sub_k_fold_list, csv_array, cols, sample_ids,
                       saving_path_kth_fold, model_advanced, lr, epochs, optimizer_fn,
                       concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
                       init_network, regularization_lambda_L1,
@@ -308,8 +285,9 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
   if not isinstance(model_advanced, Model_Advanced):
     raise ValueError('model_advanced must be an instance of Model_Advanced')
   fold_results_kth = {}
-  
-  for sub_idx in range(k_fold - 1):
+  dict_best_model = None
+  inner_folds = len(sub_k_fold_list) # number of sub-folds
+  for sub_idx in range(inner_folds):
     # Create subfold directory
     if not kwargs['all_fold_train']:
       saving_path_kth_sub_fold = os.path.join(saving_path_kth_fold, f'k{fold_idx}_cross_val_sub_{sub_idx}')
@@ -319,7 +297,7 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
     
     # Generate train/val split for this subfold
     sub_path_csv_kth_fold = generate_subfold_csv_files(
-      sub_idx, k_fold, sub_k_fold_list, csv_array, cols, 
+      sub_idx, inner_folds, sub_k_fold_list, csv_array, cols, 
       sample_ids, saving_path_kth_sub_fold, validate
     )
     
@@ -352,24 +330,34 @@ def train_subfold_models(fold_idx, k_fold, sub_k_fold_list, csv_array, cols, sam
       enable_optuna_pruning = True if fold_idx == 0 and sub_idx == 0 else False,
       **kwargs
     )
-
-    # Remove unnecessary data to save space
-    if not kwargs['return_best_model_state']:
-      dict_train['dict_results']['best_model_state'] = None
+    best_epoch = dict_train['dict_results']['best_model_idx']
     
-    if not kwargs['all_fold_train']:
-      fold_results_kth[f'k{fold_idx}_cross_val_sub_{sub_idx}']={'train':dict_train,
-                                                                # 'test':dict_test
-                                                                }
-    else:
-      fold_results_kth[f'k{fold_idx}_cross_val_final']={'train':dict_train,
-                                                                # 'test':dict_test
-                                                                }
+    # Save best model info to use in testing
+    if dict_best_model is None or dict_best_model['val_metric_value'] > dict_train['dict_results']['list_val_performance_metric'][best_epoch]:
+      dict_best_model = {
+        'best_model_idx': best_epoch,
+        'best_model_state': copy.deepcopy(dict_train['dict_results']['best_model_state']),
+        'metric_for_stopping': key_for_early_stopping,
+        'train_metric_value':  dict_train['dict_results']['list_train_performance_metric'][best_epoch],
+        'val_metric_value':  dict_train['dict_results']['list_val_performance_metric'][best_epoch],
+        'fold_sub_fold_idx': (fold_idx, sub_idx)
+      }
+    # Remove unnecessary data to save space
+    dict_train['dict_results']['best_model_state'] = None
+    
+    # if not kwargs['all_fold_train']:
+    fold_results_kth[f'k{fold_idx}_cross_val_sub_{sub_idx}']={'train':dict_train,
+                                                              # 'test':dict_test
+                                                              }
+    # else:
+    #   fold_results_kth[f'k{fold_idx}_cross_val_final']={'train':dict_train,
+    #                                                             # 'test':dict_test
+    #                                                             }
     
     # Stop to make the tests faster
     if (kwargs['all_fold_train']) or (stop_after_kth_fold is not None and sub_idx == stop_after_kth_fold[1] - 1):
       break
-  
+  fold_results_kth[f'k{fold_idx}_cross_val'] = {'best_model': dict_best_model}
   return fold_results_kth
 
 def generate_subfold_csv_files(sub_idx, k_fold, sub_k_fold_list, csv_array, cols, 
@@ -381,13 +369,14 @@ def generate_subfold_csv_files(sub_idx, k_fold, sub_k_fold_list, csv_array, cols
   if validate:
     val_indices = sub_k_fold_list[sub_idx]
     val_sample_ids = sample_ids[val_indices]
+    
   else:
     val_indices = None
     val_sample_ids = None
     sub_idx = None  # No validation split, so sub_idx is not used
     
   # Get training indices (all except validation)
-  train_sub_idx = [j for j in range(k_fold - 1) if j != sub_idx]
+  train_sub_idx = [j for j in range(len(sub_k_fold_list)) if j != sub_idx]
   train_indices = np.concatenate([sub_k_fold_list[j] for j in train_sub_idx])
   train_sample_ids = sample_ids[train_indices]
   
