@@ -935,7 +935,8 @@ class customDatasetWhole(torch.utils.data.Dataset):
     # load_end = time.perf_counter()
     # print(f"Element {idx} loading time: {load_end - load_start:.2f} seconds")
     return _get_element(dict_data=features,df=self.df,idx=idx,
-                        dataset_type=CUSTOM_DATASET_TYPE.WHOLE, is_quadrant=self.is_quadrant,
+                        dataset_type=CUSTOM_DATASET_TYPE.WHOLE, 
+                        is_quadrant=self.is_quadrant,
                         embedding_reduction=self.model.embedding_reduction,
                         xattn_mask=self.xattn_mask)
 
