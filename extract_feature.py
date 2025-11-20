@@ -1,3 +1,4 @@
+from pandas.core.indexes import multi
 from custom.dataset import customDataset
 from custom.backbone import VideoBackbone,VitImageBackbone
 from custom.helper import CLIPS_REDUCTION,EMBEDDING_REDUCTION,MODEL_TYPE,SAMPLE_FRAME_STRATEGY, HEAD, GLOBAL_PATH
@@ -74,7 +75,8 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
     dataloader = DataLoader(dataset, 
                 batch_size=batch_size_feat_extraction,
                 shuffle=False,
-                num_workers=n_workers,
+                num_workers=0,
+                persistent_workers=True if n_workers > 0 else False,
                 collate_fn=dataset._custom_collate_fn_extraction)
     backbone.model.to(device)
     backbone.model.eval()
@@ -299,11 +301,13 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
   gc.collect()
   torch.cuda.empty_cache()
   
-  
+import tempfile
+import multiprocessing as mp
+tempfile.tempdir = '/tmp'
+mp.util._exit_function = lambda: None
+
 
 if __name__ == "__main__":
-  # print('Setting sharing strategy')
-  # torch.multiprocessing.set_sharing_strategy('file_system')
   
   timestamp = int(time.time())
   parser = argparse.ArgumentParser(description='Extract features from video dataset.')
