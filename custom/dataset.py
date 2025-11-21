@@ -1421,7 +1421,7 @@ def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,is_quadrant=F
 
   with profile_workers(f'{pid}_embedding_reduction_time',helper.time_profiling_enabled,helper.time_profile_dict):
     if embedding_reduction != EMBEDDING_REDUCTION.NONE:
-      features = torch.mean(features,dim=embedding_reduction.value,keepdim=True)
+      features = torch.mean(features,dim=embedding_reduction.value,keepdim=True) 
     
   ###### LATENT AUGMENTATIONS ######
   with profile_workers(f'{pid}_latent_augm_time',helper.time_profiling_enabled,helper.time_profile_dict):
