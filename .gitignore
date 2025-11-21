@@ -185,3 +185,6 @@ VideoMAEv2/pretrained/vit_g_hybrid_pt_1200e.pth
 KTH_dataset/
 vjepa2/
 CelebV-HQ
+subject_class_loss_results/unbc_class_loss_metrics.png
+subject_class_loss_results/unbc_loss_class_subject_results.xlsx
+subject_class_loss_results/unbc_subject_loss_metrics.png
