@@ -47,7 +47,7 @@ def retrieve_subject_ids(data, key, best_epoch):
     uniqie_subject_ids_val = data[key]['val_unique_subject_ids']
   return uniqie_subject_ids_train, uniqie_subject_ids_val
 
-def get_grouped_losses(dict_grouped_k_fold, config):
+def get_grouped_losses(data, config):
   
   def update_dict_grouped_losses(k_fold, res, best_epoch, key, value, key_target_dict, upper_dict = 'train_val'):
     # convert to numpy if tensor
@@ -61,8 +61,21 @@ def get_grouped_losses(dict_grouped_k_fold, config):
         dict_grouped_losses[k_fold][key_target_dict][k] = []
       dict_grouped_losses[k_fold][key_target_dict][k].append(loss)
 
-
+  
+  # Group results by K-Fold, separating final results if present
+  dict_grouped_k_fold = {}
+  real_k_fold = set([int(key.split('_')[0][1]) for key in data['results'].keys()])
+  final_key = [key for key in data['results'].keys() if '_final' in key]
+  for k in real_k_fold:
+    keys = [key for key in data['results'].keys() if key.startswith(f'k{k}_') and '_final' not in key]
+    dict_grouped_k_fold[f'k{k}'] = {} 
+    for key in keys:
+      dict_grouped_k_fold[f'k{k}'][key] = data['results'][key]
+  if final_key != []:
+    dict_grouped_k_fold['final'] = {key:data['results'][key] for key in final_key}
   dict_grouped_losses = {}
+  
+  # Compute grouped losses, per class and subject
   for k_fold,sub_k_dict in dict_grouped_k_fold.items():
     if 'final' in k_fold:
       final_flag = True
@@ -141,22 +154,14 @@ def get_grouped_losses(dict_grouped_k_fold, config):
       
        
        
-  
+
 def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', plot_type='loss', group_folds=True):
   # Create output folder for grouped K-Fold plots
   grouped_output_folder = os.path.join(run_output_folder, test_id)
   os.makedirs(grouped_output_folder, exist_ok=True)
-  real_k_fold = set([int(key.split('_')[0][1]) for key in data['results'].keys()])
-  dict_grouped_k_fold = {}
-  final_key = [key for key in data['results'].keys() if '_final' in key]
-  for k in real_k_fold:
-    keys = [key for key in data['results'].keys() if key.startswith(f'k{k}_') and '_final' not in key]
-    dict_grouped_k_fold[f'k{k}'] = {} 
-    for key in keys:
-      dict_grouped_k_fold[f'k{k}'][key] = data['results'][key]
-  if final_key != []:
-    dict_grouped_k_fold['final'] = {key:data['results'][key] for key in final_key}
-  dict_grouped_losses = get_grouped_losses(dict_grouped_k_fold, data['config'])
+  # real_k_fold = set([int(key.split('_')[0][1]) for key in data['results'].keys()])
+
+  dict_grouped_losses = get_grouped_losses(data, data['config'])
   
   # Plot grouped losses per subject and class
   for k_fold, grouped_losses in dict_grouped_losses.items():
@@ -204,11 +209,12 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
     plt.close(fig)
     
 def plot_CCC_ICC_pearson(data, run_output_folder, test_id, additional_info=''):
-  def plot_metric(dict_value_to_plot, metric_name, ax: plt.Axes, epochs, title_suffix='', y_lim_bottom = -1, y_lim_top = 1):
+  def plot_metric(dict_value_to_plot, metric_name, ax: plt.Axes, best_epoch_idx, title_suffix='', y_lim_bottom = -1, y_lim_top = 1):
+    
     for phase in dict_value_to_plot[metric_name]:
       values = dict_value_to_plot[metric_name][phase]
       if isinstance(values, float) or isinstance(values, int):
-        ax.plot(epochs,values,marker='o', label=phase)
+        ax.plot(best_epoch_idx, values, marker='o', markersize=8, label=f'{phase} (best @ epoch {best_epoch_idx})')
       else:
         ax.plot(values, label=phase)
     ax.set_title(f'{metric_name} over Epochs {title_suffix}')
@@ -219,33 +225,45 @@ def plot_CCC_ICC_pearson(data, run_output_folder, test_id, additional_info=''):
     return ax
   
   for k in data['results'].keys():
-    if 'ICC' not in data['results'][k].get('train_val', {}):
+    train_val_results = data['results'][k].get('train_val', {})
+    if not train_val_results or 'list_train_ICC' not in train_val_results:
       continue
+      
     dict_value_to_plot = {}
-    if 'train_val' in data['results'][k]:
-      dict_value_to_plot['ICC'] = {'train':data['results'][k]['train_val']['list_train_ICC'],
-                                  'val':data['results'][k]['train_val']['list_val_ICC']}
+    dict_value_to_plot['ICC'] = {'train': train_val_results.get('list_train_ICC', []),
+                                 'val': train_val_results.get('list_val_ICC', [])}
 
-      dict_value_to_plot['CCC'] = {'train':data['results'][k]['train_val']['list_train_CCC'],
-                                  'val':data['results'][k]['train_val']['list_val_CCC']}
+    dict_value_to_plot['CCC'] = {'train': train_val_results.get('list_train_CCC', []),
+                                 'val': train_val_results.get('list_val_CCC', [])}
 
-      dict_value_to_plot['pearson_correlation'] = {'train':[val for val,pval in data['results'][k]['train_val']['list_train_pearson_correlation']],
-                                  'val':[val for val,pval in data['results'][k]['train_val']['list_val_pearson_correlation']]}
+    dict_value_to_plot['pearson_correlation'] = {'train': [val for val, pval in train_val_results.get('list_train_pearson_correlation', [])],
+                                                 'val': [val for val, pval in train_val_results.get('list_val_pearson_correlation', [])]}
     
-    if 'final' in k:
-      dict_value_to_plot['ICC'].update({'test':data['results'][k]['test']['test_ICC']})
-      dict_value_to_plot['CCC'].update({'test':data['results'][k]['test']['test_CCC']})
-      dict_value_to_plot['pearson_correlation'].update({'test':data['results'][k]['test']['test_pearson_correlation'][0]})
-    
+    if 'final' in k or 'test' in data['results'][k]:
+      test_results = data['results'][k].get('test', {})
+      if test_results:
+        if 'test_ICC' in test_results and test_results['test_ICC'] is not None:
+          dict_value_to_plot['ICC']['test'] = test_results['test_ICC']
+        if 'test_CCC' in test_results and test_results['test_CCC'] is not None:
+          dict_value_to_plot['CCC']['test'] = test_results['test_CCC']
+        pearson_corr = test_results.get('test_pearson_correlation')
+        if pearson_corr and len(pearson_corr) > 0:
+            dict_value_to_plot['pearson_correlation']['test'] = pearson_corr[0]
+
     nr_plots = 3
     fig, axs = plt.subplots(nr_plots, figsize=(10, 15))
     axs = axs.flatten()
-    nr_epochs = len(dict_value_to_plot['ICC']['train']) - 1
+    nr_epochs = len(train_val_results.get('list_train_ICC', []))
+    best_epoch_idx = train_val_results.get('best_model_idx', nr_epochs - 1 if nr_epochs > 0 else 0)
+
     for i, metric_name in enumerate(['ICC', 'CCC', 'pearson_correlation']):
-      plot_metric(dict_value_to_plot, metric_name, axs[i],epochs=nr_epochs, title_suffix=f'for {k}')
-      out_path = os.path.join(run_output_folder, test_id, f'{test_id}{additional_info}_{metric_name}_over_epochs_{k}.png')
-      plt.tight_layout()
-      fig.savefig(out_path)
+      if metric_name in dict_value_to_plot and dict_value_to_plot[metric_name]:
+        plot_metric(dict_value_to_plot, metric_name, axs[i], best_epoch_idx=best_epoch_idx, title_suffix=f'for {k}')
+        
+    out_path = os.path.join(run_output_folder, test_id, f'{test_id}{additional_info}_ICC_CCC_Pearson_over_epochs_{k}.png')
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    fig.savefig(out_path)
     plt.close(fig)
 
 
@@ -910,6 +928,8 @@ def plot_history_model_prediction(data, run_output_folder, test_id, root_csv_pat
                    color='gray')
     fig.savefig(os.path.join(test_output_folder, f'{test_id}_missclassification_train_val_test_subjects_{key}.png'), bbox_inches='tight')
     plt.close(fig)
+
+
   
 def convert_dict_to_string(d):
   new_d = flatten_dict(d)
@@ -950,6 +970,44 @@ def get_range_k_fold(data):
     if '_test' in k:
       count += 1
   return count
+
+def generate_subject_class_loss_csv(results_data, output_root_folder):
+  # list_result_files_path = find_results_files(project_folder) # .pkl files
+  dict_loss_per_class = {}
+  dict_loss_per_subject = {}
+
+  for file,data in results_data.items():
+    # with open(pkl_path, 'rb') as f:
+    #   data = pickle.load(f)
+    
+    test_folder = os.path.basename(os.path.dirname(file))
+    test_id = test_folder.split('_')[0]
+    dataset = 'unbc' if 'unbc' in os.path.join(*data['config']['path_csv_dataset']).lower() else 'biovid'
+    if dataset not in dict_loss_per_class:
+      dict_loss_per_class[dataset] = {}
+    if dataset not in dict_loss_per_subject:
+      dict_loss_per_subject[dataset] = {}
+      
+    dict_grouped_final_loss = get_grouped_losses(data, data['config'])['final']  
+    class_test_loss = dict_grouped_final_loss['class_test_loss']
+    subject_test_loss = dict_grouped_final_loss['subject_test_loss']
+    dict_loss_per_class[dataset][test_id] = class_test_loss
+    dict_loss_per_subject[dataset][test_id] = subject_test_loss
+  for dataset in dict_loss_per_class:
+    df_class = pd.DataFrame.from_dict(dict_loss_per_class[dataset], orient='index')
+    df_subject = pd.DataFrame.from_dict(dict_loss_per_subject[dataset], orient='index')
+    # bold the best results in the cols
+    df_class.to_csv(os.path.join(output_root_folder, f'{dataset}_class_loss.csv'))
+    df_subject.to_csv(os.path.join(output_root_folder, f'{dataset}_subject_loss.csv'))
+    # df_class_style = df_class.style.apply(lambda x: ['font-weight: bold' if v == x.min() else '' for v in x], axis=0)
+    # df_subject_style = df_subject.style.apply(lambda x: ['font-weight: bold' if v == x.min() else '' for v in x], axis=0)
+    
+    # # Save styled dataframes to Excel files
+    # class_excel_path = os.path.join(output_root_folder, f'{dataset}_class_loss.xlsx')
+    # subject_excel_path = os.path.join(output_root_folder, f'{dataset}_subject_loss.xlsx')
+
+    # df_class_style.to_excel(class_excel_path, engine='openpyxl')
+    # df_subject_style.to_excel(subject_excel_path, engine='openpyxl')
 
 
 def generate_csv_row(data,config,time_, test_id): 
@@ -1247,14 +1305,15 @@ def generate_video_from_loss_plots(run_output_folder, test_id):
 
 def plot_run_details(results_data, output_root,only_csv):
   list_row_csv = []
+  generate_subject_class_loss_csv(results_data,output_root)
   for file, data in tqdm.tqdm(results_data.items()):
     test_folder = os.path.basename(os.path.dirname(file))
+    test_id = test_folder.split('_')[0]
     data['config']['real_k_fold'] = len(data['results'])
     if data['config']['real_k_fold'] == 0:
       print(f'No TEST file found in {file}')
       continue
     grid_search_folder = Path(file).parts[-3]
-    test_id = test_folder.split('_')[0]
     # run_output_folder = os.path.join(output_root)
     is_unbc = 'unbc' in "".join(data['config']['path_csv_dataset']).lower()
     list_row_csv.append(generate_csv_row(data['results'],data['config'],data['time'], test_id))
