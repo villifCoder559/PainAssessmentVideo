@@ -6,15 +6,27 @@ import custom.tools as tools
 import torch
 import tqdm
 import custom.helper as helper
+import argparse
 
-model_path = "TRAIN_tests/history_run_whole_full_5_m_1384139_ATTENTIVE_JEPA_dune.micc_1751272924/1751272926760_VIDEOMAE_v2_G_NONE_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/k0_cross_val/k0_cross_val_sub_0/best_model_ep_99.pth"
+
+parser = argparse.ArgumentParser(description='Extract features from trained head model.')
+parser.add_argument('--model_path', type=str, required=True, help='Path to the trained model file.')
+parser.add_argument('--csv_path', type=str, required=True, help='Path to the CSV file containing dataset information.')
+args = parser.parse_args()
+model_path = args.model_path
+csv_path = args.csv_path
+
+
+savingfeatures_from_head_path =  os.path.join(os.path.dirname(model_path),f"head_features_{os.path.basename(csv_path).replace('.csv','')}")
 config_path = "" if model_path[0] != '/' else "/"
 config_path += os.path.join(*(model_path.split(os.sep)[:-4]),"k_fold_results.pkl")
-root_folder_features = "partA/video/features/all_front_giant_finetuned_1_1_1_stride4_interp_mirror.safetensors"
-csv_path = os.path.join(os.path.dirname(model_path),"train.csv")
-  
 with open(config_path, 'rb') as f:
   data = pickle.load(f)
+
+# csv_path = os.path.join(os.path.dirname(model_path),"train.csv")
+# TODO fix this to be more general
+root_folder_features = os.path.join('UNBC/video', *data['config']['features_folder_saving_path'])
+
 head_params = data['config']['head_params']
 att_head = head.AttentiveHeadJEPA(embed_dim=head_params['input_dim'],
                               num_classes=head_params['num_classes'],
@@ -35,7 +47,6 @@ att_head = head.AttentiveHeadJEPA(embed_dim=head_params['input_dim'],
                               cross_block_after_transformers=head_params['cross_block_after_transformers'])
 
 att_head.load_state_dict(torch.load(model_path))
-savingfeatures_from_head_path =  os.path.join(os.path.dirname(model_path),f"head_features_{os.path.basename(csv_path).replace('.csv','')}")
 print(f"CSV path: {csv_path}")
 n_workers = 4
 dataset_, loader_ = dataset.get_dataset_and_loader(batch_size=16,
@@ -44,6 +55,7 @@ dataset_, loader_ = dataset.get_dataset_and_loader(batch_size=16,
                                             shuffle_training_batch=False,
                                             is_training=False,
                                             concatenate_temporal=False,
+                                            concatenate_quadrants=False,
                                             dataset_type=tools.get_dataset_type(root_folder_features),
                                             prefetch_factor=2,
                                             backbone_dict=None,
