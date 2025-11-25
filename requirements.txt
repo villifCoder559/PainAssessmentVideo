@@ -23,3 +23,4 @@ PIP
 -tokenizers==0.20.3
 -tqdm==4.67.0
 -transformers==4.46.2
+-openpyxl
