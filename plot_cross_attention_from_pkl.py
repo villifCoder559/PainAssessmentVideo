@@ -618,8 +618,11 @@ if __name__ == "__main__":
         n_samples = dict_args['create_attention_video']
         if n_samples > len(list_sample_id):
           n_samples = len(list_sample_id)
-        list_sample_id = np.random.choice(list_sample_id_correct_pred, n_samples//2, replace=False).tolist() + \
-                        np.random.choice(list_sample_id_wrong_pred, n_samples//2, replace=False).tolist()
+          print(f"Requested number of samples {dict_args['create_attention_video']} is higher than available samples {len(list_sample_id)}. Using all samples.")
+        else:
+          print(f"Randomly selecting {n_samples} samples to create attention videos.")
+          list_sample_id = np.random.choice(list_sample_id_correct_pred, n_samples//2, replace=False).tolist() + \
+                          np.random.choice(list_sample_id_wrong_pred, n_samples//2, replace=False).tolist()
         df_selected = df[df['sample_id'].isin(list_sample_id)]
         # save selected sample ids to csv
         df_selected.to_csv(os.path.join(path_video_output, f'selected_sample_ids_for_attention_videos_{n_samples}_samples.csv'), index=False, sep='\t')

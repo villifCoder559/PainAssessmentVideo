@@ -78,9 +78,10 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
                 num_workers=0,
                 persistent_workers=True if n_workers > 0 else False,
                 collate_fn=dataset._custom_collate_fn_extraction)
+    
+    
     backbone.model.to(device)
     backbone.model.eval()
-
     start = time.time()
     str_augmentation = '_'.join([f'{k}' for k,v in dict_augmentation.items() if v])
     for data, labels, subject_id, sample_id, path, list_sampled_frames in dataloader:
@@ -90,7 +91,6 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
         print(f'extracting features from {path[0]}')
         data = data.to(device)
         with torch.no_grad():
-          
           feature = backbone.forward_features(x=data) # [1,8,14,14,768]
         if isinstance(backbone,VideoBackbone) and pooling_embedding_reduction != EMBEDDING_REDUCTION.NONE:
           if adaptive_avg_pool3d_out_shape is not None and pooling_embedding_reduction == EMBEDDING_REDUCTION.ADAPTIVE_POOLING_3D:
