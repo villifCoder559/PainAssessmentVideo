@@ -438,18 +438,38 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   trial.set_user_attr('k_fold', [kwargs['k_fold']])
   trial.set_user_attr('stop', kwargs['stop'])
   trial.set_user_attr('n_workers', [kwargs['n_workers']])
-
+  optuna_direction = trial.study.direction # 1 -> minimize, 2 -> maximize
   # return metric
-  mean_val_accuracy = get_mean_val_accuracy(results)
+  mean_val_accuracy = get_mean_val_accuracy(results=results,
+                                            optuna_direction=optuna_direction,
+                                            use_median=kwargs['optuna_use_median'],
+                                            min_epoch_threshold=kwargs['optuna_min_epoch_thr'])
   return mean_val_accuracy
 
-def get_mean_val_accuracy(results):
+def get_mean_val_accuracy(results,optuna_direction,use_median=False,min_epoch_threshold=0):
+  # optuna_direction: 1 -> minimize, 2 -> maximize
   list_val_metric = []
+  list_best_epochs = []
   for k_fold,dict_log_k_fold in results['results'].items():
     if 'final' not in k_fold:
       best_epoch = dict_log_k_fold['train_val']['best_model_idx']
       list_val_metric.append(dict_log_k_fold['train_val']['list_val_performance_metric'][best_epoch])
-  return np.mean(list_val_metric)
+      list_best_epochs.append(best_epoch)
+      
+  idx_median = np.argsort(list_val_metric)[len(list_val_metric)//2]
+  median_val_best_evaluation = list_val_metric[idx_median]
+  best_epoch_median = list_best_epochs[idx_median]
+  
+  if min_epoch_threshold > 0: 
+    if best_epoch_median < min_epoch_threshold:
+      print(f"Trial rejected due to best epoch {best_epoch_median} < min_epoch_threshold {min_epoch_threshold}")
+      return float('inf') if optuna_direction == 1 else float('-inf')
+      
+    
+  if use_median:
+    return np.median(list_val_metric)
+  else:
+    return np.mean(list_val_metric)
 
 def get_sampler_module(sampler_name,kwargs=None):
   if sampler_name.lower() == 'tpe':
@@ -657,6 +677,8 @@ if __name__ == '__main__':
   parser.add_argument('--save_last_epoch_model', action='store_true', help='Save the last epoch model')
 
   # Optuna parameters
+  parser.add_argument('--optuna_use_median', type=int, default=0, help='Use median of k-fold validation results for Optuna optimization. Default is 0 (False)')
+  parser.add_argument('--optuna_min_epoch_thr', type=int, default=0, help='Minimum epoch threshold for Optuna optimization to keep the experiment. Default is 0 (no threshold)')
   parser.add_argument('--pruner_threshold_lower', type=float, default=0.20, help='Threshold for Optuna pruner. Default is 0.2')
   parser.add_argument('--pruner_n_warmup_steps', type=int, default=30, help='Number of warmup steps for Optuna pruner. Default is 30')
   parser.add_argument('--optuna_categorical',type=int, default=1, help='Use categorical optimization for Optuna. Default is 1 (True). Otherwise, use continuous optimization in range [list[0],list[-1]]')
