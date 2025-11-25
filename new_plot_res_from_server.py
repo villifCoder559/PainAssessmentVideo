@@ -147,14 +147,7 @@ def get_grouped_losses(data, config):
               dict_grouped_losses[k_fold][k][key_inner] = np.mean(list_loss)
   return dict_grouped_losses
         
-
-         
-
-         
-      
-       
-       
-
+    
 def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', plot_type='loss', group_folds=True):
   # Create output folder for grouped K-Fold plots
   grouped_output_folder = os.path.join(run_output_folder, test_id)
@@ -975,7 +968,7 @@ def generate_subject_class_loss_csv(results_data, output_root_folder):
   # list_result_files_path = find_results_files(project_folder) # .pkl files
   dict_loss_per_class = {}
   dict_loss_per_subject = {}
-
+  os.makedirs(output_root_folder, exist_ok=True)
   for file,data in results_data.items():
     # with open(pkl_path, 'rb') as f:
     #   data = pickle.load(f)
@@ -1397,7 +1390,6 @@ def plot_filtered_run_details(parent_folder, output_root, filter_dict,only_csv):
   # Process filtered data
   plot_run_details(filtered_data, filtered_output_folder,only_csv)
 
-      
 if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='Plot results from a folder') 
   parser.add_argument('--parent_folder', type=str, required=True,
