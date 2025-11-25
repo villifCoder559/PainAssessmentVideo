@@ -10,11 +10,13 @@ from VideoMAEv2.models.modeling_finetune import (
   vit_base_patch16_224,
   vit_giant_patch14_224
 )
-
+from MAE_DFER import modeling_pretrain as dfer_modeling  
 from VideoMAEv2.models.modeling_pretrain import pretrain_videomae_giant_patch14_224, pretrain_videomae_base_patch16_224,pretrain_videomae_small_patch16_224
 from transformers import ViTFeatureExtractor, ViTModel
 from custom.helper import MODEL_TYPE, ModelTypeEntry
 import torch.nn as nn
+from functools import partial
+
 
 class BackboneBase(nn.Module):
   """Base class for feature extraction backbones."""
@@ -118,24 +120,75 @@ class VideoBackbone(BackboneBase):
       self.embed_dim = self.model.config.hidden_size
       self.frame_size = self.model.config.frames_per_clip
       self.remove_head = remove_head
+      
+    elif model_type == MODEL_TYPE.DFER:
+      if adapter_dict is not None:
+        raise ValueError("Adapters are not supported for DFER model.")
+      # Load DFER model
+      dfer_args = {
+        # "model_name": 'pretrain_videomae_base_dim512_no_depth_patch16_160',
+        "encoder_depth": 16,
+        "decoder_depth": 4,
+        "epochs": 100,
+        "lr": 3e-4,
+        "num_workers": 20,
+        "attn_type": "local_global",
+        "part_win_size": (2, 5, 10),
+        "lg_region_size": (2, 5, 10),
+        "use_frame_diff_as_target": True,
+        "mask_ratio": 0.9,
+        "mask_type": "part_window",
+        "input_size": 160,
+        "batch_size": 32,
+        "num_frames": 16,
+        "sampling_rate": 4,
+        "opt": "adamw",
+        "opt_betas": (0.9, 0.95),
+        "warmup_epochs": 5,
+        "save_ckpt_freq": 10,
+        "epochs": 100,
+        "log_dir": "./output",
+        "output_dir": "./output",
+        "lr": 3e-4,
+        "drop_path_rate": 0,
+        "drop_block_rate": None,
+        "lg_first_attn_type": "self",
+        "lg_third_attn_type": "cross",
+        "lg_attn_param_sharing_first_third": False,
+        "lg_attn_param_sharing_all": False,
+        "lg_no_second": False,
+        "lg_no_third": False,
+        "num_workers": 20,
+        "attn_type": "local_global",
+        "part_win_size": (2, 5, 10),
+        "lg_region_size": (2, 5, 10),
+        "use_frame_diff_as_target": True,
+        "img_size": 160,
+        "patch_size": 16,
+        "encoder_embed_dim": 512,
+        "encoder_num_heads":8,
+        "encoder_num_classes":0,
+        "decoder_num_classes": 1536,
+        "decoder_embed_dim": 384,
+        "decoder_num_heads": 6,
+        "mlp_ratio": 4,
+        "qkv_bias": True,
+        "norm_layer": partial(nn.LayerNorm, eps=1e-6),
+      }
+      self.model = dfer_modeling.PretrainVisionTransformer(**dfer_args)
+      state_dict_pretrained = torch.load(model_type.value, map_location='cpu', weights_only=False) # weights_only=False to avoid errors
+      self.model.load_state_dict(state_dict_pretrained['model'], strict=True)
+      self.model = self.model.encoder
+      self.tubelet_size = self.model.patch_embed.tubelet_size
+      self.img_size = self.model.patch_embed.img_size[0]  # [160, 160]
+      self.patch_size = self.model.patch_embed.patch_size[0]  # 16
+      self.out_spatial_size = self.img_size // self.patch_size  # 160/16 = 10
+      self.embed_dim = self.model.embed_dim
+      self.frame_size = 16  # Default frame size
+    else:
+      raise ValueError(f"Unsupported model type: {model_type}")
     self.adapter_dict = adapter_dict
 
-  
-  # def load_jepa2_weights(self):
-  #   if not sys.path.exists('vjepa2'):
-  #     sys.path.insert(0, os.path.abspath('vjepa2'))
-  #   with open (self.config_path,"r") as f:
-  #     config = yaml.safe_load(f)
-  #   import vjepa2.src.hub.backbones as backbones
-    
-  #   # Create model and weights for the encoder
-  #   jepa_model = backbones.vjepa2_vit_giant_384(pretrained=False,**config)
-  #   state_dict = torch.load(self.model_type.value, map_location='cpu', weights_only=True)
-  #   del state_dict['predictor']
-  #   encoder_state_dict = backbones._clean_backbone_key(state_dict["encoder"])
-  #   res = jepa_model[0].load_state_dict(encoder_state_dict, strict=False)  # state_dict has pos_embed but we use RoPE
-  #   print(res)
-  #   return jepa_model
 
   def load_pretrained_weights(self):
     if self.model_type in [MODEL_TYPE.VIDEOMAE_v2_B, MODEL_TYPE.VIDEOMAE_v2_G, MODEL_TYPE.VIDEOMAE_v2_G_unl, MODEL_TYPE.VIDEOMAE_v2_S]:

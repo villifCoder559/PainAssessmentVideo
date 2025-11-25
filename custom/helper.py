@@ -261,6 +261,7 @@ class MODEL_TYPE:
     'vjepa2_L_fpc64_256': ModelTypeEntry('vjepa2_L_fpc64_256', 'facebook/vjepa2-vitl-fpc64-256'),
     'vjepa2_G_fpc64_384': ModelTypeEntry('vjepa2_G_fpc64_384', 'facebook/vjepa2-vitg-fpc64-384'),
     'ViT_image': ModelTypeEntry('ViT_image', 'ViT_image'),
+    'DFER': ModelTypeEntry('DFER', os.path.join("MAE_DFER", "saved", "model", "pretraining", "voxceleb2", "videomae_pretrain_base_dim512_local_global_attn_depth16_region_size2510_patch16_160_frame_16x4_tube_mask_ratio_0.9_e100_with_diff_target_server170", "checkpoint-49.pth")),
   }
 
   VIDEOMAE_v2_G_unl = _entries['VIDEOMAE_v2_G_unl']
@@ -270,6 +271,7 @@ class MODEL_TYPE:
   VJEPA_v2_L_fpc64_256 = _entries['vjepa2_L_fpc64_256'] 
   VJEPA_v2_G_fpc64_384 = _entries['vjepa2_G_fpc64_384']
   ViT_image         = _entries['ViT_image']
+  DFER             = _entries['DFER']
   
   @classmethod
   def set_custom_model_type(cls, type, custom_model_path):
@@ -281,7 +283,8 @@ class MODEL_TYPE:
       # 'VJEPA2_G_384': 'VJEPA2_G_384',
       'vjepa2_L_fpc64_256': 'vjepa2_L_fpc64_256',
       'vjepa2_G_fpc64_384': 'vjepa2_G_fpc64_384',
-      'ViT_image': 'ViT_image'
+      'ViT_image': 'ViT_image',
+      'DFER': 'DFER'
     }
     key = mapping.get(type)
     if key is None or key not in cls._entries:
@@ -298,7 +301,8 @@ class MODEL_TYPE:
       # 'VJEPA2_G_384': 'VJEPA2_G_384',
       'vjepa2_L_fpc64_256': 'vjepa2_L_fpc64_256',
       'vjepa2_G_fpc64_384': 'vjepa2_G_fpc64_384',
-      'ViT_image': 'ViT_image'
+      'ViT_image': 'ViT_image',
+      'DFER': 'DFER'
     }
     key = mapping.get(type)
     if key and key in cls._entries:
@@ -309,6 +313,8 @@ class MODEL_TYPE:
   def get_embedding_size(cls, typ):
     if 'S' in typ:
       return 384
+    elif 'B_DFER' in typ:
+      return 512
     elif 'B' in typ:
       return 768
     elif 'G' in typ:
