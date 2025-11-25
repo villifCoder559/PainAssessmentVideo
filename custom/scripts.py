@@ -585,9 +585,9 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
       'pooling_embedding_reduction': pooling_embedding_reduction,
       'pooling_clips_reduction': pooling_clips_reduction,
       'sample_frame_strategy': sample_frame_strategy,
-      'path_csv_dataset': path_csv_dataset.split('/')[-3:], # get the last 3 folders
-      'path_video_dataset': path_video_dataset.split('/')[-3:], # get the last 3 folders
-      'features_folder_saving_path': features_folder_saving_path.split('/')[-3:], # get the last 3 folders
+      'path_csv_dataset': path_csv_dataset.split('/'), # get the last 3 folders
+      'path_video_dataset': path_video_dataset.split('/'), # get the last 3 folders
+      'features_folder_saving_path': features_folder_saving_path.split('/'), # get the last 3 folders
       'head': head,
       'key_for_early_stopping': key_for_early_stopping,
       # 'stride_window_in_video': stride_window_in_video,
