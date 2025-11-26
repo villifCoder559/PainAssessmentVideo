@@ -1037,6 +1037,7 @@ def generate_csv_row(data,config,time_, test_id):
     mean_test_losses = {f'mean_all_test_loss_best_ep': np.mean([data[f'k{i}_cross_val_final']['test']['test_loss'] for i in list_final_test])}
     total_mean_test_accuracy_best_epoch = {f'total_mean_all_test_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_final']['test'][test_key] for i in list_final_test])}
     total_mean_test_losses_best_epoch = {f'total_mean_all_test_loss_best_ep': np.mean([data[f'k{i}_cross_val_final']['test']['test_loss'] for i in list_final_test])}
+    total_median_test_losses_best_epoch = {f'total_median_all_test_loss_best_ep': np.median([data[f'k{i}_cross_val_final']['test']['test_loss'] for i in list_final_test])}
   else:
     mean_test_accuracies = {}
     mean_test_losses = {}
@@ -1046,6 +1047,8 @@ def generate_csv_row(data,config,time_, test_id):
   total_mean_train_accuracy_best_epoch = {f'total_mean_train_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_train][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_val_accuracy_best_epoch = {f'total_mean_val_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_val][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_val_losses_best_epoch = {f'total_mean_val_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
+  
+  total_median_val_losses_best_epoch = {f'total_median_val_loss_best_ep': np.median([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   
   
   total_mean_train_losses_last_epoch = {f'total_mean_train_loss_last_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][-1] for i in range(real_k_fold) for j in range(real_sub_fold)])}
@@ -1098,6 +1101,8 @@ def generate_csv_row(data,config,time_, test_id):
     **mean_train_accuracies_best_epoch,
     **mean_val_accuracies_best_epoch,
     **mean_val_losses_best_epoch,
+    **total_median_val_losses_best_epoch,
+    **total_median_test_losses_best_epoch,
     'clip_grad_norm': clip_grad_norm,
     'time_min': int(time_//60) if time_ is not None else 'ND',
   }
