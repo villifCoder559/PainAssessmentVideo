@@ -981,11 +981,15 @@ def generate_subject_class_loss_csv(results_data, output_root_folder):
     if dataset not in dict_loss_per_subject:
       dict_loss_per_subject[dataset] = {}
       
-    dict_grouped_final_loss = get_grouped_losses(data, data['config'])['final']  
+    dict_grouped_final_loss = get_grouped_losses(data, data['config'])
+    if 'final' not in dict_grouped_final_loss:
+      continue
     class_test_loss = dict_grouped_final_loss['class_test_loss']
     subject_test_loss = dict_grouped_final_loss['subject_test_loss']
     dict_loss_per_class[dataset][test_id] = class_test_loss
     dict_loss_per_subject[dataset][test_id] = subject_test_loss
+  if dict_loss_per_class == {} or dict_loss_per_subject == {}:
+    return
   for dataset in dict_loss_per_class:
     df_class = pd.DataFrame.from_dict(dict_loss_per_class[dataset], orient='index')
     df_subject = pd.DataFrame.from_dict(dict_loss_per_subject[dataset], orient='index')
@@ -1043,6 +1047,7 @@ def generate_csv_row(data,config,time_, test_id):
     mean_test_losses = {}
     total_mean_test_accuracy_best_epoch = {}
     total_mean_test_losses_best_epoch = {}
+    total_median_test_losses_best_epoch = {}
   total_mean_train_losses_best_epoch = {f'total_mean_train_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_train_accuracy_best_epoch = {f'total_mean_train_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_train][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_val_accuracy_best_epoch = {f'total_mean_val_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_val][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
@@ -1050,7 +1055,10 @@ def generate_csv_row(data,config,time_, test_id):
   
   total_median_val_losses_best_epoch = {f'total_median_val_loss_best_ep': np.median([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   
-  
+  best_epoch_values = [data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx'] for i in range(real_k_fold) for j in range(real_sub_fold)]
+  best_epoch_values = {'best_epoch_values': best_epoch_values,
+                       'best_epoch_mean': np.mean(best_epoch_values),
+                       'best_epoch_median': np.median(best_epoch_values)}
   total_mean_train_losses_last_epoch = {f'total_mean_train_loss_last_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][-1] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   head_type = config['head'].name
   clip_grad_norm = config['clip_grad_norm'] if 'clip_grad_norm' in config else 'ND'
@@ -1103,6 +1111,7 @@ def generate_csv_row(data,config,time_, test_id):
     **mean_val_losses_best_epoch,
     **total_median_val_losses_best_epoch,
     **total_median_test_losses_best_epoch,
+    **best_epoch_values,
     'clip_grad_norm': clip_grad_norm,
     'time_min': int(time_//60) if time_ is not None else 'ND',
   }

@@ -121,6 +121,7 @@ def main():
     'csv_path': csv_copy_path,
     'config_logging': config_logging
   }
+  
   if video_embeddings is not None:
     dict_res['video_embeddings'] = video_embeddings
   if cross_attention is not None:
