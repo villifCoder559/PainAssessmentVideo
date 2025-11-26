@@ -14,6 +14,10 @@ import logging
 from custom import helper
 import custom.loss as losses  # For pickle loading
 import seaborn as sns
+import cv2
+import torch
+
+
 
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
 
@@ -984,8 +988,8 @@ def generate_subject_class_loss_csv(results_data, output_root_folder):
     dict_grouped_final_loss = get_grouped_losses(data, data['config'])
     if 'final' not in dict_grouped_final_loss:
       continue
-    class_test_loss = dict_grouped_final_loss['class_test_loss']
-    subject_test_loss = dict_grouped_final_loss['subject_test_loss']
+    class_test_loss = dict_grouped_final_loss['final']['class_test_loss']
+    subject_test_loss = dict_grouped_final_loss['final']['subject_test_loss']
     dict_loss_per_class[dataset][test_id] = class_test_loss
     dict_loss_per_subject[dataset][test_id] = subject_test_loss
   if dict_loss_per_class == {} or dict_loss_per_subject == {}:
@@ -1092,13 +1096,6 @@ def generate_csv_row(data,config,time_, test_id):
     # 'reg_loss': config['regularization_loss'],
     **criterion_params,
     **head_params,
-    **total_mean_train_losses_best_epoch,
-    **total_mean_val_accuracy_best_epoch,
-    **total_mean_test_accuracy_best_epoch,
-    **total_mean_train_accuracy_best_epoch,
-    **total_mean_test_losses_best_epoch,
-    **total_mean_val_losses_best_epoch,
-    **total_mean_train_losses_last_epoch,
     **mean_train_losses_last_epoch,
     **mean_val_accuracies_last_epoch,
     **mean_test_accuracies,
@@ -1109,6 +1106,13 @@ def generate_csv_row(data,config,time_, test_id):
     **mean_train_accuracies_best_epoch,
     **mean_val_accuracies_best_epoch,
     **mean_val_losses_best_epoch,
+    **total_mean_train_losses_best_epoch,
+    **total_mean_val_accuracy_best_epoch,
+    **total_mean_test_accuracy_best_epoch,
+    **total_mean_train_accuracy_best_epoch,
+    **total_mean_train_losses_last_epoch,
+    **total_mean_test_losses_best_epoch,
+    **total_mean_val_losses_best_epoch,
     **total_median_val_losses_best_epoch,
     **total_median_test_losses_best_epoch,
     **best_epoch_values,
@@ -1186,8 +1190,6 @@ def plot_confusion_matrices(data, root_output_folder, test_id, additional_info='
   plt.close(fig)
     # ##########################################################
 
-import torch
-from torchmetrics.classification import MulticlassConfusionMatrix
 
 def convert_conf_matrix_to_percent(conf_matrix: MulticlassConfusionMatrix):
     matrix = conf_matrix.confmat if hasattr(conf_matrix, "confmat") else conf_matrix
@@ -1281,9 +1283,47 @@ def plot_accuray_per_class_across_epochs(data, run_output_folder, test_id, addit
   
   # plt.show()
 
-
+def plot_lr_wd_across_epochs(data, run_output_folder, test_id):
+  test_output_folder = os.path.join(run_output_folder, test_id)
+  os.makedirs(test_output_folder, exist_ok=True)
+  for key,dict_sub_fold in data['results'].items():
+    if 'final' in key:
+      continue
+    lr_values = dict_sub_fold['train_val'].get('list_lrs', None)
+    wd_values = dict_sub_fold['train_val'].get('list_wds', None)
+    if lr_values is None and wd_values is None:
+      continue
+    
+    epochs = range(0, len(lr_values) ) if lr_values is not None else range(0, len(wd_values))
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    if lr_values is not None:
+      ax1.plot(epochs, lr_values, 'b-', label='Learning Rate')
+      ax1.set_xlabel('Epochs')
+      ax1.set_ylabel('Learning Rate', color='b')
+      ax1.tick_params(axis='y', labelcolor='b')
+    if wd_values is not None:
+      ax2 = ax1.twinx()
+      ax2.plot(epochs, wd_values, 'r-', label='Weight Decay')
+      ax2.set_ylabel('Weight Decay', color='r')
+      ax2.tick_params(axis='y', labelcolor='r')
+    plt.title(f'Learning Rate and Weight Decay Across Epochs - {test_id} - {key}')
+    # add legends for both axes
+    lines = []
+    labels = []
+    if lr_values is not None:
+      line1, = ax1.plot([], [], 'b-')
+      lines.append(line1)
+      labels.append('Learning Rate')
+    if wd_values is not None:
+      line2, = ax2.plot([], [], 'r-')
+      lines.append(line2)
+      labels.append('Weight Decay')
+    ax1.legend(lines, labels, loc='upper right')
+    fig.tight_layout()
+    fig.savefig(os.path.join(test_output_folder, f'{test_id}_lr_wd_across_epochs_{key}.png'), bbox_inches='tight')
+    plt.close(fig)
 # def link_cross_attention_logs(data, run_output_folder, test_id):
-import cv2
+
 
 def generate_video_from_loss_plots(run_output_folder, test_id):
   test_output_folder = os.path.join(run_output_folder, test_id)
@@ -1328,6 +1368,7 @@ def plot_run_details(results_data, output_root,only_csv):
       # try:
       plot_grouped_k_fold(data, os.path.join(output_root), test_id)
       plot_losses(data, os.path.join(output_root), test_id)
+      plot_lr_wd_across_epochs(data, os.path.join(output_root), test_id)
       if is_unbc:
         generate_video_from_loss_plots(os.path.join(output_root), test_id)
       if not is_unbc:
