@@ -159,6 +159,12 @@ class BaseHead(nn.Module):
       model=self,
       optimizer_name=kwargs['optimizer_name'], 
     )
+    print("\n-------- Created Optimizer and Schedulers -------")
+    print("   Optimizer Configuration:", optimizer)
+    print("   LR Scheduler Configuration:", lr_scheduler)
+    print("   WD Scheduler Configuration:", wd_scheduler)
+    print(f"   Warm-up {f"{optimezer_factory.config['warm_up_percent'] * optimezer_factory.config['epochs'] * optimezer_factory.config['steps_per_epoch']} steps" if optimezer_factory.config.get('warm_up_percent', 0) > 0 else 'disabled'}")
+    print("---------------------------------------------------")
     # train_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
     train_unique_classes = torch.tensor(train_dataset.get_unique_classes())
     train_unique_subjects = torch.tensor(train_dataset.get_unique_subjects())
