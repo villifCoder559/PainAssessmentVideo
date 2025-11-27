@@ -1,0 +1,158 @@
+# train_model.py configuration
+
+# Model configuration
+model:
+  mt: 'B' # Model type. Available options: 'S', 'B', 'G', 'G_unl', 'vjepa2_L_fpc64_256', 'vjepa2_G_fpc64_384', 'ViT_image', 'DFER'.
+  head: 'ATTENTIVE_JEPA' # Head type. Available options: 'GRU', 'ATTENTIVE', 'ATTENTIVE_JEPA', 'LINEAR'.
+  embedding_reduction: 'none' # Embedding reduction method. Available options: 'spatial', 'temporal', 'all', 'adaptive_pooling_3d', 'none'.
+
+# Path configuration
+paths:
+  gp: false # Use global path prefix for file paths
+  csv: 'partA/starting_point/samples_exc_no_detection.csv' # Path to CSV dataset file
+  ffsp: 'partA/video/features/samples_16_frontalized_new' # Feature folder saving path
+  global_folder_name: 'history_run' # Global folder name for saving results
+  path_video_dataset: 'partA/video/video_frontalized_interpolated_mirror' # Path to video dataset
+
+# Data loading parameters
+data:
+  load_dataset_in_memory: 0 # Load the entire dataset into RAM memory. 0 for False
+  is_subject_independent: 1 # Subject-independent split. 1 for True
+  skip_test: 0 # Skip test phase after training. 0 for False
+  n_workers: 1 # Number of workers for data loading
+  prefetch_factor: 2 # Prefetch factor for data loading
+
+# Training parameters
+training:
+  lr: [0.0001] # Learning rate(s)
+  opt: ['adamw'] # Optimizer(s). Available options: 'adam', 'sgd', 'adamw'.
+  validation_enabled: 1 # Enable validation set during training. 1 for enabled
+  train_amp_enabled: false # Enable AMP training
+  train_amp_dtype: null # AMP training data type: bfloat16 or float16
+  ep: 50 # Number of epochs
+  k_fold: 3 # Number of k-fold cross validation splits
+  batch_train: [64] # Training batch size(s)
+  stop: null # Stop after [kth fold, ith subfold]
+  clip_grad_norm: null # Clip gradient norm. Default is None (not applied)
+  concatenate_temp_dim: [0] # Concatenate temporal dimension in input to the model
+  concatenate_quadrants: [0] # Concatenate quadrants dimension in input to the model
+  loss: null # Loss function. Available options: 'l1', 'l2', 'ce', 'cdw_ce', 'sim_loss', 'huber', 'coral', 'ce_weight'.
+  add_CCC_loss: [0.0] # Add CCC loss to the main loss with this weight
+  cdw_ce_alpha: [2] # Alpha parameter for CDW loss
+  cdw_ce_transform: ['power'] # Transform for CDW loss: power, huber, log
+  sim_loss_reduction: [0.0] # Reduction factor for sim loss
+  delta_huber: [null] # Delta parameter for Huber loss
+  num_clips_per_video: [1] # Number of clips per video for random sampling strategy
+  sample_frame_strategy: ['sliding_window'] # Sampling strategy for frames in a video when not use pre-computed feats. Available options: ['uniform', 'sliding_window', 'central', 'random'].
+  stride_inside_window: [1] # Stride inside the sampling window
+  composite_loss: null # Composite loss type: l1, l2, ce, ce_weight, huber, contrastive
+  composite_loss_lambda: null # Lambda for composite loss
+  use_sdpa: [1] # Use SDPA for backbone when feats are not precomputed
+  contrastive_loss_temp: [0.07] # Temperature for contrastive loss
+  contrastive_loss_theta: [1.1] # Theta for contrastive loss
+  contrastive_lambda_weight: [4.0] # Lambda weight for contrastive loss
+  stratified_training: 0 # Use stratified sampling for training batches
+
+# Attention parameters (for AttentiveJepa head)
+attention:
+  num_heads: [8] # Number of heads for attention in transformer
+  num_cross_head: [8] # Number of heads for cross-attention
+  model_dropout: [0.0] # Model dropout rate(s)
+  drop_attn: [0.0] # Attention dropout rate(s)
+  drop_residual: [0.0] # Residual dropPath rate(s)
+  drop_path_mode: ['row'] # Drop path mode: row or batch
+  mlp_ratio: [2.0] # MLP ratio(s)
+  custom_mlp: [0] # Use custom MLP
+  pos_enc: [0] # Use positional encoding
+  nr_blocks: [1] # Number of blocks
+  cross_block_after_transformers: [0] # Use cross block after transformers
+  num_queries: [1] # Number of queries
+  queries_agg_method: ['mean'] # Aggregation method for queries. Available options: ['mean', 'max'].
+  complete_block: [1] # Use complete block
+  q_k_v_dim: [null] # Dimension of query, key, value
+  apply_xattn_mask: [0] # Apply mask to cross-attention
+
+# Adapter backbone finetuning parameters
+adapter:
+  adpater_mlp_ratio: [0.25] # MLP ratio(s) for backbone adapter
+  adapter_kernel_size: [3] # Kernel size(s) for backbone adapter
+  adapter_dilation: [1] # Dilation(s) for backbone adapter
+  adapter_type: ['adapter'] # Adapter type
+  num_adapters: [0] # Number of adapters to use
+
+# Linear head parameters
+linear:
+  linear_dim_reduction: 'spatial' # Dimension reduction for Linear head. Available options: ['mean_temporal', 'mean_spatial', 'mean_temporal_spatial', 'none', 'adaptive_pooling_3d'].
+
+# GRU head parameters
+gru:
+  GRU_hidden_size: [1024] # GRU hidden layer size(s)
+  GRU_num_layers: [2] # GRU number of layers
+  GRU_dropout: [0.0] # GRU dropout rate(s)
+  GRU_output_size: 1 # Output size of GRU
+  layer_norm: [0] # Add Layer normalization
+  GRU_round_output_loss: [0] # Round output from regression before computing loss
+
+# Network regularization
+regularization:
+  init_network: ['default'] # Network initialization: xavier, default, uniform
+  regulariz_lambda_L1: [0] # Regularization strength(s) L1
+  regulariz_lambda_L2: [0] # Regularization strength(s) L2
+  label_smooth: [0.0] # Label smoothing factor
+  soft_labels: [0.0] # Soft labels factor
+  loss_regression: 'L1' # Regression loss function: L1 or L2
+  head_init_path: null # Path to pre-trained head weights
+
+# Augmentation
+augmentation:
+  hflip: [0.0] # Horizontal flip augmentation probability
+  jitter: [0.0] # Jitter augmentation probability
+  rotation: [0.0] # Rotation augmentation probability
+  latent_basic: [0.0] # Latent basic augmentation probability
+  latent_masking: [0.0] # Latent masking augmentation
+  shift_augm: [0.0] # Video shift augmentation probability
+
+# Early stopping
+early_stopping:
+  key_early_stopping: 'val_accuracy' # Metric for early stopping: val_accuracy, val_loss
+  p_early_stop: 2000 # Patience for early stopping
+  min_delta: 0.001 # Minimum delta for early stopping
+  threshold_mode: 'abs' # Early stopping threshold mode: abs or rel
+
+# Logging
+logging:
+  log_grad_per_module: false # Log gradient per module
+  log_history_sample: false # Log the train,val, test prediction of the model
+  plot_live_loss: false # Plot live loss during training
+  log_xattn: false # Log cross attention weights
+  log_grad_norm: false # Log gradient norm
+  log_workers: false # Log time taken by each worker to load data
+  save_best_model: false # Save the best model during training
+  save_last_epoch_model: false # Save the last epoch model
+
+# Optimizer and Scheduler Settings
+scheduler:
+  scheduler_name: ['cosine'] # LR scheduler name
+  wd_scheduler_name: [null] # Weight decay scheduler name
+  exclude_bias_wd: [1] # Exclude bias and 1D params from weight decay
+  min_lr: [0.0000001] # Minimum learning rate for cosine scheduler
+  warm_up_percent: [0.1] # Warm-up percentage of total steps
+  warm_up_scheduler: ['linear'] # Warm-up scheduler name
+  warm_up_start_factor: [0.1] # Warm-up start factor for learning rate
+  min_wd: [0.0] # Minimum weight decay
+  first_restart_epochs: [10] # Epochs for first restart in cosine_restart scheduler
+  multiplier_restart: [2] # Multiplier for restart in cosine_restart scheduler
+  step_size_epochs: [30] # Step size in epochs for step scheduler
+  gamma: [0.1] # Gamma for step scheduler
+  onecycle_pct_start: [0.3] # Percentage of start phase in onecycle scheduler
+
+# Optuna parameters
+optuna:
+  optuna_use_median: 0 # Use median of k-fold validation results for Optuna
+  optuna_min_epoch_thr: 0 # Minimum epoch threshold for Optuna
+  pruner_threshold_lower: 0.20 # Threshold for Optuna pruner
+  pruner_n_warmup_steps: 30 # Number of warmup steps for Optuna pruner
+  optuna_categorical: 1 # Use categorical optimization for Optuna
+  optuna_sampler: 'auto' # Optuna sampler: tpe, random, auto, grid
+  n_trials: 100 # Number of trials for Optuna
+  timeout: 14 # Timeout for Optuna in hours
