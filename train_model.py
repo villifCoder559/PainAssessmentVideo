@@ -567,18 +567,39 @@ def generate_pymp_folder():
   # Tell pymp to use that folder for shared memory files
   os.environ["PYMP_TEMP_DIR"] = hidden_tmp_dir
   
+import yaml
+
+def set_parser_defaults_from_yaml(parser, yaml_path):
+  with open(yaml_path, 'r') as f:
+    yaml_config = yaml.safe_load(f)
+    
+  for section, settings in yaml_config.items():
+    for key, value in settings.items():
+      # Convert keys from yaml to the format expected by argparse
+      arg_key = key.replace('-', '_')
+      parser.set_defaults(**{arg_key: value})
+
 if __name__ == '__main__':
   # mp.set_start_method('spawn', force=True)
   # Set up argument parser
   # generate_pymp_folder()
   parser = argparse.ArgumentParser(description='Train video analysis model with various configurations')
   
+  # Add config file argument
+  parser.add_argument('--config', type=str, help='Path to YAML configuration file.')
+  
+  # Set defaults from YAML if provided
+  import sys
+  if '--config' in sys.argv:
+    config_path = sys.argv[sys.argv.index('--config') + 1]
+    set_parser_defaults_from_yaml(parser, config_path)
+  
   # Model configuration
-  parser.add_argument('--mt', type=str, default='B', help='Model type: G(Giant) B (Base), S (Small), or I (Image)')
-  parser.add_argument('--head', type=str, default='ATTENTIVE_JEPA', help='Head type: GRU, ATTENTIVE, LINEAR, ATTENTIVE_JEPA')
+  parser.add_argument('--mt', type=str, default='B', help="Model type. Available options: 'S', 'B', 'G', 'G_unl', 'vjepa2_L_fpc64_256', 'vjepa2_G_fpc64_384', 'ViT_image', 'DFER'.")
+  parser.add_argument('--head', type=str, default='ATTENTIVE_JEPA', help="Head type. Available options: 'GRU', 'ATTENTIVE', 'ATTENTIVE_JEPA', 'LINEAR'.")
   parser.add_argument('--n_workers', type=int, default=1, help='Number of workers for data loading. Default is 1')
   parser.add_argument('--prefetch_factor', type=int, default=2, help='Prefetch factor for data loading. Default is 2')
-  parser.add_argument('--embedding_reduction', type=str, default='none', help='Embedding reduction method: spatial, temporal, all, adaptive_pooling_3d, none. Default is spatial')
+  parser.add_argument('--embedding_reduction', type=str, default='none', help="Embedding reduction method. Available options: 'spatial', 'temporal', 'all', 'adaptive_pooling_3d', 'none'.")
   
   # Path configuration
   parser.add_argument('--gp', action='store_true', help='Use global path prefix for file paths')
@@ -598,7 +619,7 @@ if __name__ == '__main__':
   
   # Training parameters
   parser.add_argument('--lr', type=float, nargs='*', default=[0.0001], help='Learning rate(s)')
-  parser.add_argument('--opt', type=str, nargs='*', default=['adamw'], help='Optimizer(s): adam, sgd, adamw')
+  parser.add_argument('--opt', type=str, nargs='*', default=['adamw'], help="Optimizer(s). Available options: 'adam', 'sgd', 'adamw'.")
   parser.add_argument('--validation_enabled', type=int, choices=[0,1], default=1, help='Enable validation set during training. Default is 1 (enabled)')
   parser.add_argument('--train_amp_enabled', action='store_true', help='Enable AMP training')
   parser.add_argument('--train_amp_dtype', type=str, default=None, help='AMP training data type: bfloat16 or float16. Default is float16')
@@ -610,14 +631,14 @@ if __name__ == '__main__':
   parser.add_argument('--concatenate_temp_dim', type=int, nargs='*', default=[0],
                     help='Concatenate temporal dimension in input to the model. (ex: the embeddind is [temporal*emb_dim]=6144 if model base)')
   parser.add_argument('--concatenate_quadrants',type=int, nargs='*', default=[0], help='Concatenate quadrants dimension in input to the model. (ex: the embeddind is [4*emb_dim]=3072 if model base)' )
-  parser.add_argument('--loss', type=str, nargs='*', default=None, help='Loss function: l1, l2, ce, cdw_ce,sim_loss,huber, coral, ce_weight. Default is ce')
+  parser.add_argument('--loss', type=str, nargs='*', default=None, help="Loss function. Available options: 'l1', 'l2', 'ce', 'cdw_ce', 'sim_loss', 'huber', 'coral', 'ce_weight'.")
   parser.add_argument('--add_CCC_loss', type=float, nargs='*', default=[0.0], help='Add CCC loss to the main loss with this weight. Default is 0.0 (not added)')
   parser.add_argument('--cdw_ce_alpha', type=float, nargs='*', default=[2], help='Alpha parameter for CDW loss.') 
   parser.add_argument('--cdw_ce_transform', type=str, nargs='*', default=['power'], help='Transform for CDW loss. Default is power, can Be also "huber" or "log"')
   parser.add_argument('--sim_loss_reduction', type=float, nargs='*', default=[0.0], help='Reduction factor for sim loss. Default is 0.0 (no reduction)')
   parser.add_argument('--delta_huber', type=float, nargs='*',default=[None], help='Delta parameter for Huber loss.')
   parser.add_argument('--num_clips_per_video',type=int, nargs='*', default=[1], help='Number of clips per video for random sampling strategy. Default is 1')
-  parser.add_argument('--sample_frame_strategy', type=str, nargs='*', default=['sliding_window'],help=f'Sampling strategy for frames in a video when not use pre-computed feats: {list(SAMPLE_FRAME_STRATEGY)}. Default is sliding_window')
+  parser.add_argument('--sample_frame_strategy', type=str, nargs='*', default=['sliding_window'],help=f"Sampling strategy for frames in a video when not use pre-computed feats. Available options: {[s.value for s in SAMPLE_FRAME_STRATEGY]}.")
   parser.add_argument('--stride_inside_window', type=int, nargs='*', default=[1], help='Stride inside the sampling window. Default is 1')
   parser.add_argument('--composite_loss', nargs='*', type=str, default=None, help='Composite loss type: l1, l2, ce, ce_weight, huber, contrastive. Default is None')
   parser.add_argument('--composite_loss_lambda', nargs='*', type=float, default=None, help='Lambda for composite loss (only for attentive head). Default is None (not used)')
@@ -642,7 +663,7 @@ if __name__ == '__main__':
   parser.add_argument('--cross_block_after_transformers', type=int,nargs='*', default=[0],
                     help='Use cross block after transformers for Jepa Attentive head')
   parser.add_argument('--num_queries', type=int, nargs='*', default=[1], help='Number of queries for Attentive head. Default is 1')
-  parser.add_argument('--queries_agg_method',type=str, nargs='*',default=['mean'], help=f'Aggregation method for queries: {[print(agg_method) for agg_method in helper.QUERIES_AGG_METHOD]} . Default is mean')
+  parser.add_argument('--queries_agg_method',type=str, nargs='*',default=['mean'], help=f"Aggregation method for queries. Available options: {helper.QUERIES_AGG_METHOD}.")
   parser.add_argument('--complete_block', type=int, nargs='*', default=[1],
                     help='Use complete block for Attentive head (after cross-attn there is MLP). Default is 1 (complete block), if 0 remove the MLP block after cross-attention')
   parser.add_argument('--q_k_v_dim', type=int, nargs='*', default=[None],
@@ -658,7 +679,7 @@ if __name__ == '__main__':
   parser.add_argument('--num_adapters', type=int, nargs='*', default=[0], help='Number of adapters to use. Default is 0')
   
   # Linear parameters
-  parser.add_argument('--linear_dim_reduction', type=str, default='spatial', help=f'Dimension reduction for Linear head. Can be {[d.name.lower() for d in EMBEDDING_REDUCTION]}')
+  parser.add_argument('--linear_dim_reduction', type=str, default='spatial', help=f"Dimension reduction for Linear head. Available options: {[d.name.lower() for d in EMBEDDING_REDUCTION]}.")
   
   # GRU parameters
   parser.add_argument('--GRU_hidden_size', type=int, nargs='*', default=[1024], help='GRU hidden layer size(s)')
@@ -713,15 +734,15 @@ if __name__ == '__main__':
   parser.add_argument('--exclude_bias_wd', type=int, choices=[0, 1], nargs='*', default=[1], help='Exclude bias and 1D params from weight decay. 1 for True, 0 for False.')
   # parser.add_argument('--steps_per_epoch', type=int, default=None, help='Manually set steps per epoch. If None, it is inferred from dataset size and batch size.')
   parser.add_argument('--min_lr', type=float, nargs='*', default=[1e-7], help='Minimum learning rate for cosine scheduler.')
-  parser.add_argument('--warm_up_percent', type=float, nargs='*', default=[0.1], help='Warm-up percentage of total steps.')
-  parser.add_argument('--warm_up_scheduler', type=str, nargs='*', default=['linear'], help='Warm-up scheduler name.')
-  parser.add_argument('--warm_up_start_factor', type=float, nargs='*', default=[0.1], help='Warm-up start factor for learning rate.')
-  parser.add_argument('--min_wd', type=float, nargs='*', default=[0.0], help='Minimum weight decay for cosine_wd scheduler.')
-  parser.add_argument('--first_restart_epochs', type=int, nargs='*', default=[10], help='Epochs for first restart in cosine_restart scheduler.')
-  parser.add_argument('--multiplier_restart', type=int, nargs='*', default=[2], help='Multiplier for restart in cosine_restart scheduler.')
-  parser.add_argument('--step_size_epochs', type=int, nargs='*', default=[30], help='Step size in epochs for step scheduler.')
-  parser.add_argument('--gamma', type=float, nargs='*', default=[0.1], help='Gamma for step scheduler.')
-  parser.add_argument('--onecycle_pct_start', type=float, nargs='*', default=[0.3], help='Percentage of start phase in onecycle scheduler.')
+  parser.add_argument('--warm_up_percent', type=float, nargs='*', default=[None], help='Warm-up percentage of total steps.')
+  parser.add_argument('--warm_up_scheduler', type=str, nargs='*', default=[None], help='Warm-up scheduler name.')
+  parser.add_argument('--warm_up_start_factor', type=float, nargs='*', default=[None], help='Warm-up start factor for learning rate.')
+  parser.add_argument('--min_wd', type=float, nargs='*', default=[None], help='Minimum weight decay for cosine_wd scheduler.')
+  parser.add_argument('--first_restart_epochs', type=int, nargs='*', default=[None], help='Epochs for first restart in cosine_restart scheduler.')
+  parser.add_argument('--multiplier_restart', type=int, nargs='*', default=[None], help='Multiplier for restart in cosine_restart scheduler.')
+  parser.add_argument('--step_size_epochs', type=int, nargs='*', default=[None], help='Step size in epochs for step scheduler.')
+  parser.add_argument('--gamma', type=float, nargs='*', default=[None], help='Gamma for step scheduler.')
+  parser.add_argument('--onecycle_pct_start', type=float, nargs='*', default=[None], help='Percentage of start phase in onecycle scheduler.')
 
   # Optuna parameters
   parser.add_argument('--optuna_use_median', type=int, default=0, help='Use median of k-fold validation results for Optuna optimization. Default is 0 (False)')
