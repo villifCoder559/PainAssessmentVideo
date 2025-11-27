@@ -27,7 +27,7 @@ from coral_pytorch.losses import coral_loss
 import sys
 from custom.tools import plot_masked_attention, get_pth_path_from_project_folder
 import custom.loss as losses
-
+from custom.optimizers import OptimizerFactory
 
 def get_composite_loss_module(loss_types,losses_weights, **kwargs):
   list_losses = []
@@ -223,6 +223,11 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   step_size_epochs = _suggest(trial, 'step_size_epochs', kwargs['step_size_epochs'], kwargs['optuna_categorical'])
   gamma = _suggest(trial, 'gamma', kwargs['gamma'], kwargs['optuna_categorical'])
   onecycle_pct_start = _suggest(trial, 'onecycle_pct_start', kwargs['onecycle_pct_start'], kwargs['optuna_categorical'])
+  onecycle_max_lr = _suggest(trial, 'onecycle_max_lr', kwargs['onecycle_max_lr'], kwargs['optuna_categorical'])
+  onecycle_div_factor = _suggest(trial, 'onecycle_div_factor', kwargs['onecycle_div_factor'], kwargs['optuna_categorical'])
+  onecycle_final_div_factor = _suggest(trial, 'onecycle_final_div_factor', kwargs['onecycle_final_div_factor'], kwargs['optuna_categorical'])
+  onecycle_anneal_strategy = trial.suggest_categorical('onecycle_anneal_strategy', kwargs['onecycle_anneal_strategy'])
+  
   scheduler_config_dict = {
     'optimizer_name': opt,
     'scheduler_name': scheduler_name,
@@ -238,10 +243,16 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'multiplier_restart': multiplier_restart,
     'step_size_epochs': step_size_epochs,
     'gamma': gamma,
-    'onecycle_pct_start': onecycle_pct_start,
     'lr': lr,
-    'weight_decay': regulariz_lambda_L2
+    'weight_decay': regulariz_lambda_L2,
+    'onecycle_pct_start': onecycle_pct_start,
+    'onecycle_max_lr': onecycle_max_lr,
+    'onecycle_div_factor': onecycle_div_factor,
+    'onecycle_final_div_factor': onecycle_final_div_factor,
+    'onecycle_anneal_strategy': onecycle_anneal_strategy,
   }
+  OptimizerFactory.check_schedulers_parms(scheduler_name=scheduler_name, config=scheduler_config_dict)
+  
   emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
   input_dim = emb_dim
   if concatenate_temp_dim:
@@ -734,8 +745,8 @@ if __name__ == '__main__':
   parser.add_argument('--exclude_bias_wd', type=int, choices=[0, 1], nargs='*', default=[1], help='Exclude bias and 1D params from weight decay. 1 for True, 0 for False.')
   # parser.add_argument('--steps_per_epoch', type=int, default=None, help='Manually set steps per epoch. If None, it is inferred from dataset size and batch size.')
   parser.add_argument('--min_lr', type=float, nargs='*', default=[1e-7], help='Minimum learning rate for cosine scheduler.')
-  parser.add_argument('--warm_up_percent', type=float, nargs='*', default=[None], help='Warm-up percentage of total steps.')
-  parser.add_argument('--warm_up_scheduler', type=str, nargs='*', default=[None], help='Warm-up scheduler name.')
+  parser.add_argument('--warm_up_percent', type=float, nargs='*', default=[None], help='Warm-up percentage of total steps. [0,1] is the range. E.g., 0.1 means 10%% of total steps.')
+  parser.add_argument('--warm_up_scheduler', type=str, nargs='*', default=[None], help='Warm-up scheduler name. Default is None (not used), available: linear.')
   parser.add_argument('--warm_up_start_factor', type=float, nargs='*', default=[None], help='Warm-up start factor for learning rate.')
   parser.add_argument('--min_wd', type=float, nargs='*', default=[None], help='Minimum weight decay for cosine_wd scheduler.')
   parser.add_argument('--first_restart_epochs', type=int, nargs='*', default=[None], help='Epochs for first restart in cosine_restart scheduler.')
@@ -743,7 +754,10 @@ if __name__ == '__main__':
   parser.add_argument('--step_size_epochs', type=int, nargs='*', default=[None], help='Step size in epochs for step scheduler.')
   parser.add_argument('--gamma', type=float, nargs='*', default=[None], help='Gamma for step scheduler.')
   parser.add_argument('--onecycle_pct_start', type=float, nargs='*', default=[None], help='Percentage of start phase in onecycle scheduler.')
-
+  parser.add_argument('--onecycle_max_lr', type=float, nargs='*', default=[None], help='Maximum learning rate in onecycle scheduler.')
+  parser.add_argument('--onecycle_div_factor', type=float, nargs='*', default=[None], help='Div factor for onecycle scheduler.')
+  parser.add_argument('--onecycle_final_div_factor', type=float, nargs='*', default=[None], help='Final div factor for onecycle scheduler.')
+  parser.add_argument('--onecycle_anneal_strategy', type=str, nargs='*', default=[None], help='Anneal strategy for onecycle scheduler.')
   # Optuna parameters
   parser.add_argument('--optuna_use_median', type=int, default=0, help='Use median of k-fold validation results for Optuna optimization. Default is 0 (False)')
   parser.add_argument('--optuna_min_epoch_thr', type=int, default=0, help='Minimum epoch threshold for Optuna optimization to keep the experiment. Default is 0 (no threshold)')
@@ -766,6 +780,8 @@ if __name__ == '__main__':
   dict_args['pooling_embedding_reduction'] = helper.EMBEDDING_REDUCTION.get_embedding_reduction(dict_args['embedding_reduction'])
   dict_args['pooling_clips_reduction'] = pooling_clips_reduction
   dict_args['stride_window_in_video'] = 16 # To avoid errors but not used
+  if dict_args['warm_up_scheduler'][0] is not None and dict_args['scheduler_name'][0] == 'onecycle':
+    raise ValueError("Onecycle scheduler already includes warm-up phase. Remove warm_up_scheduler argument.")
   
   if dict_args['plot_live_loss']:
     helper.PLOT_LIVE_LOSS = True
