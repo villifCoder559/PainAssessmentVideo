@@ -60,7 +60,7 @@ class OptimizerFactory:
     """
     optimizer = self._get_optimizer(model, self.config['optimizer_name'])
     lr_scheduler = self._get_lr_scheduler(optimizer, self.config['scheduler_name'])
-    wd_scheduler = self._get_wd_scheduler(optimizer, self.config.get('wd_scheduler_name'))
+    wd_scheduler = self._get_wd_scheduler(optimizer, self.config['wd_scheduler_name'])
     return optimizer, lr_scheduler, wd_scheduler
 
   def _get_optimizer(self, model: nn.Module, optimizer_name: str) -> optim.Optimizer:
