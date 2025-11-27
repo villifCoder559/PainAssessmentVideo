@@ -38,8 +38,8 @@ def set_seed(seed):
   torch.backends.cudnn.benchmark = False  # May slow down training but ensures reproducibility
 
 def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced, k_fold, seed_random_state,
-                          lr, epochs, optimizer_fn, round_output_loss, shuffle_training_batch, criterion,
-                          early_stopping, enable_scheduler, concatenate_temp_dim, init_network,is_subject_independent,
+                          lr, epochs, round_output_loss, shuffle_training_batch, criterion,
+                          early_stopping, concatenate_temp_dim, init_network,is_subject_independent,
                           regularization_lambda_L1, key_for_early_stopping, target_metric_best_model,stop_after_kth_fold,
                           clip_grad_norm,regularization_lambda_L2,trial,summary_res,run_folder_path,validate,**kwargs):
   """
@@ -75,10 +75,10 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
     start = time.time()
     fold_results = run_single_fold(
       i, k_fold, list_splits_idxs, csv_array, cols, sample_ids, subject_ids,
-      train_folder_path, model_advanced, lr, epochs, optimizer_fn, 
+      train_folder_path, model_advanced, lr, epochs, 
       concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
       init_network, regularization_lambda_L1,
-      key_for_early_stopping, early_stopping, enable_scheduler,
+      key_for_early_stopping, early_stopping,
       target_metric_best_model, seed_random_state, clip_grad_norm,stop_after_kth_fold,
       regularization_lambda_L2,trial,validate,**kwargs
     )
@@ -114,7 +114,7 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
                    train_folder_path, model_advanced, lr, epochs, optimizer_fn, 
                    concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
                    init_network, regularization_lambda_L1,
-                   key_for_early_stopping, early_stopping, enable_scheduler,
+                   key_for_early_stopping, early_stopping, 
                    target_metric_best_model, seed_random_state,clip_grad_norm,
                    stop_after_kth_fold,regularization_lambda_L2,trial,validate=True,**kwargs):
   """Run a single fold of the cross-validation"""
@@ -164,10 +164,10 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
   # AUGMENTAION: val and test csv will be filtered in function get_dataset_and_loader (dataset.py)  
   fold_results_kth = train_subfold_models(
     fold_idx, sub_k_fold_list, csv_array, cols, sample_ids,
-    saving_path_kth_fold, model_advanced, lr, epochs, optimizer_fn,
+    saving_path_kth_fold, model_advanced, lr, epochs,
     concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
     init_network, regularization_lambda_L1,
-    key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state,
+    key_for_early_stopping, early_stopping, seed_random_state,
     clip_grad_norm,stop_after_kth_fold,regularization_lambda_L2,
     trial,validate,**kwargs
   )
@@ -276,10 +276,10 @@ def set_frozen_head_from_pth_folder(model_advanced: Model_Advanced, saving_path_
     raise ValueError(f'No .pth model found for {saving_kth} in {model_advanced.head_init_path}')
 
 def train_subfold_models(fold_idx, sub_k_fold_list, csv_array, cols, sample_ids,
-                      saving_path_kth_fold, model_advanced, lr, epochs, optimizer_fn,
+                      saving_path_kth_fold, model_advanced, lr, epochs,
                       concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
                       init_network, regularization_lambda_L1,
-                      key_for_early_stopping, early_stopping, enable_scheduler, seed_random_state,clip_grad_norm,
+                      key_for_early_stopping, early_stopping, seed_random_state,clip_grad_norm,
                       stop_after_kth_fold, regularization_lambda_L2, trial, validate, **kwargs):
   """Train models on sub-folds"""
   if not isinstance(model_advanced, Model_Advanced):
@@ -311,7 +311,6 @@ def train_subfold_models(fold_idx, sub_k_fold_list, csv_array, cols, sample_ids,
     dict_train = model_advanced.train(
       lr=lr,
       num_epochs=epochs,
-      optimizer_fn=optimizer_fn,
       concatenate_temporal=concatenate_temp_dim,
       criterion=criterion,
       saving_path=saving_path_kth_sub_fold,
@@ -324,7 +323,6 @@ def train_subfold_models(fold_idx, sub_k_fold_list, csv_array, cols, sample_ids,
       regularization_lambda_L2=regularization_lambda_L2,
       key_for_early_stopping=key_for_early_stopping,
       early_stopping=early_stopping,
-      enable_scheduler=enable_scheduler,
       clip_grad_norm=clip_grad_norm,
       trial=trial,
       enable_optuna_pruning = True if fold_idx == 0 and sub_idx == 0 else False,
@@ -539,7 +537,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    k_fold,
                    global_foder_name, 
                    batch_size_training, epochs, 
-                   criterion, optimizer_fn, lr,seed_random_state,
+                   criterion, lr,seed_random_state,
                    is_plot_dataset_distribution,
                    is_round_output_loss, is_shuffle_video_chunks,is_shuffle_training_batch,
                    init_network,key_for_early_stopping,
@@ -547,7 +545,6 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                    regularization_lambda_L2,
                    clip_length,
                    target_metric_best_model,
-                   enable_scheduler,
                    early_stopping,
                    concatenate_temp_dim,
                    stop_after_kth_fold,
@@ -574,7 +571,6 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
       'k_fold': k_fold,
       'model_type': model_type,
       'epochs': epochs,
-      'optimizer_fn': optimizer_fn.__name__,
       'lr': lr,
       'criterion': criterion,
       'criterion_dict': criterion.get_params() if hasattr(criterion,'get_params') else None,
@@ -602,7 +598,6 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
       'clip_length': clip_length,
       'target_metric_best_model': target_metric_best_model,
       'early_stopping': early_stopping,
-      'enable_scheduler': enable_scheduler,
       'concatenate_temp_dim': concatenate_temp_dim,
       'stop_after_kth_fold': stop_after_kth_fold,
       'n_workers': n_workers,
@@ -619,7 +614,6 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'k_fold': k_fold,
     'model_type': model_type.name,
     'epochs': epochs,
-    'optimizer_fn': optimizer_fn.__name__,
     'lr': lr,
     'criterion': type(criterion).__name__,
     'init_network': init_network,
@@ -745,7 +739,6 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                           seed_random_state=seed_random_state,
                                           lr=lr,
                                           epochs=epochs,
-                                          optimizer_fn=optimizer_fn,
                                           round_output_loss=is_round_output_loss,
                                           shuffle_training_batch=is_shuffle_training_batch,
                                           criterion=criterion,
@@ -755,7 +748,6 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                           regularization_lambda_L1=regularization_lambda_L1,
                                           regularization_lambda_L2=regularization_lambda_L2,
                                           key_for_early_stopping=key_for_early_stopping,
-                                          enable_scheduler=enable_scheduler,
                                           clip_grad_norm=clip_grad_norm,
                                           target_metric_best_model=target_metric_best_model,
                                           stop_after_kth_fold=stop_after_kth_fold,

@@ -8,6 +8,8 @@ import custom.tools as tools
 from torchmetrics.classification import ConfusionMatrix
 import math
 import os
+from custom.optimizers import OptimizerFactory
+
 from custom.helper import CUSTOM_DATASET_TYPE
 import torch.nn.init as init
 import custom.helper as helper
@@ -91,9 +93,9 @@ class BaseHead(nn.Module):
         mask_grid = mask_grid.expand(B,T,S,S,C) # [B,T,S,S,C]
         features[i] = features[i].masked_fill(mask_grid, 0.0) # set to zero the masked values
     
-  def start_train(self, num_epochs, criterion, optimizer,lr, saving_path, train_csv_path, val_csv_path ,batch_size,dataset_type,
+  def start_train(self, num_epochs, criterion, lr, saving_path, train_csv_path, val_csv_path ,batch_size,dataset_type,
                   round_output_loss, shuffle_training_batch, regularization_lambda_L1,concatenate_temp_dim,clip_grad_norm,
-                  early_stopping, key_for_early_stopping,enable_scheduler,root_folder_features,init_network,backbone_dict,n_workers,label_smooth,
+                  early_stopping, key_for_early_stopping,root_folder_features,init_network,backbone_dict,n_workers,label_smooth,
                   regularization_lambda_L2,trial,enable_optuna_pruning,prefetch_factor,soft_labels,is_coral_loss,sample_frame_strategy,stride_inside_window,
                   num_clips_per_video, **kwargs):
     
@@ -151,29 +153,12 @@ class BaseHead(nn.Module):
                                                             n_workers=n_workers,
                                                             **kwargs)
     
-    if isinstance(self,AttentiveClassifierJEPA) and enable_scheduler: 
-      optimizer, _, scheduler, wd_scheduler = jepa_eval.init_opt( 
-          classifier=self,
-          start_lr=lr,
-          ref_lr=lr,
-          iterations_per_epoch=1, # 1 because I update the optimizer every epoch
-          warmup=0.0,
-          wd=regularization_lambda_L2,
-          final_wd=regularization_lambda_L2,
-          num_epochs=num_epochs, 
-          use_bfloat16=False)
-    else:
-      optimizer = optimizer(self.parameters(), lr=lr, weight_decay=regularization_lambda_L2) 
-      if enable_scheduler:
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer,
-                                                               T_max=num_epochs,
-                                                               eta_min=1e-7,
-                                                               last_epoch=-1)
-        wd_scheduler = None
-      else:
-        scheduler = None
-        wd_scheduler = None
-
+    kwargs['scheduler_config_dict']['steps_per_epoch'] = len(train_loader)
+    optimezer_factory = OptimizerFactory(kwargs['scheduler_config_dict'])
+    optimizer, lr_scheduler, wd_scheduler = optimezer_factory.create(
+      model=self,
+      optimizer_name=kwargs['optimizer_name'], 
+    )
     # train_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
     train_unique_classes = torch.tensor(train_dataset.get_unique_classes())
     train_unique_subjects = torch.tensor(train_dataset.get_unique_subjects())
@@ -276,9 +261,6 @@ class BaseHead(nn.Module):
     for epoch in range(num_epochs):
       start_epoch = time.time()
       self.train() 
-      lrs, wds = tools.get_lr_and_weight_decay(optimizer)
-      list_lrs.append(lrs)
-      list_wds.append(wds)
       list_train_epoch_predictions = []
       list_train_ground_truths = []
       class_loss = torch.zeros(2,train_unique_classes.shape[0])
@@ -302,7 +284,8 @@ class BaseHead(nn.Module):
       dict_log_time['pre_batch'] = dict_log_time.get('pre_batch',0) + time.time() - start_epoch
       start_load_batch = time.time()
       torch.cuda.reset_peak_memory_stats(device)
-      
+      list_batch_lr = []
+      list_batch_wd = []
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
         end_load_batch = time.time()
         dict_log_time['load_batch'] = dict_log_time.get('load_batch',0) + end_load_batch - start_load_batch
@@ -311,11 +294,7 @@ class BaseHead(nn.Module):
         _,count_sample_per_subject = torch.unique(batch_subjects, return_counts=True)
         sample_per_subject_count[tmp] += count_sample_per_subject
         dict_log_time['count_subjects'] = dict_log_time.get('count_subjects',0) + time.time() - time_to_count_subjects
-        # Latent augmentation
-        # time_for_latent_augmentation = time.time()
-        # self.check_and_apply_latent_augmentation_(dict_batch_X['x'], sample_id)
-        # dict_log_time['latent_augmentation'] = dict_log_time.get('latent_augmentation',0) + time.time() - time_for_latent_augmentation
-        
+
         transfer_to_device = time.time() 
         # HuberLoss requires float32 inputs
         if batch_y.dtype == torch.int32: # if ce not has label smoothing
@@ -331,6 +310,7 @@ class BaseHead(nn.Module):
         helper.LOG_CROSS_ATTENTION['state'] = 'train'
         dict_batch_X['list_sample_id'] = sample_id
         dict_batch_X['return_video_emb'] = return_embeddings
+        
         start_forward = time.time()
         with autocast(device_type=device, dtype=amp_dtype, enabled=enable_autocast): # Use autocast for mixed precision training
           dict_out = self(**dict_batch_X) # input [batch, seq_len, emb_dim]
@@ -377,6 +357,16 @@ class BaseHead(nn.Module):
         dict_log_time['optimizer'] = dict_log_time.get('optimizer',0) + time.time()-start_optimizer
         train_loss += loss.item()
         
+        # Log learning rate and weight decay
+        monitoring_values = OptimizerFactory.get_monitoring_values(optimizer)
+        list_batch_lr.append(monitoring_values['lr'])
+        list_batch_wd.append({'wd_no_bias': monitoring_values['wd_no_bias'], 'wd_bias': monitoring_values['wd_bias']})
+        
+        if lr_scheduler:
+          lr_scheduler.step()
+        if wd_scheduler:
+          wd_scheduler.step()
+          
         start_logs = time.time()
         if not is_resupcon_loss and (helper.LOG_PER_CLASS or helper.LOG_PER_SUBJECT or helper.LOG_CONFIDENCE_PREDICTION):
           if is_coral_loss:
@@ -449,6 +439,8 @@ class BaseHead(nn.Module):
           # dict_log_time['batch'] = dict_log_time.get('batch',0) + time.time()-end_load_batch
         start_load_batch = time.time()
 
+      list_lrs.append(list_batch_lr)
+      list_wds.append(list_batch_wd)
       time_eval = time.time()
       dict_eval = None
       if val_csv_path is not None:
@@ -539,11 +531,7 @@ class BaseHead(nn.Module):
         train_dict_precision_recall = {}
         list_train_performance_metric.append(list_train_losses[-1])
         list_val_performance_metric.append(dict_eval['val_loss'] if dict_eval is not None else 0.0)
-        
-      if scheduler:
-        scheduler.step()
-      if wd_scheduler:
-        wd_scheduler.step()
+      
       
       # log performance
       self.log_performance(stage='Train',
@@ -552,8 +540,8 @@ class BaseHead(nn.Module):
                            accuracy=train_dict_precision_recall.get('accuracy', 0.0),
                            epoch=epoch,
                            list_grad_norm=total_norm_epoch[epoch],
-                           lrs=lrs,
-                           wds=wds)
+                           lrs=np.mean(list_batch_lr),
+                           wds={k: np.mean([d[k] for d in list_batch_wd]) for k in list_batch_wd[0].keys()})
       if dict_eval is not None:
         self.log_performance(stage='Val',
                             num_epochs=num_epochs,
@@ -687,8 +675,9 @@ class BaseHead(nn.Module):
       'list_lrs': list_lrs,
       'list_wds': list_wds,
       'optimizer': optimizer.state_dict()['param_groups'],
-      'wd_scheduler': wd_scheduler.get_config() if wd_scheduler else None,
-      'scheduler': scheduler.state_dict() if scheduler else None,
+      'optimizer_config': OptimizerFactory.get_config(optimizer),
+      # 'wd_scheduler': wd_scheduler.get_config() if wd_scheduler else None,
+      # 'scheduler': scheduler.state_dict() if scheduler else None,
       'list_train_ICC': list_train_ICC,
       'list_val_ICC': list_val_ICC,
       'list_train_CCC': list_train_CCC,

@@ -353,10 +353,10 @@ class Model_Advanced: # Scenario_Advanced
   
 
   def train(self, train_csv_path, val_csv_path, num_epochs, criterion,
-            optimizer_fn, lr,saving_path,round_output_loss,
+            lr,saving_path,round_output_loss,
             shuffle_training_batch,init_network,
             regularization_lambda_L1,key_for_early_stopping,early_stopping,
-            enable_scheduler,concatenate_temporal,clip_grad_norm,regularization_lambda_L2,
+            concatenate_temporal,clip_grad_norm,regularization_lambda_L2,
             enable_optuna_pruning=False,trial=None,**kwargs
             ):
 
@@ -380,13 +380,11 @@ class Model_Advanced: # Scenario_Advanced
           
     dict_results = self.head.start_train(batch_size=self.batch_size_training,
                                           criterion=criterion,
-                                          optimizer=optimizer_fn,
                                           lr=lr,
                                           soft_labels=self.soft_labels,
                                           concatenate_temp_dim=concatenate_temporal,
                                           early_stopping=early_stopping,
                                           key_for_early_stopping=key_for_early_stopping,
-                                          enable_scheduler=enable_scheduler,
                                           saving_path=saving_path,
                                           init_network=init_network,
                                           dataset_type=self.dataset_type,
