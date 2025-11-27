@@ -94,10 +94,44 @@ class OptimizerFactory:
       return optim.Adam(params, lr=lr)
     else:
       raise ValueError(f"Optimizer {optimizer_name} not supported.")
-
+  dict_check_scheduler = {
+    'cosine':{
+      'list_params': ['min_lr'],
+    },
+    'cosine_restart':{
+      'list_params': ['first_restart_epochs', 'multiplier_restart', 'min_lr'],
+    },
+    'step':{
+      'list_params': ['step_size_epochs', 'gamma'],
+    },
+    'onecycle':{
+      'list_params': ['onecycle_max_lr', 'onecycle_div_factor', 'onecycle_final_div_factor', 'onecycle_pct_start', 'onecycle_anneal_strategy'],
+    },
+    'warm_up':{
+      'list_params': ['warm_up_percent', 'warm_up_scheduler', 'warm_up_start_factor'],
+    },
+    'wd_scheduler':{
+      'list_params': ['wd_scheduler_name', 'min_wd'],
+    },
+    'lambda':{
+      'list_params': [],
+    },
+  }
+  
+  @staticmethod
+  def check_schedulers_parms(scheduler_name: str, config: dict):
+    """Checks if all required parameters for the scheduler are present in the config."""
+    if scheduler_name.lower() not in OptimizerFactory.dict_check_scheduler:
+      raise ValueError(f"Scheduler {scheduler_name} not supported for parameter checking.")
+    
+    required_params = OptimizerFactory.dict_check_scheduler[scheduler_name.lower()]['list_params']
+    missing_params = [param for param in required_params if param not in config or config[param] is None]
+    
+    if missing_params:
+      raise ValueError(f"Missing parameters for {scheduler_name} scheduler: {missing_params}")
+    
   def _get_lr_scheduler(self, optimizer: optim.Optimizer, scheduler_name: str):
     """Creates the learning rate scheduler."""
-    lr = self.config['lr']
     epochs = self.config['epochs']
     steps_per_epoch = self.config['steps_per_epoch']
     total_steps = epochs * steps_per_epoch
@@ -107,16 +141,32 @@ class OptimizerFactory:
     main_scheduler_steps = total_steps - warm_up_steps if warm_up_steps > 0 else total_steps
     
     if scheduler_name.lower() == 'cosine':
-      lr_scheduler = CosineAnnealingLR(optimizer, T_max=main_scheduler_steps, eta_min=self.config.get('min_lr', 1e-7))
+      lr_scheduler = CosineAnnealingLR(optimizer, 
+                                       T_max=main_scheduler_steps,
+                                       eta_min=self.config['min_lr'])
+    
     elif scheduler_name.lower() == 'cosine_restart':
       T_0 = self.config['first_restart_epochs'] * steps_per_epoch
       T_mul = self.config['multiplier_restart']
-      lr_scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=T_mul, eta_min=self.config.get('min_lr', 1e-7))
+      lr_scheduler = CosineAnnealingWarmRestarts(optimizer, 
+                                                 T_0=T_0,
+                                                 T_mult=T_mul,
+                                                 eta_min=self.config['min_lr'])
+    
     elif scheduler_name.lower() == 'step':
       step_size = self.config['step_size_epochs'] * steps_per_epoch
-      lr_scheduler = StepLR(optimizer, step_size=step_size, gamma=self.config.get('gamma', 0.1))
+      lr_scheduler = StepLR(optimizer, step_size=step_size, gamma=self.config['gamma']) 
+      
     elif scheduler_name.lower() == 'onecycle':
-      lr_scheduler = OneCycleLR(optimizer, max_lr=lr, total_steps=total_steps, pct_start=self.config.get('onecycle_pct_start', 0.3))
+      # not chainable with warm-up
+      lr_scheduler = OneCycleLR(optimizer, 
+                                total_steps=total_steps, 
+                                max_lr=self.config['onecycle_max_lr'],
+                                div_factor=self.config['onecycle_div_factor'],
+                                final_div_factor=self.config['onecycle_final_div_factor'],
+                                pct_start=self.config['onecycle_pct_start'],
+                                anneal_strategy=self.config['onecycle_anneal_strategy']
+                                ) 
     elif scheduler_name.lower() == 'lambda':
       lr_scheduler = LambdaLR(optimizer, lr_lambda=lambda epoch: 1.0)
     else:
