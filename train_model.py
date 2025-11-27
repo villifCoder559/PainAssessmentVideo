@@ -163,7 +163,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   # common training params
   lr = _suggest(trial, 'lr', kwargs['lr'], kwargs['optuna_categorical'])
   opt = trial.suggest_categorical('opt', kwargs['opt'])
-  optimizer_fn = get_optimizer(opt)
+  # optimizer_fn = get_optimizer(opt)
   init_network = trial.suggest_categorical('init_network', kwargs['init_network'])
   batch_train = trial.suggest_categorical('batch_train', kwargs['batch_train'])
   regulariz_lambda_L1 = _suggest(trial, 'regulariz_lambda_L1', kwargs['regulariz_lambda_L1'], kwargs['optuna_categorical'])
@@ -209,7 +209,39 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   latent_basic = _suggest(trial, 'latent_basic', kwargs['latent_basic'], kwargs['optuna_categorical'])  
   latent_masking = _suggest(trial, 'latent_masking', kwargs['latent_masking'], kwargs['optuna_categorical'])
   shift_augm = _suggest(trial, 'shift_augm', kwargs['shift_augm'], kwargs['optuna_categorical'])
-  
+  # scheduler and optimizer params
+  exclude_bias_wd = trial.suggest_categorical('exclude_bias_wd', kwargs['exclude_bias_wd'])
+  warm_up_percent = _suggest(trial, 'warm_up_percent', kwargs['warm_up_percent'], kwargs['optuna_categorical'])
+  warm_up_scheduler = trial.suggest_categorical('warm_up_scheduler', kwargs['warm_up_scheduler'])
+  warm_up_start_factor = _suggest(trial, 'warm_up_start_factor', kwargs['warm_up_start_factor'], kwargs['optuna_categorical'])
+  min_lr = _suggest(trial, 'min_lr', kwargs['min_lr'], kwargs['optuna_categorical'])
+  wd_scheduler_name = trial.suggest_categorical('wd_scheduler_name', kwargs['wd_scheduler_name'])
+  scheduler_name = trial.suggest_categorical('scheduler_name', kwargs['scheduler_name'])
+  min_wd = _suggest(trial, 'min_wd', kwargs['min_wd'], kwargs['optuna_categorical'])
+  first_restart_epochs = _suggest(trial, 'first_restart_epochs', kwargs['first_restart_epochs'], kwargs['optuna_categorical'])
+  multiplier_restart = _suggest(trial, 'multiplier_restart', kwargs['multiplier_restart'], kwargs['optuna_categorical'])
+  step_size_epochs = _suggest(trial, 'step_size_epochs', kwargs['step_size_epochs'], kwargs['optuna_categorical'])
+  gamma = _suggest(trial, 'gamma', kwargs['gamma'], kwargs['optuna_categorical'])
+  onecycle_pct_start = _suggest(trial, 'onecycle_pct_start', kwargs['onecycle_pct_start'], kwargs['optuna_categorical'])
+  scheduler_config_dict = {
+    'optimizer_name': opt,
+    'scheduler_name': scheduler_name,
+    'wd_scheduler_name': wd_scheduler_name,
+    'epochs': epochs,
+    'exclude_bias_wd': exclude_bias_wd,
+    'warm_up_percent': warm_up_percent,
+    'warm_up_scheduler': warm_up_scheduler,
+    'warm_up_start_factor': warm_up_start_factor,
+    'min_lr': min_lr,
+    'min_wd': min_wd,
+    'first_restart_epochs': first_restart_epochs,
+    'multiplier_restart': multiplier_restart,
+    'step_size_epochs': step_size_epochs,
+    'gamma': gamma,
+    'onecycle_pct_start': onecycle_pct_start,
+    'lr': lr,
+    'weight_decay': regulariz_lambda_L2
+  }
   emb_dim = MODEL_TYPE.get_embedding_size(kwargs['mt'])
   input_dim = emb_dim
   if concatenate_temp_dim:
@@ -366,6 +398,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'stratified_training': stratified_training,
     'is_subject_independent': kwargs['is_subject_independent'],
     'skip_test': kwargs['skip_test'],
+    'scheduler_config_dict': scheduler_config_dict,
   }
     
   print(f"\n[Trial {trial.number}] Params: {trial.params}")
@@ -401,7 +434,6 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     global_foder_name=kwargs['global_folder_name'],
     batch_size_training=batch_train,
     epochs=epochs,
-    optimizer_fn=optimizer_fn,
     lr=lr,
     seed_random_state=seed_random_state,
     is_plot_dataset_distribution=False,
@@ -415,7 +447,6 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     clip_length=clip_length,
     target_metric_best_model=target_metric_best_model,
     early_stopping=early_stopping,
-    enable_scheduler=kwargs['enable_scheduler'],
     stop_after_kth_fold=kwargs['stop'],
     n_workers=kwargs['n_workers'],
     clip_grad_norm=kwargs['clip_grad_norm'],
@@ -566,15 +597,14 @@ if __name__ == '__main__':
   parser.add_argument('--skip_test', type=int, default=0, help='Skip test phase after training. Default is 0 (False)')
   
   # Training parameters
+  parser.add_argument('--lr', type=float, nargs='*', default=[0.0001], help='Learning rate(s)')
+  parser.add_argument('--opt', type=str, nargs='*', default=['adamw'], help='Optimizer(s): adam, sgd, adamw')
   parser.add_argument('--validation_enabled', type=int, choices=[0,1], default=1, help='Enable validation set during training. Default is 1 (enabled)')
   parser.add_argument('--train_amp_enabled', action='store_true', help='Enable AMP training')
   parser.add_argument('--train_amp_dtype', type=str, default=None, help='AMP training data type: bfloat16 or float16. Default is float16')
-  parser.add_argument('--lr', type=float, nargs='*', default=[0.0001], help='Learning rate(s)')
   parser.add_argument('--ep', type=int, default=50, help='Number of epochs')
   parser.add_argument('--k_fold', type=int, default=3, help='Number of k-fold cross validation splits')
-  parser.add_argument('--opt', type=str, nargs='*', default=['adamw'], help='Optimizer(s): adam, sgd, adamw')
   parser.add_argument('--batch_train', type=int, nargs='*', default=[64], help='Training batch size(s)')
-  parser.add_argument('--enable_scheduler', action='store_true', help='Enable learning rate scheduler')
   parser.add_argument('--stop', type=int,nargs='*' ,default=None, help='Stop after [kth fold, ith subfold]')
   parser.add_argument('--clip_grad_norm', type=float, default=None, help='Clip gradient norm. Default is None (not applied)')
   parser.add_argument('--concatenate_temp_dim', type=int, nargs='*', default=[0],
@@ -675,6 +705,23 @@ if __name__ == '__main__':
   parser.add_argument('--log_workers', action='store_true', help='Log time taken by each worker to load data')
   parser.add_argument('--save_best_model', action='store_true', help='Save the best model during training')
   parser.add_argument('--save_last_epoch_model', action='store_true', help='Save the last epoch model')
+
+  # Optimizer and Scheduler Settings
+  parser.add_argument('--scheduler_name', type=str, nargs='*', default=['cosine'], help='LR scheduler name: cosine, cosine_restart, step, onecycle, lambda.')
+  parser.add_argument('--wd_scheduler_name', type=str, nargs='*', default=[None], help='Weight decay scheduler name: cosine_wd. Default is None (not used)')
+  # parser.add_argument('--weight_decay', type=float, nargs='*', default=[0.05], help='Weight decay for optimizer. Default is 0.05')
+  parser.add_argument('--exclude_bias_wd', type=int, choices=[0, 1], nargs='*', default=[1], help='Exclude bias and 1D params from weight decay. 1 for True, 0 for False.')
+  # parser.add_argument('--steps_per_epoch', type=int, default=None, help='Manually set steps per epoch. If None, it is inferred from dataset size and batch size.')
+  parser.add_argument('--min_lr', type=float, nargs='*', default=[1e-7], help='Minimum learning rate for cosine scheduler.')
+  parser.add_argument('--warm_up_percent', type=float, nargs='*', default=[0.1], help='Warm-up percentage of total steps.')
+  parser.add_argument('--warm_up_scheduler', type=str, nargs='*', default=['linear'], help='Warm-up scheduler name.')
+  parser.add_argument('--warm_up_start_factor', type=float, nargs='*', default=[0.1], help='Warm-up start factor for learning rate.')
+  parser.add_argument('--min_wd', type=float, nargs='*', default=[0.0], help='Minimum weight decay for cosine_wd scheduler.')
+  parser.add_argument('--first_restart_epochs', type=int, nargs='*', default=[10], help='Epochs for first restart in cosine_restart scheduler.')
+  parser.add_argument('--multiplier_restart', type=int, nargs='*', default=[2], help='Multiplier for restart in cosine_restart scheduler.')
+  parser.add_argument('--step_size_epochs', type=int, nargs='*', default=[30], help='Step size in epochs for step scheduler.')
+  parser.add_argument('--gamma', type=float, nargs='*', default=[0.1], help='Gamma for step scheduler.')
+  parser.add_argument('--onecycle_pct_start', type=float, nargs='*', default=[0.3], help='Percentage of start phase in onecycle scheduler.')
 
   # Optuna parameters
   parser.add_argument('--optuna_use_median', type=int, default=0, help='Use median of k-fold validation results for Optuna optimization. Default is 0 (False)')
