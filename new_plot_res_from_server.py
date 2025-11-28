@@ -413,8 +413,8 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
           tools.plot_losses_and_test_new(**input_dict_accuracy_gap)
           tools.plot_losses_and_test_new(**input_dict_loss_acc)
         else:
-          dict_count_labels_val = data['results'][key]['train_val']['count_y_val'] if not 'final' in key else dict(zip(data['results']['k0_cross_val_final']['test']['test_unique_y'].numpy(), data['results']['k0_cross_val_final']['test']['test_count_y']))
-          dict_count_sbjs_val = data['results'][key]['train_val']['count_subject_ids_val'] if not 'final' in key else dict(zip(data['results']['k0_cross_val_final']['test']['test_unique_subject_ids'], data['results']['k0_cross_val_final']['test']['test_count_subject_ids']))
+          dict_count_labels_val = data['results'][key]['train_val']['count_y_val'] if not 'final' in key else dict(zip(data['results'][key]['test']['test_unique_y'].numpy(), data['results'][key]['test']['test_count_y']))
+          dict_count_sbjs_val = data['results'][key]['train_val']['count_subject_ids_val'] if not 'final' in key else dict(zip(data['results'][key]['test']['test_unique_subject_ids'], data['results'][key]['test']['test_count_subject_ids']))
           y_lim_train = 40
           y_limit_val = 20
           tools.plot_distribution(
