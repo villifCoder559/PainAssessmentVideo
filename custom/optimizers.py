@@ -135,7 +135,7 @@ class OptimizerFactory:
     epochs = self.config['epochs']
     steps_per_epoch = self.config['steps_per_epoch']
     total_steps = epochs * steps_per_epoch
-    warm_up_percent = self.config['warm_up_percent']
+    warm_up_percent = self.config['warm_up_percent'] if self.config['warm_up_percent'] is not None else 0.0
     warm_up_steps = int(warm_up_percent * total_steps)
 
     main_scheduler_steps = total_steps - warm_up_steps if warm_up_steps > 0 else total_steps
@@ -176,7 +176,9 @@ class OptimizerFactory:
       warm_up_name = self.config['warm_up_scheduler']
       if warm_up_name.lower() == 'linear':
         start_factor = self.config['warm_up_start_factor']
-        warm_up_scheduler = LinearLR(optimizer, start_factor=start_factor, total_iters=warm_up_steps)
+        warm_up_scheduler = LinearLR(optimizer, 
+                                     start_factor=start_factor, 
+                                     total_iters=warm_up_steps)
       else:
         raise ValueError(f"Warm-up scheduler {warm_up_name} not supported.")
       

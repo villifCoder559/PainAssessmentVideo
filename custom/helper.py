@@ -313,7 +313,7 @@ class MODEL_TYPE:
   def get_embedding_size(cls, typ):
     if 'S' in typ:
       return 384
-    elif 'B_DFER' in typ:
+    elif 'DFER' in typ:
       return 512
     elif 'B' in typ:
       return 768

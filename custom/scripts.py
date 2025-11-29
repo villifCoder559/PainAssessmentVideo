@@ -111,7 +111,7 @@ def create_stratified_splits(k_fold, seed_random_state, y_labels, subject_ids, s
   return list_splits_idxs
 
 def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_ids, subject_ids,
-                   train_folder_path, model_advanced, lr, epochs, optimizer_fn, 
+                   train_folder_path, model_advanced, lr, epochs, 
                    concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
                    init_network, regularization_lambda_L1,
                    key_for_early_stopping, early_stopping, 

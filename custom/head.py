@@ -61,6 +61,9 @@ class BaseHead(nn.Module):
       if wds:
         if isinstance(wds,list):
           print(f'  Weight decay     : {[round(wd,8) for wd in wds]}')
+        elif isinstance(wds,dict):
+          for k,v in wds.items():
+            print(f'  Weight decay {k} : {v:.8f}')
         else:
           print(f'  Weight decay     : {wds:.8f}')
       if lrs:
@@ -157,13 +160,12 @@ class BaseHead(nn.Module):
     optimizer_factory = OptimizerFactory(kwargs['scheduler_config_dict'])
     optimizer, lr_scheduler, wd_scheduler = optimizer_factory.create(
       model=self,
-      optimizer_name=kwargs['optimizer_name'], 
     )
     print("\n-------- Created Optimizer and Schedulers -------")
     print("   Optimizer Configuration:", optimizer)
     print("   LR Scheduler Configuration:", lr_scheduler)
     print("   WD Scheduler Configuration:", wd_scheduler)
-    print("   Warm-up ", f"{optimizer_factory.config['warm_up_percent'] * optimizer_factory.config['epochs'] * optimizer_factory.config['steps_per_epoch']} steps" if optimizer_factory.config.get("warm_up_percent", 0) > 0 else "disabled")    
+    print("   Warm-up ", f"{optimizer_factory.config['warm_up_percent'] * optimizer_factory.config['epochs'] * optimizer_factory.config['steps_per_epoch']} steps" if optimizer_factory.config["warm_up_percent"] else "disabled")    
     print("---------------------------------------------------")
     # train_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
     train_unique_classes = torch.tensor(train_dataset.get_unique_classes())
@@ -681,7 +683,7 @@ class BaseHead(nn.Module):
       'list_lrs': list_lrs,
       'list_wds': list_wds,
       'optimizer': optimizer.state_dict()['param_groups'],
-      'optimizer_config': OptimizerFactory.get_config(optimizer),
+      'optimizer_config': optimizer_factory.get_config(),
       # 'wd_scheduler': wd_scheduler.get_config() if wd_scheduler else None,
       # 'scheduler': scheduler.state_dict() if scheduler else None,
       'list_train_ICC': list_train_ICC,
