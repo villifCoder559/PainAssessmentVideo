@@ -13,6 +13,7 @@ from io import BytesIO
 import argparse
 import shutil
 from pathlib import Path
+import custom.helper as helper
 
 def plot_space_importance(xattn,plot_folder=None,title='',png_name=None): # xattn shape (T, S, S) or (S,S)
   if xattn.ndim != 3 and xattn.ndim != 2:
@@ -178,9 +179,9 @@ def create_frame_with_overlaid_attention(list_indices, video_frames, xattn, samp
     ax.imshow(frame)
     # set color range if specified
     if max_range_plot is not None and min_range_plot is not None:
-      im = ax.imshow(attn_map, cmap='jet', alpha=0.5, vmin=min_range_plot, vmax=max_range_plot)
+      im = ax.imshow(attn_map, cmap='jet', alpha=0.3, vmin=min_range_plot, vmax=max_range_plot)
     else:
-      im = ax.imshow(attn_map, cmap='jet', alpha=0.5)
+      im = ax.imshow(attn_map, cmap='jet', alpha=0.3)
     fig.colorbar(im, fraction=0.046, pad = 0.04, )
     ax.set_title(f"Head {head} - Sample {sample_id} - gt: {gt}, pred: {pred:.2f}")
     ax.axis('off')
@@ -431,6 +432,20 @@ def generate_video_from_folder(folder_path, output_video_path, fps=2):
     video.write(frame)
   video.release()
   
+def get_custom_ds(data):
+  feats_path = data['config_model']['model_advanced_params']['features_folder_saving_path']
+
+  config_dict = os.path.join(feats_path, "config_dict.pkl")
+  if 'raid' in config_dict:
+    config_dict = config_dict.replace('raid','dune')
+  
+  with open(config_dict, 'rb') as f:
+    config = pickle.load(f)
+  # Retrieve list frames for the sample id
+  if 'caer' in feats_path.lower():
+    config['video_extension'] = '.avi'
+  custom_ds = customDataset(**config)
+  return custom_ds
   
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()
@@ -464,13 +479,17 @@ if __name__ == "__main__":
   os.makedirs(path_images_output, exist_ok=True)
   os.makedirs(path_video_output, exist_ok=True)
   
-  # Get data from pkl
-  
   # Get the df from csv
   csv_path = data['csv_path']
   df = pd.read_csv(csv_path,sep='\t')
+  # Create custom ds to set the helper.step_shift
+  custom_ds = get_custom_ds(data) 
+  df = df[df['sample_id'] <= helper.step_shift] # remove augmented samples if any
+  del custom_ds
+  
   list_sample_id = df['sample_id'].to_list()
-  print(f"Processing all {len(list_sample_id)} samples from csv {csv_path}")
+  print(f"Processing all {len(list_sample_id)} samples from csv {csv_path}. Excluding augmented samples.")
+  
   
   
   ## SPLIT CHUNKS PART ##
@@ -621,8 +640,8 @@ if __name__ == "__main__":
           print(f"Requested number of samples {dict_args['create_attention_video']} is higher than available samples {len(list_sample_id)}. Using all samples.")
         else:
           print(f"Randomly selecting {n_samples} samples to create attention videos.")
-          list_sample_id = np.random.choice(list_sample_id_correct_pred, n_samples//2, replace=False).tolist() + \
-                          np.random.choice(list_sample_id_wrong_pred, n_samples//2, replace=False).tolist()
+          list_sample_id = np.random.choice(list_sample_id_correct_pred, min(n_samples//2, len(list_sample_id_correct_pred)), replace=False).tolist() + \
+                          np.random.choice(list_sample_id_wrong_pred, min(n_samples//2, len(list_sample_id_wrong_pred)), replace=False).tolist()
         df_selected = df[df['sample_id'].isin(list_sample_id)]
         # save selected sample ids to csv
         df_selected.to_csv(os.path.join(path_video_output, f'selected_sample_ids_for_attention_videos_{n_samples}_samples.csv'), index=False, sep='\t')
