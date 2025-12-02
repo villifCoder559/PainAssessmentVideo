@@ -209,9 +209,10 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   latent_basic = _suggest(trial, 'latent_basic', kwargs['latent_basic'], kwargs['optuna_categorical'])  
   latent_masking = _suggest(trial, 'latent_masking', kwargs['latent_masking'], kwargs['optuna_categorical'])
   shift_augm = _suggest(trial, 'shift_augm', kwargs['shift_augm'], kwargs['optuna_categorical'])
+  
   # scheduler and optimizer params
   exclude_bias_wd = trial.suggest_categorical('exclude_bias_wd', kwargs['exclude_bias_wd'])
-  warm_up_percent = _suggest(trial, 'warm_up_percent', kwargs['warm_up_percent'], kwargs['optuna_categorical'])
+  warm_up_epochs = _suggest(trial, 'warm_up_epochs', kwargs['warm_up_epochs'], kwargs['optuna_categorical'])
   warm_up_scheduler = trial.suggest_categorical('warm_up_scheduler', kwargs['warm_up_scheduler'])
   warm_up_start_factor = _suggest(trial, 'warm_up_start_factor', kwargs['warm_up_start_factor'], kwargs['optuna_categorical'])
   min_lr = _suggest(trial, 'min_lr', kwargs['min_lr'], kwargs['optuna_categorical'])
@@ -234,7 +235,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'wd_scheduler_name': wd_scheduler_name,
     'epochs': epochs,
     'exclude_bias_wd': exclude_bias_wd,
-    'warm_up_percent': warm_up_percent,
+    'warm_up_epochs': warm_up_epochs,
     'warm_up_scheduler': warm_up_scheduler,
     'warm_up_start_factor': warm_up_start_factor,
     'min_lr': min_lr,
@@ -580,30 +581,86 @@ def generate_pymp_folder():
   
 import yaml
 
-def set_parser_defaults_from_yaml(parser, yaml_path):
-  with open(yaml_path, 'r') as f:
-    yaml_config = yaml.safe_load(f)
+# def set_parser_defaults_from_yaml(parser, yaml_path):
+#   with open(yaml_path, 'r') as f:
+#     yaml_config = yaml.safe_load(f)
     
-  for section, settings in yaml_config.items():
-    for key, value in settings.items():
-      # Convert keys from yaml to the format expected by argparse
-      arg_key = key.replace('-', '_')
-      parser.set_defaults(**{arg_key: value})
+#   for section, settings in yaml_config.items():
+#     for key, value in settings.items():
+#       # Convert keys from yaml to the format expected by argparse
+#       arg_key = key.replace('-', '_')
+#       parser.set_defaults(**{arg_key: value})
+      
+def set_parser_defaults_from_flat_dict(parser, defaults_dict):
+    # parser.set_defaults accepts arbitrary keyword args that match dest names
+    # We already normalized keys in load_yaml_as_flat_dict
+    if not defaults_dict:
+        return
+    parser.set_defaults(**defaults_dict)
+          
+def load_yaml_as_flat_dict(yaml_path):
+    """Load YAML and flatten one-level sections into a single dict.
+    Example supported shapes:
+      {section1: {a: 1, b: 2}, section2: {c: 3}}
+      {a: 1, b: 2}
+    Returns an empty dict on file/read errors."""
+    try:
+        with open(yaml_path, 'r') as f:
+            yaml_config = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"Error reading YAML config '{yaml_path}': {e}")
+
+    flat = {}
+    if isinstance(yaml_config, dict):
+        # If top-level keys are sections mapping to dicts, merge them
+        for k, v in yaml_config.items():
+            if isinstance(v, dict):
+                for kk, vv in v.items():
+                    flat_key = str(kk).lstrip('-').replace('-', '_')
+                    flat[flat_key] = vv
+            else:
+                # top-level scalar value (or list) -> keep it
+                flat_key = str(k).lstrip('-').replace('-', '_')
+                flat[flat_key] = v
+    else:
+        raise RuntimeError("YAML config root must be a mapping (dict).")
+    return flat
+
+import sys
 
 if __name__ == '__main__':
-  # mp.set_start_method('spawn', force=True)
-  # Set up argument parser
-  # generate_pymp_folder()
-  parser = argparse.ArgumentParser(description='Train video analysis model with various configurations')
+  # First, quick parse to find --config (without raising on unknown args)
+  pre_parser = argparse.ArgumentParser(add_help=False)
+  pre_parser.add_argument('--config', type=str, help='Path to YAML configuration file.')
+  pre_args, _ = pre_parser.parse_known_args()
+
+  yaml_defaults = {}
+  if pre_args.config:
+    try:
+      yaml_defaults = load_yaml_as_flat_dict(pre_args.config)
+    except FileNotFoundError:
+      print(f"Config file not found: {pre_args.config}", file=sys.stderr)
+      sys.exit(2)
+    except Exception as e:
+      print(f"Failed to load config file {pre_args.config}: {e}", file=sys.stderr)
+      sys.exit(2)
+
+  # Now build the full parser (all arguments)
+  parser = argparse.ArgumentParser(
+      description='Train video analysis model with various configurations'
+  )
+  # parser.add_argument('--config', type=str, help='Path to YAML configuration file.')
+  # parser = argparse.ArgumentParser(description='Train video analysis model with various configurations')
   
   # Add config file argument
-  parser.add_argument('--config', type=str, help='Path to YAML configuration file.')
+  # parser.add_argument('--config', type=str, help='Path to YAML configuration file.')
   
   # Set defaults from YAML if provided
-  import sys
-  if '--config' in sys.argv:
-    config_path = sys.argv[sys.argv.index('--config') + 1]
-    set_parser_defaults_from_yaml(parser, config_path)
+  # if '--config' in sys.argv:
+  #   config_path = sys.argv[sys.argv.index('--config') + 1]
+  #   set_parser_defaults_from_yaml(parser, config_path)
   
   # Model configuration
   parser.add_argument('--mt', type=str, default='B', help="Model type. Available options: 'S', 'B', 'G', 'G_unl', 'vjepa2_L_fpc64_256', 'vjepa2_G_fpc64_384', 'ViT_image', 'DFER'.")
@@ -745,7 +802,7 @@ if __name__ == '__main__':
   parser.add_argument('--exclude_bias_wd', type=int, choices=[0, 1], nargs='*', default=[1], help='Exclude bias and 1D params from weight decay. 1 for True, 0 for False.')
   # parser.add_argument('--steps_per_epoch', type=int, default=None, help='Manually set steps per epoch. If None, it is inferred from dataset size and batch size.')
   parser.add_argument('--min_lr', type=float, nargs='*', default=[1e-7], help='Minimum learning rate for cosine scheduler.')
-  parser.add_argument('--warm_up_percent', type=float, nargs='*', default=[None], help='Warm-up percentage of total steps. [0,1] is the range. E.g., 0.1 means 10%% of total steps.')
+  parser.add_argument('--warm_up_epochs', type=float, nargs='*', default=[None], help='Warm-up percentage of total steps. [0,1] is the range. E.g., 0.1 means 10%% of total steps.')
   parser.add_argument('--warm_up_scheduler', type=str, nargs='*', default=[None], help='Warm-up scheduler name. Default is None (not used), available: linear.')
   parser.add_argument('--warm_up_start_factor', type=float, nargs='*', default=[None], help='Warm-up start factor for learning rate.')
   parser.add_argument('--min_wd', type=float, nargs='*', default=[None], help='Minimum weight decay for cosine_wd scheduler.')
