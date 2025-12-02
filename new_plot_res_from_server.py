@@ -1292,6 +1292,7 @@ def plot_lr_wd_across_epochs(data, run_output_folder, test_id):
     lr_values = dict_sub_fold['train_val'].get('list_lrs', None)
     lr_values = np.concatenate(lr_values) if lr_values is not None else None
     wd_values = dict_sub_fold['train_val'].get('list_wds', None)
+    wd_values = [item for sublist in wd_values for item in sublist] if wd_values is not None else None
     wd_biases = np.array([wd['wd_bias'] for wd in wd_values]) if (wd_values is not None and 'wd_bias' in wd_values[0]) else None
     wd_no_biases = np.array([wd['wd_no_bias'] for wd in wd_values]) if (wd_values is not None and 'wd_no_bias' in wd_values[0]) else None
     
