@@ -135,8 +135,8 @@ class OptimizerFactory:
     epochs = self.config['epochs']
     steps_per_epoch = self.config['steps_per_epoch']
     total_steps = epochs * steps_per_epoch
-    warm_up_percent = self.config['warm_up_percent'] if self.config['warm_up_percent'] is not None else 0.0
-    warm_up_steps = int(warm_up_percent * total_steps)
+    warm_up_epochs = self.config['warm_up_epochs'] if self.config['warm_up_epochs'] is not None else 0.0
+    warm_up_steps = int(warm_up_epochs * steps_per_epoch)
 
     main_scheduler_steps = total_steps - warm_up_steps if warm_up_steps > 0 else total_steps
     
