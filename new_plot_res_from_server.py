@@ -1074,8 +1074,8 @@ def generate_csv_row(data,config,time_, test_id):
     'k_fold_(real_k_fold)': f'{config["k_fold"]}_({config["real_k_fold"]})',
     'model': config['model_type'].name,
     'head': head_type,
-    'optimizer': config['optimizer_fn'],
-    'enable_scheduler': config['enable_scheduler'] if 'enable_scheduler' in config else 'ND',
+    'optimizer': config['scheduler_config_dict']['optimizer_name'],
+    'enable_scheduler': config['scheduler_config_dict']['scheduler_name'] if 'scheduler_config_dict' in config else config['enable_scheduler'],
     'target_metric': config['target_metric_best_model'],
     'criterion': type(config['criterion']).__name__,
     'round_output_loss': config['round_output_loss'],
@@ -1290,22 +1290,31 @@ def plot_lr_wd_across_epochs(data, run_output_folder, test_id):
     if 'final' in key:
       continue
     lr_values = dict_sub_fold['train_val'].get('list_lrs', None)
+    lr_values = np.concatenate(lr_values) if lr_values is not None else None
     wd_values = dict_sub_fold['train_val'].get('list_wds', None)
-    if lr_values is None and wd_values is None:
+    wd_biases = np.array([wd['wd_bias'] for wd in wd_values]) if (wd_values is not None and 'wd_bias' in wd_values[0]) else None
+    wd_no_biases = np.array([wd['wd_no_bias'] for wd in wd_values]) if (wd_values is not None and 'wd_no_bias' in wd_values[0]) else None
+    
+    if lr_values is None:
       continue
     
-    epochs = range(0, len(lr_values) ) if lr_values is not None else range(0, len(wd_values))
+    steps = list(range(0, len(lr_values)))
     fig, ax1 = plt.subplots(figsize=(10, 6))
     if lr_values is not None:
-      ax1.plot(epochs, lr_values, 'b-', label='Learning Rate')
-      ax1.set_xlabel('Epochs')
+      ax1.plot(steps, lr_values, 'b-', label='Learning Rate')
+      ax1.set_xlabel('Steps')
       ax1.set_ylabel('Learning Rate', color='b')
       ax1.tick_params(axis='y', labelcolor='b')
-    if wd_values is not None:
+    if wd_biases is not None:
       ax2 = ax1.twinx()
-      ax2.plot(epochs, wd_values, 'r-', label='Weight Decay')
-      ax2.set_ylabel('Weight Decay', color='r')
+      ax2.plot(steps, wd_biases, 'r-', label='Weight Decay Bias')
+      ax2.set_ylabel('Weight Decay Bias', color='r')
       ax2.tick_params(axis='y', labelcolor='r')
+    if wd_no_biases is not None:
+      ax3 = ax1.twinx()
+      ax3.plot(steps, wd_no_biases, 'g-', label='Weight Decay No Bias')
+      ax3.set_ylabel('Weight Decay No Bias', color='g')
+      ax3.tick_params(axis='y', labelcolor='g')
     plt.title(f'Learning Rate and Weight Decay Across Epochs - {test_id} - {key}')
     # add legends for both axes
     lines = []
@@ -1314,10 +1323,14 @@ def plot_lr_wd_across_epochs(data, run_output_folder, test_id):
       line1, = ax1.plot([], [], 'b-')
       lines.append(line1)
       labels.append('Learning Rate')
-    if wd_values is not None:
+    if wd_biases is not None:
       line2, = ax2.plot([], [], 'r-')
       lines.append(line2)
-      labels.append('Weight Decay')
+      labels.append('Weight Decay Bias')
+    if wd_no_biases is not None:
+      line3, = ax3.plot([], [], 'g-')
+      lines.append(line3)
+      labels.append('Weight Decay No Bias')
     ax1.legend(lines, labels, loc='upper right')
     fig.tight_layout()
     fig.savefig(os.path.join(test_output_folder, f'{test_id}_lr_wd_across_epochs_{key}.png'), bbox_inches='tight')
