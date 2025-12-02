@@ -264,7 +264,7 @@ def plot_CCC_ICC_pearson(data, run_output_folder, test_id, additional_info=''):
     plt.close(fig)
 
 
-def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_per_subject=True,plot_acc_per_subject=True, plot_loss_per_class=True,plot_train_loss_val_acc=True):
+def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info='', plot_loss_per_subject=True,plot_acc_per_subject=True, plot_loss_per_class=True,plot_train_loss_val_acc=True):
   # Adjust run_output_folder to store plots
   # run_output_folder = Path(run_output_folder).parts[:-3]
   test_output_folder = os.path.join(run_output_folder, test_id)
@@ -333,7 +333,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         if not is_unbc:
           fig, axs = plt.subplots(2,2,figsize=(20,15))
         else:
-          fig, axs = plt.subplots(3,2,figsize=(20,15))
+          fig, axs = plt.subplots(3,2,figsize=(21,18))
       # Plot train and val loss
       # set global title
       fig.suptitle(f'Losses for {key} - id: {test_id}', fontsize=24,y=0.93,fontstyle='italic',fontweight='bold',color='darkred')
@@ -354,7 +354,19 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         dict_to_string += f'\nfold_subfold: {key.split("_")[0]}_{key.split("_")[-1]}'
         y_lim_loss = 5.1
         x_lim_loss = -1.1 if isinstance(data['config']['criterion'],losses.RESupConLoss) else 0
-        input_dict_loss_acc= {
+        
+        # Plot accuracy gap and dataset distribution if not UNBC dataset
+        if not is_unbc: # Biovid
+          input_dict_accuracy_gap={
+            'list_1': np.array(train_accuracy) - np.array(val_accuracy),
+            'title':f'Accuracy Gap in Train-Validation',
+            'ax':axs[1][0],
+            'x_label':'Epochs',
+            'y_label_1':f'Accuracy Gap',
+            'y_lim_1':[-1, 1],
+            'color_1':'tab:orange',
+          }
+          input_dict_loss_acc= {
           'list_1':train_losses,
           'list_2':val_accuracy,
           'output_path':None,
@@ -376,6 +388,119 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
           'color_2':'tab:blue',
           'color_3':'tab:green',
         }
+        
+          tools.plot_losses_and_test_new(**input_dict_accuracy_gap)
+          tools.plot_losses_and_test_new(**input_dict_loss_acc)
+        else:
+          if loss_plot_type == 'dist':
+            dict_count_labels_val = data['results'][key]['train_val']['count_y_val'] if not 'final' in key else dict(zip(data['results'][key]['test']['test_unique_y'].numpy(), data['results'][key]['test']['test_count_y']))
+            dict_count_sbjs_val = data['results'][key]['train_val']['count_subject_ids_val'] if not 'final' in key else dict(zip(data['results'][key]['test']['test_unique_subject_ids'], data['results'][key]['test']['test_count_subject_ids']))
+            y_lim_train = 40
+            y_limit_val = 20
+            tools.plot_distribution(
+              data_dict=data['results'][key]['train_val']['count_y_train'],
+              x_label='Pain intensity labels',
+              title='Dataset distribution on TRAIN set - Pain intensity labels',
+              color='blue',
+              y_lim=y_lim_train,
+              show_missing=(0,10),
+              ax=axs[1][0],
+            )
+            tools.plot_distribution(
+              data_dict=data['results'][key]['train_val']['count_subject_ids_train'],
+              x_label='Subject IDs',
+              title='Dataset distribution on TRAIN set - Subject IDs',
+              color='green',
+              y_lim=y_lim_train,
+              ax=axs[2][0],
+            )
+            tools.plot_distribution(
+              data_dict=dict_count_labels_val,
+              x_label='Pain intensity labels',
+              title=f'Dataset distribution on {"TEST" if "final" in key else "VAL"} set - Pain intensity labels',
+              color='blue',
+              y_lim=y_limit_val,
+              show_missing=(0,10),
+              ax=axs[1][1],
+            )
+            tools.plot_distribution(
+            data_dict=dict_count_sbjs_val,
+            x_label='Subject IDs',
+            title=f'Dataset distribution on {"TEST" if "final" in key else "VAL"} set - Subject IDs',
+            color='green',
+            y_lim=y_limit_val,
+            ax=axs[2][1],
+          )
+          elif loss_plot_type == 'loss': # grouped loss per subject,class in train, val (or test) + lr schedule
+            # axs[0][1]: lr schedule
+            create_lr_wd_plot(data['results'][key],
+                              test_id,
+                              key,
+                              title=f'Learning Rate and Weight Decay Across Epochs',
+                              ax1=axs[0][1])
+            
+            # axs[1][0]: loss per subject train
+            best_epoch = data['results'][key]['train_val']['best_model_idx']
+            loss_per_subject_train = data['results'][key]['train_val'].get('train_loss_per_subject', None)
+            tools.plot_error_per_subject(loss_per_subject=loss_per_subject_train[best_epoch],
+                                        unique_subject_ids=data['results'][key]['train_val']['train_unique_subject_ids'],
+                                        title=f'TRAIN error per subject - Epoch_{best_epoch} ',
+                                        criterion=data['config']['criterion'],
+                                        list_stoic_subject=None,
+                                        y_lim=10,
+                                        ax=axs[1][0])
+            
+            # axs[1][1]: loss per class train
+            loss_per_class_train = data['results'][key]['train_val'].get('train_loss_per_class', None)
+            tools.plot_error_per_class(mae_per_class=loss_per_class_train[best_epoch],
+                                       unique_classes=data['results'][key]['train_val']['train_unique_y'],
+                                       criterion=data['config']['criterion'],
+                                       ax=axs[1][1],
+                                       y_lim=10,
+                                       title=f'TRAIN error per class - Epoch_{best_epoch}')
+            
+            # axs[2][0]: loss per subject val (or test)
+            loss_per_subject_val = data['results'][key]['train_val'].get('val_loss_per_subject', None)
+            loss_per_subject_val = loss_per_subject_val if (loss_per_subject_val != None).all() else None
+            if loss_per_subject_val is not None:
+              tools.plot_error_per_subject(loss_per_subject=loss_per_subject_val[best_epoch],
+                                          unique_subject_ids=data['results'][key]['train_val']['val_unique_subject_ids'],
+                                          title=f'VAL error per subject - Epoch_{best_epoch} ',
+                                          criterion=data['config']['criterion'],
+                                          list_stoic_subject=None,
+                                          y_lim=10,
+                                          ax=axs[2][0])
+            else:
+              dict_per_subject_test = data['results'][key].get('test', None)
+              tools.plot_error_per_subject(loss_per_subject=dict_per_subject_test['test_loss_per_subject'],
+                                          unique_subject_ids=dict_per_subject_test['test_unique_subject_ids'],
+                                          title=f'TEST error per subject - Epoch_{best_epoch} ',
+                                          criterion=data['config']['criterion'],
+                                          list_stoic_subject=None,
+                                          y_lim=10,
+                                          ax=axs[2][0])
+        
+              
+            # axs[2][1]: loss per class val (or test)
+            dict_per_subject_test = data['results'][key].get('test', None)
+            if dict_per_subject_test is None:
+              loss_per_class_val = data['results'][key]['train_val'].get('val_loss_per_class', None)
+              tools.plot_error_per_class(mae_per_class=loss_per_class_val[best_epoch],
+                                         unique_classes=data['results'][key]['train_val']['val_unique_y'],
+                                         criterion=data['config']['criterion'],
+                                         ax=axs[2][1],
+                                         y_lim=10,
+                                         title=f'VAL error per class - Epoch_{best_epoch}')
+            else:
+              tools.plot_error_per_class(mae_per_class=dict_per_subject_test['test_loss_per_class'],
+              unique_classes=dict_per_subject_test['test_unique_y'],
+              criterion=data['config']['criterion'],
+              ax=axs[2][1],
+              y_lim=10,
+              title=f'TEST error per class - Epoch_{best_epoch}')
+              
+            
+        
         input_dict_loss={
           'list_1':train_losses,
           'list_2':val_loss,
@@ -398,60 +523,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
           'color_2':'tab:purple',
           'color_3':(0,0,0), # (r,g,b)
         }
-        input_dict_accuracy_gap={
-          'list_1': np.array(train_accuracy) - np.array(val_accuracy),
-          'title':f'Accuracy Gap in Train-Validation',
-          'ax':axs[1][0],
-          'x_label':'Epochs',
-          'y_label_1':f'Accuracy Gap',
-          'y_lim_1':[-1, 1],
-          'color_1':'tab:orange',
-        }
-        
-        # Plot accuracy gap and dataset distribution if not UNBC dataset
-        if not is_unbc:
-          tools.plot_losses_and_test_new(**input_dict_accuracy_gap)
-          tools.plot_losses_and_test_new(**input_dict_loss_acc)
-        else:
-          dict_count_labels_val = data['results'][key]['train_val']['count_y_val'] if not 'final' in key else dict(zip(data['results'][key]['test']['test_unique_y'].numpy(), data['results'][key]['test']['test_count_y']))
-          dict_count_sbjs_val = data['results'][key]['train_val']['count_subject_ids_val'] if not 'final' in key else dict(zip(data['results'][key]['test']['test_unique_subject_ids'], data['results'][key]['test']['test_count_subject_ids']))
-          y_lim_train = 40
-          y_limit_val = 20
-          tools.plot_distribution(
-            data_dict=data['results'][key]['train_val']['count_y_train'],
-            x_label='Pain intensity labels',
-            title='Dataset distribution on TRAIN set - Pain intensity labels',
-            color='blue',
-            y_lim=y_lim_train,
-            show_missing=(0,10),
-            ax=axs[1][0],
-          )
-          tools.plot_distribution(
-            data_dict=data['results'][key]['train_val']['count_subject_ids_train'],
-            x_label='Subject IDs',
-            title='Dataset distribution on TRAIN set - Subject IDs',
-            color='green',
-            y_lim=y_lim_train,
-            ax=axs[2][0],
-          )
-          tools.plot_distribution(
-            data_dict=dict_count_labels_val,
-            x_label='Pain intensity labels',
-            title=f'Dataset distribution on {"TEST" if "final" in key else "VAL"} set - Pain intensity labels',
-            color='blue',
-            y_lim=y_limit_val,
-            show_missing=(0,10),
-            ax=axs[1][1],
-          )
-          tools.plot_distribution(
-            data_dict=dict_count_sbjs_val,
-            x_label='Subject IDs',
-            title=f'Dataset distribution on {"TEST" if "final" in key else "VAL"} set - Subject IDs',
-            color='green',
-            y_lim=y_limit_val,
-            ax=axs[2][1],
-          )
-        tools.plot_losses_and_test_new(**input_dict_loss)
+        tools.plot_losses_and_test_new(**input_dict_loss) # ax[0][0]
         
         axs[0][1].text(1.14, -0.5, dict_to_string, fontsize=12, color='black',transform=axs[0][1].transAxes,ha='left', va='center')
         # data['results']['k0_cross_val_sub_0']['train_val']['count_y_train']
@@ -532,7 +604,7 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         # Create a new symlink
         os.symlink(plot_path, symlink_path)
 
-      if not isinstance(data['config']['criterion'],losses.RESupConLoss) and plot_loss_per_subject and len(data['results']['k0_cross_val_sub_0']['train_val']['list_val_accuracy_per_subject']) > 0:
+      if not isinstance(data['config']['criterion'],losses.RESupConLoss) and plot_loss_per_subject and len(data['results'][key]['train_val']['list_val_accuracy_per_subject']) > 0:
         y_lim = 10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3
         
         loss_per_subject_train = data['results'][key]['train_val'].get('train_loss_per_subject', None)
@@ -682,7 +754,6 @@ def plot_losses(data, run_output_folder, test_id, additional_info='', plot_loss_
         y_lim = 10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3
         train_accuracy_per_class = data['results'][key]['train_val']['list_train_accuracy_per_class'][best_epoch]
         val_accuracy_per_class = data['results'][key]['train_val']['list_val_accuracy_per_class'][best_epoch]
-        
         dict_test = data['results'][key].get('test', None)
         class_loss_list = [train_accuracy_per_class, val_accuracy_per_class, dict_test]  
         total_plots = sum([1 for class_loss in class_loss_list if class_loss is not None])
@@ -1283,59 +1354,76 @@ def plot_accuray_per_class_across_epochs(data, run_output_folder, test_id, addit
   
   # plt.show()
 
-def plot_lr_wd_across_epochs(data, run_output_folder, test_id):
+def create_lr_wd_plot(dict_sub_fold, test_id, key, ax1=None, title=None):
+  lr_values = dict_sub_fold['train_val'].get('list_lrs', None)
+  lr_values = np.array([np.mean(sublist) for sublist in lr_values]) if lr_values is not None else None
+  # lr_values = np.concatenate(lr_values) if lr_values is not None else None
+  wd_values = dict_sub_fold['train_val'].get('list_wds', None)
+  wd_no_biases = [[el['wd_no_bias'] for el in batch] for batch in wd_values] if wd_values is not None else None
+  # wd_values = [item for sublist in wd_values for item in sublist] if wd_values is not None else None
+  # wd_biases = np.array([wd['wd_bias'] for wd in wd_values]) if (wd_values is not None and 'wd_bias' in wd_values[0]) else None
+  wd_no_biases = np.array([np.mean(sublist) for sublist in wd_no_biases]) if (wd_values is not None) else None
+  if lr_values is None:
+    return  # Nothing to plot
+  
+  steps = list(range(0, len(lr_values)))
+  if ax1 is None:
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+  else:
+    fig = None
+  if lr_values is not None:
+    ax1.plot(steps, lr_values, 'b-', label='Learning Rate')
+    ax1.set_xlabel('Steps')
+    ax1.set_ylabel('Learning Rate', color='b')
+    ax1.tick_params(axis='y', labelcolor='b')
+  if wd_no_biases is not None:
+    ax2 = ax1.twinx()
+    ax2.plot(steps, wd_no_biases, 'r-', label='Weight Decay No Bias')
+    ax2.set_ylabel('Weight Decay No Bias', color='r')
+    ax2.tick_params(axis='y', labelcolor='r')
+  # if wd_no_biases is not None:
+  #   ax2.plot(steps, wd_no_biases, 'g-', label='Weight Decay No Bias')
+  #   ax2.set_ylabel('Weight Decay', color='g')
+    # ax3.tick_params(axis='y', labelcolor='g')
+  
+  if title is None:
+    title = f'Learning Rate and Weight Decay Across Epochs - {test_id} - {key}'
+  
+  if fig is not None:
+    plt.title(title)
+  else:
+    ax1.set_title(title)
+  # add legends for both axes
+  lines = []
+  labels = []
+  if lr_values is not None:
+    line1, = ax1.plot([], [], 'b-')
+    lines.append(line1)
+    labels.append('Learning Rate')
+  if wd_no_biases is not None:
+    line2, = ax2.plot([], [], 'r-')
+    lines.append(line2)
+    labels.append('Weight Decay No Bias')
+  # if wd_biases is not None:
+  #   line3, = ax2.plot([], [], 'g-')
+  #   lines.append(line3)
+  #   labels.append('Weight Decay Bias')
+  ax1.legend(lines, labels)
+
+def plot_lr_wd_across_epochs(data, run_output_folder, test_id, save_fig=True,title=None):
   test_output_folder = os.path.join(run_output_folder, test_id)
   os.makedirs(test_output_folder, exist_ok=True)
   for key,dict_sub_fold in data['results'].items():
     if 'final' in key:
       continue
-    lr_values = dict_sub_fold['train_val'].get('list_lrs', None)
-    lr_values = np.concatenate(lr_values) if lr_values is not None else None
-    wd_values = dict_sub_fold['train_val'].get('list_wds', None)
-    wd_values = [item for sublist in wd_values for item in sublist] if wd_values is not None else None
-    wd_biases = np.array([wd['wd_bias'] for wd in wd_values]) if (wd_values is not None and 'wd_bias' in wd_values[0]) else None
-    wd_no_biases = np.array([wd['wd_no_bias'] for wd in wd_values]) if (wd_values is not None and 'wd_no_bias' in wd_values[0]) else None
     
-    if lr_values is None:
-      continue
-    
-    steps = list(range(0, len(lr_values)))
     fig, ax1 = plt.subplots(figsize=(10, 6))
-    if lr_values is not None:
-      ax1.plot(steps, lr_values, 'b-', label='Learning Rate')
-      ax1.set_xlabel('Steps')
-      ax1.set_ylabel('Learning Rate', color='b')
-      ax1.tick_params(axis='y', labelcolor='b')
-    if wd_biases is not None:
-      ax2 = ax1.twinx()
-      ax2.plot(steps, wd_biases, 'r-', label='Weight Decay Bias')
-      ax2.set_ylabel('Weight Decay Bias', color='r')
-      ax2.tick_params(axis='y', labelcolor='r')
-    if wd_no_biases is not None:
-      ax3 = ax1.twinx()
-      ax3.plot(steps, wd_no_biases, 'g-', label='Weight Decay No Bias')
-      ax3.set_ylabel('Weight Decay No Bias', color='g')
-      ax3.tick_params(axis='y', labelcolor='g')
-    plt.title(f'Learning Rate and Weight Decay Across Epochs - {test_id} - {key}')
-    # add legends for both axes
-    lines = []
-    labels = []
-    if lr_values is not None:
-      line1, = ax1.plot([], [], 'b-')
-      lines.append(line1)
-      labels.append('Learning Rate')
-    if wd_biases is not None:
-      line2, = ax2.plot([], [], 'r-')
-      lines.append(line2)
-      labels.append('Weight Decay Bias')
-    if wd_no_biases is not None:
-      line3, = ax3.plot([], [], 'g-')
-      lines.append(line3)
-      labels.append('Weight Decay No Bias')
-    ax1.legend(lines, labels, loc='upper right')
+    create_lr_wd_plot(dict_sub_fold, test_id, key, ax1=ax1, title=title)
     fig.tight_layout()
-    fig.savefig(os.path.join(test_output_folder, f'{test_id}_lr_wd_across_epochs_{key}.png'), bbox_inches='tight')
+    if save_fig:
+      fig.savefig(os.path.join(test_output_folder, f'{test_id}_lr_wd_across_epochs_{key}.png'), bbox_inches='tight')
     plt.close(fig)
+    
 # def link_cross_attention_logs(data, run_output_folder, test_id):
 
 
@@ -1364,7 +1452,7 @@ def generate_video_from_loss_plots(run_output_folder, test_id):
   # print(f'Generated loss video at {video_path}')
 
 
-def plot_run_details(results_data, output_root,only_csv):
+def plot_run_details(results_data, output_root,only_csv, dict_args):
   list_row_csv = []
   generate_subject_class_loss_csv(results_data,output_root)
   for file, data in tqdm.tqdm(results_data.items()):
@@ -1381,7 +1469,7 @@ def plot_run_details(results_data, output_root,only_csv):
     if not only_csv:
       # try:
       plot_grouped_k_fold(data, os.path.join(output_root), test_id)
-      plot_losses(data, os.path.join(output_root), test_id)
+      plot_losses(data, os.path.join(output_root), test_id, loss_plot_type=dict_args['loss_plot_type'])
       plot_lr_wd_across_epochs(data, os.path.join(output_root), test_id)
       if is_unbc:
         generate_video_from_loss_plots(os.path.join(output_root), test_id)
@@ -1463,6 +1551,7 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='Plot results from a folder') 
   parser.add_argument('--parent_folder', type=str, required=True,
                       help='Path to folder containing all the results')
+  parser.add_argument('--loss_plot_type', type=str, default='dist', help='Type of loss plot: dist or loss')
   parser.add_argument('--filter', type=str, default='',
                       help='Optional filter criteria in format key1=val1,key2=val2')
   parser.add_argument('--only_csv', action='store_true',
@@ -1470,7 +1559,7 @@ if __name__ == '__main__':
   parser.add_argument('--print_filter', action='store_true',
                       help='Print list of avilable filter from the first .pkl file in parent_folder')
   args = parser.parse_args()
-  
+  dict_args = vars(args)
   parent_folder = args.parent_folder
   only_csv = args.only_csv
   
@@ -1498,12 +1587,12 @@ if __name__ == '__main__':
           except ValueError:
             filter_dict_arg[key.strip()] = value.strip() 
       print(f'Applying filter: {filter_dict_arg}')
-      plot_filtered_run_details(parent_folder, output_root, filter_dict_arg,only_csv)
+      plot_filtered_run_details(parent_folder, output_root, filter_dict_arg,only_csv, dict_args)
       
     else:
     # Generate the unfiltered plots
       results_files = find_results_files(parent_folder) # get .pkl files
       results_data = {file: load_results(file) for file in results_files} # load .pkl files with path as a key
       # print(f'Loaded {len(results_data)} results files')
-      plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv)
+      plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args)
 
