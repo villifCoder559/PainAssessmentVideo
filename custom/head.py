@@ -757,7 +757,7 @@ class BaseHead(nn.Module):
       'list_val_ICC': list_val_ICC,
       'list_val_CCC': list_val_CCC,
       'list_val_pearson_correlation': list_val_pearson_correlation,
-      
+      'train_batch_sampler_name': (train_loader.batch_sampler.__class__.__module__ + "." + train_loader.batch_sampler.__class__.__name__),
       # 'list_samples': list_list_samples,
       # 'list_y': list_list_y
     }
