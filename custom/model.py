@@ -377,7 +377,9 @@ class Model_Advanced: # Scenario_Advanced
       df_final.to_csv(train_csv_path, index=False, sep='\t')
       print(f"Original class distribution:\n{df_original['class_id'].value_counts().sort_index()}")
       print(f"Stratification completed. New class distribution:\n{df_final['class_id'].value_counts().sort_index()}")
-          
+    
+    # use_test_as_val
+    
     dict_results = self.head.start_train(batch_size=self.batch_size_training,
                                           criterion=criterion,
                                           lr=lr,
