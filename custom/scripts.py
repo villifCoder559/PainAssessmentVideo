@@ -495,6 +495,7 @@ def reduce_logs_for_subfold(dict_train, skip_reduction=False):
       else:
         reduced_dict_train[key] = v
         
+  # Remove dict_results to avoid duplicates
   if 'dict_results' in reduced_dict_train:
     reduced_dict_train.pop('dict_results')  
   # save only the last matrix
