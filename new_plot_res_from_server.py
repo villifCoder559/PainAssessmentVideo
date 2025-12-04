@@ -264,7 +264,7 @@ def plot_CCC_ICC_pearson(data, run_output_folder, test_id, additional_info=''):
     plt.close(fig)
 
 
-def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info='', plot_loss_per_subject=True,plot_acc_per_subject=True, plot_loss_per_class=True,plot_train_loss_val_acc=True):
+def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info='', plot_loss_per_subject=True,plot_acc_per_subject=True, plot_loss_per_class=True,plot_train_loss_val_acc=True,**kwargs):
   # Adjust run_output_folder to store plots
   # run_output_folder = Path(run_output_folder).parts[:-3]
   test_output_folder = os.path.join(run_output_folder, test_id)
@@ -289,9 +289,9 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         val_accuracy = data['results'][key]['train_val'].get('list_val_accuracy', [])
       
       ###### TODO: To remove in future
-      elif 'list_train_performance_metric' in data['results'][key]['train_val']:
-        train_accuracy = data['results'][key]['train_val'].get('list_train_performance_metric', [])
-        val_accuracy = data['results'][key]['train_val'].get('list_val_performance_metric', [])
+      # elif 'list_train_performance_metric' in data['results'][key]['train_val']:
+      #   train_accuracy = data['results'][key]['train_val'].get('list_train_performance_metric', [])
+      #   val_accuracy = data['results'][key]['train_val'].get('list_val_performance_metric', [])
       elif 'list_train_macro_accuracy' in data['results'][key]['train_val']:
         train_accuracy = data['results'][key]['train_val'].get('list_train_macro_accuracy', []) # list_train_performance_metric
         val_accuracy = data['results'][key]['train_val'].get('list_val_macro_accuracy', [])
@@ -500,7 +500,11 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
               title=f'TEST error per class - Epoch_{best_epoch}')
               
             
-        
+        if kwargs.get('test_as_validation', False):
+          tmp = data['results'][key]['train_val']['test_as_eval'].get('test_losses', None)
+          if tmp is not None:
+            point_loss = tmp # list of test losses per epoch
+            
         input_dict_loss={
           'list_1':train_losses,
           'list_2':val_loss,
@@ -1469,7 +1473,7 @@ def plot_run_details(results_data, output_root,only_csv, dict_args):
     if not only_csv:
       # try:
       plot_grouped_k_fold(data, os.path.join(output_root), test_id)
-      plot_losses(data, os.path.join(output_root), test_id, loss_plot_type=dict_args['loss_plot_type'])
+      plot_losses(data, os.path.join(output_root), test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
       plot_lr_wd_across_epochs(data, os.path.join(output_root), test_id)
       if is_unbc:
         generate_video_from_loss_plots(os.path.join(output_root), test_id)
@@ -1558,6 +1562,8 @@ if __name__ == '__main__':
                       help='Generate only the summary CSV file without generating any plots')
   parser.add_argument('--print_filter', action='store_true',
                       help='Print list of avilable filter from the first .pkl file in parent_folder')
+  parser.add_argument('--test_as_validation', default=0, type=int,
+                      help='If set to 1, use plot test set as validation set (for UNBC) if possible')
   args = parser.parse_args()
   dict_args = vars(args)
   parent_folder = args.parent_folder

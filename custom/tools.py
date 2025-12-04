@@ -2132,11 +2132,16 @@ def plot_losses_and_test_new(list_1,title, list_2=None,output_path=None,point=No
   # ax1.legend()
   
   if point is not None:
+      
     ax3 = ax1.twinx()
     # ax3.spines["right"].set_position(("axes", 1.05))  # Offset the third axis to the right
     ax3.spines["right"].set_visible(False)
     ax3.set_ylabel(y_label_3, color=color_3, labelpad=15)
-    ax3.plot(point['epoch'],point['value'],'o', label=y_label_3, color=color_3)
+    if isinstance(point,list):
+      ax3.plot(point, label=y_label_3, color=color_3)
+    elif isinstance(point,dict):
+      ax3.plot(point['epoch'],point['value'],'o', label=y_label_3, color=color_3)
+    
     ax3.set_ylim(y_lim_3)
     ax3.set_yticks(np.arange(y_lim_3[0], y_lim_3[1], step=step_ylim_3))
     ax3.tick_params(axis='y', labelcolor=color_3)
