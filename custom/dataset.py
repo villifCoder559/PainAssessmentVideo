@@ -1177,27 +1177,29 @@ class customBatchSampler(BatchSampler):
     self.n_batch_size = batch_size
     self.random_state = random_state
     self.shuffle = shuffle
-    _, count = np.unique(self.y_labels, return_counts=True)
-    min_member = np.min(count)
-    # max_member = np.max(count)
+    nr_samples = len(self.y_labels)
+    self.calculated_n_splits = math.ceil(nr_samples/self.n_batch_size)
+    _,count = np.unique(self.y_labels,return_counts=True)
+    min_class_count = np.min(count)
+    if self.calculated_n_splits > min_class_count:
+      raise ValueError(f"Cannot create stratified batches: "+
+                       f"the calculated number of splits {self.calculated_n_splits} is higher than the minimum class count {min_class_count}. ")
     self.initialize()
-    # if max_member < self.skf.get_n_splits():
-    #   raise ValueError(f"Impossible to split the dataset in {self.skf.get_n_splits()} splits. The maximum number of samples per class is {max_member}")
-    if min_member < self.skf.get_n_splits():
-      raise ValueError(f"Impossible to split the dataset in {self.skf.get_n_splits()} splits. The minimum number of samples per class is {min_member} and the batch size is {self.n_batch_size}. ")
-    # -(-a//b) is the same as math.ceil(a/b)
-
     
   def initialize(self):
-    nr_samples = len(self.y_labels)
-    self.skf = StratifiedKFold(n_splits = math.ceil(nr_samples/self.n_batch_size) , shuffle=self.shuffle, random_state=self.random_state)
+    self.skf = StratifiedKFold(n_splits = self.calculated_n_splits,
+                               shuffle=self.shuffle,
+                               random_state=self.random_state)
     self.n_batches = self.skf.get_n_splits()
-    self.real_batch_size = math.ceil(nr_samples/self.n_batches)
+    
+    # Informative but batches can vary slightly in size
+    self.real_batch_size = math.ceil(len(self.y_labels)/self.n_batches) 
     
   def __iter__(self):
     for _,test in self.skf.split(np.zeros(self.y_labels.shape[0]), self.y_labels):
       yield test.astype(np.int32).tolist() 
-    
+      
+    # Update random state for next epoch, so that shuffling is different
     self.random_state += 13
     self.initialize()
       
@@ -1361,7 +1363,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
         print(f'Use custom Dataloader!')
     except Exception as e:
       # raise ValueError(f'Error in customBatchSampler: {e}') from e
-      print(f'Err: {e}')
+      print(f'Err in custom BatchSampler: {e}')
       print(f'Use standard DataLoader')
       loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate,num_workers=n_workers,persistent_workers=True)
   else:
