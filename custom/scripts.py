@@ -160,6 +160,9 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
   #   kwargs['return_best_model_state'] = False
   
   kwargs['all_fold_train'] = False
+  if kwargs.get('use_test_as_val', False):
+    kwargs['test_csv_path_as_eval'] = path_csv_kth_fold['test']
+    
   # Train sub-fold models
   # AUGMENTAION: val and test csv will be filtered in function get_dataset_and_loader (dataset.py)  
   fold_results_kth = train_subfold_models(
@@ -308,6 +311,8 @@ def train_subfold_models(fold_idx, sub_k_fold_list, csv_array, cols, sample_ids,
     
     ## Train model
     set_seed(seed=seed_random_state)
+    # if kwargs.get('use_test_as_val', False):
+    #   kwargs['test_csv_path_as_eval'] = sub_path_csv_kth_fold['test']
     dict_train = model_advanced.train(
       lr=lr,
       num_epochs=epochs,
