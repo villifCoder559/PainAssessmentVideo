@@ -155,7 +155,26 @@ class BaseHead(nn.Module):
                                                             label_smooth=label_smooth,
                                                             n_workers=n_workers,
                                                             **kwargs)
-    
+    if kwargs['use_test_as_val']:
+      test_dataset, test_loader = get_dataset_and_loader(batch_size=batch_size,
+                                                         csv_path=kwargs['test_csv_path_as_eval'],
+                                                         root_folder_features=root_folder_features,
+                                                         shuffle_training_batch=False,
+                                                         is_training=False,
+                                                         sample_frame_strategy=sample_frame_strategy,
+                                                         num_clips_per_video=num_clips_per_video,
+                                                         stride_inside_window=stride_inside_window,
+                                                         concatenate_temporal=concatenate_temp_dim,
+                                                         dataset_type=dataset_type,
+                                                         prefetch_factor=prefetch_factor,
+                                                         backbone_dict=backbone_dict,
+                                                         model=self, 
+                                                         is_coral_loss=is_coral_loss,
+                                                         soft_labels=soft_labels,
+                                                         label_smooth=label_smooth,
+                                                         n_workers=n_workers,
+                                                         **kwargs)
+      
     kwargs['scheduler_config_dict']['steps_per_epoch'] = len(train_loader)
     optimizer_factory = OptimizerFactory(kwargs['scheduler_config_dict'])
     optimizer, lr_scheduler, wd_scheduler = optimizer_factory.create(
@@ -174,9 +193,9 @@ class BaseHead(nn.Module):
     # if val_csv_path is not None:
     val_unique_classes = torch.tensor(val_dataset.get_unique_classes()) if val_csv_path is not None else torch.tensor([])
     val_unique_subjects = torch.tensor(val_dataset.get_unique_subjects()) if val_csv_path is not None else torch.tensor([])
-    
-    # train_all_classes_conf_mat = torch.tensor(train_dataset.get_unique_classes(return_all=True))
-    # val_all_classes_conf_mat = torch.tensor(val_dataset.get_unique_classes(return_all=True)) if val_csv_path is not None else torch.tensor([])
+    if kwargs.get('use_test_as_val', False):
+      test_unique_classes = torch.tensor(test_dataset.get_unique_classes()) if kwargs.get('test_csv_path_as_eval', None) is not None else torch.tensor([])
+      test_unique_subjects = torch.tensor(test_dataset.get_unique_subjects()) if kwargs.get('test_csv_path_as_eval', None) is not None else torch.tensor([])
     
     if helper.LOG_HISTORY_SAMPLE and torch.min(train_unique_classes)>=0 and torch.max(train_unique_classes)<=255 and torch.min(val_unique_classes)>=0 and torch.max(val_unique_classes)<=255:
       list_train_sample = train_dataset.get_all_sample_ids()
@@ -207,6 +226,20 @@ class BaseHead(nn.Module):
     list_val_losses_per_subject = []
     list_val_accuracy_per_subject = []
     list_val_confusion_matricies = []
+    if kwargs.get('use_test_as_val', False):
+      list_test_accuracy = []
+      list_test_losses = []
+      list_test_losses_per_class = []
+      list_test_accuracy_per_class = []
+      list_test_losses_per_subject = []
+      list_test_accuracy_per_subject = []
+      list_test_confusion_matricies = []
+      list_test_performance_metric = []
+      list_test_confidence_prediction_right_mean = []
+      list_test_confidence_prediction_wrong_mean = []
+      list_test_confidence_prediction_right_std = []
+      list_test_confidence_prediction_wrong_std = []
+      
     list_train_performance_metric = []
     list_val_performance_metric = []
     total_norm_epoch = []
@@ -460,6 +493,18 @@ class BaseHead(nn.Module):
                                   epoch=epoch,
                                   history_val_sample_predictions=history_val_sample_predictions,
                                   **kwargs)
+      dict_test_as_eval = None
+      if kwargs.get('test_csv_path_as_eval') is not None:
+        dict_test_as_eval = self.evaluate(criterion=criterion,
+                                          is_test=False,
+                                          unique_val_classes=test_unique_classes,
+                                          unique_val_subjects=test_unique_subjects,
+                                          val_loader=test_loader,
+                                          is_coral_loss=is_coral_loss,
+                                          epoch=epoch,
+                                          history_val_sample_predictions=None,
+                                          **kwargs)
+        
       dict_log_time['eval'] = dict_log_time.get('eval',0) + time.time()-time_eval
       # print(f'  Evaluation time: {dict_log_time["eval"]:.4f}')
       
@@ -475,7 +520,8 @@ class BaseHead(nn.Module):
       
       list_train_losses.append(train_loss / len(train_loader))
       list_val_losses.append(dict_eval['val_loss'] if dict_eval is not None else 0.0)
-      
+      if dict_test_as_eval is not None:
+        list_test_losses.append(dict_test_as_eval['val_loss'])
       if not is_resupcon_loss:
         np_list_train_epoch_predictions = np.concatenate(list_train_epoch_predictions, axis=0)
         np_list_train_ground_truths = np.concatenate(list_train_ground_truths, axis=0)
@@ -511,35 +557,49 @@ class BaseHead(nn.Module):
           list_train_accuracy_per_class.append(class_accuracy[0] / class_accuracy[1]) # class_accuracy[0] is correct predictions, class_accuracy[1] is total)
           list_val_losses_per_class.append(dict_eval['val_loss_per_class'] if dict_eval is not None else None)
           list_val_accuracy_per_class.append(dict_eval['val_accuracy_per_class'] if dict_eval is not None else None)
-        
+          if dict_test_as_eval is not None:
+            list_test_losses_per_class.append(dict_test_as_eval['val_loss_per_class'])
+            list_test_accuracy_per_class.append(dict_test_as_eval['val_accuracy_per_class'])
         if helper.LOG_PER_SUBJECT:
           list_train_losses_per_subject.append((subject_loss / sample_per_subject_count))
           list_train_accuracy_per_subject.append(subject_accuracy / sample_per_subject_count)
           list_val_losses_per_subject.append(dict_eval['val_loss_per_subject'] if dict_eval is not None else None)
           list_val_accuracy_per_subject.append(dict_eval['val_accuracy_per_subject'] if dict_eval is not None else None)
+          if dict_test_as_eval is not None:
+            list_test_losses_per_subject.append(dict_test_as_eval['val_loss_per_subject'])
+            list_test_accuracy_per_subject.append(dict_test_as_eval['val_accuracy_per_subject'])
 
       if helper.LOG_CONFIDENCE_PREDICTION and not is_resupcon_loss:
         list_val_confidence_prediction_right_mean.append(dict_eval['val_prediction_confidence_right_mean'] if dict_eval is not None else 0.0)
         list_val_confidence_prediction_wrong_mean.append(dict_eval['val_prediction_confidence_wrong_mean'] if dict_eval is not None else 0.0)
         list_val_confidence_prediction_right_std.append(dict_eval['val_prediction_confidence_right_std'] if dict_eval is not None else 0.0)
         list_val_confidence_prediction_wrong_std.append(dict_eval['val_prediction_confidence_wrong_std'] if dict_eval is not None else 0.0)
+        if dict_test_as_eval is not None:
+          list_test_confidence_prediction_right_mean.append(dict_test_as_eval['val_prediction_confidence_right_mean'])
+          list_test_confidence_prediction_wrong_mean.append(dict_test_as_eval['val_prediction_confidence_wrong_mean'])
+          list_test_confidence_prediction_right_std.append(dict_test_as_eval['val_prediction_confidence_right_std'])
+          list_test_confidence_prediction_wrong_std.append(dict_test_as_eval['val_prediction_confidence_wrong_std'])
 
       if not is_resupcon_loss:
         list_val_confusion_matricies.append(dict_eval['val_confusion_matrix'] if dict_eval is not None else None)
-
         train_confusion_matrix.compute()
         train_dict_precision_recall = tools.evaluate_classification_from_confusion_matrix(confusion_matrix=train_confusion_matrix,list_real_classes=train_unique_classes)
         train_dict_precision_recall['loss'] = list_train_losses[-1]
         list_train_accuracy.append(train_dict_precision_recall['accuracy'])
         list_train_performance_metric.append(train_dict_precision_recall[metric_for_stopping])
         list_val_performance_metric.append(dict_eval[key_for_early_stopping] if dict_eval is not None else 0.0)
-      
         list_val_accuracy.append(dict_eval['val_accuracy'] if dict_eval is not None else 0.0)
+        if dict_test_as_eval is not None:
+          list_test_performance_metric.append(dict_test_as_eval[key_for_early_stopping])
+          list_test_accuracy.append(dict_test_as_eval['val_accuracy'])
+          
       else:
         train_dict_precision_recall = {}
         list_train_performance_metric.append(list_train_losses[-1])
         list_val_performance_metric.append(dict_eval['val_loss'] if dict_eval is not None else 0.0)
-      
+        if dict_test_as_eval is not None:
+          list_test_performance_metric.append(dict_test_as_eval['val_loss'])
+          list_test_accuracy.append(dict_test_as_eval['val_accuracy'])
       
       # log performance
       self.log_performance(stage='Train',
@@ -556,7 +616,12 @@ class BaseHead(nn.Module):
                             loss=dict_eval['val_loss'],
                             #  dict_kwarg={'acc_per_class':dict_eval['val_accuracy_per_class'],},
                             accuracy=dict_eval['val_accuracy'],)
-      
+      if dict_test_as_eval is not None:
+        self.log_performance(stage='Test',
+                            num_epochs=num_epochs,
+                            loss=dict_test_as_eval['val_loss'],
+                            accuracy=dict_test_as_eval['val_accuracy'],)
+        
       if helper.LOG_LOSS_ACCURACY and epoch > 0 and epoch % (helper.saving_rate_training_logs*2) == 0:
         fig,ax = plt.subplots(1,1,figsize=(10,10))
         input_dict_loss_acc= {
@@ -632,48 +697,33 @@ class BaseHead(nn.Module):
       torch.save(best_model_state, os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth'))
       print(f"Best model weights saved to {os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth')}")
 
-    return {
+    logs = {
       'train_losses': list_train_losses,
       'train_loss_per_class': np.array(list_train_losses_per_class),
       'train_loss_per_subject': np.array(list_train_losses_per_subject),
-      'val_losses': list_val_losses,
-      'val_loss_per_class': np.array(list_val_losses_per_class),
-      'val_loss_per_subject': np.array(list_val_losses_per_subject),
       'y_unique': np.unique(np.concatenate((train_unique_classes,val_unique_classes),axis=0)),
       'train_unique_subject_ids': train_unique_subjects.numpy(),
       'train_count_subject_ids': train_dataset.get_count_subjects(),
-      'val_unique_subject_ids': val_unique_subjects.numpy(),
-      'val_count_subject_ids': val_dataset.get_count_subjects() if val_csv_path is not None else None,
       'train_unique_y': train_unique_classes,
-      'val_unique_y': val_unique_classes,
       'subject_ids_unique': np.unique(np.concatenate((train_unique_subjects.numpy(),val_unique_subjects.numpy()),axis=0)),
-      'list_val_accuracy_per_subject': list_val_accuracy_per_subject,
       'list_train_accuracy_per_subject': list_train_accuracy_per_subject,
-      'list_val_accuracy_per_class': list_val_accuracy_per_class,
       'list_train_accuracy_per_class': list_train_accuracy_per_class,
       'list_train_confidence_prediction_right_mean': list_train_confidence_prediction_right_mean,
       'list_train_confidence_prediction_wrong_mean': list_train_confidence_prediction_wrong_mean,
       'list_train_confidence_prediction_right_std': list_train_confidence_prediction_right_std,
       'list_train_confidence_prediction_wrong_std': list_train_confidence_prediction_wrong_std,
-      'list_val_confidence_prediction_right_mean': list_val_confidence_prediction_right_mean,
-      'list_val_confidence_prediction_wrong_mean': list_val_confidence_prediction_wrong_mean,
-      'list_val_confidence_prediction_right_std': list_val_confidence_prediction_right_std,
-      'list_val_confidence_prediction_wrong_std': list_val_confidence_prediction_wrong_std,
       'epochs_gradient_per_module': epochs_gradient_per_module,
       'history_train_sample_predictions': history_train_sample_predictions,
       'history_val_sample_predictions': history_val_sample_predictions,
       'list_train_accuracy': list_train_accuracy,
-      'list_val_accuracy': list_val_accuracy,
       # 'train_accuracy_per_class': train_accuracy_per_class,
       # 'test_accuracy_per_class': test_accuracy_per_class,
       'train_confusion_matricies': list_train_confusion_matricies,
-      'val_confusion_matricies': list_val_confusion_matricies,
       'best_model_idx': best_model_epoch,
       'best_model_state': best_model_state,
       'metric_for_stopping': metric_for_stopping,
       # 'list_train_macro_accuracy': list_train_performance_metric,
       'list_train_performance_metric': list_train_performance_metric,
-      'list_val_performance_metric': list_val_performance_metric,
       # 'list_val_macro_accuracy': list_val_performance_metric,
       'epochs': epoch,
       'list_mean_total_norm_epoch': np.array(total_norm_epoch).mean(axis=1) ,
@@ -687,14 +737,47 @@ class BaseHead(nn.Module):
       # 'wd_scheduler': wd_scheduler.get_config() if wd_scheduler else None,
       # 'scheduler': scheduler.state_dict() if scheduler else None,
       'list_train_ICC': list_train_ICC,
-      'list_val_ICC': list_val_ICC,
       'list_train_CCC': list_train_CCC,
-      'list_val_CCC': list_val_CCC,
       'list_train_pearson_correlation': list_train_pearson_correlation,
+      'val_losses': list_val_losses,
+      'val_loss_per_class': np.array(list_val_losses_per_class),
+      'val_loss_per_subject': np.array(list_val_losses_per_subject),
+      'val_unique_subject_ids': val_unique_subjects.numpy(),
+      'val_count_subject_ids': val_dataset.get_count_subjects() if val_csv_path is not None else None,
+      'val_unique_y': val_unique_classes,
+      'list_val_accuracy_per_subject': list_val_accuracy_per_subject,
+      'list_val_accuracy_per_class': list_val_accuracy_per_class,
+      'list_val_confidence_prediction_right_mean': list_val_confidence_prediction_right_mean,
+      'list_val_confidence_prediction_wrong_mean': list_val_confidence_prediction_wrong_mean,
+      'list_val_confidence_prediction_right_std': list_val_confidence_prediction_right_std,
+      'list_val_confidence_prediction_wrong_std': list_val_confidence_prediction_wrong_std,
+      'list_val_accuracy': list_val_accuracy,
+      'val_confusion_matricies': list_val_confusion_matricies,
+      'list_val_performance_metric': list_val_performance_metric,
+      'list_val_ICC': list_val_ICC,
+      'list_val_CCC': list_val_CCC,
       'list_val_pearson_correlation': list_val_pearson_correlation,
+      
       # 'list_samples': list_list_samples,
       # 'list_y': list_list_y
     }
+    if kwargs.get('use_test_as_val', False):
+      logs['test_as_eval'] = {
+        'test_losses': list_test_losses,
+        'test_loss_per_class': np.array(list_test_losses_per_class),
+        'test_loss_per_subject': np.array(list_test_losses_per_subject),
+        'test_unique_subjects_ids': test_unique_subjects.numpy(),
+        'test_count_subjects_ids': test_dataset.get_count_subjects() if kwargs['test_csv_path_as_eval'] is not None else None,
+        'test_unique_y': test_unique_classes,
+        'list_test_confidence_prediction_right_mean': list_test_confidence_prediction_right_mean,
+        'list_test_confidence_prediction_wrong_mean': list_test_confidence_prediction_wrong_mean,
+        'list_test_confidence_prediction_right_std': list_test_confidence_prediction_right_std,
+        'list_test_confidence_prediction_wrong_std': list_test_confidence_prediction_wrong_std,
+        'list_test_accuracy_per_subject': list_test_accuracy_per_subject,
+        'list_test_accuracy_per_class': list_test_accuracy_per_class,
+        'test_unique_classes_ids': test_unique_classes.numpy(),
+      }
+    return logs
 
   def evaluate(self, val_loader, criterion, unique_val_subjects, unique_val_classes, is_test,is_coral_loss,epoch,history_val_sample_predictions=None,save_log=True,**kwargs):
     # unique_train_val_classes is only for eval but kept the name for compatibility
