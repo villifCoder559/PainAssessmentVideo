@@ -494,7 +494,9 @@ def reduce_logs_for_subfold(dict_train, skip_reduction=False):
             reduced_dict_train[key].update({f'{best_model_idx}': v[best_model_idx]})
       else:
         reduced_dict_train[key] = v
-    
+        
+  if 'dict_results' in reduced_dict_train:
+    reduced_dict_train.pop('dict_results')  
   # save only the last matrix
   return reduced_dict_train
 
