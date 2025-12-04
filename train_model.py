@@ -411,6 +411,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'is_subject_independent': kwargs['is_subject_independent'],
     'skip_test': kwargs['skip_test'],
     'scheduler_config_dict': scheduler_config_dict,
+    'use_test_as_val': kwargs['use_test_as_val']
   }
     
   print(f"\n[Trial {trial.number}] Params: {trial.params}")
@@ -651,17 +652,7 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser(
       description='Train video analysis model with various configurations'
   )
-  # parser.add_argument('--config', type=str, help='Path to YAML configuration file.')
-  # parser = argparse.ArgumentParser(description='Train video analysis model with various configurations')
-  
-  # Add config file argument
-  # parser.add_argument('--config', type=str, help='Path to YAML configuration file.')
-  
-  # Set defaults from YAML if provided
-  # if '--config' in sys.argv:
-  #   config_path = sys.argv[sys.argv.index('--config') + 1]
-  #   set_parser_defaults_from_yaml(parser, config_path)
-  
+  parser.add_argument('--use_test_as_val', type=int, choices=[0,1], default=0, help='Use test set as validation set. Default is 0 (False)')
   # Model configuration
   parser.add_argument('--mt', type=str, default='B', help="Model type. Available options: 'S', 'B', 'G', 'G_unl', 'vjepa2_L_fpc64_256', 'vjepa2_G_fpc64_384', 'ViT_image', 'DFER'.")
   parser.add_argument('--head', type=str, default='ATTENTIVE_JEPA', help="Head type. Available options: 'GRU', 'ATTENTIVE', 'ATTENTIVE_JEPA', 'LINEAR'.")
