@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import LinearLR,SequentialLR,CosineAnnealingLR, StepLR, OneCycleLR, LambdaLR, CosineAnnealingWarmRestarts, ReduceLROnPlateau
 import math
+import torch_optimizer as t_optim
 
 class CustomWeightDecayScheduler:
   """
@@ -92,6 +93,12 @@ class OptimizerFactory:
       return optim.SGD(params, lr=lr)
     elif optimizer_name.lower() == 'adam':
       return optim.Adam(params, lr=lr)
+    elif optimizer_name.lower() == 'adabelief':
+      return t_optim.AdaBelief(params, lr=lr)
+    elif optimizer_name.lower() == 'yogi':
+      return t_optim.Yogi(params, lr=lr)
+    elif optimizer_name.lower() == 'ranger':
+      return t_optim.Ranger(params, lr=lr)
     else:
       raise ValueError(f"Optimizer {optimizer_name} not supported.")
   dict_check_scheduler = {
