@@ -1428,14 +1428,18 @@ def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,is_quadrant=F
   ###### LATENT AUGMENTATIONS ######
   with profile_workers(f'{pid}_latent_augm_time',helper.time_profiling_enabled,helper.time_profile_dict):
     if helper.is_latent_basic_augmentation(sample_id): # latent_basic_augmentation: invert the features + add gaussian noise
-      gaussian_noise = torch.randn_like(features) * 0.1
+      gaussian_noise = torch.randn_like(features) * 0.1 # mean 0, std 0.1
       features = (-1 * features) + gaussian_noise
 
     # random masking patches
     elif helper.is_latent_masking_augmentation(sample_id):
       B,T,S,S,C = features.shape # B->nr_frames, T->temporal, S->spatial, C->emb_dim
-      mask_grid = torch.rand(S,S,dtype=features.dtype) < 0.25 # 25% of the grid
-      mask_grid = mask_grid.view(1,1,S,S,1)
+      if S == 1: # mask Temporal
+        mask_grid = torch.rand(T,dtype=features.dtype) < 0.1 # 10% of the temporal
+        mask_grid = mask_grid.view(1,T,1,1,1)
+      else: # mask Spatial
+        mask_grid = torch.rand(S,S,dtype=features.dtype) < 0.25 # 25% of the grid
+        mask_grid = mask_grid.view(1,1,S,S,1)
       features = features.masked_fill(mask_grid, 0.0) # set to zero the masked values
   ##################################
     
