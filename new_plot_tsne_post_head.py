@@ -8,6 +8,8 @@ import pandas as pd
 from pathlib import Path
 import custom.helper as helper  
 from custom.dataset import customDataset
+import time
+
 
 def load_data(pkl_file):
   with open(pkl_file, 'rb') as f:
@@ -29,7 +31,7 @@ def get_custom_ds(data):
   custom_ds = customDataset(**config)
   return custom_ds
 
-def plot_tsne(embeddings, labels, output_folder, v_max=None,v_min=None, title="t-SNE Visualization", group_by="pain",cmap='viridis'):
+def plot_tsne(embeddings, labels, output_folder, v_max=None,v_min=None, title="t-SNE Visualization", group_by="pain",cmap='viridis', output_path=None):
   tsne = TSNE(n_components=2, random_state=42, n_jobs=-1)
   reduced_embeddings = tsne.fit(embeddings)
 
@@ -58,47 +60,47 @@ def plot_tsne(embeddings, labels, output_folder, v_max=None,v_min=None, title="t
   
   plt.tight_layout()
   os.makedirs(output_folder, exist_ok=True)
-  output_path = os.path.join(output_folder, f"{group_by}_{int(time.time())}_tsne_plot.png")
+  if output_path is None:
+    timestamp = int(time.time())
+    output_path = os.path.join(output_folder, f'tsne_plot_{group_by}_{timestamp}.png')
   plt.savefig(output_path)
   plt.close()
   print(f"t-SNE plot saved to {output_path}")
+  dict_tsne = {
+    'embeddings_2d': reduced_embeddings,
+    'labels': labels
+  }
+  return dict_tsne
 
 # NOTE: pkl_file extracted from log_cross_attention_from_model.py
-import time
-def main():
-  parser = argparse.ArgumentParser(description="Plot t-SNE from embeddings in a pickle file from log_cross_attention_from_model.py")
-  parser.add_argument("--pkl_file", type=str, required=True, help="Path to the pickle file containing embeddings and labels.")
-  # parser.add_argument("--output_folder", type=str, required=True, help="Folder to save the t-SNE plot.")
-  parser.add_argument("--title", type=str, default=None, help="Title of the plot.")
-  parser.add_argument("--group_by", type=str, choices=["labels", "subjects"], default="labels", help="Group visualization by labels or subjects.")
-  parser.add_argument("--cmap", type=str, default="jet", help="Colormap for the plot.") # jet, tab20, viridis, etc
-  args = parser.parse_args()
 
-  data = load_data(args.pkl_file)
+def prepare_data_for_tsne(pkl_file, group_by, cmap):
+  if isinstance(pkl_file, dict):
+    data = pkl_file
+  elif isinstance(pkl_file, str) and os.path.isfile(pkl_file):  
+    data = load_data(pkl_file)
+  else:
+    raise ValueError("pkl_file must be a path to a pickle file or a dictionary.")
 
   if not isinstance(data, dict) or 'embeddings' not in data['video_embeddings'] or 'labels' not in data['video_embeddings']:
     raise ValueError("Pickle file must contain a dictionary with 'embeddings' and 'labels' keys.")
 
-  log_path_folder = os.path.join(*Path(args.pkl_file).parts[:-1], f'log_tsne_plots')
-  os.makedirs(log_path_folder, exist_ok=True)
-  # Filter out augmented samples if any
-  
   # Determine labels based on grouping choice
   df = pd.read_csv(data['csv_path'], sep='\t', dtype={'sample_name': str})
-  if args.group_by == "labels":
+  if group_by == "labels":
     labels = np.array(data['video_embeddings']['labels'])
-  elif args.group_by == "subjects":
+  elif group_by == "subjects":
     sample_ids = np.array(data['video_embeddings']['sample_ids'])
     id_to_subject = dict(zip(df['sample_id'], df['subject_id']))
     labels = np.array([id_to_subject[sample_id] for sample_id in sample_ids])
     nr_subjects = len(set(df['subject_id']))
-    if args.cmap == 'jet':  # only change if default
+    if cmap == 'jet':  # only change if default
       if nr_subjects <= 10:
-        args.cmap = 'tab10'  # better for categorical data
+        cmap = 'tab10'  # better for categorical data
       elif nr_subjects <= 20:
-        args.cmap = 'tab20'  
+        cmap = 'tab20'  
       else:
-        args.cmap = 'tab20c'  # good for many categories
+        cmap = 'tab20c'  # good for many categories
   else:
     raise ValueError("group_by must be either 'labels' or 'subjects'.")
   # Create a reference for readability
@@ -120,16 +122,35 @@ def main():
   list_sample_ids = list_sample_ids[valid_indices]
   
   # Adjust title
-  args.group_by = 'pain' if args.group_by.lower() == 'labels' else 'subject_id'
+  group_by = 'pain' if group_by.lower() == 'labels' else 'subject_id'
+  title = f"t-SNE grouped by {group_by} - tot samples: {len(list_sample_ids)} - subject_ids: {set(df['subject_id'])}"
+  
+  return embeddings, labels, title
 
-  if args.title is None:
-    args.title = f"t-SNE grouped by {args.group_by} - tot samples: {len(list_sample_ids)} - subject_ids: {set(df['subject_id'])}"
-  plot_tsne(embeddings = embeddings,
+def run_tsne_and_plot(pkl_file, group_by, cmap, log_path_folder, png_output_name=None):
+  embeddings, labels, title = prepare_data_for_tsne(pkl_file, group_by, cmap)  
+  dict_tsne = plot_tsne(embeddings = embeddings,
             labels = labels,
             output_folder = log_path_folder,
-            title = args.title,
-            group_by = args.group_by,
-            cmap = args.cmap)
+            title = title,
+            output_path=png_output_name,
+            group_by = group_by,
+            cmap = cmap)
+  dict_tsne['title'] = title
+  dict_tsne['group_by'] = group_by
+  return dict_tsne
+
+
+def main():
+  parser = argparse.ArgumentParser(description="Plot t-SNE from embeddings in a pickle file from log_cross_attention_from_model.py")
+  parser.add_argument("--pkl_file", type=str, required=True, help="Path to the pickle file containing embeddings and labels.")
+  parser.add_argument("--group_by", type=str, choices=["labels", "subjects"], default="labels", help="Group visualization by labels or subjects.")
+  parser.add_argument("--cmap", type=str, default="jet", help="Colormap for the plot.") # jet, tab20, viridis, etc
+  args = parser.parse_args()
+  
+  log_path_folder = str(Path(args.pkl_file).parent)
+  run_tsne_and_plot(args.pkl_file, args.group_by, args.cmap, log_path_folder)
+  
 
 if __name__ == "__main__":
   main()
