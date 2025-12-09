@@ -191,6 +191,8 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
       criterion=criterion,
       concatenate_temporal=concatenate_temp_dim,
       **kwargs)
+    # remove state_dict to save space
+    fold_results_kth[f'k{fold_idx}_cross_val']['best_model']['best_model_state'] = None
   fold_results ={'fold_results':{}}
   
   # Add sub-fold results

@@ -1145,7 +1145,7 @@ def generate_csv_row(data,config,time_, test_id):
     # 3 decimal places
     all_test_losses_best_epoch = ",".join([f"{loss:.3f}" for loss in all_test_losses_best_epoch]) 
     all_test_losses_best_epoch = {'all_test_losses_best_epoch': all_test_losses_best_epoch}
-    
+    fold_used_for_final_test = {'folds_final_test': [data[f'k{i}_cross_val_final']['best_model']['fold_sub_fold_idx']] for i in list_final_test}
     total_mean_val_loss_best_epoch = {f'total_mean_all_val_loss_best_ep': np.mean([data[f'k{i}_cross_val_final']['train_val'][key_metric_val][data[f'k{i}_cross_val_final']['train_val']['best_model_idx']] for i in list_final_test])}
   else:
     mean_test_accuracies = {}
@@ -1220,12 +1220,13 @@ def generate_csv_row(data,config,time_, test_id):
     **total_mean_train_losses_last_epoch,
     **total_mean_val_losses_best_epoch,
     **total_median_test_losses_best_epoch,
-    **total_mean_test_losses_best_epoch,
     **total_median_val_losses_best_epoch,
+    **total_mean_test_losses_best_epoch,
     **total_mean_val_loss_best_epoch,
     **all_test_losses_best_epoch,
     **best_epoch_values,
     'final_best_epoch_values': final_best_epoch_values,
+    **fold_used_for_final_test,
     'clip_grad_norm': clip_grad_norm,
     'time_min': int(time_//60) if time_ is not None else 'ND',
   }
