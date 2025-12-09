@@ -42,7 +42,21 @@ LOG_VIDEO_EMBEDDINGS = {
   'labels':[],
   'sample_ids':[]
 }
-
+def init_log_cross_attention():
+  global LOG_CROSS_ATTENTION
+  LOG_CROSS_ATTENTION = {
+    'enable': False,
+    'state':'train'
+  }
+def init_log_video_embeddings():
+  global LOG_VIDEO_EMBEDDINGS
+  LOG_VIDEO_EMBEDDINGS = {
+    'enable': False,
+    'embeddings':[],
+    'predictions':[],
+    'labels':[],
+    'sample_ids':[]
+  }
 def get_sampling_frame_startegy(strategy):
   """Get sampling strategy from string name."""
   strategy = strategy.lower()
