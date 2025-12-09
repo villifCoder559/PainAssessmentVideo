@@ -275,7 +275,11 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
   
   
   for key in data['results'].keys():
-    only_losses_folder_per_k = os.path.join(loss_plots_output_folder, f'only_losses_{key.split("_")[0]}_{key.split("_")[-1]}')
+    if 'final' in key:
+      only_losses_folder_per_k = os.path.join(loss_plots_output_folder, f'only_losses_final')
+    else:
+      only_losses_folder_per_k = os.path.join(loss_plots_output_folder, f'only_losses_{key.split("_")[0]}_{key.split("_")[-1]}')
+    
     os.makedirs(only_losses_folder_per_k, exist_ok=True)
     # class_subject_loss_folder = os.path.join(run_output_folder, f'class_subject_loss_{key.split("_")[0]}_{key.split("_")[1]}')
     # os.makedirs(class_subject_loss_folder, exist_ok=True)
@@ -500,36 +504,6 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
               title=f'TEST error per class - Epoch_{best_epoch}')
               
             
-        if kwargs.get('test_as_validation', False):
-          tmp = data['results'][key]['train_val']['test_as_eval'].get('test_losses', None)
-          if tmp is not None:
-            point_loss = tmp # list of test losses per epoch
-            
-        input_dict_loss={
-          'list_1':train_losses,
-          'list_2':val_loss,
-          'output_path':None,
-          'title':'Train loss + validation and test loss',
-          'point':point_loss,
-          'ax':axs[0][0],
-          'x_label':'Epochs',
-          'y_label_1':'Train loss',
-          'y_label_2':'Validation loss',
-          'y_label_3':'Test loss',
-          'y_lim_1':[x_lim_loss, y_lim_loss],
-          'y_lim_2':[x_lim_loss, y_lim_loss],
-          'y_lim_3':[x_lim_loss, y_lim_loss],
-          'step_ylim_1':0.25,
-          'step_ylim_2':0.25,
-          'step_ylim_3':0.25,
-          'dict_to_string':None,
-          'color_1':'tab:red',
-          'color_2':'tab:purple',
-          'color_3':(0,0,0), # (r,g,b)
-        }
-        tools.plot_losses_and_test_new(**input_dict_loss) # ax[0][0]
-        
-        axs[0][1].text(1.14, -0.5, dict_to_string, fontsize=12, color='black',transform=axs[0][1].transAxes,ha='left', va='center')
         # data['results']['k0_cross_val_sub_0']['train_val']['count_y_train']
         # data['results']['k0_cross_val_sub_0']['train_val']['count_y_val']
         # data['results']['k0_cross_val_sub_0']['train_val']['count_subject_ids_train']
@@ -595,10 +569,34 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                               y_lim=[0, 1],
                               y_step=0.1,)
         
-        plot_path = os.path.join(test_output_folder, f'{test_id}{additional_info}_losses_{key}.png')
         
+        
+        input_dict_loss={
+          'list_1':train_losses,
+          'list_2':val_loss,
+          'output_path':None,
+          'title':'Train loss + validation and test loss',
+          'point':point_loss,
+          'ax':axs[0][0],
+          'x_label':'Epochs',
+          'y_label_1':'Train loss',
+          'y_label_2':'Validation loss',
+          'y_label_3':'Test loss',
+          'y_lim_1':[x_lim_loss, y_lim_loss],
+          'y_lim_2':[x_lim_loss, y_lim_loss],
+          'y_lim_3':[x_lim_loss, y_lim_loss],
+          'step_ylim_1':0.25,
+          'step_ylim_2':0.25,
+          'step_ylim_3':0.25,
+          'dict_to_string':None,
+          'color_1':'tab:red',
+          'color_2':'tab:purple',
+          'color_3':(0,0,0), # (r,g,b)
+        }
+        tools.plot_losses_and_test_new(**input_dict_loss) # ax[0][0]
+        axs[0][1].text(1.14, -0.5, dict_to_string, fontsize=12, color='black',transform=axs[0][1].transAxes,ha='left', va='center')
+        plot_path = os.path.join(test_output_folder, f'{test_id}{additional_info}_losses_{key}.png')
         fig.savefig(plot_path, bbox_inches='tight')
-        plt.close(fig)
         symlink_path = os.path.join(only_losses_folder_per_k, f'{test_id}{additional_info}_losses_{key}.png')
         # Remove the link if it already exists to avoid errors
         try:
@@ -607,6 +605,25 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
           pass
         # Create a new symlink
         os.symlink(plot_path, symlink_path)
+        
+        # Create and save plot for test_as_validation if applicable
+        if kwargs.get('test_as_validation', False):
+          tmp = data['results'][key]['train_val'].get('test_as_eval', None)
+          if tmp is not None:
+            input_dict_loss['point'] = tmp['test_losses'] # list of test losses per epoch
+            tools.plot_losses_and_test_new(**input_dict_loss) # ax[0][0]
+            plot_path = os.path.join(test_output_folder, f'{test_id}{additional_info}_losses_test_as_validation_{key}.png')
+            fig.savefig(plot_path, bbox_inches='tight')
+            symlink_path = os.path.join(only_losses_folder_per_k, f'{test_id}{additional_info}_losses_test_as_validation_{key}.png')
+            # Remove the link if it already exists to avoid errors
+            try:
+              os.remove(symlink_path)
+            except FileNotFoundError:
+              pass
+            # Create a new symlink
+            os.symlink(plot_path, symlink_path)
+        ###########
+        plt.close(fig)
 
       if not isinstance(data['config']['criterion'],losses.RESupConLoss) and plot_loss_per_subject and len(data['results'][key]['train_val']['list_val_accuracy_per_subject']) > 0:
         y_lim = 10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3
@@ -658,7 +675,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         y_lim = 1
         accuracy_per_subject_train = data['results'][key]['train_val'].get('list_train_accuracy_per_subject', None)
         accuracy_per_subject_val = data['results'][key]['train_val'].get('list_val_accuracy_per_subject', None)
-        accuracy_per_subject_val = accuracy_per_subject_val if (accuracy_per_subject_val != None).all() else None
+        accuracy_per_subject_val = accuracy_per_subject_val if accuracy_per_subject_val != None else None
         dict_per_subject_test = data['results'][key].get('test', None)
         acc_list = [accuracy_per_subject_train, accuracy_per_subject_val, dict_per_subject_test]
         total_plots = sum([1 for acc in acc_list if acc is not None])
@@ -1008,7 +1025,7 @@ def convert_dict_to_string(d):
   return '\n'.join([f'{k}: {v}' for k, v in new_d.items()])
 
 def filter_dict(d):
-  keys_to_exclude = ['model_type', 'epochs', 'pooling_embedding_reduction', 'pooling_clips_reduction',
+  keys_to_exclude = ['epochs', 'pooling_embedding_reduction', 'pooling_clips_reduction',
                      'shuffle_video_chunks', 'sample_frame_strategy', 'head', 'stride_window_in_video',
                      'plot_dataset_distribution', 'clip_length', 'early_stopping']
   # 'criterion_dict' if not d['criterion_dict'] else ''
@@ -1095,19 +1112,20 @@ def generate_csv_row(data,config,time_, test_id):
   real_sub_fold = max(list_sub_fold) + 1
   
   # test_key = 'test_accuracy' if 'test_accuracy' in data[f'k{list_fold[0]}_cross_val_sub_{list_sub_fold[0]}']['test'] else 'test_macro_precision'
-  metric = ['accuracy']
-  test_key = f"test_{'_'.join(metric)}" 
-  key_metric_train = 'list_train_performance_metric' if 'list_train_performance_metric' in data[f'k{list_fold[0]}_cross_val_sub_{list_sub_fold[0]}']['train_val'] else 'list_train_macro_accuracy'
-  key_metric_val = 'list_val_performance_metric' if 'list_val_performance_metric' in data[f'k{list_fold[0]}_cross_val_sub_{list_sub_fold[0]}']['train_val'] else 'list_val_macro_accuracy'
+  metric = data['k0_cross_val_sub_0']['train_val']['metric_for_stopping']
+  key_metric_val = 'list_val_performance_metric'
+  
   mean_train_losses_last_epoch = {f'mean_train_loss_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  mean_train_accuracies_last_epoch = {f'mean_train_{metric}_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_train][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  mean_val_accuracies_last_epoch = {f'mean_val_{metric}_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_val][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_val_losses_last_epoch = {f'mean_val_loss_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  
+  mean_train_accuracies_last_epoch = {f'mean_train_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_accuracy'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  mean_val_accuracies_last_epoch = {f'mean_val_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_accuracy'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
     
   mean_train_losses_best_epoch = {f'mean_train_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  mean_train_accuracies_best_epoch = {f'mean_train_{metric}_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_train][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  mean_val_accuracies_best_epoch = {f'mean_val_{metric}_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_val][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_val_losses_best_epoch = {f'mean_val_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  
+  mean_train_accuracies_best_epoch = {f'mean_train_accuracy_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  mean_val_accuracies_best_epoch = {f'mean_val_accuracy_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   
   # if list_final_test != []: 
   #   mean_test_accuracies = {f'mean_test_{metric}_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test'][test_key] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
@@ -1116,24 +1134,33 @@ def generate_csv_row(data,config,time_, test_id):
   #   total_mean_test_losses_best_epoch = {f'total_mean_test_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['test']['test_loss'] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   # else:
   if list_final_test != []:
-    mean_test_accuracies = {f'mean_all_test_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_final']['test'][test_key] for i in list_final_test])}
+    mean_test_accuracies = {f'mean_all_test_accuracy_best_ep': np.mean([data[f'k{i}_cross_val_final']['test']['test_accuracy'] for i in list_final_test])}
     mean_test_losses = {f'mean_all_test_loss_best_ep': np.mean([data[f'k{i}_cross_val_final']['test']['test_loss'] for i in list_final_test])}
-    total_mean_test_accuracy_best_epoch = {f'total_mean_all_test_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_final']['test'][test_key] for i in list_final_test])}
+    total_mean_test_accuracy_best_epoch = {f'total_mean_all_test_accuracy_best_ep': np.mean([data[f'k{i}_cross_val_final']['test']['test_accuracy'] for i in list_final_test])}
     total_mean_test_losses_best_epoch = {f'total_mean_all_test_loss_best_ep': np.mean([data[f'k{i}_cross_val_final']['test']['test_loss'] for i in list_final_test])}
     total_median_test_losses_best_epoch = {f'total_median_all_test_loss_best_ep': np.median([data[f'k{i}_cross_val_final']['test']['test_loss'] for i in list_final_test])}
+    final_best_epoch_values = [data[f'k{i}_cross_val_final']['train_val']['best_model_idx'] for i in list_final_test]
+    all_test_losses_best_epoch = [data[f'k{i}_cross_val_final']['test']['test_loss'] for i in list_final_test]
+    
+    # 3 decimal places
+    all_test_losses_best_epoch = ",".join([f"{loss:.3f}" for loss in all_test_losses_best_epoch]) 
+    all_test_losses_best_epoch = {'all_test_losses_best_epoch': all_test_losses_best_epoch}
+    
+    total_mean_val_loss_best_epoch = {f'total_mean_all_val_loss_best_ep': np.mean([data[f'k{i}_cross_val_final']['train_val'][key_metric_val][data[f'k{i}_cross_val_final']['train_val']['best_model_idx']] for i in list_final_test])}
   else:
     mean_test_accuracies = {}
     mean_test_losses = {}
     total_mean_test_accuracy_best_epoch = {}
     total_mean_test_losses_best_epoch = {}
     total_median_test_losses_best_epoch = {}
+    final_best_epoch_values = []
+    total_mean_val_loss_best_epoch = {}
+    all_test_losses_best_epoch = {}
   total_mean_train_losses_best_epoch = {f'total_mean_train_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-  total_mean_train_accuracy_best_epoch = {f'total_mean_train_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_train][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-  total_mean_val_accuracy_best_epoch = {f'total_mean_val_{metric}_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val'][key_metric_val][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
+  total_mean_train_accuracy_best_epoch = {f'total_mean_train_accuracy_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
+  total_mean_val_accuracy_best_epoch = {f'total_mean_val_accuracy_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_val_losses_best_epoch = {f'total_mean_val_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-  
   total_median_val_losses_best_epoch = {f'total_median_val_loss_best_ep': np.median([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-  
   best_epoch_values = [data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx'] for i in range(real_k_fold) for j in range(real_sub_fold)]
   best_epoch_values = {'best_epoch_values': best_epoch_values,
                        'best_epoch_mean': np.mean(best_epoch_values),
@@ -1191,11 +1218,14 @@ def generate_csv_row(data,config,time_, test_id):
     **total_mean_test_accuracy_best_epoch,
     **total_mean_train_accuracy_best_epoch,
     **total_mean_train_losses_last_epoch,
-    **total_mean_test_losses_best_epoch,
     **total_mean_val_losses_best_epoch,
-    **total_median_val_losses_best_epoch,
     **total_median_test_losses_best_epoch,
+    **total_mean_test_losses_best_epoch,
+    **total_median_val_losses_best_epoch,
+    **total_mean_val_loss_best_epoch,
+    **all_test_losses_best_epoch,
     **best_epoch_values,
+    'final_best_epoch_values': final_best_epoch_values,
     'clip_grad_norm': clip_grad_norm,
     'time_min': int(time_//60) if time_ is not None else 'ND',
   }
@@ -1476,6 +1506,7 @@ def plot_run_details(results_data, output_root,only_csv, dict_args):
     is_unbc = 'unbc' in "".join(data['config']['path_csv_dataset']).lower()
     list_row_csv.append(generate_csv_row(data['results'],data['config'],data['time'], test_id))
     if not only_csv:
+      data['config']['model_type'] = data['config']['model_type'].name
       # try:
       plot_grouped_k_fold(data, os.path.join(output_root), test_id)
       plot_losses(data, os.path.join(output_root), test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
@@ -1569,6 +1600,8 @@ if __name__ == '__main__':
                       help='Print list of avilable filter from the first .pkl file in parent_folder')
   parser.add_argument('--test_as_validation', default=0, type=int,
                       help='If set to 1, use plot test set as validation set (for UNBC) if possible')
+  parser.add_argument('--test_ids', type=str, default='',
+                      help='Comma separated list of test IDs to process (e.g., test1,test2). If empty, process all tests.')
   args = parser.parse_args()
   dict_args = vars(args)
   parent_folder = args.parent_folder
@@ -1602,8 +1635,21 @@ if __name__ == '__main__':
       
     else:
     # Generate the unfiltered plots
-      results_files = find_results_files(parent_folder) # get .pkl files
-      results_data = {file: load_results(file) for file in results_files} # load .pkl files with path as a key
-      # print(f'Loaded {len(results_data)} results files')
-      plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args)
+      if args.test_ids:
+        test_ids_list = [test_id.strip() for test_id in args.test_ids.split(',')]
+        print(f'Filtering to only process test IDs: {test_ids_list}')
+        results_files = find_results_files(parent_folder)
+        results_data = {}
+        for file in results_files:
+          test_folder = os.path.basename(os.path.dirname(file))
+          test_id = test_folder.split('_')[0]
+          if test_id in test_ids_list:
+            results_data[file] = load_results(file)
+        print(f'Loaded {len(results_data)} results files after filtering by test IDs')
+        plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args)
+      else:
+        results_files = find_results_files(parent_folder) # get .pkl files
+        results_data = {file: load_results(file) for file in results_files} # load .pkl files with path as a key
+        # print(f'Loaded {len(results_data)} results files')
+        plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args)
 
