@@ -1172,17 +1172,19 @@ def generate_csv_row(data,config,time_, test_id):
   head_params = flatten_dict({f'{head_type}': config['head_params']})
   criterion_params = flatten_dict({f'{type(config["criterion"]).__name__}': config["criterion_dict"]}) if "criterion_dict" in config else {}
   train_batch_sampler = [data[f'k{i}_cross_val_sub_{j}']['train_val'].get('train_batch_sampler_name',None) for i in range(real_k_fold) for j in range(real_sub_fold)]
+  
   if np.all([value is not None for value in train_batch_sampler]): 
     train_batch_sampler = [value.split('.')[-1] for value in train_batch_sampler]
   else:
     train_batch_sampler = ['ND' for _ in train_batch_sampler]
+  scheduler_config = flatten_dict({'scheduler_config': config['scheduler_config_dict']}) if 'scheduler_config_dict' in config else {}
   row_dict = {
     'test_id': test_id,
     'k_fold_(real_k_fold)': f'{config["k_fold"]}_({config["real_k_fold"]})',
     'model': config['model_type'].name,
     'head': head_type,
     'optimizer': config['scheduler_config_dict']['optimizer_name'],
-    'enable_scheduler': config['scheduler_config_dict']['scheduler_name'] if 'scheduler_config_dict' in config else config['enable_scheduler'],
+    **scheduler_config,
     'target_metric': config['target_metric_best_model'],
     'criterion': type(config['criterion']).__name__,
     'train_batch_sampler': ','.join(train_batch_sampler),
