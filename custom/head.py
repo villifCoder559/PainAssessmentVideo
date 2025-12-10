@@ -235,6 +235,8 @@ class BaseHead(nn.Module):
       list_test_accuracy_per_subject = []
       list_test_confusion_matricies = []
       list_test_performance_metric = []
+      l1_error_test_list = []
+      l2_error_test_list = []
       list_test_confidence_prediction_right_mean = []
       list_test_confidence_prediction_wrong_mean = []
       list_test_confidence_prediction_right_std = []
@@ -299,6 +301,8 @@ class BaseHead(nn.Module):
     is_composite_loss = isinstance(criterion, losses.CompositeLoss)
     is_resupcon_loss = isinstance(criterion, losses.RESupConLoss)
     max_train_class = train_unique_classes.max().item() + 1 # start from 0
+    l1_error_val_list = []
+    l2_error_val_list = []
     for epoch in range(num_epochs):
       start_epoch = time.time()
       self.train() 
@@ -522,6 +526,8 @@ class BaseHead(nn.Module):
       list_val_losses.append(dict_eval['val_loss'] if dict_eval is not None else 0.0)
       if dict_test_as_eval is not None:
         list_test_losses.append(dict_test_as_eval['val_loss'])
+        l1_error_test_list.append(dict_test_as_eval['val_l1_error'])
+        l2_error_test_list.append(dict_test_as_eval['val_l2_error'])
       if not is_resupcon_loss:
         np_list_train_epoch_predictions = np.concatenate(list_train_epoch_predictions, axis=0)
         np_list_train_ground_truths = np.concatenate(list_train_ground_truths, axis=0)
@@ -535,6 +541,8 @@ class BaseHead(nn.Module):
           list_val_ICC.append(dict_eval['val_ICC'])
           list_val_CCC.append(dict_eval['val_CCC'])
           list_val_pearson_correlation.append(dict_eval['val_pearson_correlation'])
+          l1_error_val_list.append(dict_eval['val_l1_error'])
+          l2_error_val_list.append(dict_eval['val_l2_error'])
       
       if helper.LOG_CONFIDENCE_PREDICTION and not is_resupcon_loss:
         list_train_confidence_prediction_right_mean.append(np.mean(batch_train_confidence_prediction_right_mean) if len(batch_train_confidence_prediction_right_mean) > 0 else 0)
@@ -756,6 +764,8 @@ class BaseHead(nn.Module):
       'list_val_performance_metric': list_val_performance_metric,
       'list_val_ICC': list_val_ICC,
       'list_val_CCC': list_val_CCC,
+      'list_val_l1_error': l1_error_val_list,
+      'list_val_l2_error': l2_error_val_list,
       'list_val_pearson_correlation': list_val_pearson_correlation,
       'train_batch_sampler_name': (train_loader.batch_sampler.__class__.__module__ + "." + train_loader.batch_sampler.__class__.__name__),
       # 'list_samples': list_list_samples,
@@ -764,6 +774,8 @@ class BaseHead(nn.Module):
     if kwargs.get('use_test_as_val', False):
       logs['test_as_eval'] = {
         'test_losses': list_test_losses,
+        'test_list_l1_error': l1_error_test_list,
+        'test_list_l2_error': l2_error_test_list,
         'test_loss_per_class': np.array(list_test_losses_per_class),
         'test_loss_per_subject': np.array(list_test_losses_per_subject),
         'test_unique_subjects_ids': test_unique_subjects.numpy(),
@@ -790,6 +802,8 @@ class BaseHead(nn.Module):
     
     list_val_epoch_predictions = []
     list_val_ground_truths = []
+    l1_error = 0.0
+    l2_error = 0.0
     with torch.no_grad():
       val_loss = 0.0
       loss_per_class = torch.zeros(2,len(val_loader.dataset.get_unique_classes()))
@@ -931,6 +945,8 @@ class BaseHead(nn.Module):
                                     y_true=list_val_ground_truths)
         ICC = tools.intraclass_icc(data=np.column_stack((list_val_ground_truths, list_val_epoch_predictions)),
                                   icc_type='ICC2')
+        l1_error = np.mean(np.abs(list_val_epoch_predictions - list_val_ground_truths))
+        l2_error = np.mean((list_val_epoch_predictions - list_val_ground_truths)**2)
       else:
         dict_precision_recall = {}
         pearson_corr = 0.0
@@ -956,6 +972,8 @@ class BaseHead(nn.Module):
           'test_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
           'test_prediction_confidence_wrong_std': np.std(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
           'dict_precision_recall': dict_precision_recall,
+          'test_l1_error': l1_error,
+          'test_l2_error': l2_error,
         }
       else:
         return {
@@ -974,7 +992,9 @@ class BaseHead(nn.Module):
           'val_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
           'val_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
           'val_prediction_confidence_wrong_std': np.std(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0, 
-          'dict_precision_recall': dict_precision_recall
+          'dict_precision_recall': dict_precision_recall,
+          'val_l1_error': l1_error,
+          'val_l2_error': l2_error,
         }      
 
   def log_and_save_gradients(model, epoch, batch_idx, saving_path):
