@@ -106,6 +106,7 @@ def get_loss(loss, dict_args=None):
     return cdw_cross_entropy_loss.CDW_CELoss(
       num_classes=dict_args['num_classes'],
       alpha=dict_args['alpha'],
+      delta=dict_args['cdw_ce_delta'],
       transform=dict_args['transform']
     )
   elif loss == 'sim_loss':
@@ -173,12 +174,13 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   concatenate_quadrants = trial.suggest_categorical('concatenate_quadrants', kwargs['concatenate_quadrants'])
   cdw_ce_alpha = _suggest(trial, 'cdw_ce_alpha', kwargs['cdw_ce_alpha'], kwargs['optuna_categorical'])
   cdw_ce_power_transform = trial.suggest_categorical('cdw_ce_power_transform', kwargs['cdw_ce_transform'])
+  cdw_ce_delta = _suggest(trial, 'cdw_ce_delta', kwargs['cdw_ce_delta'], kwargs['optuna_categorical'])
   soft_labels = _suggest(trial, 'soft_labels', kwargs['soft_labels'], kwargs['optuna_categorical'])
   sim_loss_reduction = _suggest(trial, 'sim_loss_reduction', kwargs['sim_loss_reduction'], kwargs['optuna_categorical'])
-  delta_huber = _suggest(trial, 'delta_huber', kwargs['delta_huber'], kwargs['optuna_categorical'])
   contrastive_loss_temp = _suggest(trial, 'contrastive_loss_temp', kwargs['contrastive_loss_temp'], kwargs['optuna_categorical'])
   contrastive_loss_theta = _suggest(trial, 'contrastive_loss_theta', kwargs['contrastive_loss_theta'], kwargs['optuna_categorical'])
   contrastive_lambda_weight = trial.suggest_categorical('contrastive_lambda_weight', kwargs['contrastive_lambda_weight'])
+  delta_huber = _suggest(trial, 'delta_huber', kwargs['delta_huber'], kwargs['optuna_categorical'])
   composite_loss = None
   loss = None
   loss_args = {
@@ -384,6 +386,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   dict_args_loss = {'num_classes': num_classes, 
                     'alpha': cdw_ce_alpha, 
                     'sim_loss_reduction': sim_loss_reduction,
+                    'cdw_ce_delta': cdw_ce_delta,
                     **loss_args,
                     # 'class_weights': class_weights,
                     'transform': cdw_ce_power_transform}
@@ -403,6 +406,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     }
   stratified_training = kwargs['stratified_training']
   add_kwargs={
+    'dict_args_loss': dict_args_loss,
     'add_CCC_loss': add_CCC_loss,
     'CCC_loss': losses.CCCLoss() if add_CCC_loss > 0 else None,
     'concatenate_quadrants': concatenate_quadrants,
@@ -694,6 +698,7 @@ if __name__ == '__main__':
   parser.add_argument('--add_CCC_loss', type=float, nargs='*', default=[0.0], help='Add CCC loss to the main loss with this weight. Default is 0.0 (not added)')
   parser.add_argument('--cdw_ce_alpha', type=float, nargs='*', default=[2], help='Alpha parameter for CDW loss.') 
   parser.add_argument('--cdw_ce_transform', type=str, nargs='*', default=['power'], help='Transform for CDW loss. Default is power, can Be also "huber" or "log"')
+  parser.add_argument('--cdw_ce_delta', type=float, nargs='*', default=[0.5], help='Delta parameter for CDW loss when using huber transform.')
   parser.add_argument('--sim_loss_reduction', type=float, nargs='*', default=[0.0], help='Reduction factor for sim loss. Default is 0.0 (no reduction)')
   parser.add_argument('--delta_huber', type=float, nargs='*',default=[None], help='Delta parameter for Huber loss.')
   parser.add_argument('--num_clips_per_video',type=int, nargs='*', default=[1], help='Number of clips per video for random sampling strategy. Default is 1')
