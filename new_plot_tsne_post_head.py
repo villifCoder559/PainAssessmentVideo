@@ -37,7 +37,7 @@ def plot_tsne(embeddings, labels, output_folder, v_max=None,v_min=None, title="t
 
   fig,ax = plt.subplots(figsize=(12, 8))
   unique_labels = np.unique(labels)
-  if group_by == 'pain': # continuous colormap
+  if group_by == 'labels': # continuous colormap
     normalized_unique_labels = (unique_labels - np.min(unique_labels)) / (np.max(unique_labels) - np.min(unique_labels))
     colormap = plt.get_cmap(cmap)
     colors = colormap(normalized_unique_labels)
@@ -122,13 +122,13 @@ def prepare_data_for_tsne(pkl_file, group_by, cmap):
   list_sample_ids = list_sample_ids[valid_indices]
   
   # Adjust title
-  group_by = 'pain' if group_by.lower() == 'labels' else 'subject_id'
+  # group_by = 'pain' if group_by.lower() == 'labels' else 'subject_id'
   title = f"t-SNE grouped by {group_by} - tot samples: {len(list_sample_ids)} - subject_ids: {set(df['subject_id'])}"
   
-  return embeddings, labels, title
+  return embeddings, labels, title, cmap
 
 def run_tsne_and_plot(pkl_file, group_by, cmap, log_path_folder, png_output_name=None):
-  embeddings, labels, title = prepare_data_for_tsne(pkl_file, group_by, cmap)  
+  embeddings, labels, title, cmap = prepare_data_for_tsne(pkl_file, group_by, cmap)  
   dict_tsne = plot_tsne(embeddings = embeddings,
             labels = labels,
             output_folder = log_path_folder,

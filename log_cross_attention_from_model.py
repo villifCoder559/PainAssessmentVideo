@@ -10,7 +10,7 @@ import pandas as pd
 import custom.helper as helper
 from custom.model import Model_Advanced
 
-def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None, nr_samples=None,
+def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None, nr_samples=None,free_space=False,
                                    disable_video_embeddings=False, disable_cross_attention=False):
   # Initialize logging flags
   helper.init_log_cross_attention()
@@ -104,12 +104,14 @@ def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None
   # Aggregate results
   dict_res = {
     'results': results,
-    'config_model': config_model,
+    # 'config_model': config_model,
     'csv_original_path': test_csv_path,
     'csv_path': csv_copy_path,
-    'config_logging': config_logging
+    **config_logging
   }
-  
+  if free_space:
+    dict_res['config_model']['results'] = None  # Free up space
+    
   if video_embeddings is not None:
     dict_res['video_embeddings'] = video_embeddings
   if cross_attention is not None:
