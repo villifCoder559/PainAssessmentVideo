@@ -907,7 +907,7 @@ if __name__ == '__main__':
   if dict_args['loss'] is not None and dict_args['loss'] in ['l1', 'l2'] and (sum(dict_args['label_smooth']) > 0 or sum(dict_args['soft_labels']) > 0):
     raise ValueError("Label smoothing and soft labels are not supported for 'l1' or 'l2' loss. Set them to 0.")
   
-  if sum(dict_args['sim_loss_reduction']) != 0. and dict_args['loss'] != 'sim_loss':
+  if sum(dict_args['sim_loss_reduction']) != 0. and dict_args['loss'][0] != 'sim_loss':
     raise ValueError("Sim loss reduction is only supported for 'sim_loss'. Set it to 0 for other losses.")
   
   if dict_args['loss'] is not None and ('ce' not in dict_args['loss']) and (sum(dict_args['label_smooth']) > 0 or sum(dict_args['soft_labels']) > 0):
