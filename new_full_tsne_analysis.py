@@ -62,20 +62,22 @@ if __name__ == '__main__':
     dict_logs[pth_folder] = {}
     os.makedirs(log_path_folder, exist_ok=True)
     for csv_path in list_csv_path:
+      csv_basename = os.path.basename(csv_path).replace('.csv','')
       log_dict = logger.log_cross_attention_from_model(model_pth_path=pth_path,
                                                         csv_path=csv_path,
+                                                        free_space=True,
                                                         disable_cross_attention=True)
       dict_tsne_subjects = tsne_plotter.run_tsne_and_plot(pkl_file=log_dict,
                                                           group_by='subjects',
                                                           cmap='tab20',
-                                                          png_output_name=os.path.join(log_path_folder, f'tsne_plot_subjects.png'),
+                                                          png_output_name=os.path.join(log_path_folder, f'{csv_basename}_tsne_plot_subjects.png'),
                                                           log_path_folder=log_path_folder)
       dict_tsne_labels = tsne_plotter.run_tsne_and_plot(pkl_file=log_dict,
                                                 group_by='labels',
                                                 cmap='jet',
-                                                png_output_name=os.path.join(log_path_folder, f'tsne_plot_labels.png'),
+                                                png_output_name=os.path.join(log_path_folder, f'{csv_basename}_tsne_plot_labels.png'),
                                                 log_path_folder=log_path_folder)
-      dict_logs[pth_folder][os.path.basename(csv_path)] = {
+      dict_logs[pth_folder][csv_basename] = {
         'log_dict': log_dict,
         'tsne_subjects': dict_tsne_subjects,
         'tsne_labels': dict_tsne_labels,
