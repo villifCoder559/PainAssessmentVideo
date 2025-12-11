@@ -12,8 +12,13 @@ import time
 
 
 def load_data(pkl_file):
-  with open(pkl_file, 'rb') as f:
-    data = pickle.load(f)
+  if isinstance(pkl_file, dict):
+    data = pkl_file
+  elif isinstance(pkl_file, str) and os.path.isfile(pkl_file):  
+    with open(pkl_file, 'rb') as f:
+      data = pickle.load(f)
+  else:
+    raise ValueError("pkl_file must be a path to a pickle file or a dictionary.")
   return data
 
 def get_custom_ds(data):
@@ -31,10 +36,9 @@ def get_custom_ds(data):
   custom_ds = customDataset(**config)
   return custom_ds
 
-def plot_tsne(embeddings, labels, output_folder, v_max=None,v_min=None, title="t-SNE Visualization", group_by="pain",cmap='viridis', output_path=None):
-  tsne = TSNE(n_components=2, random_state=42, n_jobs=-1)
-  reduced_embeddings = tsne.fit(embeddings)
 
+
+def plot_tsne(reduced_embeddings, labels, output_folder, v_max=None,v_min=None, title="t-SNE Visualization", group_by="pain",cmap='viridis', output_path=None):
   fig,ax = plt.subplots(figsize=(12, 8))
   unique_labels = np.unique(labels)
   if group_by == 'labels': # continuous colormap
@@ -66,26 +70,14 @@ def plot_tsne(embeddings, labels, output_folder, v_max=None,v_min=None, title="t
   plt.savefig(output_path)
   plt.close()
   print(f"t-SNE plot saved to {output_path}")
-  dict_tsne = {
-    'embeddings_2d': reduced_embeddings,
-    'labels': labels
-  }
-  return dict_tsne
+  # dict_tsne = {
+  #   'embeddings_2d': reduced_embeddings,
+  #   'labels': labels
+  # }
+  # return dict_tsne
 
 # NOTE: pkl_file extracted from log_cross_attention_from_model.py
-
-def prepare_data_for_tsne(pkl_file, group_by, cmap):
-  if isinstance(pkl_file, dict):
-    data = pkl_file
-  elif isinstance(pkl_file, str) and os.path.isfile(pkl_file):  
-    data = load_data(pkl_file)
-  else:
-    raise ValueError("pkl_file must be a path to a pickle file or a dictionary.")
-
-  if not isinstance(data, dict) or 'embeddings' not in data['video_embeddings'] or 'labels' not in data['video_embeddings']:
-    raise ValueError("Pickle file must contain a dictionary with 'embeddings' and 'labels' keys.")
-
-  # Determine labels based on grouping choice
+def determine_labels(data, group_by, return_subject_ids=False):
   df = pd.read_csv(data['csv_path'], sep='\t', dtype={'sample_name': str})
   if group_by == "labels":
     labels = np.array(data['video_embeddings']['labels'])
@@ -93,6 +85,15 @@ def prepare_data_for_tsne(pkl_file, group_by, cmap):
     sample_ids = np.array(data['video_embeddings']['sample_ids'])
     id_to_subject = dict(zip(df['sample_id'], df['subject_id']))
     labels = np.array([id_to_subject[sample_id] for sample_id in sample_ids])
+  else:
+    raise ValueError("group_by must be either 'labels' or 'subjects'.")
+  if return_subject_ids:
+    return labels, np.array(df['subject_id'])
+  return labels
+
+def set_cmap(data, group_by, cmap):
+  df = pd.read_csv(data['csv_path'], sep='\t', dtype={'sample_name': str})
+  if group_by == "subjects":
     nr_subjects = len(set(df['subject_id']))
     if cmap == 'jet':  # only change if default
       if nr_subjects <= 10:
@@ -101,9 +102,18 @@ def prepare_data_for_tsne(pkl_file, group_by, cmap):
         cmap = 'tab20'  
       else:
         cmap = 'tab20c'  # good for many categories
-  else:
-    raise ValueError("group_by must be either 'labels' or 'subjects'.")
-  # Create a reference for readability
+  return cmap
+
+def get_valid_indices(data, list_sample_ids):
+  custom_ds = get_custom_ds(data) # set the helper.step_shift
+  valid_indices = [i for i, sample_id in enumerate(list_sample_ids) if sample_id <= helper.step_shift]
+  del custom_ds
+  return valid_indices
+
+def compute_valid_tsne_embeddings(data, return_valid_indices=False):
+  list_sample_ids = np.array(data['video_embeddings']['sample_ids'])
+  valid_indices = get_valid_indices(data, list_sample_ids)
+  
   embeddings_data = data['video_embeddings']['embeddings']
   embeddings = [
       desc.cpu().numpy() 
@@ -111,34 +121,40 @@ def prepare_data_for_tsne(pkl_file, group_by, cmap):
       for desc in batch_list
   ]
   embeddings = np.array(embeddings)
-  list_sample_ids = np.array(data['video_embeddings']['sample_ids'])
   
   # Filter out augmented samples if any
-  custom_ds = get_custom_ds(data) # set the helper.step_shift
-  valid_indices = [i for i, sample_id in enumerate(list_sample_ids) if sample_id <= helper.step_shift]
-  del custom_ds
-  labels = labels[valid_indices]
   embeddings = embeddings[valid_indices]
-  list_sample_ids = list_sample_ids[valid_indices]
   
-  # Adjust title
-  # group_by = 'pain' if group_by.lower() == 'labels' else 'subject_id'
-  title = f"t-SNE grouped by {group_by} - tot samples: {len(list_sample_ids)} - subject_ids: {set(df['subject_id'])}"
-  
-  return embeddings, labels, title, cmap
+  # Compute t-SNE
+  tsne = TSNE(n_components=2, random_state=42, n_jobs=1)
+  tsne_embeddings = tsne.fit(embeddings)
+  if return_valid_indices:
+    return tsne_embeddings, valid_indices, list_sample_ids[valid_indices]
+  return tsne_embeddings
 
-def run_tsne_and_plot(pkl_file, group_by, cmap, log_path_folder, png_output_name=None):
-  embeddings, labels, title, cmap = prepare_data_for_tsne(pkl_file, group_by, cmap)  
-  dict_tsne = plot_tsne(embeddings = embeddings,
+
+def run_tsne_and_plot(pkl_file, group_by, cmap, log_path_folder, png_output_name=None,reduced_embeddings=None):
+  data = load_data(pkl_file)
+  if reduced_embeddings is None:
+    reduced_embeddings, valid_indices = compute_valid_tsne_embeddings(data, return_valid_indices=True)
+  else:
+    reduced_embeddings, valid_indices = reduced_embeddings
+    
+  labels, subject_ids = determine_labels(data, group_by, return_subject_ids=True)
+  labels = labels[valid_indices]
+  subject_ids = subject_ids[valid_indices]
+  
+  cmap = set_cmap(data, group_by, cmap)
+  title = f"t-SNE grouped by {group_by} - tot samples: {len(subject_ids)} - subject_ids: {set(subject_ids)}"
+  
+  plot_tsne(reduced_embeddings = reduced_embeddings,
             labels = labels,
             output_folder = log_path_folder,
             title = title,
             output_path=png_output_name,
             group_by = group_by,
             cmap = cmap)
-  dict_tsne['title'] = title
-  dict_tsne['group_by'] = group_by
-  return dict_tsne
+  
 
 
 def main():
