@@ -356,7 +356,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         # add test_id in dict_to_string
         dict_to_string += f'\nTest ID: {test_id}'
         dict_to_string += f'\nfold_subfold: {key.split("_")[0]}_{key.split("_")[-1]}'
-        y_lim_loss = 5.1
+        y_lim_loss = 15.1 if isinstance(data['config']['criterion'],torch.nn.MSELoss) else 5.1
         x_lim_loss = -1.1 if isinstance(data['config']['criterion'],losses.RESupConLoss) else 0
         
         # Plot accuracy gap and dataset distribution if not UNBC dataset
@@ -437,6 +437,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
           )
           elif loss_plot_type == 'loss': # grouped loss per subject,class in train, val (or test) + lr schedule
             # axs[0][1]: lr schedule
+            y_lim_error = 20 if isinstance(data['config']['criterion'],torch.nn.MSELoss) else 10
             create_lr_wd_plot(data['results'][key],
                               test_id,
                               key,
@@ -451,7 +452,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                         title=f'TRAIN error per subject - Epoch_{best_epoch} ',
                                         criterion=data['config']['criterion'],
                                         list_stoic_subject=None,
-                                        y_lim=10,
+                                        y_lim=y_lim_error,
                                         ax=axs[1][0])
             
             # axs[1][1]: loss per class train
@@ -460,7 +461,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                        unique_classes=data['results'][key]['train_val']['train_unique_y'],
                                        criterion=data['config']['criterion'],
                                        ax=axs[1][1],
-                                       y_lim=10,
+                                       y_lim=y_lim_error,
                                        title=f'TRAIN error per class - Epoch_{best_epoch}')
             
             # axs[2][0]: loss per subject val (or test)
@@ -472,7 +473,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                           title=f'VAL error per subject - Epoch_{best_epoch} ',
                                           criterion=data['config']['criterion'],
                                           list_stoic_subject=None,
-                                          y_lim=10,
+                                          y_lim=y_lim_error,
                                           ax=axs[2][0])
             else:
               dict_per_subject_test = data['results'][key].get('test', None)
@@ -481,7 +482,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                           title=f'TEST error per subject - Epoch_{best_epoch} ',
                                           criterion=data['config']['criterion'],
                                           list_stoic_subject=None,
-                                          y_lim=10,
+                                          y_lim=y_lim_error,
                                           ax=axs[2][0])
         
               
@@ -493,15 +494,15 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                          unique_classes=data['results'][key]['train_val']['val_unique_y'],
                                          criterion=data['config']['criterion'],
                                          ax=axs[2][1],
-                                         y_lim=10,
+                                         y_lim=y_lim_error,
                                          title=f'VAL error per class - Epoch_{best_epoch}')
             else:
               tools.plot_error_per_class(mae_per_class=dict_per_subject_test['test_loss_per_class'],
-              unique_classes=dict_per_subject_test['test_unique_y'],
-              criterion=data['config']['criterion'],
-              ax=axs[2][1],
-              y_lim=10,
-              title=f'TEST error per class - Epoch_{best_epoch}')
+                                        unique_classes=dict_per_subject_test['test_unique_y'],
+                                        criterion=data['config']['criterion'],
+                                        ax=axs[2][1],
+                                        y_lim=y_lim_error,
+                                        title=f'TEST error per class - Epoch_{best_epoch}')
               
             
         # data['results']['k0_cross_val_sub_0']['train_val']['count_y_train']
@@ -1157,6 +1158,20 @@ def generate_csv_row(data,config,time_, test_id):
     total_mean_val_loss_best_epoch = {}
     all_test_losses_best_epoch = {}
     fold_used_for_final_test = {}
+  if 'list_val_l1_error' not in data[f'k0_cross_val_sub_0']['train_val']:
+    val_l1_error = {}
+    val_l2_error = {}
+  else:
+    val_l1_error = {f'mean_val_l1_error_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_l1_error'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+    val_l2_error = {f'mean_val_l2_error_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_l2_error'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  if 'list_val_icc' not in data[f'k0_cross_val_sub_0']['train_val']:
+    val_icc_error_mean = {}
+    val_ccc_error_mean = {}
+    val_pearson_corr_mean = {}
+  else:
+    val_icc_error_mean = {f'mean_val_icc_error_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_ICC'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+    val_ccc_error_mean = {f'mean_val_ccc_error_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_CCC'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+    val_pearson_corr_mean = {f'mean_val_pearson_corr_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_pearson_correlation'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx'][0]] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   total_mean_train_losses_best_epoch = {f'total_mean_train_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_train_accuracy_best_epoch = {f'total_mean_train_accuracy_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_val_accuracy_best_epoch = {f'total_mean_val_accuracy_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
@@ -1206,6 +1221,9 @@ def generate_csv_row(data,config,time_, test_id):
     # 'reg_loss': config['regularization_loss'],
     **criterion_params,
     **head_params,
+    **val_icc_error_mean,
+    **val_ccc_error_mean,
+    **val_pearson_corr_mean,
     **mean_train_losses_last_epoch,
     **mean_val_accuracies_last_epoch,
     **mean_test_accuracies,
@@ -1222,6 +1240,8 @@ def generate_csv_row(data,config,time_, test_id):
     **total_mean_train_accuracy_best_epoch,
     **total_mean_train_losses_last_epoch,
     **total_mean_val_losses_best_epoch,
+    **val_l1_error,
+    **val_l2_error,
     **total_median_test_losses_best_epoch,
     **total_median_val_losses_best_epoch,
     **total_mean_test_losses_best_epoch,
@@ -1495,7 +1515,7 @@ def generate_video_from_loss_plots(run_output_folder, test_id):
   # print(f'Generated loss video at {video_path}')
 
 
-def plot_run_details(results_data, output_root,only_csv, dict_args):
+def plot_run_details(results_data, output_root,only_csv, dict_args,plot_only_loss=False):
   list_row_csv = []
   generate_subject_class_loss_csv(results_data,output_root)
   for file, data in tqdm.tqdm(results_data.items()):
@@ -1514,17 +1534,18 @@ def plot_run_details(results_data, output_root,only_csv, dict_args):
       # try:
       plot_grouped_k_fold(data, os.path.join(output_root), test_id)
       plot_losses(data, os.path.join(output_root), test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
-      plot_lr_wd_across_epochs(data, os.path.join(output_root), test_id)
-      if is_unbc:
-        generate_video_from_loss_plots(os.path.join(output_root), test_id)
-      if not is_unbc:
-        plot_confusion_matrices(data, os.path.join(output_root), test_id)
-        plot_gradient_per_module(data, os.path.join(output_root), test_id)
-        
-      plot_CCC_ICC_pearson(data, os.path.join(output_root), test_id)
-      plot_history_model_prediction(data, os.path.join(output_root), test_id,root_csv_path=os.path.dirname(file))
-      if data['config'].get('validate', True):
-        plot_accuray_per_class_across_epochs(data, os.path.join(output_root), test_id)
+      if not plot_only_loss:
+        plot_lr_wd_across_epochs(data, os.path.join(output_root), test_id)
+        if is_unbc:
+          generate_video_from_loss_plots(os.path.join(output_root), test_id)
+        if not is_unbc:
+          plot_confusion_matrices(data, os.path.join(output_root), test_id)
+          plot_gradient_per_module(data, os.path.join(output_root), test_id)
+          
+        plot_CCC_ICC_pearson(data, os.path.join(output_root), test_id)
+        plot_history_model_prediction(data, os.path.join(output_root), test_id,root_csv_path=os.path.dirname(file))
+        if data['config'].get('validate', True):
+          plot_accuray_per_class_across_epochs(data, os.path.join(output_root), test_id)
       link_attention_logs(os.path.dirname(file), output_root, test_id)        
       # except Exception as e:
       #   print(f'Error in {file} - {e}')
@@ -1606,6 +1627,8 @@ if __name__ == '__main__':
                       help='If set to 1, use plot test set as validation set (for UNBC) if possible')
   parser.add_argument('--test_ids', type=str, default='',
                       help='Comma separated list of test IDs to process (e.g., test1,test2). If empty, process all tests.')
+  parser.add_argument('--plot_only_loss', action='store_true',
+                      help='If set, only plot the loss curves without other plots.')
   args = parser.parse_args()
   dict_args = vars(args)
   parent_folder = args.parent_folder
@@ -1650,10 +1673,10 @@ if __name__ == '__main__':
           if test_id in test_ids_list:
             results_data[file] = load_results(file)
         print(f'Loaded {len(results_data)} results files after filtering by test IDs')
-        plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args)
+        plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args, plot_only_loss=args.plot_only_loss)
       else:
         results_files = find_results_files(parent_folder) # get .pkl files
         results_data = {file: load_results(file) for file in results_files} # load .pkl files with path as a key
         # print(f'Loaded {len(results_data)} results files')
-        plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args)
+        plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args, plot_only_loss=args.plot_only_loss)
 
