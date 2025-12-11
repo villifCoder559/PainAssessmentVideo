@@ -1276,6 +1276,7 @@ def generate_csv_augmented(original_csv_path, dict_augmentation, out_csv_path,pa
         df_sampled['sample_id'] = df_sampled['sample_id'].apply(lambda x: x + get_shift_for_sample_id(type_augm))
         list_df.append(df_sampled)
   df_merged = pd.concat(list_df, ignore_index=True)
+  os.makedirs(os.path.dirname(out_csv_path), exist_ok=True)
   df_merged.to_csv(out_csv_path, index=False, sep='\t')
   print(f'CSV file with augmentations saved to {out_csv_path}')
   return df_merged
