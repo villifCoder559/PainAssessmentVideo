@@ -5,6 +5,7 @@ import new_plot_tsne_post_head as tsne_plotter
 import log_cross_attention_from_model as logger 
 import pickle
 import tqdm
+import numpy as np
 
 def get_pth_path_best_models(proj_dir):
   # Retrive pkl project path
@@ -49,6 +50,7 @@ def get_list_csv_path(proj_dir,target):
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument('--proj_dir', type=str, required=True, help='Path to the project directory')
+  parser.add_argument('--type_logs', type=str, default='tsne', help='Type of logs to generate. Can be "tsne" or "xattn"')
   
   args = parser.parse_args()
   list_pth_paths= get_pth_path_best_models(args.proj_dir)
@@ -63,30 +65,44 @@ if __name__ == '__main__':
     os.makedirs(log_path_folder, exist_ok=True)
     for csv_path in list_csv_path:
       csv_basename = os.path.basename(csv_path).replace('.csv','')
-      log_dict = logger.log_cross_attention_from_model(model_pth_path=pth_path,
-                                                        csv_path=csv_path,
-                                                        free_space=True,
-                                                        disable_cross_attention=True)
-      dict_tsne_subjects = tsne_plotter.run_tsne_and_plot(pkl_file=log_dict,
-                                                          group_by='subjects',
-                                                          cmap='tab20',
-                                                          png_output_name=os.path.join(log_path_folder, f'{csv_basename}_tsne_plot_subjects.png'),
-                                                          log_path_folder=log_path_folder)
-      dict_tsne_labels = tsne_plotter.run_tsne_and_plot(pkl_file=log_dict,
-                                                group_by='labels',
-                                                cmap='jet',
-                                                png_output_name=os.path.join(log_path_folder, f'{csv_basename}_tsne_plot_labels.png'),
-                                                log_path_folder=log_path_folder)
-      dict_logs[pth_folder][csv_basename] = {
-        'log_dict': log_dict,
-        'tsne_subjects': dict_tsne_subjects,
-        'tsne_labels': dict_tsne_labels,
-        'csv_path': csv_path,
-        'pth_path': pth_path
-      }
+      if args.type_logs == 'tsne':
+        log_dict = logger.log_cross_attention_from_model(model_pth_path=pth_path,
+                                                          csv_path=csv_path,
+                                                          free_space=True,
+                                                          disable_cross_attention=True)
+        reduced_embeddings, valid_indices, valid_sample_ids = tsne_plotter.compute_valid_tsne_embeddings(log_dict, return_valid_indices=True)
+        tsne_plotter.run_tsne_and_plot(pkl_file=log_dict,
+                                        group_by='subjects',
+                                        cmap='tab20',
+                                        png_output_name=os.path.join(log_path_folder, f'{csv_basename}_tsne_plot_subjects.png'),
+                                        log_path_folder=log_path_folder,
+                                        reduced_embeddings=(reduced_embeddings, valid_indices))
+        tsne_plotter.run_tsne_and_plot(pkl_file=log_dict,
+                                        group_by='labels',
+                                        cmap='jet',
+                                        png_output_name=os.path.join(log_path_folder, f'{csv_basename}_tsne_plot_labels.png'),
+                                        log_path_folder=log_path_folder,
+                                        reduced_embeddings=(reduced_embeddings, valid_indices))
+        dict_logs[pth_folder][csv_basename] = {
+          'log_dict': log_dict,
+          'tsne_embeddings': (reduced_embeddings, valid_sample_ids),
+          'csv_path': csv_path,
+          'pth_path': pth_path
+        }
+      elif args.type_logs == 'xattn':
+        log_dict = logger.log_cross_attention_from_model(model_pth_path=pth_path,
+                                                          csv_path=csv_path,
+                                                          free_space=True,
+                                                          disable_cross_attention=False,
+                                                          disable_video_embeddings=True)
+        dict_logs[pth_folder][csv_basename] = {
+          'log_dict': log_dict,
+          'csv_path': csv_path,
+          'pth_path': pth_path
+        }
   
   # Save overall log
-  overall_log_path = os.path.join(args.proj_dir, 'logs_tsne', 'overall_logs.pkl')
+  overall_log_path = os.path.join(args.proj_dir, f'logs_{args.type_logs}', f'{args.type_logs}_overall_logs.pkl')
   with open(overall_log_path, 'wb') as f:
     pickle.dump(dict_logs, f)
     print(f'Saved overall logs to {overall_log_path}')
