@@ -465,9 +465,9 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                        title=f'TRAIN error per class - Epoch_{best_epoch}')
             
             # axs[2][0]: loss per subject val (or test)
-            loss_per_subject_val = data['results'][key]['train_val'].get('val_loss_per_subject', None)
-            loss_per_subject_val = loss_per_subject_val if (loss_per_subject_val != None).all() else None
-            if loss_per_subject_val is not None:
+            dict_per_subject_test = data['results'][key].get('test', None)
+            if dict_per_subject_test is None:
+              loss_per_subject_val = data['results'][key]['train_val'].get('val_loss_per_subject', None)
               tools.plot_error_per_subject(loss_per_subject=loss_per_subject_val[best_epoch],
                                           unique_subject_ids=data['results'][key]['train_val']['val_unique_subject_ids'],
                                           title=f'VAL error per subject - Epoch_{best_epoch} ',
@@ -476,7 +476,6 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                           y_lim=y_lim_error,
                                           ax=axs[2][0])
             else:
-              dict_per_subject_test = data['results'][key].get('test', None)
               tools.plot_error_per_subject(loss_per_subject=dict_per_subject_test['test_loss_per_subject'],
                                           unique_subject_ids=dict_per_subject_test['test_unique_subject_ids'],
                                           title=f'TEST error per subject - Epoch_{best_epoch} ',
@@ -571,7 +570,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                               y_step=0.1,)
         
         
-        
+        step_lim = 2 if isinstance(data['config']['criterion'],torch.nn.MSELoss) else 0.25
         input_dict_loss={
           'list_1':train_losses,
           'list_2':val_loss,
@@ -586,9 +585,9 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
           'y_lim_1':[x_lim_loss, y_lim_loss],
           'y_lim_2':[x_lim_loss, y_lim_loss],
           'y_lim_3':[x_lim_loss, y_lim_loss],
-          'step_ylim_1':0.25,
-          'step_ylim_2':0.25,
-          'step_ylim_3':0.25,
+          'step_ylim_1':step_lim,
+          'step_ylim_2':step_lim,
+          'step_ylim_3':step_lim,
           'dict_to_string':None,
           'color_1':'tab:red',
           'color_2':'tab:purple',
@@ -1198,7 +1197,7 @@ def generate_csv_row(data,config,time_, test_id):
     'k_fold_(real_k_fold)': f'{config["k_fold"]}_({config["real_k_fold"]})',
     'model': config['model_type'].name,
     'head': head_type,
-    'optimizer': config['scheduler_config_dict']['optimizer_name'],
+    'optimizer': config['scheduler_config_dict']['optimizer_name'] if 'scheduler_config_dict' in config else config['optimizer_fn'],
     **scheduler_config,
     'target_metric': config['target_metric_best_model'],
     'criterion': type(config['criterion']).__name__,
@@ -1422,10 +1421,13 @@ def create_lr_wd_plot(dict_sub_fold, test_id, key, ax1=None, title=None):
   lr_values = np.array([np.mean(sublist) for sublist in lr_values]) if lr_values is not None else None
   # lr_values = np.concatenate(lr_values) if lr_values is not None else None
   wd_values = dict_sub_fold['train_val'].get('list_wds', None)
-  wd_no_biases = [[el['wd_no_bias'] for el in batch] for batch in wd_values] if wd_values is not None else None
+  if wd_values is not None and isinstance(wd_values[0], dict):
+    wd_no_biases = [[el['wd_no_bias'] for el in batch] for batch in wd_values] if wd_values is not None else None
+    wd_no_biases = np.array([np.mean(sublist) for sublist in wd_no_biases]) if (wd_values is not None) else None
+  else:
+    wd_no_biases = None
   # wd_values = [item for sublist in wd_values for item in sublist] if wd_values is not None else None
   # wd_biases = np.array([wd['wd_bias'] for wd in wd_values]) if (wd_values is not None and 'wd_bias' in wd_values[0]) else None
-  wd_no_biases = np.array([np.mean(sublist) for sublist in wd_no_biases]) if (wd_values is not None) else None
   if lr_values is None:
     return  # Nothing to plot
   
