@@ -450,12 +450,12 @@ def get_custom_ds(data):
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument('--xattn_path',required=True, type=str, help='Path to the pkl file with cross attention')
-  parser.add_argument('--plot_space_correctly_pred', type=int,default=1, help='Plot average attention for correctly predicted samples')
-  parser.add_argument('--plot_space_wrongly_pred', type=int,default=1, help='Plot average attention for wrongly predicted samples')
-  parser.add_argument('--plot_space_per_subject', type=int,default=1, help='Plot average attention per subject')
-  parser.add_argument('--plot_space_per_class', type=int,default=1, help='Plot average attention per class')
-  parser.add_argument('--plot_image_attention_per_sample', type=int,default=1, help='Plot attention map over space per single sample')
-  parser.add_argument('--plot_image_attention_pain_level_and_subject', type=int,default=1, help='Plot attention map over space grouping per pain level and subject')
+  parser.add_argument('--plot_space_correctly_pred', type=int,default=0, help='Plot average attention for correctly predicted samples')
+  parser.add_argument('--plot_space_wrongly_pred', type=int,default=0, help='Plot average attention for wrongly predicted samples')
+  parser.add_argument('--plot_space_per_subject', type=int,default=0, help='Plot average attention per subject')
+  parser.add_argument('--plot_space_per_class', type=int,default=0, help='Plot average attention per class')
+  parser.add_argument('--plot_image_attention_per_sample', type=int,default=0, help='Plot attention map over space per single sample')
+  parser.add_argument('--plot_image_attention_pain_level_and_subject', type=int,default=0, help='Plot attention map over space grouping per pain level and subject')
   parser.add_argument('--create_attention_video', type=int,default=50, help='Visualize attention in video per sample')
   parser.add_argument('--merge_videos', type=int,default=1, help='Merge all videos in the output folder into a single video.')
   parser.add_argument('--video_csv_path', type=str,default=None, help='Path to csv to create attention videos for samples in the csv only.')
@@ -640,8 +640,8 @@ if __name__ == "__main__":
           print(f"Requested number of samples {dict_args['create_attention_video']} is higher than available samples {len(list_sample_id)}. Using all samples.")
         else:
           print(f"Randomly selecting {n_samples} samples to create attention videos.")
-          list_sample_id = np.random.choice(list_sample_id_correct_pred, min(n_samples//2, len(list_sample_id_correct_pred)), replace=False).tolist() + \
-                          np.random.choice(list_sample_id_wrong_pred, min(n_samples//2, len(list_sample_id_wrong_pred)), replace=False).tolist()
+          np.random.seed(42)
+          list_sample_id = np.random.choice(list_sample_id, size=n_samples, replace=False).tolist()
         df_selected = df[df['sample_id'].isin(list_sample_id)]
         # save selected sample ids to csv
         df_selected.to_csv(os.path.join(path_video_output, f'selected_sample_ids_for_attention_videos_{n_samples}_samples.csv'), index=False, sep='\t')
