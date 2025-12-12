@@ -38,8 +38,9 @@ def get_custom_ds(data):
 
 
 
-def plot_tsne(reduced_embeddings, labels, output_folder, v_max=None,v_min=None, title="t-SNE Visualization", group_by="pain",cmap='viridis', output_path=None):
-  fig,ax = plt.subplots(figsize=(12, 8))
+def plot_tsne(reduced_embeddings, labels, output_folder, save_plot=True,v_max=None,v_min=None, title="t-SNE Visualization", group_by="pain",cmap='viridis', output_path=None,ax = None):
+  if ax is None:
+    fig,ax = plt.subplots(figsize=(12, 8))
   unique_labels = np.unique(labels)
   if group_by == 'labels': # continuous colormap
     normalized_unique_labels = (unique_labels - np.min(unique_labels)) / (np.max(unique_labels) - np.min(unique_labels))
@@ -58,10 +59,16 @@ def plot_tsne(reduced_embeddings, labels, output_folder, v_max=None,v_min=None, 
                color=color,
                s=30)
   ax.legend(title=group_by)
-  plt.title(title)
-  plt.xlabel("t-SNE Dimension 1")
-  plt.ylabel("t-SNE Dimension 2")
+  # plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+  ax.set_xlabel("t-SNE Dimension 1")
+  ax.set_ylabel("t-SNE Dimension 2")
+  ax.set_title(title)
+  # plt.title(title)
+  # plt.xlabel("t-SNE Dimension 1")
+  # plt.ylabel("t-SNE Dimension 2")
   
+  if not save_plot:
+    return
   plt.tight_layout()
   os.makedirs(output_folder, exist_ok=True)
   if output_path is None:
@@ -133,7 +140,9 @@ def compute_valid_tsne_embeddings(data, return_valid_indices=False):
   return tsne_embeddings
 
 
-def run_tsne_and_plot(pkl_file, group_by, cmap, log_path_folder, png_output_name=None,reduced_embeddings=None):
+def run_tsne_and_plot(pkl_file, group_by, cmap, log_path_folder, 
+                      png_output_name=None,reduced_embeddings=None,save_plot=True,ax=None,
+                      add_title_info=""):
   data = load_data(pkl_file)
   if reduced_embeddings is None:
     reduced_embeddings, valid_indices = compute_valid_tsne_embeddings(data, return_valid_indices=True)
@@ -145,7 +154,10 @@ def run_tsne_and_plot(pkl_file, group_by, cmap, log_path_folder, png_output_name
   subject_ids = subject_ids[valid_indices]
   
   cmap = set_cmap(data, group_by, cmap)
-  title = f"t-SNE grouped by {group_by} - tot samples: {len(subject_ids)} - subject_ids: {set(subject_ids)}"
+  if add_title_info:
+    title = f"t-SNE tot samples: {len(subject_ids)} - subject_ids: {set(subject_ids)}" + add_title_info
+  else:
+    title = f"t-SNE grouped by {group_by} - tot samples: {len(subject_ids)} - subject_ids: {set(subject_ids)}" + add_title_info
   
   plot_tsne(reduced_embeddings = reduced_embeddings,
             labels = labels,
@@ -153,7 +165,9 @@ def run_tsne_and_plot(pkl_file, group_by, cmap, log_path_folder, png_output_name
             title = title,
             output_path=png_output_name,
             group_by = group_by,
-            cmap = cmap)
+            save_plot=save_plot,
+            cmap = cmap,
+            ax = ax)
   
 
 
