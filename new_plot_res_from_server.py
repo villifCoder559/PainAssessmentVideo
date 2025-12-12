@@ -29,7 +29,7 @@ def find_results_files(parent_folder):
       list_runs = os.listdir(os.path.join(parent_folder, folder))
       for run in list_runs:
         if os.path.isdir(os.path.join(parent_folder, folder, run)):
-          pkl_files = [f for f in os.listdir(os.path.join(parent_folder, folder, run)) if f.endswith('.pkl')]
+          pkl_files = [f for f in os.listdir(os.path.join(parent_folder, folder, run)) if 'k_fold_results.pkl' in f]
           if len(pkl_files) == 1:
             results_files.append(os.path.join(parent_folder, folder, run, pkl_files[0]))
           # elif len(pkl_files) == 0:
