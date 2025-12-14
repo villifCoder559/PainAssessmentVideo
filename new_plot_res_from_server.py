@@ -1186,7 +1186,14 @@ def generate_csv_row(data,config,time_, test_id):
   head_params = flatten_dict({f'{head_type}': config['head_params']})
   criterion_params = flatten_dict({f'{type(config["criterion"]).__name__}': config["criterion_dict"]}) if "criterion_dict" in config else {}
   train_batch_sampler = [data[f'k{i}_cross_val_sub_{j}']['train_val'].get('train_batch_sampler_name',None) for i in range(real_k_fold) for j in range(real_sub_fold)]
-  
+  if 'adv_alpha_strategy' in config:
+    adversarial_config = {
+      'adv_alpha_strategy': config['adv_alpha_strategy'],
+      'adv_alpha_gamma': config['adv_alpha_gamma'],
+      'adversarial_loss_lambda': config['adversarial_loss_lambda'],
+    }
+  else:
+    adversarial_config = {}
   if np.all([value is not None for value in train_batch_sampler]): 
     train_batch_sampler = [value.split('.')[-1] for value in train_batch_sampler]
   else:
@@ -1211,6 +1218,7 @@ def generate_csv_row(data,config,time_, test_id):
     'batch_size_training': config['batch_size_training'],
     'reg_lambda_L1': config['regularization_lambda_L1'] if 'regularization_lambda_L1' in config else config['regularization_lambda'] if config['regularization_loss'] == 'L1' else 0,
     'reg_lambda_L2': config['regularization_lambda_L2'] if 'regularization_lambda_L2' in config else config['regularization_lambda'] if config['regularization_loss'] == 'L2' else 0,
+    **adversarial_config,
     'label_smooth': config['label_smooth'] if 'label_smooth' in config else 0,
     'hflip': config['hflip'] if 'hflip' in config else 0,
     'jitter': config['jitter'] if 'jitter' in config else 0,
