@@ -124,6 +124,10 @@ class Model_Advanced: # Scenario_Advanced
       # check if head_params['head_init_path'] is a folder or .pt/.safetensors file
       
       self.head_init_path = head_params['head_init_path'] if 'head_init_path' in head_params else None
+      if head_params['adversarial_head']:
+        adversarial_out_dim = complete_df['subject_id'].nunique()
+      else:
+        adversarial_out_dim = None
       self.head = AttentiveHeadJEPA(embed_dim=head_params['input_dim'],
                                           num_classes=head_params['num_classes'],
                                           num_heads=head_params['num_heads'],
@@ -138,6 +142,8 @@ class Model_Advanced: # Scenario_Advanced
                                           custom_mlp=head_params['custom_mlp'],
                                           grid_size_pos=T_S_S_shape, # [T, S, S]
                                           depth=head_params['depth'],
+                                          adversarial_head=head_params['adversarial_head'],
+                                          adversarial_out_dim=adversarial_out_dim,
                                           head_init_path=head_params['head_init_path'],
                                           num_queries=head_params['num_queries'],
                                           agg_method=head_params['agg_method'],
@@ -325,6 +331,7 @@ class Model_Advanced: # Scenario_Advanced
       'is_coral_loss': is_coral_loss,
       'epoch': 0, # to get the right position for history_test_sample_predictions
       'history_val_sample_predictions': history_test_sample_predictions,
+      'adversarial_loss_lambda': kwargs['adversarial_loss_lambda']
     }
     wargs = {k:v for k,v in kwargs.items() if k not in evaluate_args.keys()}
     dict_test = self.head.evaluate(val_loader=test_loader, 
@@ -332,6 +339,8 @@ class Model_Advanced: # Scenario_Advanced
                                    unique_val_subjects=unique_test_subjects,
                                    unique_val_classes=unique_classes,
                                    is_test=is_test,
+                                   adv_criterion= torch.nn.CrossEntropyLoss() if 'adversarial_loss_lambda' in kwargs and kwargs['adversarial_loss_lambda'] > 0 else None,
+                                   adversarial_loss_lambda=kwargs['adversarial_loss_lambda'] if 'adversarial_loss_lambda' in kwargs else None,
                                    is_coral_loss=is_coral_loss,
                                    epoch=0, # to get the right position for history_test_sample_predictions
                                    history_val_sample_predictions=history_test_sample_predictions,

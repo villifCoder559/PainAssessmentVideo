@@ -40,6 +40,71 @@ import torch.nn.functional as F
 import custom.loss as losses
 
 
+class GradientReversalFunction(torch.autograd.Function):
+  @staticmethod
+  def forward(ctx, x, lambda_):
+    ctx.lambda_ = lambda_
+    return x.view_as(x)
+
+  @staticmethod
+  def backward(ctx, grad_output):
+    return grad_output.neg() * ctx.lambda_, None
+
+def grad_reverse(x, lambda_):
+  return GradientReversalFunction.apply(x, lambda_)
+
+import numpy as np
+
+class AdvAlpha:
+  def __init__(self, total_steps, method, gamma):
+    """
+    Initializes the class with precomputed alpha values for all steps.
+    
+    Args:
+        total_steps (int): Total expected iterations or epochs.
+        method (str): 'sigmoid', 'linear', or 'fixed' (default 'sigmoid').
+        gamma (float): Steepness for sigmoid (default 10 from paper).
+    """
+    self.total_steps = total_steps
+    self.method = method
+    self.gamma = gamma
+    self.alpha_values = self._precompute_alphas()
+
+  def _precompute_alphas(self):
+    """
+    Precomputes the alpha values for all steps from 0 to total_steps.
+    
+    Returns:
+        List[float]: Precomputed alpha values.
+    """
+    alphas = []
+    for current_step in range(self.total_steps):
+      p = float(current_step) / self.total_steps
+      if self.method == 'sigmoid':
+        alpha = 2.0 / (1.0 + np.exp(-self.gamma * p)) - 1.0
+      elif self.method == 'linear':
+        alpha = p
+      elif self.method == 'fixed':
+        alpha = 1.0
+      else:
+        raise ValueError(f"Unknown method '{self.method}' for calculating adversarial alpha.")
+      alphas.append(alpha)
+    return alphas
+
+  def get_adv_alpha(self, current_step):
+    """
+    Retrieves the precomputed adversarial alpha value for the given step.
+    
+    Args:
+        current_step (int): Current iteration or epoch.
+    
+    Returns:
+        float: The precomputed alpha value.
+    """
+    if current_step < 0 or current_step >= self.total_steps:
+      raise ValueError(f"Current step {current_step} is out of range (0 to {self.total_steps - 1}).")
+    return self.alpha_values[current_step]
+
 class BaseHead(nn.Module):
   def __init__(self, model,is_classification):
     super(BaseHead, self).__init__()
@@ -285,7 +350,14 @@ class BaseHead(nn.Module):
     enable_autocast = helper.AMP_ENABLED and amp_dtype == torch.bfloat16 # Use autocast for mixed precision training
     enable_scaler = helper.AMP_ENABLED and amp_dtype in [torch.float16] # Use GradScaler for mixed precision training
     scaler = GradScaler(device=device, enabled=enable_scaler)
-    
+    # check if adversarial_head exists and is not None
+    if hasattr(self, 'adversarial_head') and self.adversarial_head is not None:
+      print(f'\n\nAdversarial head detected with output dimension {self.adversarial_head.out_features}')
+      adv_criterion = torch.nn.CrossEntropyLoss()
+      assert kwargs.get('adversarial_loss_lambda',0.0) > 0.0, "adversarial_loss_lambda must be greater than 0.0 when using adversarial head"
+    else:
+      adv_criterion = None
+      
     if enable_scaler:
       print(f'Using GradScaler for mixed precision training. Dtype {amp_dtype}')
     else:
@@ -297,12 +369,15 @@ class BaseHead(nn.Module):
     return_embeddings = getattr(criterion, 'return_embeddings', False)
     if return_embeddings:
       print('The criterion requires to return the video embeddings from the model during training\n')
-    
+    adv_alpha = AdvAlpha(total_steps=num_epochs * len(train_loader),
+                         method=kwargs['adv_alpha_strategy'],
+                         gamma=kwargs['adv_alpha_gamma'])
     is_composite_loss = isinstance(criterion, losses.CompositeLoss)
     is_resupcon_loss = isinstance(criterion, losses.RESupConLoss)
     max_train_class = train_unique_classes.max().item() + 1 # start from 0
     l1_error_val_list = []
     l2_error_val_list = []
+    train_loader_len = len(train_loader)
     for epoch in range(num_epochs):
       start_epoch = time.time()
       self.train() 
@@ -330,6 +405,7 @@ class BaseHead(nn.Module):
       start_load_batch = time.time()
       torch.cuda.reset_peak_memory_stats(device)
       list_batch_lr = []
+      total_steps = num_epochs * len(train_loader)
       list_batch_wd = []
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
         end_load_batch = time.time()
@@ -348,6 +424,10 @@ class BaseHead(nn.Module):
           elif isinstance(criterion, torch.nn.CrossEntropyLoss):
             batch_y = batch_y.long()
         batch_y = batch_y.to(device)
+        
+        if adv_criterion is not None:
+          batch_subjects = batch_subjects.to(torch.long).to(device)
+        
         dict_batch_X = {key: value.to(device) if value is not None else None for key, value in dict_batch_X.items()}
         dict_log_time['transfer_to_device'] = dict_log_time.get('transfer_to_device',0) + time.time() - transfer_to_device
         optimizer.zero_grad()
@@ -355,7 +435,8 @@ class BaseHead(nn.Module):
         helper.LOG_CROSS_ATTENTION['state'] = 'train'
         dict_batch_X['list_sample_id'] = sample_id
         dict_batch_X['return_video_emb'] = return_embeddings
-        
+        if adv_criterion is not None:
+          dict_batch_X['adv_alpha'] = adv_alpha.get_adv_alpha(current_step = epoch * train_loader_len + count_batch)
         start_forward = time.time()
         with autocast(device_type=device, dtype=amp_dtype, enabled=enable_autocast): # Use autocast for mixed precision training
           dict_out = self(**dict_batch_X) # input [batch, seq_len, emb_dim]
@@ -373,6 +454,11 @@ class BaseHead(nn.Module):
           else:
             loss = criterion(dict_out['logits'], batch_y)
             
+          if adv_criterion is not None:
+            adv_logits = dict_out['adv_logits']
+            # create adversarial labels as the opposite of the true labels
+            adv_loss = adv_criterion(adv_logits, batch_subjects)
+            loss = loss + adv_loss * kwargs['adversarial_loss_lambda']
           outputs = dict_out['logits']
           if regularization_lambda_L1 > 0:
             # Sum absolute values of all trainable parameters except biases
@@ -445,8 +531,7 @@ class BaseHead(nn.Module):
           self.log_gradient_per_module(batch_dict_gradient_per_module)
         
         count_batch+=1
-        
-        
+
         if not is_resupcon_loss:
           if self.is_classification:
             if is_coral_loss:
@@ -493,6 +578,7 @@ class BaseHead(nn.Module):
                                   unique_val_classes=val_unique_classes,
                                   unique_val_subjects=val_unique_subjects,
                                   val_loader=val_loader,
+                                  adv_criterion=adv_criterion,
                                   is_coral_loss=is_coral_loss,
                                   epoch=epoch,
                                   history_val_sample_predictions=history_val_sample_predictions,
@@ -504,6 +590,7 @@ class BaseHead(nn.Module):
                                           unique_val_classes=test_unique_classes,
                                           unique_val_subjects=test_unique_subjects,
                                           val_loader=test_loader,
+                                          adv_criterion=adv_criterion,
                                           is_coral_loss=is_coral_loss,
                                           epoch=epoch,
                                           history_val_sample_predictions=None,
@@ -837,18 +924,17 @@ class BaseHead(nn.Module):
         
         dict_batch_X = {key: value.to(device) if value is not None else None for key, value in dict_batch_X.items()}
         batch_y = batch_y.to(device)
-        
+        if kwargs.get('adv_criterion') is not None:
+          batch_subjects = batch_subjects.to(torch.long).to(device)
         # subject_batch_count[tmp] += 1
         helper.LOG_CROSS_ATTENTION['state'] = 'test' if is_test else 'val'
         
         dict_batch_X['list_sample_id'] = sample_id
         dict_batch_X['return_video_emb'] = return_embeddings
-        
+        if kwargs.get('adv_criterion') is not None:
+          dict_batch_X['adv_alpha'] = 0
         with autocast(device_type=device, dtype=amp_dtype, enabled=enable_autocast): # Use autocast for mixed precision training
           dict_out = self(**dict_batch_X)
-        
-          
-
 
         if dict_out['logits'].shape[1] == 1 and not is_resupcon_loss: # if regression I don't need to keep dim 1
           dict_out['logits'] = dict_out['logits'].squeeze(1)
@@ -870,6 +956,11 @@ class BaseHead(nn.Module):
         else:
           outputs = dict_out['logits']
           loss = criterion(outputs, batch_y)
+          
+        if kwargs.get('adv_criterion') is not None:
+          adv_logits = dict_out['adv_logits']
+          adv_loss = kwargs['adv_criterion'](adv_logits, batch_subjects)
+          loss = loss + adv_loss * kwargs['adversarial_loss_lambda']
         val_loss += loss.item()
         
         if not is_resupcon_loss:
@@ -1078,6 +1169,8 @@ class AttentiveHeadJEPA(BaseHead):
       remove_head=False,
       drop_path_mode='row',
       head_init_path=None,
+      adversarial_head=False,
+      adversarial_out_dim=None,
       backbone: custom_backbone.BackboneBase = None,
       embedding_reduction: helper.EMBEDDING_REDUCTION = None,
       complete_block=True):
@@ -1139,7 +1232,11 @@ class AttentiveHeadJEPA(BaseHead):
       # for param in self.pooler.parameters():
       #   param.requires_grad = False
       # print(f'FROZEN Head weights loaded from {head_init_path}')
-    
+    if adversarial_head:
+      assert adversarial_out_dim is not None, 'adversarial_out_dim must be specified if adversarial_head is True'
+      self.adversarial_head = nn.Linear(embed_dim, adversarial_out_dim)
+    else:
+      self.adversarial_head = None
     # Init weights
     self._initialize_weights()  
     
@@ -1287,6 +1384,11 @@ class AttentiveHeadJEPA(BaseHead):
       self.log_xattn(xattn, **kwargs) 
     
     logits = self.linear(x)
+    if self.adversarial_head is not None:
+      reversed_feats = grad_reverse(x, kwargs['adv_alpha'])
+      adv_logits = self.adversarial_head(reversed_feats)
+      return {'logits': logits, 'embeddings': x, 'adv_logits': adv_logits}
+    
     if return_video_emb:
       return {'logits': logits, 'embeddings': x}
     else:
@@ -1326,10 +1428,16 @@ class AttentiveHeadJEPA(BaseHead):
       ## Initialize linear layer ##
       if self.coral_loss:
         self.linear.coral_weights.reset_parameters()
+        if self.adversarial_head is not None:
+          torch.nn.init.xavier_uniform_(self.adversarial_head.weight,gain=0.1)
+          torch.nn.init.zeros_(self.adversarial_head.bias)
       else:
         if self.linear is not None and not isinstance(self.linear, nn.Identity):
           torch.nn.init.xavier_uniform_(self.linear.weight,gain=0.1)
           torch.nn.init.zeros_(self.linear.bias)
+        if self.adversarial_head is not None:
+          torch.nn.init.xavier_uniform_(self.adversarial_head.weight,gain=0.1)
+          torch.nn.init.zeros_(self.adversarial_head.bias)
     else:
       raise NotImplementedError(f'Initialization method {init_type} not implemented')
   

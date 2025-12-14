@@ -286,6 +286,10 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
 
   else:
     # Attentive head parameters
+    adversarial_head = trial.suggest_categorical('adversarial_head', kwargs['adversarial_head'])
+    adv_alpha_strategy = trial.suggest_categorical('adv_alpha_strategy', kwargs['adv_alpha_strategy'])
+    adv_alpha_gamma = _suggest(trial, 'adv_alpha_gamma', kwargs['adv_alpha_gamma'], kwargs['optuna_categorical'])
+    adversarial_loss_lambda = _suggest(trial, 'adversarial_loss_lambda', kwargs['adversarial_loss_lambda'], kwargs['optuna_categorical'])
     nr_blocks = _suggest(trial, 'nr_blocks', kwargs['nr_blocks'], kwargs['optuna_categorical'])
     num_heads = trial.suggest_categorical('num_heads', kwargs['num_heads'])
     num_cross_head = trial.suggest_categorical('num_cross_head', kwargs['num_cross_head'])
@@ -346,6 +350,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'num_cross_heads': num_cross_head,
       'num_heads': num_heads or num_cross_head,
       'dropout': model_dropout,
+      'adversarial_head': adversarial_head,
       'attn_dropout': drop_attn,
       'head_init_path': kwargs['head_init_path'],
       'residual_dropout': drop_residual,
@@ -415,7 +420,10 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'is_subject_independent': kwargs['is_subject_independent'],
     'skip_test': kwargs['skip_test'],
     'scheduler_config_dict': scheduler_config_dict,
-    'use_test_as_val': kwargs['use_test_as_val']
+    'use_test_as_val': kwargs['use_test_as_val'],
+    'adv_alpha_strategy': adv_alpha_strategy,
+    'adv_alpha_gamma': adv_alpha_gamma,
+    'adversarial_loss_lambda': adversarial_loss_lambda,
   }
     
   print(f"\n[Trial {trial.number}] Params: {trial.params}")
@@ -790,7 +798,11 @@ if __name__ == '__main__':
   parser.add_argument('--log_workers', action='store_true', help='Log time taken by each worker to load data')
   parser.add_argument('--save_best_model', action='store_true', help='Save the best model during training')
   parser.add_argument('--save_last_epoch_model', action='store_true', help='Save the last epoch model')
-
+  # adverasarial training parameters
+  parser.add_argument('--adversarial_head', type=str, nargs='*', default=[0], help='Add adversarial head for ATTENTIVE_JEPA head. Default is 0 (no adversarial head)')
+  parser.add_argument('--adv_alpha_strategy', type=str, nargs='*', default=[''], help='Adversarial alpha strategy: sigmoid, linear, fixed. Default is fixed')
+  parser.add_argument('--adv_alpha_gamma', type=float, nargs='*', default=[0.0], help='Gamma parameter for adversarial sigmoid alpha strategy. Default is None')
+  parser.add_argument('--adversarial_loss_lambda', type=float, nargs='*', default=[0.0], help='Adversarial loss lambda weight. Default is 0.0 (no adversarial loss)')
   # Optimizer and Scheduler Settings
   parser.add_argument('--scheduler_name', type=str, nargs='*', default=['cosine'], help='LR scheduler name: cosine, cosine_restart, step, onecycle, lambda.')
   parser.add_argument('--wd_scheduler_name', type=str, nargs='*', default=[None], help='Weight decay scheduler name: cosine_wd. Default is None (not used)')
