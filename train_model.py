@@ -691,7 +691,7 @@ if __name__ == '__main__':
   parser.add_argument('--skip_test', type=int, default=0, help='Skip test phase after training. Default is 0 (False)')
   
   # Training parameters
-  parser.add_argument('--type_group', type=int, default=0, help='Type of group for stratified sampling. Default is 0 (StratifiedGroupKFold) else (split in equal numeber of subjects per group)')
+  parser.add_argument('--type_group', type=int,nargs='*', default=0, help='Type of group for stratified sampling. Default is 0 (StratifiedGroupKFold) else (split in equal numeber of subjects per group)')
   parser.add_argument('--lr', type=float, nargs='*', default=[0.0001], help='Learning rate(s)')
   parser.add_argument('--opt', type=str, nargs='*', default=['adamw'], help="Optimizer(s). Available options: 'adam', 'sgd', 'adamw'.")
   parser.add_argument('--validation_enabled', type=int, choices=[0,1], default=1, help='Enable validation set during training. Default is 1 (enabled)')
