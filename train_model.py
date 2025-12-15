@@ -165,6 +165,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   lr = _suggest(trial, 'lr', kwargs['lr'], kwargs['optuna_categorical'])
   opt = trial.suggest_categorical('opt', kwargs['opt'])
   # optimizer_fn = get_optimizer(opt)
+  type_group = trial.suggest_categorical('type_group', kwargs['type_group'])
   init_network = trial.suggest_categorical('init_network', kwargs['init_network'])
   batch_train = trial.suggest_categorical('batch_train', kwargs['batch_train'])
   regulariz_lambda_L1 = _suggest(trial, 'regulariz_lambda_L1', kwargs['regulariz_lambda_L1'], kwargs['optuna_categorical'])
@@ -424,6 +425,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'adv_alpha_strategy': adv_alpha_strategy,
     'adv_alpha_gamma': adv_alpha_gamma,
     'adversarial_loss_lambda': adversarial_loss_lambda,
+    'type_group': type_group,
   }
     
   print(f"\n[Trial {trial.number}] Params: {trial.params}")
@@ -689,6 +691,7 @@ if __name__ == '__main__':
   parser.add_argument('--skip_test', type=int, default=0, help='Skip test phase after training. Default is 0 (False)')
   
   # Training parameters
+  parser.add_argument('--type_group', type=int, default=0, help='Type of group for stratified sampling. Default is 0 (StratifiedGroupKFold) else (split in equal numeber of subjects per group)')
   parser.add_argument('--lr', type=float, nargs='*', default=[0.0001], help='Learning rate(s)')
   parser.add_argument('--opt', type=str, nargs='*', default=['adamw'], help="Optimizer(s). Available options: 'adam', 'sgd', 'adamw'.")
   parser.add_argument('--validation_enabled', type=int, choices=[0,1], default=1, help='Enable validation set during training. Default is 1 (enabled)')
