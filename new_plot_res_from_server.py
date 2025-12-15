@@ -1141,12 +1141,15 @@ def generate_csv_row(data,config,time_, test_id):
     total_median_test_losses_best_epoch = {f'total_median_all_test_loss_best_ep': np.median([data[f'k{i}_cross_val_final']['test']['test_loss'] for i in list_final_test])}
     final_best_epoch_values = [data[f'k{i}_cross_val_final']['train_val']['best_model_idx'] for i in list_final_test]
     all_test_losses_best_epoch = [data[f'k{i}_cross_val_final']['test']['test_loss'] for i in list_final_test]
-    
+    all_test_l1_error = {'mean_test_l1_error': np.mean([data[f'k{i}_cross_val_final']['test'].get('test_l1_error', None) for i in list_final_test])}
+    list_l1_error = [data[f'k{i}_cross_val_final']['test'].get('test_l1_error', None) for i in list_final_test]
+    test_l1_errors = {'all_test_l1_error': ",".join([f"{error:.3f}" for error in list_l1_error])}
     # 3 decimal places
     all_test_losses_best_epoch = ",".join([f"{loss:.3f}" for loss in all_test_losses_best_epoch]) 
     all_test_losses_best_epoch = {'all_test_losses_best_epoch': all_test_losses_best_epoch}
     fold_used_for_final_test = {'fold_subfold_final_test': [data[f'k{i}_cross_val_final']['best_model']['fold_sub_fold_idx'] for i in list_final_test]}
     total_mean_val_loss_best_epoch = {f'total_mean_all_val_loss_best_ep': np.mean([data[f'k{i}_cross_val_final']['train_val'][key_metric_val][data[f'k{i}_cross_val_final']['train_val']['best_model_idx']] for i in list_final_test])}
+
   else:
     mean_test_accuracies = {}
     mean_test_losses = {}
@@ -1157,12 +1160,16 @@ def generate_csv_row(data,config,time_, test_id):
     total_mean_val_loss_best_epoch = {}
     all_test_losses_best_epoch = {}
     fold_used_for_final_test = {}
+    all_test_l1_error = {}
+    test_l1_errors = {}
+  
   if 'list_val_l1_error' not in data[f'k0_cross_val_sub_0']['train_val']:
     val_l1_error = {}
     val_l2_error = {}
   else:
     val_l1_error = {f'mean_val_l1_error_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_l1_error'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
     val_l2_error = {f'mean_val_l2_error_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_l2_error'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  
   if 'list_val_icc' not in data[f'k0_cross_val_sub_0']['train_val']:
     val_icc_error_mean = {}
     val_ccc_error_mean = {}
@@ -1251,9 +1258,11 @@ def generate_csv_row(data,config,time_, test_id):
     **val_l2_error,
     **total_median_test_losses_best_epoch,
     **total_median_val_losses_best_epoch,
+    **all_test_l1_error,
     **total_mean_test_losses_best_epoch,
     **total_mean_val_loss_best_epoch,
     **all_test_losses_best_epoch,
+    **test_l1_errors,
     **best_epoch_values,
     'final_best_epoch_values': final_best_epoch_values,
     **fold_used_for_final_test,
