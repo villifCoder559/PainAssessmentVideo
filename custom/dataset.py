@@ -1382,7 +1382,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
     else:
       loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=False,collate_fn=dataset_._custom_collate)
   return dataset_,loader_
- 
+
   
 def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,is_quadrant=False,concatenate_quadrants=False,xattn_mask=None):
   pid = os.getpid()

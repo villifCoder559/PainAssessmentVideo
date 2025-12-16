@@ -354,10 +354,14 @@ class BaseHead(nn.Module):
     if hasattr(self, 'adversarial_head') and self.adversarial_head is not None:
       print(f'\n\nAdversarial head detected with output dimension {self.adversarial_head.out_features}')
       adv_criterion = torch.nn.CrossEntropyLoss()
+      adv_alpha = AdvAlpha(total_steps=num_epochs * len(train_loader),
+                         method=kwargs['adv_alpha_strategy'],
+                         gamma=kwargs['adv_alpha_gamma'])
+    
       assert kwargs.get('adversarial_loss_lambda',0.0) > 0.0, "adversarial_loss_lambda must be greater than 0.0 when using adversarial head"
     else:
       adv_criterion = None
-      
+      adv_alpha = None  
     if enable_scaler:
       print(f'Using GradScaler for mixed precision training. Dtype {amp_dtype}')
     else:
@@ -369,9 +373,6 @@ class BaseHead(nn.Module):
     return_embeddings = getattr(criterion, 'return_embeddings', False)
     if return_embeddings:
       print('The criterion requires to return the video embeddings from the model during training\n')
-    adv_alpha = AdvAlpha(total_steps=num_epochs * len(train_loader),
-                         method=kwargs['adv_alpha_strategy'],
-                         gamma=kwargs['adv_alpha_gamma'])
     is_composite_loss = isinstance(criterion, losses.CompositeLoss)
     is_resupcon_loss = isinstance(criterion, losses.RESupConLoss)
     max_train_class = train_unique_classes.max().item() + 1 # start from 0
@@ -1233,7 +1234,7 @@ class AttentiveHeadJEPA(BaseHead):
       #   param.requires_grad = False
       # print(f'FROZEN Head weights loaded from {head_init_path}')
     if adversarial_head:
-      assert adversarial_out_dim is not None, 'adversarial_out_dim must be specified if adversarial_head is True'
+      assert adversarial_out_dim is not None, 'adversarial_out_dim must be specified if adversarial_head is not None'
       self.adversarial_head = nn.Linear(embed_dim, adversarial_out_dim)
     else:
       self.adversarial_head = None

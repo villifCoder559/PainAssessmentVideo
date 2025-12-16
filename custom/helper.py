@@ -6,6 +6,40 @@ from copy import deepcopy
 import pandas as pd
 import numpy as np
 
+
+unbc_count_to_id = {
+  0: 115,
+  1: 42,
+  2: 66,
+  3: 120,
+  4: 43,
+  5: 64,
+  6: 124,
+  7: 47,
+  8: 95,
+  9: 109,
+  10: 101,
+  11: 121,
+  12: 97,
+  13: 96,
+  14: 92,
+  15: 48,
+  16: 106,
+  17: 80,
+  18: 108,
+  19: 59,
+  20: 49,
+  21: 103,
+  22: 52,
+  23: 107,
+  24: 123
+}
+
+def convert_unbc_count_to_id(unique_subject_ids):
+  return np.array([unbc_count_to_id[int(s)] for s in unique_subject_ids])
+
+
+
 stoic_subjects = [27,28,32,33,34,35,36,39,40,41,42,44,51,53,55,56,61,64,74,87]
 saving_rate_training_logs = 3
 dict_data = None
@@ -84,6 +118,10 @@ def set_step_shift(folder_feature):
   else:
     raise ValueError(f'Dataset not recognized in folder_feature: {folder_feature}')
 
+def transform_sample_id(original_sample_id, augmentation_type):
+  return original_sample_id + get_shift_for_sample_id(augmentation_type)
+
+
 def is_hflip_augmentation(sample_id):
   return sample_id > step_shift and sample_id <= step_shift * 2
 
@@ -154,6 +192,42 @@ def get_augmentation_availables(fold_feature_path):
   return augment_available
 
 
+def get_perfectly_balanced_target_samples_per_class(df, batch_size, min_target_samples_per_class=0):
+  class_counts = df['class_id'].value_counts()
+  n_classes = len(class_counts)
+  total_samples = len(df)
+  assert batch_size % n_classes == 0, "Batch size must be divisible by number of classes for perfect balancing."
+  nr_batches = np.ceil(total_samples // batch_size)
+  target_class_count = int((nr_batches * batch_size) / n_classes)
+  return target_class_count
+
+
+def refine_perfectly_balanced_target_samples_per_class(df, target_samples_per_class,strategy='oversample'):
+  class_counts = df['class_id'].value_counts()
+  new_df = df.copy(deep=True)
+  for class_id, count in class_counts.items(): 
+    if count < target_samples_per_class:
+      n_to_add = target_samples_per_class - count
+      if strategy == 'oversample':
+        samples_to_add = new_df[new_df['class_id'] == class_id].sample(n=n_to_add, replace=True)
+      elif strategy == 'latent_augm':
+        while n_to_add > 0:
+          n = min(n_to_add, target_samples_per_class - new_df[new_df['class_id'] == class_id].shape[0])
+          samples_to_add = new_df[new_df['class_id'] == class_id].sample(n=n, replace=True)
+          # Apply latent_basic augmentation to samples with sample_id < step_shift (non augmented samples)
+          samples_to_add['sample_id'] = samples_to_add['sample_id'].apply(lambda x: transform_sample_id((((x-1)%step_shift) + 1), 'latent_basic'))
+          n_to_add -= len(samples_to_add)
+          new_df = pd.concat([new_df, samples_to_add], ignore_index=True)
+          # n_to_add = target_samples_per_class - new_df[new_df['class_id'] == class_id].shape[0]
+      else:
+        raise ValueError(f"Strategy not recognized: {strategy}")
+      new_df = pd.concat([new_df, samples_to_add], ignore_index=True)
+    elif count > target_samples_per_class:
+      samples_to_remove = new_df[new_df['class_id'] == class_id].sample(n=count-target_samples_per_class, replace=False)
+      new_df = new_df[~new_df.index.isin(samples_to_remove.index)]
+    
+  return new_df  
+
 def get_sample_augmented(pain, list_subject, orig_df, dict_augmentation_per_sample, new_df):
   for sbj in list_subject:
     if orig_df[(orig_df['subject_id']==sbj) & (orig_df['class_id']==pain)].shape[0]>0:
@@ -178,7 +252,7 @@ def get_sample_augmented(pain, list_subject, orig_df, dict_augmentation_per_samp
           all_candidate_samples = all_candidate_samples[all_candidate_samples['sample_id'] != id_candidate]
   return None
 
-def generate_balanced_dataframe(df_original,list_augmentations_available,target_samples_per_class):
+def generate_balanced_dataframe(df_original,list_augmentations_available,target_samples_per_class,):
   # Deepcopy to modify each key separately
   dict_augm_available = {id: deepcopy(list_augmentations_available) for id in df_original['sample_id'].values}
   target_samples_distribution = {class_id: target_samples_per_class for class_id in df_original['class_id'].unique()}

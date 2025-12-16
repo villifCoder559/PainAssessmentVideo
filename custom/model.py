@@ -378,10 +378,19 @@ class Model_Advanced: # Scenario_Advanced
     
     if 'unbc' in self.path_to_extracted_features.lower() and kwargs.get('stratified_training', False):
       df_original = pd.read_csv(train_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
+      target_samples_per_class = kwargs['stratified_training']
       df_final = helper.generate_balanced_dataframe(df_original=df_original,
                                          list_augmentations_available=helper.get_augmentation_availables(self.path_to_extracted_features),
-                                         target_samples_per_class=kwargs['stratified_training'])
-      
+                                         target_samples_per_class=target_samples_per_class)
+      if kwargs['perfect_bal_strategy'] is not None:
+        # target_samples_per_class = helper.get_perfectly_balanced_target_samples_per_class(df_final, self.batch_size_training)
+        class_counts = df_final['class_id'].value_counts()
+        n_classes = len(class_counts)
+        self.batch_size_training = self.batch_size_training * n_classes # batch size is a multiple of n_classes
+        print(f'Adjusted batch size for perfect balancing: {self.batch_size_training}')
+        assert self.batch_size_training % n_classes == 0, "Batch size must be divisible by number of classes for perfect balancing."
+        print(f'################ Using perfectly balanced stratification train with {target_samples_per_class} samples per class ################')
+        df_final = helper.refine_perfectly_balanced_target_samples_per_class(df_final, target_samples_per_class, kwargs['perfect_bal_strategy'])
       df_original.to_csv(os.path.basename(train_csv_path).replace('.csv','_original.csv'), index=False, sep='\t')
       df_final.to_csv(train_csv_path, index=False, sep='\t')
       print(f"Original class distribution:\n{df_original['class_id'].value_counts().sort_index()}")
