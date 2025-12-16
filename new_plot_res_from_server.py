@@ -159,7 +159,7 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
   # real_k_fold = set([int(key.split('_')[0][1]) for key in data['results'].keys()])
 
   dict_grouped_losses = get_grouped_losses(data, data['config'])
-  
+  is_adversarial_training = True if int(data['config']['head_params']['adversarial_head']) == 1 else False
   # Plot grouped losses per subject and class
   for k_fold, grouped_losses in dict_grouped_losses.items():
     
@@ -168,15 +168,25 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
     ax = ax.flatten()
     train_subject_loss = grouped_losses['subject_train_loss']
     val_subject_loss = grouped_losses['subject_val_loss'] if 'subject_val_loss' in grouped_losses else grouped_losses['subject_test_loss']
+    
+    # Convert UNBC counts to IDs if adversarial training
+    if is_adversarial_training:
+      train_subject_loss = {helper.unbc_count_to_id[k]: v for k,v in train_subject_loss.items()}
+      val_subject_loss = {helper.unbc_count_to_id[k]: v for k,v in val_subject_loss.items()}
+       
+    unique_subject_ids_train = list(train_subject_loss.keys())
+    unique_subject_ids_val = list(val_subject_loss.keys())
+    
+      
     tools.plot_error_per_subject(loss_per_subject=[train_subject_loss[k] for k in sorted(train_subject_loss.keys())],
-                                  unique_subject_ids=sorted(train_subject_loss.keys()),
+                                  unique_subject_ids=sorted(unique_subject_ids_train),
                                   criterion=data['config']['criterion'],
                                   title=f'Grouped mean TRAIN Loss per Subject - {k_fold} - {test_id}',
                                   ax=ax[0],
                                   y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
     title_plt = 'VAL' if 'subject_val_loss' in grouped_losses else 'TEST'
     tools.plot_error_per_subject(loss_per_subject=[val_subject_loss[k] for k in sorted(val_subject_loss.keys())],
-                                  unique_subject_ids=sorted(val_subject_loss.keys()),
+                                  unique_subject_ids=sorted(unique_subject_ids_val),
                                   criterion=data['config']['criterion'],
                                   title=f'Grouped mean {title_plt} Loss per Subject - {k_fold} - {test_id}',
                                   ax=ax[1],
@@ -273,7 +283,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
   os.makedirs(test_output_folder, exist_ok=True)
   metric_for_training = "_".join(data['config']['key_for_early_stopping'].split('_')[1:]) # key for early stopping === target_metric_best_model
   
-  
+  is_adversarial_training = True if int(data['config']['head_params']['adversarial_head']) == 1 else False
   for key in data['results'].keys():
     if 'final' in key:
       only_losses_folder_per_k = os.path.join(loss_plots_output_folder, f'only_losses_final')
@@ -447,8 +457,13 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
             # axs[1][0]: loss per subject train
             best_epoch = data['results'][key]['train_val']['best_model_idx']
             loss_per_subject_train = data['results'][key]['train_val'].get('train_loss_per_subject', None)
+            unique_subject_ids_train=data['results'][key]['train_val']['train_unique_subject_ids']
+            
+            if is_adversarial_training:
+              unique_subject_ids_train = helper.convert_unbc_count_to_id(unique_subject_ids_train)
+                
             tools.plot_error_per_subject(loss_per_subject=loss_per_subject_train[best_epoch],
-                                        unique_subject_ids=data['results'][key]['train_val']['train_unique_subject_ids'],
+                                        unique_subject_ids=unique_subject_ids_train,
                                         title=f'TRAIN error per subject - Epoch_{best_epoch} ',
                                         criterion=data['config']['criterion'],
                                         list_stoic_subject=None,
@@ -468,16 +483,25 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
             dict_per_subject_test = data['results'][key].get('test', None)
             if dict_per_subject_test is None:
               loss_per_subject_val = data['results'][key]['train_val'].get('val_loss_per_subject', None)
+              unique_subject_ids_val=data['results'][key]['train_val']['val_unique_subject_ids']
+              
+              if is_adversarial_training:
+                unique_subject_ids_val = helper.convert_unbc_count_to_id(unique_subject_ids_val)
+              
               tools.plot_error_per_subject(loss_per_subject=loss_per_subject_val[best_epoch],
-                                          unique_subject_ids=data['results'][key]['train_val']['val_unique_subject_ids'],
+                                          unique_subject_ids=unique_subject_ids_val,
                                           title=f'VAL error per subject - Epoch_{best_epoch} ',
                                           criterion=data['config']['criterion'],
                                           list_stoic_subject=None,
                                           y_lim=y_lim_error,
                                           ax=axs[2][0])
             else:
+              unique_subject_ids_test=dict_per_subject_test['test_unique_subject_ids']
+              if is_adversarial_training:
+                unique_subject_ids_test = helper.convert_unbc_count_to_id(unique_subject_ids_test)
+            
               tools.plot_error_per_subject(loss_per_subject=dict_per_subject_test['test_loss_per_subject'],
-                                          unique_subject_ids=dict_per_subject_test['test_unique_subject_ids'],
+                                          unique_subject_ids=unique_subject_ids_test,
                                           title=f'TEST error per subject - Epoch_{best_epoch} ',
                                           criterion=data['config']['criterion'],
                                           list_stoic_subject=None,
@@ -640,8 +664,11 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         
         # Train Loss
         if loss_per_subject_train is not None:
+          unique_subject_ids_train=data['results'][key]['train_val']['train_unique_subject_ids']
+          if is_adversarial_training:
+            unique_subject_ids_train = helper.convert_unbc_count_to_id(unique_subject_ids_train)
           tools.plot_error_per_subject(loss_per_subject=loss_per_subject_train[best_epoch],
-                                        unique_subject_ids=data['results'][key]['train_val']['train_unique_subject_ids'],
+                                        unique_subject_ids=unique_subject_ids_train,
                                         title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
                                         criterion=data['config']['criterion'],
                                         list_stoic_subject=helper.stoic_subjects,
@@ -650,8 +677,11 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
           count_axs += 1
         # Val Loss
         if loss_per_subject_val is not None:
+          unique_subject_ids_val=data['results'][key]['train_val']['val_unique_subject_ids']
+          if is_adversarial_training:
+            unique_subject_ids_val = helper.convert_unbc_count_to_id(unique_subject_ids_val)
           tools.plot_error_per_subject(loss_per_subject=loss_per_subject_val[best_epoch],
-                                      unique_subject_ids=data['results'][key]['train_val']['val_unique_subject_ids'],
+                                      unique_subject_ids=unique_subject_ids_val,
                                       title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
                                       criterion=data['config']['criterion'],
                                       list_stoic_subject=helper.stoic_subjects,
@@ -660,6 +690,9 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
           count_axs += 1
         # Test Loss
         if dict_per_subject_test is not None:
+          unique_subject_ids_test=dict_per_subject_test['test_unique_subject_ids']
+          if is_adversarial_training:
+            unique_subject_ids_test = helper.convert_unbc_count_to_id(unique_subject_ids_test)
           tools.plot_error_per_subject(loss_per_subject=dict_per_subject_test['test_loss_per_subject'],
                                     unique_subject_ids=dict_per_subject_test['test_unique_subject_ids'],
                                     title=f'TEST {key} - {test_id}',
