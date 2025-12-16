@@ -182,6 +182,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   contrastive_loss_theta = _suggest(trial, 'contrastive_loss_theta', kwargs['contrastive_loss_theta'], kwargs['optuna_categorical'])
   contrastive_lambda_weight = trial.suggest_categorical('contrastive_lambda_weight', kwargs['contrastive_lambda_weight'])
   delta_huber = _suggest(trial, 'delta_huber', kwargs['delta_huber'], kwargs['optuna_categorical'])
+  perfect_bal_strategy = trial.suggest_categorical('perfect_bal_strategy', kwargs['perfect_bal_strategy'])
   composite_loss = None
   loss = None
   loss_args = {
@@ -426,6 +427,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'adv_alpha_gamma': adv_alpha_gamma,
     'adversarial_loss_lambda': adversarial_loss_lambda,
     'type_group': type_group,
+    'perfect_bal_strategy': perfect_bal_strategy
   }
     
   print(f"\n[Trial {trial.number}] Params: {trial.params}")
@@ -691,7 +693,7 @@ if __name__ == '__main__':
   parser.add_argument('--skip_test', type=int, default=0, help='Skip test phase after training. Default is 0 (False)')
   
   # Training parameters
-  parser.add_argument('--type_group', type=int,nargs='*', default=0, help='Type of group for stratified sampling. Default is 0 (StratifiedGroupKFold) else (split in equal numeber of subjects per group)')
+  parser.add_argument('--type_group', type=int,nargs='*', default=[0], help='Type of group for stratified sampling. Default is 0 (StratifiedGroupKFold) else (split in equal numeber of subjects per group)')
   parser.add_argument('--lr', type=float, nargs='*', default=[0.0001], help='Learning rate(s)')
   parser.add_argument('--opt', type=str, nargs='*', default=['adamw'], help="Optimizer(s). Available options: 'adam', 'sgd', 'adamw'.")
   parser.add_argument('--validation_enabled', type=int, choices=[0,1], default=1, help='Enable validation set during training. Default is 1 (enabled)')
@@ -722,6 +724,7 @@ if __name__ == '__main__':
   parser.add_argument('--contrastive_loss_theta', type=float, nargs='*', default=[1.1], help='Theta for contrastive loss. Distance between classes for positive pairs. Default is 1.1')
   parser.add_argument('--contrastive_lambda_weight', type=float, nargs='*', default=[4.0], help='Lambda weight for contrastive loss. Default is 4.0')
   parser.add_argument('--stratified_training', type=int, default=0, help='Use stratified sampling for training batches. Default is 0 (False). Values > 0 will set the number of samples for each class in training (reached using augmentation) for UNBC-McMaster dataset')
+  parser.add_argument('--perfect_bal_strategy', type=str, nargs='*', default=[None], help=f"Perfect balancing strategy for stratified training. Can be either oversample or latent_augm. Default is None (not used).")
   
   # Attention parameters
   parser.add_argument('--num_heads', type=int, nargs='*',default=[8], help='Number of heads for attention in transformer (when nr_blocks >1). Default is 8')
@@ -801,9 +804,10 @@ if __name__ == '__main__':
   parser.add_argument('--log_workers', action='store_true', help='Log time taken by each worker to load data')
   parser.add_argument('--save_best_model', action='store_true', help='Save the best model during training')
   parser.add_argument('--save_last_epoch_model', action='store_true', help='Save the last epoch model')
+  
   # adverasarial training parameters
   parser.add_argument('--adversarial_head', type=str, nargs='*', default=[0], help='Add adversarial head for ATTENTIVE_JEPA head. Default is 0 (no adversarial head)')
-  parser.add_argument('--adv_alpha_strategy', type=str, nargs='*', default=[''], help='Adversarial alpha strategy: sigmoid, linear, fixed. Default is fixed')
+  parser.add_argument('--adv_alpha_strategy', type=str, nargs='*', default=[None], help='Adversarial alpha strategy: sigmoid, linear, fixed. Default is fixed')
   parser.add_argument('--adv_alpha_gamma', type=float, nargs='*', default=[0.0], help='Gamma parameter for adversarial sigmoid alpha strategy. Default is None')
   parser.add_argument('--adversarial_loss_lambda', type=float, nargs='*', default=[0.0], help='Adversarial loss lambda weight. Default is 0.0 (no adversarial loss)')
   # Optimizer and Scheduler Settings
