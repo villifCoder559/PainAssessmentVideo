@@ -427,7 +427,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'adv_alpha_gamma': adv_alpha_gamma,
     'adversarial_loss_lambda': adversarial_loss_lambda,
     'type_group': type_group,
-    'perfect_bal_strategy': perfect_bal_strategy
+    'perfect_bal_strategy': perfect_bal_strategy,
+    'load_idxs_splits': kwargs['load_idxs_splits'],
   }
     
   print(f"\n[Trial {trial.number}] Params: {trial.params}")
@@ -805,11 +806,13 @@ if __name__ == '__main__':
   parser.add_argument('--save_best_model', action='store_true', help='Save the best model during training')
   parser.add_argument('--save_last_epoch_model', action='store_true', help='Save the last epoch model')
   
-  # adverasarial training parameters
-  parser.add_argument('--adversarial_head', type=str, nargs='*', default=[0], help='Add adversarial head for ATTENTIVE_JEPA head. Default is 0 (no adversarial head)')
+  # ADVERSARIAL training parameters
+  parser.add_argument('--adversarial_head', type=int, nargs='*', default=[0], help='Add adversarial head for ATTENTIVE_JEPA head. Default is 0 (no adversarial head)')
   parser.add_argument('--adv_alpha_strategy', type=str, nargs='*', default=[None], help='Adversarial alpha strategy: sigmoid, linear, fixed. Default is fixed')
   parser.add_argument('--adv_alpha_gamma', type=float, nargs='*', default=[0.0], help='Gamma parameter for adversarial sigmoid alpha strategy. Default is None')
   parser.add_argument('--adversarial_loss_lambda', type=float, nargs='*', default=[0.0], help='Adversarial loss lambda weight. Default is 0.0 (no adversarial loss)')
+  parser.add_argument('--load_idxs_splits', type=int, default=0, help='Load specific idxs splits for k-fold cross validation. Default is 0 (not used)')
+  
   # Optimizer and Scheduler Settings
   parser.add_argument('--scheduler_name', type=str, nargs='*', default=['cosine'], help='LR scheduler name: cosine, cosine_restart, step, onecycle, lambda.')
   parser.add_argument('--wd_scheduler_name', type=str, nargs='*', default=[None], help='Weight decay scheduler name: cosine_wd. Default is None (not used)')
