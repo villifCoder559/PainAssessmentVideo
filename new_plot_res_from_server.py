@@ -159,7 +159,7 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
   # real_k_fold = set([int(key.split('_')[0][1]) for key in data['results'].keys()])
 
   dict_grouped_losses = get_grouped_losses(data, data['config'])
-  is_adversarial_training = True if int(data['config']['head_params']['adversarial_head']) == 1 else False
+  is_adversarial_training = True if int(data['config']['head_params'].get('adversarial_head', 0)) == 1 else False
   # Plot grouped losses per subject and class
   for k_fold, grouped_losses in dict_grouped_losses.items():
     
@@ -283,7 +283,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
   os.makedirs(test_output_folder, exist_ok=True)
   metric_for_training = "_".join(data['config']['key_for_early_stopping'].split('_')[1:]) # key for early stopping === target_metric_best_model
   
-  is_adversarial_training = True if int(data['config']['head_params']['adversarial_head']) == 1 else False
+  is_adversarial_training = True if int(data['config']['head_params'].get('adversarial_head', 0)) == 1 else False
   for key in data['results'].keys():
     if 'final' in key:
       only_losses_folder_per_k = os.path.join(loss_plots_output_folder, f'only_losses_final')
@@ -1312,14 +1312,16 @@ def plot_confusion_matrices(data, root_output_folder, test_id, additional_info='
   
   #### Plot confusion matrix for each epoch ####
   for key,dict_sub_fold in data['results'].items():
+    
+    if 'final' not in key:
+      continue  # For cross-validation folds, only plot for final model
+    
     best_epoch_idx =  dict_sub_fold['train_val']['best_model_idx']
     dict_train_conf_matrix = dict_sub_fold['train_val']['train_confusion_matricies']
-    dict_val_conf_matrix = None
+    dict_val_conf_matrix = dict_sub_fold['train_val']['val_confusion_matricies']
     dict_test_conf_matrix = None
-    if 'final' not in key:
-      dict_val_conf_matrix = dict_sub_fold['train_val']['val_confusion_matricies']
       
-    if 'final' in key or 'test' in data['results'][key]:
+    if 'test' in data['results'][key]:
       dict_test_conf_matrix = {f'{best_epoch_idx}':dict_sub_fold['test']['test_confusion_matrix']}
     
     # Plot confusion matrix for each epoch
@@ -1329,17 +1331,23 @@ def plot_confusion_matrices(data, root_output_folder, test_id, additional_info='
       else:
         fig, axs = plt.subplots(2, 1, figsize=(5, 10))
       axs_count = 0
-      tools.plot_confusion_matrix(dict_train_conf_matrix[epoch], ax=axs[axs_count], title=f'TRAIN - Epoch {epoch}   - {test_id}')
+      kk = key.split('_')
+      if len(kk) > 2:
+        kk = f'{kk[0]}_{kk[-1]}'
+      else:
+        kk = key
+      tools.plot_confusion_matrix(dict_train_conf_matrix[epoch], ax=axs[axs_count], title=f'TRAIN - Epoch {epoch} - {test_id}\n{kk}')
       axs_count += 1
       if data['config'].get('validate', True) and dict_val_conf_matrix is not None:
-        tools.plot_confusion_matrix(dict_val_conf_matrix[epoch], ax=axs[axs_count], title=f'VAL - Epoch {epoch}   - {test_id}')
+        tools.plot_confusion_matrix(dict_val_conf_matrix[epoch], ax=axs[axs_count], title=f'VAL - Epoch {epoch} - {test_id}\n{kk}')
         axs_count += 1
       if int(epoch) == best_epoch_idx and dict_test_conf_matrix is not None:
-        tools.plot_confusion_matrix(dict_test_conf_matrix[epoch], ax=axs[axs_count], title=f'TEST {test_id} - {key} - Epoch {epoch}')
+        tools.plot_confusion_matrix(dict_test_conf_matrix[epoch], ax=axs[axs_count], title=f'TEST - Epoch {epoch} - {test_id}\n{kk}')
         fig.tight_layout()
       fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_confusion_matrix_{key}_epoch_{epoch}.png'))
       plt.close(fig)
       
+  return # Skipping for now to save time
   #### Plot only best epoch confusion matrix in percentage ####
   fig, axs = plt.subplots(3, 1, figsize=(5, 15))
 
@@ -1586,12 +1594,12 @@ def plot_run_details(results_data, output_root,only_csv, dict_args,plot_only_los
       # try:
       plot_grouped_k_fold(data, os.path.join(output_root), test_id)
       plot_losses(data, os.path.join(output_root), test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
+      plot_confusion_matrices(data, os.path.join(output_root), test_id)
       if not plot_only_loss:
         plot_lr_wd_across_epochs(data, os.path.join(output_root), test_id)
         if is_unbc:
           generate_video_from_loss_plots(os.path.join(output_root), test_id)
         if not is_unbc:
-          plot_confusion_matrices(data, os.path.join(output_root), test_id)
           plot_gradient_per_module(data, os.path.join(output_root), test_id)
           
         plot_CCC_ICC_pearson(data, os.path.join(output_root), test_id)
