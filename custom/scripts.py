@@ -28,6 +28,8 @@ def check_intersection_splits(k_fold,subject_ids,list_splits_idxs):
       subject_ids_j = set(subject_ids[list_splits_idxs[j]])
       if len(subject_ids_i.intersection(subject_ids_j)) > 0:
         raise ValueError('The splits must be disjoint')
+      
+      
 def set_seed(seed):
   random.seed(seed)  # Python random module
   np.random.seed(seed)  # NumPy
@@ -67,7 +69,13 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
   sample_ids = csv_array[:, 4].astype(int)
   
   # Create stratified group k-fold splits
-  list_splits_idxs = create_stratified_splits(k_fold, seed_random_state, y_labels, subject_ids, is_subject_independent, type_group=kwargs['type_group'])
+  list_splits_idxs = create_stratified_splits(k_fold, seed_random_state, y_labels, subject_ids, 
+                                              is_subject_independent,
+                                              validation_enabled = validate,
+                                              type_group=kwargs['type_group'],
+                                              skip_test = kwargs['skip_test'],
+                                              load_idxs_splits = kwargs['load_idxs_splits']
+                                              )
   # check_intersection_splits(k_fold, subject_ids, list_splits_idxs)
 
   # Perform k-fold cross-validation
@@ -96,36 +104,49 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
 def create_stratified_splits(k_fold, seed_random_state, y_labels, subject_ids, subject_independent=True,**kwargs):
   """Create stratified group k-fold splits"""
   list_splits_idxs = []  # contains indices for all k splits
-  if subject_independent:
-    # no subjects in common between folds
-    if not kwargs['type_group']:
-      sgkf = StratifiedGroupKFold(n_splits=k_fold, random_state=seed_random_state, shuffle=True)
-      for _, test_index in sgkf.split(X=torch.zeros(y_labels.shape), y=y_labels, groups=subject_ids):
+
+  # load predefined splits, for the adversarial training experiments otherwise cannot compare with previous (not adversarial) results
+  if kwargs['load_idxs_splits']:
+    # load predefined splits
+    with open(f'UNBC/predefined_splits/stratified_k{k_fold}_indip{subject_independent}_val{kwargs["validation_enabled"]}_skiptest{kwargs["skip_test"]}.pkl', 'rb') as f:
+      list_splits_idxs = pickle.load(f)
+    if subject_independent:
+      check_intersection_splits(k_fold,subject_ids,list_splits_idxs)
+  else:                
+    if subject_independent:
+      # no subjects in common between folds
+      if not kwargs['type_group']:
+        sgkf = StratifiedGroupKFold(n_splits=k_fold, random_state=seed_random_state, shuffle=True)
+        for _, test_index in sgkf.split(X=torch.zeros(y_labels.shape), y=y_labels, groups=subject_ids):
+          list_splits_idxs.append(test_index)
+      else: 
+        # 1. Identify all unique subjects
+        unique_subjects = np.unique(subject_ids)
+        
+        # 2. Shuffle the subjects deterministically
+        rng = np.random.RandomState(kwargs['type_group'])  # Use type_group as seed for reproducibility
+        rng.shuffle(unique_subjects)
+        
+        # 3. Split unique subjects into 'k_fold' chunks
+        # np.array_split handles cases where total subjects aren't perfectly divisible
+        subject_folds = np.array_split(unique_subjects, k_fold)
+        
+        # 4. Map back to original indices
+        for fold_subjects in subject_folds:
+          # Find indices in the original data belonging to the subjects in this fold
+          test_mask = np.isin(subject_ids, fold_subjects)
+          test_index = np.where(test_mask)[0]
+          list_splits_idxs.append(test_index)
+    else:
+      # If not subject independent, use regular StratifiedKFold
+      skf = StratifiedKFold(n_splits=k_fold, random_state=seed_random_state, shuffle=True)
+      for _, test_index in skf.split(X=torch.zeros(y_labels.shape), y=y_labels):
         list_splits_idxs.append(test_index)
-    else: 
-      # 1. Identify all unique subjects
-      unique_subjects = np.unique(subject_ids)
-      
-      # 2. Shuffle the subjects deterministically
-      rng = np.random.RandomState(kwargs['type_group'])  # Use type_group as seed for reproducibility
-      rng.shuffle(unique_subjects)
-      
-      # 3. Split unique subjects into 'k_fold' chunks
-      # np.array_split handles cases where total subjects aren't perfectly divisible
-      subject_folds = np.array_split(unique_subjects, k_fold)
-      
-      # 4. Map back to original indices
-      for fold_subjects in subject_folds:
-        # Find indices in the original data belonging to the subjects in this fold
-        test_mask = np.isin(subject_ids, fold_subjects)
-        test_index = np.where(test_mask)[0]
-        list_splits_idxs.append(test_index)
-  else:
-    # If not subject independent, use regular StratifiedKFold
-    skf = StratifiedKFold(n_splits=k_fold, random_state=seed_random_state, shuffle=True)
-    for _, test_index in skf.split(X=torch.zeros(y_labels.shape), y=y_labels):
-      list_splits_idxs.append(test_index)
-  
+    
+    # save locally the splits
+    # os.makedirs('UNBC/predefined_splits', exist_ok=True)
+    # with open(f'UNBC/predefined_splits/stratified_k{k_fold}_indip{subject_independent}_val{kwargs["validation_enabled"]}_skiptest{kwargs["skip_test"]}.pkl', 'wb') as f:
+    #   pickle.dump(list_splits_idxs, f)
   return list_splits_idxs
 
 def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_ids, subject_ids,
