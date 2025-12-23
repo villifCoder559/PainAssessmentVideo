@@ -210,6 +210,7 @@ def refine_perfectly_balanced_target_samples_per_class(df, target_samples_per_cl
       n_to_add = target_samples_per_class - count
       if strategy == 'oversample':
         samples_to_add = new_df[new_df['class_id'] == class_id].sample(n=n_to_add, replace=True)
+        new_df = pd.concat([new_df, samples_to_add], ignore_index=True)
       elif strategy == 'latent_augm':
         while n_to_add > 0:
           n = min(n_to_add, target_samples_per_class - new_df[new_df['class_id'] == class_id].shape[0])
@@ -221,7 +222,6 @@ def refine_perfectly_balanced_target_samples_per_class(df, target_samples_per_cl
           # n_to_add = target_samples_per_class - new_df[new_df['class_id'] == class_id].shape[0]
       else:
         raise ValueError(f"Strategy not recognized: {strategy}")
-      new_df = pd.concat([new_df, samples_to_add], ignore_index=True)
     elif count > target_samples_per_class:
       samples_to_remove = new_df[new_df['class_id'] == class_id].sample(n=count-target_samples_per_class, replace=False)
       new_df = new_df[~new_df.index.isin(samples_to_remove.index)]
