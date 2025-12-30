@@ -183,6 +183,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   contrastive_lambda_weight = trial.suggest_categorical('contrastive_lambda_weight', kwargs['contrastive_lambda_weight'])
   delta_huber = _suggest(trial, 'delta_huber', kwargs['delta_huber'], kwargs['optuna_categorical'])
   perfect_bal_strategy = trial.suggest_categorical('perfect_bal_strategy', kwargs['perfect_bal_strategy'])
+  balance_batches = trial.suggest_categorical('balance_batches', kwargs['balance_batches'])
   composite_loss = None
   loss = None
   loss_args = {
@@ -265,7 +266,27 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   elif concatenate_quadrants:
     input_dim *= 4 # 4 quadrants
   # choose head-specific hyperparameters
+  
+  if composite_loss is not None:
+    num_classes = 1  # regression
+    print(f"\nComposite loss detected. Setting num_classes to 1 for regression.\n")
+    if 'ce' in [l['type'] for l in composite_loss.config_losses]:
+      raise ValueError("Classification loss (ce) not supported in composite loss for regression. Remove 'ce' from composite_loss.") 
+  else:
+    if loss in ['l1', 'l2', 'huber']:
+      num_classes = 1
+      print(f"\nRegression task detected. Setting num_classes to 1 for {loss} loss.")
+    else:
+      num_classes = pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique()
+      
   head_name = kwargs['head']
+  adapter_dict = {
+    'type': trial.suggest_categorical('adapter_type', kwargs['adapter_type']),
+    'mlp_ratio': trial.suggest_categorical('adpater_mlp_ratio', kwargs['adpater_mlp_ratio']),
+    'kernel_size': trial.suggest_categorical('adapter_kernel_size', kwargs['adapter_kernel_size']),
+    'dilation': trial.suggest_categorical('adapter_dilation', kwargs['adapter_dilation']),
+    'num_adapters': trial.suggest_categorical('num_adapters', kwargs['num_adapters']),
+  }
   if head_name.upper() == 'GRU':
     # Sample GRU-specific params
     GRU_hidden_size = _suggest(trial, 'GRU_hidden_size', kwargs['GRU_hidden_size'], kwargs['optuna_categorical'])
@@ -274,6 +295,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     layer_norm = trial.suggest_categorical('layer_norm', kwargs['layer_norm'])
     GRU_dropout = _suggest(trial, 'GRU_dropout', kwargs['GRU_dropout'], kwargs['optuna_categorical'])
     GRU_round_output_loss = trial.suggest_categorical('GRU_round_output_loss', kwargs['GRU_round_output_loss'])
+    
     # Build head parameters
     head_params = {
       'input_dim': input_dim,
@@ -286,7 +308,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     head_enum = HEAD.GRU
     num_classes = GRU_output_size
 
-  else:
+  elif head_name.upper() == 'ATTENTIVE_JEPA':
     # Attentive head parameters
     adversarial_head = trial.suggest_categorical('adversarial_head', kwargs['adversarial_head'])
     adv_alpha_strategy = trial.suggest_categorical('adv_alpha_strategy', kwargs['adv_alpha_strategy'])
@@ -325,26 +347,6 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       del video_analysis_dict
     else:
       xattn_mask = None
-    
-    if composite_loss is not None:
-      num_classes = 1  # regression
-      print(f"\nComposite loss detected. Setting num_classes to 1 for regression.\n")
-      if 'ce' in [l['type'] for l in composite_loss.config_losses]:
-        raise ValueError("Classification loss (ce) not supported in composite loss for regression. Remove 'ce' from composite_loss.") 
-    else:
-      if loss in ['l1', 'l2', 'huber']:
-        num_classes = 1
-        print(f"\nRegression task detected. Setting num_classes to 1 for {loss} loss.")
-      else:
-        num_classes = pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique()
-      
-    adapter_dict = {
-      'type': trial.suggest_categorical('adapter_type', kwargs['adapter_type']),
-      'mlp_ratio': trial.suggest_categorical('adpater_mlp_ratio', kwargs['adpater_mlp_ratio']),
-      'kernel_size': trial.suggest_categorical('adapter_kernel_size', kwargs['adapter_kernel_size']),
-      'dilation': trial.suggest_categorical('adapter_dilation', kwargs['adapter_dilation']),
-      'num_adapters': trial.suggest_categorical('num_adapters', kwargs['num_adapters']),
-    }
     head_params = {
       'input_dim': input_dim,
       'q_k_v_dim': q_k_v_dim if q_k_v_dim != None else emb_dim,
@@ -370,7 +372,30 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'embedding_reduction': kwargs['embedding_reduction'],
     }
     head_enum = HEAD.ATTENTIVE_JEPA
-
+    head_dependent_add_kwargs = {
+      'xattn_mask': xattn_mask,
+      'adv_alpha_strategy': adv_alpha_strategy,
+      'adv_alpha_gamma': adv_alpha_gamma,
+      'adversarial_loss_lambda': adversarial_loss_lambda,
+    }
+  
+  elif head_name.upper() == 'POOL_MLP':
+    mlp_ratio = trial.suggest_categorical('mlp_ratio', kwargs['mlp_ratio'])
+    model_dropout = _suggest(trial, 'model_dropout', kwargs['model_dropout'], kwargs['optuna_categorical'])
+    head_params = {
+      'input_dim': input_dim,
+      'num_classes': num_classes,
+      'dropout': model_dropout,
+      'mlp_ratio': mlp_ratio,
+    }
+    head_enum = HEAD.POOL_MLP
+    head_dependent_add_kwargs = {
+      'xattn_mask': None,
+      'adv_alpha_strategy': None,
+      'adv_alpha_gamma': None,
+      'adversarial_loss_lambda': None,
+    }
+    
   # avoid duplicate trials
   for past in trial.study.trials:
     if past.state not in (
@@ -417,20 +442,18 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'add_CCC_loss': add_CCC_loss,
     'CCC_loss': losses.CCCLoss() if add_CCC_loss > 0 else None,
     'concatenate_quadrants': concatenate_quadrants,
-    'xattn_mask': xattn_mask,
     'stratified_training': stratified_training,
     'is_subject_independent': kwargs['is_subject_independent'],
     'skip_test': kwargs['skip_test'],
     'scheduler_config_dict': scheduler_config_dict,
     'use_test_as_val': kwargs['use_test_as_val'],
-    'adv_alpha_strategy': adv_alpha_strategy,
-    'adv_alpha_gamma': adv_alpha_gamma,
-    'adversarial_loss_lambda': adversarial_loss_lambda,
     'type_group': type_group,
     'perfect_bal_strategy': perfect_bal_strategy,
     'load_idxs_splits': kwargs['load_idxs_splits'],
+    'balance_batches':balance_batches
   }
-    
+  add_kwargs = {**add_kwargs, **head_dependent_add_kwargs}
+   
   print(f"\n[Trial {trial.number}] Params: {trial.params}")
   if isinstance(criterion, losses.RESupConLoss) and kwargs['head_init_path']:
     list_pth_path = get_pth_path_from_project_folder(kwargs['head_init_path'])
@@ -672,7 +695,7 @@ if __name__ == '__main__':
   parser.add_argument('--use_test_as_val', type=int, choices=[0,1], default=0, help='Use test set as validation set. Default is 0 (False)')
   # Model configuration
   parser.add_argument('--mt', type=str, default='B', help="Model type. Available options: 'S', 'B', 'G', 'G_unl', 'vjepa2_L_fpc64_256', 'vjepa2_G_fpc64_384', 'ViT_image', 'DFER'.")
-  parser.add_argument('--head', type=str, default='ATTENTIVE_JEPA', help="Head type. Available options: 'GRU', 'ATTENTIVE', 'ATTENTIVE_JEPA', 'LINEAR'.")
+  parser.add_argument('--head', type=str, default='ATTENTIVE_JEPA', help="Head type. Available options: 'GRU', 'ATTENTIVE', 'ATTENTIVE_JEPA', 'LINEAR', 'POOL_MLP")
   parser.add_argument('--n_workers', type=int, default=1, help='Number of workers for data loading. Default is 1')
   parser.add_argument('--prefetch_factor', type=int, default=2, help='Prefetch factor for data loading. Default is 2')
   parser.add_argument('--embedding_reduction', type=str, default='none', help="Embedding reduction method. Available options: 'spatial', 'temporal', 'all', 'adaptive_pooling_3d', 'none'.")
@@ -694,6 +717,7 @@ if __name__ == '__main__':
   parser.add_argument('--skip_test', type=int, default=0, help='Skip test phase after training. Default is 0 (False)')
   
   # Training parameters
+  parser.add_argument('--balance_batches', type=int,nargs='*', default=[0], help='Try to balance batches using customSampler if possible. Default is 0 (disabled)')
   parser.add_argument('--type_group', type=int,nargs='*', default=[0], help='Type of group for stratified sampling. Default is 0 (StratifiedGroupKFold) else (split in equal numeber of subjects per group)')
   parser.add_argument('--lr', type=float, nargs='*', default=[0.0001], help='Learning rate(s)')
   parser.add_argument('--opt', type=str, nargs='*', default=['adamw'], help="Optimizer(s). Available options: 'adam', 'sgd', 'adamw'.")

@@ -730,7 +730,7 @@ class customDataset(torch.utils.data.Dataset):
     return np.sort(self.video_labels['class_id'].unique().tolist())
 
   def generate_csv_augmented(self,original_csv_path,out_csv_path,dict_augmentation,stratified_training=False):
-    return generate_csv_augmented(original_csv_path=original_csv_path,
+    return helper.generate_csv_augmented(original_csv_path=original_csv_path,
                            out_csv_path=out_csv_path,
                            dict_augmentation=dict_augmentation,
                            path_to_extracted_features=self.path_dataset,
@@ -859,7 +859,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
     return self.df['sample_id'].tolist()
   
   def generate_csv_augmented(self,original_csv_path,out_csv_path,dict_augmentation,stratified_training=False):
-    return generate_csv_augmented(original_csv_path=original_csv_path,
+    return helper.generate_csv_augmented(original_csv_path=original_csv_path,
                            out_csv_path=out_csv_path,
                            dict_augmentation=dict_augmentation,
                            path_to_extracted_features=self.root_folder_feature,
@@ -976,7 +976,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
     return self.df['sample_id'].tolist()
 
   def generate_csv_augmented(self,original_csv_path,out_csv_path,dict_augmentation,stratified_training=False):
-    return generate_csv_augmented(original_csv_path=original_csv_path,
+    return helper.generate_csv_augmented(original_csv_path=original_csv_path,
                            out_csv_path=out_csv_path,
                            dict_augmentation=dict_augmentation,
                            path_to_extracted_features=self.root_folder_features,
@@ -1123,8 +1123,7 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_cla
   # if pid not in helper.time_profile_dict:
   #   helper.time_profile_dict[pid] = 
   
-  if instance_model_name != helper.INSTANCE_MODEL_NAME.LINEARPROBE:
-    
+  if instance_model_name != helper.INSTANCE_MODEL_NAME.Pool_MLP:
     with profile_workers(f'{pid}_collate_preprocess_time',helper.time_profiling_enabled,helper.time_profile_dict):
       dict_res = highly_optimized_custom_collate(batch=batch,
                                                 pid=pid,
@@ -1156,12 +1155,12 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_cla
       raise NotImplementedError(f"Instance model {instance_model_name} not implemented for collate function.")
       
   else:
-    features = torch.cat([torch.mean(sample['features'],dim=0,keepdim=True) for sample in batch],dim=0) # mean over the sequence
-    labels = torch.tensor([sample['labels'][0] for sample in batch],dtype=torch.long)
-    subject_id = torch.tensor([sample['subject_id'][0] for sample in batch])
-    return {'x':features},\
-            labels,\
-            subject_id, 
+    features = torch.cat([torch.mean(sample['features'],dim=(0,1,2,3),keepdim=True,dtype=torch.float32) for sample in batch],dim=0) # mean over the sequence
+    features = features.squeeze(1).squeeze(1).squeeze(1) # [B, Emb]
+    labels = torch.tensor([sample['labels'][0] for sample in batch],dtype=torch.int32)
+    subject_id = torch.tensor([sample['subject_id'][0] for sample in batch], dtype=torch.int32)
+    sample_id = torch.tensor([sample['sample_id'] for sample in batch], dtype=torch.int32)
+    return {'x':features},labels,subject_id,sample_id
 
 # def fake_collate(batch): # to avoid strange error when use customSampler
 #   return batch[0]  
@@ -1235,51 +1234,6 @@ def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: f
   return smoothed_labels
 
 
-def generate_csv_augmented(original_csv_path, dict_augmentation, out_csv_path,path_to_extracted_features,stratified_training=False):
-  def _get_rnd_from_type(type_augm):
-    if type_augm == 'hflip':
-      return 42
-    elif type_augm == 'jitter':
-      return 53
-    elif type_augm == 'rotation':
-      return 63
-    elif type_augm == 'latent_basic':
-      return 73
-    elif type_augm == 'latent_masking':
-      return 83
-    elif type_augm == 'shift':
-      return 93
-    else:
-      raise ValueError(f'Unknown augmentation type: {type_augm}')
-  list_df = []
-  df = pd.read_csv(original_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
-  list_df.append(df)
-  
-  if stratified_training == -1 and 'unbc' in path_to_extracted_features.lower():
-    # if False:
-    augmented_list = ['hflip','jitter','rotation','shift']
-    # get 5 class with less samples
-    minority_classes = df['class_id'].value_counts().nsmallest(5).index
-    df_minority = df[df['class_id'].isin(minority_classes)].copy()
-    print(f'Stratified training: augmenting minority classes {minority_classes.tolist()} with all augmentations: {augmented_list}')
-    for type_augm in augmented_list:
-      copy_df = df_minority.copy(deep=True)
-      # if type_augm == 'shift' keep only the 2 lowest minority classes
-      if type_augm == 'shift' or type_augm == 'jitter':
-        copy_df = df_minority.nsmallest(2, 'class_id')
-      copy_df['sample_id'] = copy_df['sample_id'].apply(lambda x: x + get_shift_for_sample_id(type_augm))
-      list_df.append(copy_df)
-  else:
-    for type_augm, p in dict_augmentation.items():
-      if p > 0 and p<= 1:
-        df_sampled = df.sample(frac=p, random_state=_get_rnd_from_type(type_augm))
-        df_sampled['sample_id'] = df_sampled['sample_id'].apply(lambda x: x + get_shift_for_sample_id(type_augm))
-        list_df.append(df_sampled)
-  df_merged = pd.concat(list_df, ignore_index=True)
-  os.makedirs(os.path.dirname(out_csv_path), exist_ok=True)
-  df_merged.to_csv(out_csv_path, index=False, sep='\t')
-  print(f'CSV file with augmentations saved to {out_csv_path}')
-  return df_merged
  
 def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_training_batch,is_training,dataset_type,concatenate_temporal,model,
                            label_smooth,soft_labels,is_coral_loss,stride_inside_window=1,num_clips_per_video=1,sample_frame_strategy=None,n_workers=None,backbone_dict=None,split_chunks=False,prefetch_factor=None,**kwargs):
@@ -1289,7 +1243,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                   model=model,smooth_labels=label_smooth,
                                   concatenate_quadrants=kwargs['concatenate_quadrants'],
                                   soft_labels=soft_labels,
-                                  xattn_mask=kwargs['xattn_mask'],
+                                  xattn_mask=kwargs.get('xattn_mask',None),
                                   split_chunks=split_chunks,
                                   coral_loss=is_coral_loss)
     if 'caer' in csv_path.lower() or 'combined' in root_folder_features.lower():
@@ -1339,34 +1293,38 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
     raise ValueError(f'Unknown dataset type: {dataset_type}. Choose one of {CUSTOM_DATASET_TYPE}')
   
   if is_training:
-    try:
-      customBatchSampler_train = customBatchSampler(df=dataset_.df, 
-                                          batch_size=batch_size,
-                                          shuffle=shuffle_training_batch)
-      if n_workers > 1:
-        loader_ = DataLoader(
-                            dataset=dataset_,
-                            batch_sampler=customBatchSampler_train,
-                            collate_fn=dataset_._custom_collate,
-                            # batch_size=1,
-                            num_workers=n_workers,
-                            persistent_workers= persistent_workers,
-                            prefetch_factor=prefetch_factor,
-                            pin_memory=pin_memory)
-        print(f'Use custom Dataloader with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
-      else:
-        loader_ = DataLoader(
-                            dataset=dataset_,
-                            batch_sampler=customBatchSampler_train,
-                            collate_fn=dataset_._custom_collate,
-                            # batch_size=1,
-                            pin_memory=True)
-        print(f'Use custom Dataloader!')
-    except Exception as e:
-      # raise ValueError(f'Error in customBatchSampler: {e}') from e
-      print(f'Err in custom BatchSampler: {e}')
-      print(f'Use standard DataLoader')
+    if kwargs['balance_batches']:
+      try:
+        customBatchSampler_train = customBatchSampler(df=dataset_.df, 
+                                            batch_size=batch_size,
+                                            shuffle=shuffle_training_batch)
+        if n_workers > 1:
+          loader_ = DataLoader(
+                              dataset=dataset_,
+                              batch_sampler=customBatchSampler_train,
+                              collate_fn=dataset_._custom_collate,
+                              # batch_size=1,
+                              num_workers=n_workers,
+                              persistent_workers= persistent_workers,
+                              prefetch_factor=prefetch_factor,
+                              pin_memory=pin_memory)
+          print(f'Use custom Dataloader with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
+        else:
+          loader_ = DataLoader(
+                              dataset=dataset_,
+                              batch_sampler=customBatchSampler_train,
+                              collate_fn=dataset_._custom_collate,
+                              # batch_size=1,
+                              pin_memory=True)
+          print(f'Use custom Dataloader!')
+      except Exception as e:
+        # raise ValueError(f'Error in customBatchSampler: {e}') from e
+        print(f'Err in custom BatchSampler: {e}')
+        print(f'Use standard DataLoader')
+        loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate,num_workers=n_workers,persistent_workers=True)
+    else:
       loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate,num_workers=n_workers,persistent_workers=True)
+      print(f'\nBALANCING BATCHES DISABLED, using standard dataloader\n')
   else:
     if n_workers > 1:
       nr_batches = len(dataset_.df) // batch_size + 1

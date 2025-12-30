@@ -20,7 +20,8 @@ import custom.dataset as dataset_utils
 import tqdm
 import copy
 from jepa.src.models.attentive_pooler import AttentiveClassifier as AttentiveClassifierJEPA
-from jepa.evals.video_classification_frozen import eval as jepa_eval 
+
+from jepa.src.models.utils.modules import MLP as jepa_MLP
 from jepa.src.models.utils import pos_embs
 from optuna.exceptions import TrialPruned
 import pickle
@@ -1045,49 +1046,49 @@ class BaseHead(nn.Module):
         CCC = 0.0
         ICC = 0.0
 
-      if is_test:
-        self.log_performance(stage='Test', loss=val_loss, accuracy=dict_precision_recall.get('accuracy', 0.0))
-        return {
-          'test_loss': val_loss,
-          'test_loss_per_class': loss_per_class,
-          'test_loss_per_subject': subject_loss,
-          'test_accuracy_per_class': accuracy_per_class,
-          'test_accuracy_per_subject': accuracy_per_subject,
-          'test_macro_precision': dict_precision_recall.get("macro_precision",0.0),
-          'test_accuracy': dict_precision_recall.get("accuracy",0.0),
-          'test_confusion_matrix': val_confusion_matricies,
-          'test_pearson_correlation': pearson_corr,
-          'test_CCC': CCC,
-          'test_ICC': ICC,
-          'test_prediction_confidence_right_mean': np.mean(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
-          'test_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
-          'test_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
-          'test_prediction_confidence_wrong_std': np.std(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
-          'dict_precision_recall': dict_precision_recall,
-          'test_l1_error': l1_error,
-          'test_l2_error': l2_error,
-        }
-      else:
-        return {
-          'val_loss': val_loss,
-          'val_loss_per_class': loss_per_class,
-          'val_loss_per_subject': subject_loss,
-          'val_accuracy_per_class': accuracy_per_class,
-          'val_accuracy_per_subject': accuracy_per_subject,
-          'val_macro_precision': dict_precision_recall.get("macro_precision",0.0),
-          'val_accuracy': dict_precision_recall.get("accuracy",0.0),
-          'val_confusion_matrix': val_confusion_matricies,
-          'val_pearson_correlation': pearson_corr,
-          'val_CCC': CCC,
-          'val_ICC': ICC,
-          'val_prediction_confidence_right_mean': np.mean(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
-          'val_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
-          'val_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
-          'val_prediction_confidence_wrong_std': np.std(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0, 
-          'dict_precision_recall': dict_precision_recall,
-          'val_l1_error': l1_error,
-          'val_l2_error': l2_error,
-        }      
+    if is_test:
+      self.log_performance(stage='Test', loss=val_loss, accuracy=dict_precision_recall.get('accuracy', 0.0))
+      return {
+        'test_loss': val_loss,
+        'test_loss_per_class': loss_per_class,
+        'test_loss_per_subject': subject_loss,
+        'test_accuracy_per_class': accuracy_per_class,
+        'test_accuracy_per_subject': accuracy_per_subject,
+        'test_macro_precision': dict_precision_recall.get("macro_precision",0.0),
+        'test_accuracy': dict_precision_recall.get("accuracy",0.0),
+        'test_confusion_matrix': val_confusion_matricies,
+        'test_pearson_correlation': pearson_corr,
+        'test_CCC': CCC,
+        'test_ICC': ICC,
+        'test_prediction_confidence_right_mean': np.mean(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
+        'test_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
+        'test_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
+        'test_prediction_confidence_wrong_std': np.std(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
+        'dict_precision_recall': dict_precision_recall,
+        'test_l1_error': l1_error,
+        'test_l2_error': l2_error,
+      }
+    else:
+      return {
+        'val_loss': val_loss,
+        'val_loss_per_class': loss_per_class,
+        'val_loss_per_subject': subject_loss,
+        'val_accuracy_per_class': accuracy_per_class,
+        'val_accuracy_per_subject': accuracy_per_subject,
+        'val_macro_precision': dict_precision_recall.get("macro_precision",0.0),
+        'val_accuracy': dict_precision_recall.get("accuracy",0.0),
+        'val_confusion_matrix': val_confusion_matricies,
+        'val_pearson_correlation': pearson_corr,
+        'val_CCC': CCC,
+        'val_ICC': ICC,
+        'val_prediction_confidence_right_mean': np.mean(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
+        'val_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
+        'val_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
+        'val_prediction_confidence_wrong_std': np.std(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0, 
+        'dict_precision_recall': dict_precision_recall,
+        'val_l1_error': l1_error,
+        'val_l2_error': l2_error,
+      }      
 
   def log_and_save_gradients(model, epoch, batch_idx, saving_path):
     """
@@ -1136,14 +1137,46 @@ class BaseHead(nn.Module):
   
 class LinearHead(BaseHead):
   def __init__(self, input_dim, num_classes, dim_reduction):
-    super().__init__(self,is_classification)
+    super().__init__(self,is_classification=True if num_classes > 1 else False)
     self._model = LinearProbe(input_dim=input_dim, num_classes=num_classes,dim_reduction=dim_reduction)
     is_classification = True if num_classes > 1 else False
     self.is_classification = is_classification
     self.num_classes = num_classes
 
-
-
+class PooledHeadMLP(BaseHead):
+  def __init__(self, input_dim, num_classes, mlp_ratio=4.0, dropout=0.0):
+    super().__init__(self,is_classification=True if num_classes > 1 else False)
+    self.mlp = jepa_MLP(in_features=input_dim,
+                        hidden_features=int(input_dim * mlp_ratio),
+                        act_layer=nn.GELU,
+                        out_features=input_dim,
+                        drop=dropout)
+    self.num_classes = num_classes
+    self.linear = nn.Linear(input_dim, num_classes)
+    self.embedding_reduction = helper.EMBEDDING_REDUCTION.NONE
+    self._initialize_weights()
+  
+  def forward(self, x: torch.Tensor, **kwargs):
+    # x = x.mean(dim=(0,1,2,3)) # [B*chunks, T, S, S, embed_dim] -> [B,1,1,1,embed_dim]
+    # x = x.squeeze(dim=1).squeeze(dim=1).squeeze(dim=1) # [B, embed_dim] 
+    x = self.mlp(x)
+    x = self.linear(x)
+    return {'logits': x, 'embeddings': None}
+  
+  def _initialize_weights(self,init_type='default'):
+    # Initialize the weights
+    if init_type == 'default':
+      for module in self.modules():
+        if isinstance(module, nn.Linear):
+          nn.init.trunc_normal_(module.weight, std=0.02)
+          if module.bias is not None:
+            nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.LayerNorm):
+          nn.init.ones_(module.weight)
+          nn.init.zeros_(module.bias)
+    else:
+      raise NotImplementedError(f'Unknown init_type {init_type}')
+    
 class AttentiveHeadJEPA(BaseHead):
   def __init__(self,
       embed_dim=768,

@@ -449,6 +449,7 @@ class INSTANCE_MODEL_NAME(Enum): # model.__class__.__name__
   GRUPROBE = 'GRUProbe'
   ATTENTIVEPROBE = 'AttentiveProbe'
   AttentiveClassifier = 'AttentiveHeadJEPA' # JEPA implementation
+  Pool_MLP = 'PooledHeadMLP'
   
 class CLIPS_REDUCTION(Enum): 
   # [B,t,p,p,emb] -> [1,t,p,p,emb] ex: [3,8,14,14,768] -> [1,8,14,14,768]
@@ -460,6 +461,7 @@ class HEAD(Enum):
   ATTENTIVE = 'ATTENTIVE'
   ATTENTIVE_JEPA = 'ATTENTIVE_JEPA'
   LINEAR = 'LINEAR'
+  POOL_MLP = 'POOL_MLP'
 
 class GLOBAL_PATH:
   NAS_PATH = os.path.join('/equilibrium','fvilli','PainAssessmentVideo')
@@ -479,3 +481,49 @@ class CUSTOM_DATASET_TYPE(Enum):
   AGGREGATED = 'aggregated' # features reduced (spatial reduction) and saved in one folder 
   WHOLE = 'whole' # features not reduced and saved in more folders (like Biovid video)
   BASE = 'base' # video->frames->backbone->features
+
+def generate_csv_augmented(original_csv_path, dict_augmentation, out_csv_path,path_to_extracted_features='',stratified_training=False):
+  def _get_rnd_from_type(type_augm):
+    if type_augm == 'hflip':
+      return 42
+    elif type_augm == 'jitter':
+      return 53
+    elif type_augm == 'rotation':
+      return 63
+    elif type_augm == 'latent_basic':
+      return 73
+    elif type_augm == 'latent_masking':
+      return 83
+    elif type_augm == 'shift':
+      return 93
+    else:
+      raise ValueError(f'Unknown augmentation type: {type_augm}')
+  list_df = []
+  df = pd.read_csv(original_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
+  list_df.append(df)
+  
+  if stratified_training == -1 and 'unbc' in path_to_extracted_features.lower():
+    # if False:
+    augmented_list = ['hflip','jitter','rotation','shift']
+    # get 5 class with less samples
+    minority_classes = df['class_id'].value_counts().nsmallest(5).index
+    df_minority = df[df['class_id'].isin(minority_classes)].copy()
+    print(f'Stratified training: augmenting minority classes {minority_classes.tolist()} with all augmentations: {augmented_list}')
+    for type_augm in augmented_list:
+      copy_df = df_minority.copy(deep=True)
+      # if type_augm == 'shift' keep only the 2 lowest minority classes
+      if type_augm == 'shift' or type_augm == 'jitter':
+        copy_df = df_minority.nsmallest(2, 'class_id')
+      copy_df['sample_id'] = copy_df['sample_id'].apply(lambda x: x + get_shift_for_sample_id(type_augm))
+      list_df.append(copy_df)
+  else:
+    for type_augm, p in dict_augmentation.items():
+      if p > 0 and p<= 1:
+        df_sampled = df.sample(frac=p, random_state=_get_rnd_from_type(type_augm))
+        df_sampled['sample_id'] = df_sampled['sample_id'].apply(lambda x: x + get_shift_for_sample_id(type_augm))
+        list_df.append(df_sampled)
+  df_merged = pd.concat(list_df, ignore_index=True)
+  os.makedirs(os.path.dirname(out_csv_path), exist_ok=True)
+  df_merged.to_csv(out_csv_path, index=False, sep='\t')
+  print(f'CSV file with augmentations saved to {out_csv_path}')
+  return df_merged
