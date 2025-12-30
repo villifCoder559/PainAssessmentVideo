@@ -161,6 +161,7 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
   dict_grouped_losses = get_grouped_losses(data, data['config'])
   is_adversarial_training = True if int(data['config']['head_params'].get('adversarial_head', 0)) == 1 else False
   # Plot grouped losses per subject and class
+  is_unbc = 'unbc' in "".join(data['config']['path_csv_dataset']).lower()
   for k_fold, grouped_losses in dict_grouped_losses.items():
     
     # Plot error per subject
@@ -170,7 +171,7 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
     val_subject_loss = grouped_losses['subject_val_loss'] if 'subject_val_loss' in grouped_losses else grouped_losses['subject_test_loss']
     
     # Convert UNBC counts to IDs if adversarial training
-    if is_adversarial_training:
+    if is_adversarial_training and is_unbc:
       train_subject_loss = {helper.unbc_count_to_id[k]: v for k,v in train_subject_loss.items()}
       val_subject_loss = {helper.unbc_count_to_id[k]: v for k,v in val_subject_loss.items()}
        
@@ -313,7 +314,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
       
       else:
         raise ValueError('No train accuracy or val accuracy found in the data')
-      if 'test' in data['results'][key] or 'final' in key:
+      if ('test' in data['results'][key] and data['results'][key]['test'] != {}) or 'final' in key:
         test_accuracy = data['results'][key]['test']['dict_precision_recall'].get('accuracy', None)
         test_loss = data['results'][key]['test']['test_loss']
         if test_accuracy is not None:
@@ -459,7 +460,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
             loss_per_subject_train = data['results'][key]['train_val'].get('train_loss_per_subject', None)
             unique_subject_ids_train=data['results'][key]['train_val']['train_unique_subject_ids']
             
-            if is_adversarial_training:
+            if is_adversarial_training and is_unbc:
               unique_subject_ids_train = helper.convert_unbc_count_to_id(unique_subject_ids_train)
                 
             tools.plot_error_per_subject(loss_per_subject=loss_per_subject_train[best_epoch],
@@ -485,7 +486,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
               loss_per_subject_val = data['results'][key]['train_val'].get('val_loss_per_subject', None)
               unique_subject_ids_val=data['results'][key]['train_val']['val_unique_subject_ids']
               
-              if is_adversarial_training:
+              if is_adversarial_training and is_unbc:
                 unique_subject_ids_val = helper.convert_unbc_count_to_id(unique_subject_ids_val)
               
               tools.plot_error_per_subject(loss_per_subject=loss_per_subject_val[best_epoch],
@@ -497,7 +498,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                           ax=axs[2][0])
             else:
               unique_subject_ids_test=dict_per_subject_test['test_unique_subject_ids']
-              if is_adversarial_training:
+              if is_adversarial_training and is_unbc:
                 unique_subject_ids_test = helper.convert_unbc_count_to_id(unique_subject_ids_test)
             
               tools.plot_error_per_subject(loss_per_subject=dict_per_subject_test['test_loss_per_subject'],
@@ -665,7 +666,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         # Train Loss
         if loss_per_subject_train is not None:
           unique_subject_ids_train=data['results'][key]['train_val']['train_unique_subject_ids']
-          if is_adversarial_training:
+          if is_adversarial_training and is_unbc:
             unique_subject_ids_train = helper.convert_unbc_count_to_id(unique_subject_ids_train)
           tools.plot_error_per_subject(loss_per_subject=loss_per_subject_train[best_epoch],
                                         unique_subject_ids=unique_subject_ids_train,
@@ -678,7 +679,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         # Val Loss
         if loss_per_subject_val is not None:
           unique_subject_ids_val=data['results'][key]['train_val']['val_unique_subject_ids']
-          if is_adversarial_training:
+          if is_adversarial_training and is_unbc:
             unique_subject_ids_val = helper.convert_unbc_count_to_id(unique_subject_ids_val)
           tools.plot_error_per_subject(loss_per_subject=loss_per_subject_val[best_epoch],
                                       unique_subject_ids=unique_subject_ids_val,
@@ -689,9 +690,9 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                       ax=axs[count_axs])
           count_axs += 1
         # Test Loss
-        if dict_per_subject_test is not None:
+        if dict_per_subject_test is not None and dict_per_subject_test != {} :
           unique_subject_ids_test=dict_per_subject_test['test_unique_subject_ids']
-          if is_adversarial_training:
+          if is_adversarial_training and is_unbc:
             unique_subject_ids_test = helper.convert_unbc_count_to_id(unique_subject_ids_test)
           tools.plot_error_per_subject(loss_per_subject=dict_per_subject_test['test_loss_per_subject'],
                                     unique_subject_ids=dict_per_subject_test['test_unique_subject_ids'],
@@ -742,7 +743,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                       ax=axs[count_axs])
           count_axs += 1
         # Test accuracy
-        if dict_per_subject_test is not None:
+        if dict_per_subject_test is not None and dict_per_subject_test != {}:
           tools.plot_error_per_subject(loss_per_subject=dict_per_subject_test['test_accuracy_per_subject'],
                                 unique_subject_ids=data['results'][key]['test']['test_unique_subject_ids'],
                                 y_label='Test Accuracy',
@@ -792,7 +793,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                     ax=axs[count_axs])
           count_axs += 1
         # Test Loss
-        if accuracy_per_class_test is not None:
+        if accuracy_per_class_test is not None and accuracy_per_class_test != {}:
           tools.plot_error_per_class(mae_per_class=accuracy_per_class_test['test_loss_per_class'],
                                   unique_classes=data['results'][key]['test']['test_unique_y'],
                                   title=f'TEST {key} - {test_id}',
@@ -838,7 +839,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                     ax=axs[count_axs])
           count_axs += 1
         # Test Loss
-        if dict_test is not None:
+        if dict_test is not None and dict_test != {}:
           tools.plot_error_per_class(unique_classes=data['results'][key]['test']['test_unique_y'],
                                   # mae_per_class=dict_per_class_test['test_loss_per_class'],
                                   title=f'TEST {key} - {test_id}',
@@ -1313,15 +1314,15 @@ def plot_confusion_matrices(data, root_output_folder, test_id, additional_info='
   #### Plot confusion matrix for each epoch ####
   for key,dict_sub_fold in data['results'].items():
     
-    if 'final' not in key:
-      continue  # For cross-validation folds, only plot for final model
+    # if 'final' not in key:
+    #   continue  # For cross-validation folds, only plot for final model
     
     best_epoch_idx =  dict_sub_fold['train_val']['best_model_idx']
     dict_train_conf_matrix = dict_sub_fold['train_val']['train_confusion_matricies']
     dict_val_conf_matrix = dict_sub_fold['train_val']['val_confusion_matricies']
     dict_test_conf_matrix = None
       
-    if 'test' in data['results'][key]:
+    if 'test' in data['results'][key] and data['results'][key]['test'] != {}:
       dict_test_conf_matrix = {f'{best_epoch_idx}':dict_sub_fold['test']['test_confusion_matrix']}
     
     # Plot confusion matrix for each epoch
