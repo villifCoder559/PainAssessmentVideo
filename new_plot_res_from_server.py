@@ -372,15 +372,22 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         
         # Plot accuracy gap and dataset distribution if not UNBC dataset
         if not is_unbc: # Biovid
-          input_dict_accuracy_gap={
-            'list_1': np.array(train_accuracy) - np.array(val_accuracy),
-            'title':f'Accuracy Gap in Train-Validation',
-            'ax':axs[1][0],
-            'x_label':'Epochs',
-            'y_label_1':f'Accuracy Gap',
-            'y_lim_1':[-1, 1],
-            'color_1':'tab:orange',
-          }
+          # input_dict_accuracy_gap={
+          #   'list_1': np.array(train_accuracy) - np.array(val_accuracy),
+          #   'title':f'Accuracy Gap in Train-Validation',
+          #   'ax':axs[1][0],
+          #   'x_label':'Epochs',
+          #   'y_label_1':f'Accuracy Gap',
+          #   'y_lim_1':[-1, 1],
+          #   'color_1':'tab:orange',
+          # }
+          
+          y_lim_error = 20 if isinstance(data['config']['criterion'],torch.nn.MSELoss) else 10
+          create_lr_wd_plot(data['results'][key],
+                            test_id,
+                            key,
+                            title=f'Learning Rate and Weight Decay Across Epochs',
+                            ax1=axs[1][0])
           input_dict_loss_acc= {
           'list_1':train_losses,
           'list_2':val_accuracy,
@@ -404,7 +411,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
           'color_3':'tab:green',
         }
         
-          tools.plot_losses_and_test_new(**input_dict_accuracy_gap)
+          # tools.plot_losses_and_test_new(**input_dict_accuracy_gap)
           tools.plot_losses_and_test_new(**input_dict_loss_acc)
         else:
           if loss_plot_type == 'dist':
@@ -1595,6 +1602,7 @@ def plot_run_details(results_data, output_root,only_csv, dict_args,plot_only_los
       # try:
       plot_grouped_k_fold(data, os.path.join(output_root), test_id)
       plot_losses(data, os.path.join(output_root), test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
+      
       plot_confusion_matrices(data, os.path.join(output_root), test_id)
       if not plot_only_loss:
         plot_lr_wd_across_epochs(data, os.path.join(output_root), test_id)
