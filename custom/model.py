@@ -398,6 +398,7 @@ class Model_Advanced: # Scenario_Advanced
       df_final.to_csv(train_csv_path, index=False, sep='\t')
       print(f"Original class distribution:\n{df_original['class_id'].value_counts().sort_index()}")
       print(f"Stratification completed. New class distribution:\n{df_final['class_id'].value_counts().sort_index()}")
+      
     if 'parta' in self.path_to_extracted_features.lower() and kwargs.get('stratified_training', False):
       list_augmentations_available = helper.get_augmentation_availables(self.path_to_extracted_features)
       dict_augmented = {augm: 1 for augm in list_augmentations_available}

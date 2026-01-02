@@ -67,6 +67,7 @@ class customDataset(torch.utils.data.Dataset):
       video_extension = '.mp4',
       shift_frame_idx = 0,
       quadrant=None,
+      consider_only_lasts_n_chunks=None,
       **kwargs
   ):
     """
@@ -133,7 +134,7 @@ class customDataset(torch.utils.data.Dataset):
     self.image_resize_w = image_resize_w
     self.image_resize_h = image_resize_h
     self.image_channels = 3
-    
+    self.consider_only_lasts_n_chunks = consider_only_lasts_n_chunks
     # Set sampling strategy method based on parameter
     self._set_sampling_strategy(sample_frame_strategy)
 
@@ -737,7 +738,7 @@ class customDataset(torch.utils.data.Dataset):
                            stratified_training=stratified_training)
 
 class customDatasetAggregated(torch.utils.data.Dataset):
-  def __init__(self,root_folder_features,concatenate_temporal,concatenate_quadrants,model,is_train,csv_path,smooth_labels,soft_labels,coral_loss):
+  def __init__(self,root_folder_features,concatenate_temporal,concatenate_quadrants,model,is_train,csv_path,smooth_labels,soft_labels,coral_loss,consider_only_lasts_n_chunks=None):
     self.root_folder_feature = root_folder_features
     self.csv_path = csv_path
     helper.set_step_shift(root_folder_features)
@@ -760,6 +761,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
     self.model = model
     self.instance_model_name = tools.get_instace_model_name(model)
     self.smooth_labels = smooth_labels
+    self.consider_only_lasts_n_chunks = consider_only_lasts_n_chunks
     if soft_labels:
       classes = list(range(self.num_classes))
       distances = {(i, j): abs(i - j) for i in classes for j in classes}
@@ -829,6 +831,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
     if isinstance(idx,int):
       return _get_element(df=self.df,dict_data=helper.dict_data,idx=idx,
                           dataset_type=CUSTOM_DATASET_TYPE.AGGREGATED,is_quadrant=self.is_quadrant,
+                          consider_only_lasts_n_chunks=self.consider_only_lasts_n_chunks,
                           embedding_reduction=self.model.embedding_reduction)
     else:
       raise NotImplementedError("Batch loading is not implemented for customDatasetAggregated")
@@ -867,7 +870,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
 
 
 class customDatasetWhole(torch.utils.data.Dataset):
-  def __init__(self,csv_path,root_folder_features,concatenate_temporal,concatenate_quadrants,model,smooth_labels,soft_labels,coral_loss, xattn_mask,split_chunks=False):
+  def __init__(self,csv_path,root_folder_features,concatenate_temporal,concatenate_quadrants,model,smooth_labels,soft_labels,coral_loss, xattn_mask,split_chunks=False, consider_only_lasts_n_chunks=None):
     self.csv_path = csv_path
     helper.set_step_shift(root_folder_features)
     print(f"\n CustomDatasetWhole: Using step shift = {helper.step_shift} for dataset {root_folder_features} \n")
@@ -889,7 +892,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
     self.smooth_labels = smooth_labels
     self.num_classes = len(self.get_unique_classes())
     self.split_chunks = split_chunks
-    
+    self.consider_only_lasts_n_chunks = consider_only_lasts_n_chunks
     if soft_labels:
       classes = list(range(self.num_classes))
       distances = {(i, j): abs(i - j) for i in classes for j in classes}
@@ -937,6 +940,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
     return _get_element(dict_data=features,df=self.df,idx=idx,
                         dataset_type=CUSTOM_DATASET_TYPE.WHOLE, 
                         is_quadrant=self.is_quadrant,
+                        consider_only_lasts_n_chunks=self.consider_only_lasts_n_chunks,
                         embedding_reduction=self.model.embedding_reduction,
                         xattn_mask=self.xattn_mask)
 
@@ -1243,6 +1247,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                   model=model,smooth_labels=label_smooth,
                                   concatenate_quadrants=kwargs['concatenate_quadrants'],
                                   soft_labels=soft_labels,
+                                  consider_only_lasts_n_chunks=kwargs['consider_only_lasts_n_chunks'],
                                   xattn_mask=kwargs.get('xattn_mask',None),
                                   split_chunks=split_chunks,
                                   coral_loss=is_coral_loss)
@@ -1258,6 +1263,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                         concatenate_temporal=concatenate_temporal,
                                         is_train=is_training,
                                         model=model,
+                                        consider_only_lasts_n_chunks=kwargs['consider_only_lasts_n_chunks'],
                                         concatenate_quadrants=kwargs['concatenate_quadrants'],
                                         smooth_labels=label_smooth,
                                         coral_loss=is_coral_loss,
@@ -1277,6 +1283,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                               stride_inside_window=stride_inside_window,
                               preprocess_align=False,
                               preprocess_frontalize=False,
+                              consider_only_lasts_n_chunks=kwargs['consider_only_lasts_n_chunks'],
                               preprocess_crop_detection=False,
                               saving_folder_path_extracted_video=None,
                               video_labels=None,
@@ -1342,7 +1349,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
   return dataset_,loader_
 
   
-def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,is_quadrant=False,concatenate_quadrants=False,xattn_mask=None):
+def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,consider_only_lasts_n_chunks,is_quadrant=False,concatenate_quadrants=False,xattn_mask=None):
   pid = os.getpid()
   # if pid not in helper.time_profile_dict:
   #   helper.time_profile_dict[pid] = mp.Manager().dict()
@@ -1369,15 +1376,16 @@ def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,is_quadrant=F
   with profile_workers(f'{pid}_selection_time',helper.time_profiling_enabled,helper.time_profile_dict):
     if dataset_type != CUSTOM_DATASET_TYPE.AGGREGATED:
       features = dict_data['features'] # shape [nr_chunks,T,S,S,Emb] 
+      if consider_only_lasts_n_chunks is not None:
+        features = features[-consider_only_lasts_n_chunks:] # consider only the last n chunks
       labels = csv_label.repeat(features.shape[0])
       subject_id = subject_id.repeat(labels.shape[0])
-      # subject_id = dict_data['list_subject_id'] # used the one from csv because in CAER is different from the data extracted previously
-      # if subject_id.ndim == 0:
-      #   subject_id = subject_id.unsqueeze(0)
+      
     else:
       features = dict_data['features'][mask]
+      if consider_only_lasts_n_chunks is not None:
+        features = features[-consider_only_lasts_n_chunks:] # consider only the last n chunks
       labels = csv_label.repeat(features.shape[0])
-      # subject_id = dict_data['list_subject_id'][mask] # used the one from csv because in CAER is different from the data extracted previously
       subject_id = subject_id.repeat(labels.shape[0])
 
   with profile_workers(f'{pid}_embedding_reduction_time',helper.time_profiling_enabled,helper.time_profile_dict):
