@@ -170,7 +170,9 @@ class CrossAttention(nn.Module):
     ):
         super().__init__()
         self.num_heads = num_heads
-        head_dim = dim // num_heads
+        if q_k_v_dim is not None:
+            assert q_k_v_dim % num_heads == 0, "q_k_v_dim must be divisible by num_heads"
+        head_dim = (q_k_v_dim if q_k_v_dim is not None else dim) // num_heads
         self.scale = head_dim ** -0.5
         self.q = nn.Linear(dim, dim if q_k_v_dim is None else q_k_v_dim, bias=qkv_bias)
         self.kv = nn.Linear(dim, int((dim if q_k_v_dim is None else q_k_v_dim) *2), bias=qkv_bias)
@@ -257,6 +259,6 @@ class CrossAttentionBlock(nn.Module):
 
     def forward(self, q, x, mask=None, return_xattn=False):
         y,xattn = self.xattn(q, self.norm1(x), mask=mask, return_xattn=return_xattn)
-        q = self.residual_drop(q) + y
-        q = self.mlp(self.norm2(q))
+        q = q + self.residual_drop(y)
+        q = q + self.residual_drop(self.mlp(self.norm2(q)))
         return q, xattn
