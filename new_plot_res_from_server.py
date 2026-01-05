@@ -730,11 +730,11 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                        y_label='Train Accuracy',
                                        title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
                                        criterion=data['config']['criterion'],
-                                      list_stoic_subject=helper.stoic_subjects,
-                                      bar_color='blue',
-                                      step_y_axis=0.1, 
-                                      y_lim=y_lim,
-                                      ax=axs[count_axs])
+                                       list_stoic_subject=helper.stoic_subjects,
+                                       bar_color='blue',
+                                       step_y_axis=0.1, 
+                                       y_lim=y_lim,
+                                       ax=axs[count_axs])
           count_axs += 1
         # Val accuracy
         if accuracy_per_subject_val is not None:
