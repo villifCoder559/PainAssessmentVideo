@@ -528,7 +528,7 @@ def init_opt(
     num_epochs,
     wd=1e-6,
     final_wd=1e-6,
-    final_lr=0.0,
+    final_lr=1e-7,
     use_bfloat16=False
 ):
     param_groups = [
