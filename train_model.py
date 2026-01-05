@@ -214,7 +214,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   latent_basic = _suggest(trial, 'latent_basic', kwargs['latent_basic'], kwargs['optuna_categorical'])  
   latent_masking = _suggest(trial, 'latent_masking', kwargs['latent_masking'], kwargs['optuna_categorical'])
   shift_augm = _suggest(trial, 'shift_augm', kwargs['shift_augm'], kwargs['optuna_categorical'])
-  
+  consider_only_lasts_n_chunks = trial.suggest_categorical('consider_only_lasts_n_chunks', kwargs['consider_only_lasts_n_chunks'])
   # scheduler and optimizer params
   exclude_bias_wd = trial.suggest_categorical('exclude_bias_wd', kwargs['exclude_bias_wd'])
   warm_up_epochs = _suggest(trial, 'warm_up_epochs', kwargs['warm_up_epochs'], kwargs['optuna_categorical'])
@@ -450,7 +450,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'type_group': type_group,
     'perfect_bal_strategy': perfect_bal_strategy,
     'load_idxs_splits': kwargs['load_idxs_splits'],
-    'balance_batches':balance_batches
+    'balance_batches':balance_batches,
+    'consider_only_lasts_n_chunks': consider_only_lasts_n_chunks,
   }
   add_kwargs = {**add_kwargs, **head_dependent_add_kwargs}
    
@@ -715,6 +716,7 @@ if __name__ == '__main__':
   parser.add_argument('--load_dataset_in_memory', type=int, default=0, help='Load the entire dataset into RAM memory. Default is 0 (False)')
   parser.add_argument('--is_subject_independent', type=int, choices=[0,1], default=1, help='Subject-independent split. Default is 1 (True)')
   parser.add_argument('--skip_test', type=int, default=0, help='Skip test phase after training. Default is 0 (False)')
+  parser.add_argument('--consider_only_lasts_n_chunks', nargs='*', type=int, default=[], help='Consider only the last n chunks of each video during training and evaluation. Default is 0 (consider all chunks)')
   
   # Training parameters
   parser.add_argument('--balance_batches', type=int,nargs='*', default=[0], help='Try to balance batches using customSampler if possible. Default is 0 (disabled)')
