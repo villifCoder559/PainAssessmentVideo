@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import os
 import shutil
+from cdw_cross_entropy_loss import cdw_cross_entropy_loss
 import custom.tools as tools
 from torchmetrics.classification import MulticlassConfusionMatrix
 import tqdm
@@ -367,7 +368,15 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         # add test_id in dict_to_string
         dict_to_string += f'\nTest ID: {test_id}'
         dict_to_string += f'\nfold_subfold: {key.split("_")[0]}_{key.split("_")[-1]}'
-        y_lim_loss = 15.1 if isinstance(data['config']['criterion'],torch.nn.MSELoss) else 5.1
+        y_lim_loss = 5.1
+        step_lim = 0.25
+        if isinstance(data['config']['criterion'],torch.nn.MSELoss):
+          y_lim_loss = 15.1
+          step_lim = 3
+        elif isinstance(data['config']['criterion'],cdw_cross_entropy_loss.CDW_CELoss):
+          y_lim_loss = 35.1
+          step_lim = 6
+        # y_lim_loss = 15.1 if isinstance(data['config']['criterion'],torch.nn.MSELoss) else 5.1
         x_lim_loss = -1.1 if isinstance(data['config']['criterion'],losses.RESupConLoss) else 0
         
         # Plot accuracy gap and dataset distribution if not UNBC dataset
@@ -399,12 +408,12 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
           'y_label_1':'Train loss',
           'y_label_2':'Validation accuracy',
           'y_label_3':'Test accuracy',
-          'y_lim_1':[0, 5],
-          'y_lim_2':[0, 1],
-          'y_lim_3':[0, 1],
-          'step_ylim_1':0.25,
-          'step_ylim_2':0.1,
-          'step_ylim_3':0.1,
+          'y_lim_1':[0, y_lim_loss],
+          'y_lim_2':[0, 0.5],
+          'y_lim_3':[0, 0.5],
+          'step_ylim_1':step_lim,
+          'step_ylim_2':0.05,
+          'step_ylim_3':0.05,
           'dict_to_string':None,
           'color_1':'tab:red',
           'color_2':'tab:blue',
@@ -602,7 +611,6 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                               y_step=0.1,)
         
         
-        step_lim = 2 if isinstance(data['config']['criterion'],torch.nn.MSELoss) else 0.25
         input_dict_loss={
           'list_1':train_losses,
           'list_2':val_loss,
