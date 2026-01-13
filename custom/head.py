@@ -279,6 +279,7 @@ class BaseHead(nn.Module):
       history_train_sample_predictions = None
       history_val_sample_predictions = None
     list_train_losses = []
+    list_train_adv_losses = []
     list_train_losses_per_class = []
     list_train_accuracy_per_class = []
     list_train_accuracy_per_subject = []
@@ -409,6 +410,8 @@ class BaseHead(nn.Module):
       list_batch_lr = []
       total_steps = num_epochs * len(train_loader)
       list_batch_wd = []
+      batch_adv_loss = 0.0
+      batch_original_loss = 0.0
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
         end_load_batch = time.time()
         dict_log_time['load_batch'] = dict_log_time.get('load_batch',0) + end_load_batch - start_load_batch
@@ -460,6 +463,8 @@ class BaseHead(nn.Module):
             adv_logits = dict_out['adv_logits']
             # create adversarial labels as the opposite of the true labels
             adv_loss = adv_criterion(adv_logits, batch_subjects)
+            batch_adv_loss += adv_loss.item()
+            batch_original_loss += loss.item()
             loss = loss + adv_loss * kwargs['adversarial_loss_lambda']
           outputs = dict_out['logits']
           if regularization_lambda_L1 > 0:
@@ -573,6 +578,7 @@ class BaseHead(nn.Module):
 
       list_lrs.append(list_batch_lr)
       list_wds.append(list_batch_wd)
+      list_train_adv_losses.append([batch_adv_loss / len(train_loader), batch_original_loss / len(train_loader)])
       time_eval = time.time()
       dict_eval = None
       if val_csv_path is not None:
@@ -856,6 +862,7 @@ class BaseHead(nn.Module):
       'list_val_l1_error': l1_error_val_list,
       'list_val_l2_error': l2_error_val_list,
       'list_val_pearson_correlation': list_val_pearson_correlation,
+      'list_train_adv_losses': list_train_adv_losses,
       'train_batch_sampler_name': (train_loader.batch_sampler.__class__.__module__ + "." + train_loader.batch_sampler.__class__.__name__),
       # 'list_samples': list_list_samples,
       # 'list_y': list_list_y
