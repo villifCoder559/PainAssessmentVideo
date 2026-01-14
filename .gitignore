@@ -217,3 +217,4 @@ test_TSNE_plots/tsne_k4_test_labels.png
 test_TSNE_plots/tsne_k4_test_subjects.png
 test_TSNE_plots/tsne_k4_train_labels.png
 test_TSNE_plots/tsne_k4_train_subjects.png
+reversed_video*/
