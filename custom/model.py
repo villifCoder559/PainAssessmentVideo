@@ -378,6 +378,7 @@ class Model_Advanced: # Scenario_Advanced
       is_coral_loss = False
       print('No coral loss. Using standard loss function.')
     batch_size = self.batch_size_training
+    # Stratified training for UNBC dataset
     if 'unbc' in self.path_to_extracted_features.lower() and kwargs.get('stratified_training', False):
       df_original = pd.read_csv(train_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
       target_samples_per_class = kwargs['stratified_training']
@@ -399,8 +400,17 @@ class Model_Advanced: # Scenario_Advanced
       print(f"Original class distribution:\n{df_original['class_id'].value_counts().sort_index()}")
       print(f"Stratification completed. New class distribution:\n{df_final['class_id'].value_counts().sort_index()}")
       
+    # Stratified training for BIOVID dataset
     if 'parta' in self.path_to_extracted_features.lower() and kwargs.get('stratified_training', False):
       list_augmentations_available = helper.get_augmentation_availables(self.path_to_extracted_features)
+      if kwargs['stratified_training'] == 2:
+        list_augmentations_available.append('latent_basic')
+      elif kwargs['stratified_training'] == 3:
+        list_augmentations_available.append('latent_masking')
+      elif kwargs['stratified_training'] == 4:
+        list_augmentations_available.append('latent_basic')
+        list_augmentations_available.append('latent_masking')
+        
       dict_augmented = {augm: 1 for augm in list_augmentations_available}
       helper.generate_csv_augmented(original_csv_path=train_csv_path,
                                     dict_augmentation=dict_augmented,

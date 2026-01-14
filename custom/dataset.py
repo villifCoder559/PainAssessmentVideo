@@ -738,13 +738,14 @@ class customDataset(torch.utils.data.Dataset):
                            stratified_training=stratified_training)
 
 class customDatasetAggregated(torch.utils.data.Dataset):
-  def __init__(self,root_folder_features,concatenate_temporal,concatenate_quadrants,model,is_train,csv_path,smooth_labels,soft_labels,coral_loss,consider_only_lasts_n_chunks=None):
+  def __init__(self,root_folder_features,concatenate_temporal,concatenate_quadrants,model,is_train,csv_path,smooth_labels,soft_labels,coral_loss,latent_coefficient,consider_only_lasts_n_chunks=None):
     self.root_folder_feature = root_folder_features
     self.csv_path = csv_path
     helper.set_step_shift(root_folder_features)
     print(f"Using step shift = {helper.step_shift} for dataset {root_folder_features}")
     self.concatenate_temporal = concatenate_temporal
     self.concatenate_quadrants = concatenate_quadrants
+    self.latent_coefficient = latent_coefficient
     self.df = pd.read_csv(csv_path,sep='\t')
     self.num_classes = len(self.get_unique_classes())
     self.is_quadrant = True if 'combined' in root_folder_features else False
@@ -832,6 +833,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
       return _get_element(df=self.df,dict_data=helper.dict_data,idx=idx,
                           dataset_type=CUSTOM_DATASET_TYPE.AGGREGATED,is_quadrant=self.is_quadrant,
                           consider_only_lasts_n_chunks=self.consider_only_lasts_n_chunks,
+                          latent_coefficient=self.latent_coefficient,
                           embedding_reduction=self.model.embedding_reduction)
     else:
       raise NotImplementedError("Batch loading is not implemented for customDatasetAggregated")
@@ -870,7 +872,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
 
 
 class customDatasetWhole(torch.utils.data.Dataset):
-  def __init__(self,csv_path,root_folder_features,concatenate_temporal,concatenate_quadrants,model,smooth_labels,soft_labels,coral_loss, xattn_mask,split_chunks=False, consider_only_lasts_n_chunks=None):
+  def __init__(self,csv_path,root_folder_features,concatenate_temporal,concatenate_quadrants,model,smooth_labels,soft_labels,coral_loss, xattn_mask,latent_coefficient,split_chunks=False, consider_only_lasts_n_chunks=None):
     self.csv_path = csv_path
     helper.set_step_shift(root_folder_features)
     print(f"\n CustomDatasetWhole: Using step shift = {helper.step_shift} for dataset {root_folder_features} \n")
@@ -887,6 +889,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
     self.concatenate_temporal = concatenate_temporal
     self.concatenate_quadrants = concatenate_quadrants
     self.model = model
+    self.latent_coefficient = latent_coefficient
     self.is_quadrant = True if 'combined' in root_folder_features else False
     self.instance_model_name = tools.get_instace_model_name(model)
     self.smooth_labels = smooth_labels
@@ -943,6 +946,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
                         is_quadrant=self.is_quadrant,
                         consider_only_lasts_n_chunks=self.consider_only_lasts_n_chunks,
                         embedding_reduction=self.model.embedding_reduction,
+                        latent_coefficient=self.latent_coefficient,
                         xattn_mask=self.xattn_mask)
 
   def __getitem__(self,idx):
@@ -1251,6 +1255,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                   consider_only_lasts_n_chunks=kwargs['consider_only_lasts_n_chunks'],
                                   xattn_mask=kwargs.get('xattn_mask',None),
                                   split_chunks=split_chunks,
+                                  latent_coefficient=kwargs.get('latent_coefficient',0.0),
                                   coral_loss=is_coral_loss)
     if 'caer' in csv_path.lower() or 'combined' in root_folder_features.lower():
       pin_memory = False
@@ -1264,13 +1269,14 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                         concatenate_temporal=concatenate_temporal,
                                         is_train=is_training,
                                         model=model,
+                                        latent_coefficient=kwargs.get('latent_coefficient',0.0),
                                         consider_only_lasts_n_chunks=kwargs['consider_only_lasts_n_chunks'],
                                         concatenate_quadrants=kwargs['concatenate_quadrants'],
                                         smooth_labels=label_smooth,
                                         coral_loss=is_coral_loss,
                                         soft_labels=soft_labels)
-    pin_memory = False
-    persistent_workers = True
+    pin_memory = True
+    persistent_workers = False
     prefetch_factor = 2 if prefetch_factor is None else prefetch_factor
     
   elif dataset_type.value == CUSTOM_DATASET_TYPE.BASE.value:
@@ -1350,7 +1356,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
   return dataset_,loader_
 
   
-def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,consider_only_lasts_n_chunks,is_quadrant=False,concatenate_quadrants=False,xattn_mask=None):
+def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,consider_only_lasts_n_chunks,latent_coefficient,is_quadrant=False,concatenate_quadrants=False,xattn_mask=None):
   pid = os.getpid()
   # if pid not in helper.time_profile_dict:
   #   helper.time_profile_dict[pid] = mp.Manager().dict()
@@ -1403,10 +1409,10 @@ def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,consider_only
     elif helper.is_latent_masking_augmentation(sample_id):
       B,T,S,S,C = features.shape # B->nr_frames, T->temporal, S->spatial, C->emb_dim
       if S == 1: # mask Temporal
-        mask_grid = torch.rand(T,dtype=features.dtype) < 0.1 # 10% of the temporal
+        mask_grid = torch.rand(T,dtype=features.dtype) < latent_coefficient # mask % of the temporal, if 0 all unmasked
         mask_grid = mask_grid.view(1,T,1,1,1)
       else: # mask Spatial
-        mask_grid = torch.rand(S,S,dtype=features.dtype) < 0.25 # 25% of the grid
+        mask_grid = torch.rand(S,S,dtype=features.dtype) < latent_coefficient # mask % of the grid, if 0 all unmasked
         mask_grid = mask_grid.view(1,1,S,S,1)
       features = features.masked_fill(mask_grid, 0.0) # set to zero the masked values
   ##################################

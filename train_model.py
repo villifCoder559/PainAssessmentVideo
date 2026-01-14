@@ -164,6 +164,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   # common training params
   lr = _suggest(trial, 'lr', kwargs['lr'], kwargs['optuna_categorical'])
   opt = trial.suggest_categorical('opt', kwargs['opt'])
+  latent_coefficient = trial.suggest_categorical('latent_coefficient', kwargs['latent_coefficient'])
   # optimizer_fn = get_optimizer(opt)
   type_group = trial.suggest_categorical('type_group', kwargs['type_group'])
   init_network = trial.suggest_categorical('init_network', kwargs['init_network'])
@@ -452,6 +453,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'load_idxs_splits': kwargs['load_idxs_splits'],
     'balance_batches':balance_batches,
     'consider_only_lasts_n_chunks': consider_only_lasts_n_chunks,
+    'latent_coefficient': latent_coefficient,
   }
   add_kwargs = {**add_kwargs, **head_dependent_add_kwargs}
    
@@ -814,6 +816,7 @@ if __name__ == '__main__':
   parser.add_argument('--latent_basic', type=float, nargs='*', default=[0.0], help='Latent basic augmentation probability. Default is 0.0')
   parser.add_argument('--latent_masking', type=float, nargs='*', default=[0.0], help='Latent masking augmentation (0.1). Default is 0.0')
   parser.add_argument('--shift_augm', type=float, nargs='*', default=[0.0], help='Video shift augmentation probability. Default is 0.0 (not used)') 
+  parser.add_argument('--latent_coefficient', type=float, nargs='*', default=[0.0], help='Availble only for BIOVID, latent augmentation probability coefficients for masking the feature vector. Default is 0.0 (not used)')
   
   # Early stopping parameters
   parser.add_argument('--key_early_stopping', type=str, default='val_accuracy', 
@@ -859,6 +862,7 @@ if __name__ == '__main__':
   parser.add_argument('--onecycle_div_factor', type=float, nargs='*', default=[None], help='Div factor for onecycle scheduler.')
   parser.add_argument('--onecycle_final_div_factor', type=float, nargs='*', default=[None], help='Final div factor for onecycle scheduler.')
   parser.add_argument('--onecycle_anneal_strategy', type=str, nargs='*', default=[None], help='Anneal strategy for onecycle scheduler.')
+  
   # Optuna parameters
   parser.add_argument('--optuna_use_median', type=int, default=0, help='Use median of k-fold validation results for Optuna optimization. Default is 0 (False)')
   parser.add_argument('--optuna_min_epoch_thr', type=int, default=0, help='Minimum epoch threshold for Optuna optimization to keep the experiment. Default is 0 (no threshold)')
@@ -977,6 +981,10 @@ if __name__ == '__main__':
   if dict_args['apply_xattn_mask'][0] and 'combined' in dict_args['ffsp']:
     raise ValueError("apply_xattn_mask cannot be used with combined quadrants features. Use full frame features instead.")
   
+  # check if all values in latent_coefficient are between 0 and 1
+  for coeff in dict_args['latent_coefficient']:
+    if coeff < 0.0 or coeff > 1.0:
+      raise ValueError("latent_coefficient values must be between 0 and 1.")
   # Generate timestamp for unique folder name
   timestamp = int(time.time())
   server_name = platform.node()
