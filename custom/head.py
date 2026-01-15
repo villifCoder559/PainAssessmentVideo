@@ -280,6 +280,7 @@ class BaseHead(nn.Module):
       history_val_sample_predictions = None
     list_train_losses = []
     list_train_adv_losses = []
+    list_train_adv_accuracies = []
     list_train_losses_per_class = []
     list_train_accuracy_per_class = []
     list_train_accuracy_per_subject = []
@@ -381,6 +382,8 @@ class BaseHead(nn.Module):
     l1_error_val_list = []
     l2_error_val_list = []
     train_loader_len = len(train_loader)
+    grad_adv_norm_epoch = []
+    grad_task_norm_epoch = []
     for epoch in range(num_epochs):
       start_epoch = time.time()
       self.train() 
@@ -411,7 +414,11 @@ class BaseHead(nn.Module):
       total_steps = num_epochs * len(train_loader)
       list_batch_wd = []
       batch_adv_loss = 0.0
+      batch_adv_predictions = []
+      batch_adv_gt = []
       batch_original_loss = 0.0
+      batch_adv_grad_norm = []
+      batch_task_grad_norm = []
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
         end_load_batch = time.time()
         dict_log_time['load_batch'] = dict_log_time.get('load_batch',0) + end_load_batch - start_load_batch
@@ -463,8 +470,28 @@ class BaseHead(nn.Module):
             adv_logits = dict_out['adv_logits']
             # create adversarial labels as the opposite of the true labels
             adv_loss = adv_criterion(adv_logits, batch_subjects)
+            
             batch_adv_loss += adv_loss.item()
             batch_original_loss += loss.item()
+            batch_adv_predictions.append(torch.argmax(adv_logits, dim=1).detach().cpu())
+            batch_adv_gt.append(batch_subjects.detach().cpu())
+            if helper.LOG_GRADIENT_NORM:
+              start_log_grad = time.time()
+              task_norm = torch.autograd.grad(loss,
+                                              [p for p in self.parameters() if p.requires_grad], 
+                                              allow_unused=True,
+                                              retain_graph=True)
+              task_norm = [g for g in task_norm if g is not None]
+              task_norm = torch.cat([g.flatten() for g in task_norm]).norm(2).detach().cpu().item() 
+              adv_norm = torch.autograd.grad(adv_loss,
+                                              [p for p in self.parameters() if p.requires_grad], 
+                                              allow_unused=True,
+                                              retain_graph=True)
+              adv_norm = [g for g in adv_norm if g is not None]
+              adv_norm = torch.cat([g.flatten() for g in adv_norm]).norm(2).detach().cpu().item()
+              batch_task_grad_norm.append(task_norm)
+              batch_adv_grad_norm.append(adv_norm*dict_batch_X['adv_alpha'])
+              dict_log_time['log_adv_grad'] = dict_log_time.get('log_adv_grad',0) + time.time() - start_log_grad
             loss = loss + adv_loss * kwargs['adversarial_loss_lambda']
           outputs = dict_out['logits']
           if regularization_lambda_L1 > 0:
@@ -475,7 +502,6 @@ class BaseHead(nn.Module):
         # dict_log_time['loss'] = dict_log_time.get('loss',0) + time.time()-start_loss
         # print(f'  Loss time: {dict_log_time['loss']-start_loss:.4f}')
         start_back = time.time()
-        
         scaler.scale(loss).backward() # Use scaler for mixed precision training
         # loss.backward()     
         dict_log_time['backward'] = dict_log_time.get('backward',0) + time.time()-start_back
@@ -485,6 +511,7 @@ class BaseHead(nn.Module):
           total_norm=torch.nn.utils.clip_grad_norm_(self.parameters(), clip_grad_norm).detach().cpu() #  torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)
         elif helper.LOG_GRADIENT_NORM:
           total_norm = torch.nn.utils.clip_grad_norm_(self.parameters(), 500).detach().cpu() 
+          
         else:
           total_norm = torch.tensor(0.0)
         dict_log_time['log_gradient'] = dict_log_time.get('log_gradient',0) + time.time() - log_gradient_start
@@ -575,10 +602,17 @@ class BaseHead(nn.Module):
           dict_log_time['batch_logs'] = dict_log_time.get('batch_logs',0) + time.time()-start_logs 
           # dict_log_time['batch'] = dict_log_time.get('batch',0) + time.time()-end_load_batch
         start_load_batch = time.time()
-
+      
+      # End of train loader
       list_lrs.append(list_batch_lr)
       list_wds.append(list_batch_wd)
-      list_train_adv_losses.append([batch_adv_loss / len(train_loader), batch_original_loss / len(train_loader)])
+      if adv_criterion is not None:
+        list_train_adv_losses.append([batch_adv_loss / len(train_loader), batch_original_loss / len(train_loader)])
+        batch_adv_predictions = torch.cat(batch_adv_predictions)
+        batch_adv_gt = torch.cat(batch_adv_gt)
+        list_train_adv_accuracies.append(sum((batch_adv_predictions == batch_adv_gt).float()).item() / len(batch_adv_predictions))
+        grad_adv_norm_epoch.append(torch.tensor(batch_adv_grad_norm).mean().item() if len(batch_adv_grad_norm)>0 else 0.0)
+        grad_task_norm_epoch.append(torch.tensor(batch_task_grad_norm).mean().item() if len(batch_task_grad_norm)>0 else 0.0)
       time_eval = time.time()
       dict_eval = None
       if val_csv_path is not None:
@@ -619,6 +653,9 @@ class BaseHead(nn.Module):
       
       list_train_losses.append(train_loss / len(train_loader))
       list_val_losses.append(dict_eval['val_loss'] if dict_eval is not None else 0.0)
+      if adv_criterion is not None:
+        list_train_adv_losses.append([batch_adv_loss / len(train_loader), batch_original_loss / len(train_loader)])
+        list_train_adv_accuracies.append(sum((batch_adv_predictions == batch_adv_gt).float()).item() / len(batch_adv_predictions))
       
       # Save model at certain epochs
       if helper.SAVE_MODEL_EVERY_N_EPOCHS > 0 and epoch % helper.SAVE_MODEL_EVERY_N_EPOCHS == 0 and epoch != 0:
@@ -896,6 +933,9 @@ class BaseHead(nn.Module):
       'list_val_l2_error': l2_error_val_list,
       'list_val_pearson_correlation': list_val_pearson_correlation,
       'list_train_adv_losses': list_train_adv_losses,
+      'list_train_adv_accuracies': list_train_adv_accuracies,
+      'grad_adv_norm_epoch': grad_adv_norm_epoch,
+      'grad_task_norm_epoch': grad_task_norm_epoch,
       'train_batch_sampler_name': (train_loader.batch_sampler.__class__.__module__ + "." + train_loader.batch_sampler.__class__.__name__),
       # 'list_samples': list_list_samples,
       # 'list_y': list_list_y
@@ -999,10 +1039,10 @@ class BaseHead(nn.Module):
           outputs = dict_out['logits']
           loss = criterion(outputs, batch_y)
           
-        if kwargs.get('adv_criterion') is not None:
-          adv_logits = dict_out['adv_logits']
-          adv_loss = kwargs['adv_criterion'](adv_logits, batch_subjects)
-          loss = loss + adv_loss * kwargs['adversarial_loss_lambda']
+        # if kwargs.get('adv_criterion') is not None:
+        #   adv_logits = dict_out['adv_logits']
+        #   adv_loss = kwargs['adv_criterion'](adv_logits, batch_subjects)
+        #   loss = loss + adv_loss * kwargs['adversarial_loss_lambda']
         val_loss += loss.item()
         
         if not is_resupcon_loss:
@@ -1458,7 +1498,9 @@ class AttentiveHeadJEPA(BaseHead):
       self.log_xattn(xattn, **kwargs) 
     
     logits = self.linear(x)
-    if self.adversarial_head is not None:
+    
+    # not used in evaluation, only for adversarial training
+    if self.adversarial_head is not None and self.training:
       reversed_feats = grad_reverse(x, kwargs['adv_alpha'])
       adv_logits = self.adversarial_head(reversed_feats)
       return {'logits': logits, 'embeddings': x, 'adv_logits': adv_logits}
