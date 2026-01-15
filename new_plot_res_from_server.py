@@ -1590,6 +1590,27 @@ def generate_video_from_loss_plots(run_output_folder, test_id):
   video.release()
   # print(f'Generated loss video at {video_path}')
 
+def plot_separated_losses_adversarial(data, run_output_folder, test_id):
+  test_output_folder = os.path.join(run_output_folder, test_id)
+  os.makedirs(test_output_folder, exist_ok=True)
+  if not data['config']['head_params']['adversarial_head']:
+    return  # No adversarial loss to plot 
+  for key,dict_sub_fold in data['results'].items():
+    adv_loss = [v[0] for v in dict_sub_fold['train_val']['list_train_adv_losses']]
+    main_loss = [v[1] for v in dict_sub_fold['train_val']['list_train_adv_losses']]
+    epochs = list(range(len(adv_loss)))
+    loss = str(data['config']['criterion']).lower()
+    plt.figure(figsize=(15, 10))
+    plt.plot(epochs, adv_loss, label='Adversarial Loss')
+    plt.plot(epochs, main_loss, label=f'{loss.capitalize()} Loss')
+    plt.legend()
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.title(f'Training - {test_id} - Adversarial and {loss.capitalize()} Loss')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(test_output_folder, f'{test_id}_separated_losses_adversarial_{key}.png'))
+    plt.close()
 
 def plot_run_details(results_data, output_root,only_csv, dict_args,plot_only_loss=False):
   list_row_csv = []
@@ -1610,7 +1631,7 @@ def plot_run_details(results_data, output_root,only_csv, dict_args,plot_only_los
       # try:
       plot_grouped_k_fold(data, os.path.join(output_root), test_id)
       plot_losses(data, os.path.join(output_root), test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
-      
+      plot_separated_losses_adversarial(data, os.path.join(output_root), test_id)
       plot_confusion_matrices(data, os.path.join(output_root), test_id)
       if not plot_only_loss:
         plot_lr_wd_across_epochs(data, os.path.join(output_root), test_id)
