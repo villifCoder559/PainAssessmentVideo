@@ -374,11 +374,14 @@ if __name__ == "__main__":
   if args.save_big_feature:
     args.saving_after = 1
   dict_augmentation = {
-    'hflip': args.h_flip,
-    'jitter': args.color_jitter,
-    'rotation': args.rotation,
-    'shift': args.spatial_shift,
-    'zoom': args.zoom
+    'hflip': False,
+    'jitter': False,
+    'rotation': False,
+    'shift': False,
+    'zoom': False,
+    'reverse':False,
+    'timelapse':False,
+    'slowmotion':False,
   }
   for k,v in dict_augmentation.items():
     if k in args.path_dataset:
@@ -386,8 +389,8 @@ if __name__ == "__main__":
   print(f'\nData augmentation used for feature extraction:\n')
   for k,v in dict_augmentation.items():
     print(f'  {k}: {v}')
-  # sleep 10 seconds to let user see the args
-  time.sleep(10)
+  # sleep 15 seconds to let user see the args
+  time.sleep(15)
   if args.log_file_path is None:
     args.log_file_path = os.path.join(args.saving_folder_path,'log_file.txt')
   dict_args = vars(args)  
