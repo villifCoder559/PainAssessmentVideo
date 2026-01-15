@@ -6,6 +6,7 @@ from copy import deepcopy
 import pandas as pd
 import numpy as np
 
+SAVE_MODEL_EVERY_N_EPOCHS = 0  # 0 to disable
 
 unbc_count_to_id = {
   0: 115,
@@ -155,6 +156,15 @@ def is_jitter_rotation_augmentation(sample_id):
 def is_rotation_zoom_augmentation(sample_id):
   return sample_id > step_shift * 15 and sample_id <= step_shift * 16
 
+def is_reverse_augmentation(sample_id):
+  return sample_id > step_shift * 16 and sample_id <= step_shift * 17
+
+def is_timelapse_augmentation(sample_id):
+  return sample_id > step_shift * 17 and sample_id <= step_shift * 18
+
+def is_slowmotion_augmentation(sample_id):
+  return sample_id > step_shift * 18 and sample_id <= step_shift * 19
+
 def get_augmentation_type(sample_id): # folder based on cvs_path, so must contain dataset name to
   if sample_id <= step_shift:
     return False
@@ -180,6 +190,12 @@ def get_augmentation_type(sample_id): # folder based on cvs_path, so must contai
     return 'jitter_rotation'
   elif is_rotation_zoom_augmentation(sample_id):
     return 'rotation_zoom'
+  elif is_reverse_augmentation(sample_id):
+    return 'reverse'
+  elif is_timelapse_augmentation(sample_id):
+    return 'timelapse'
+  elif is_slowmotion_augmentation(sample_id):
+    return 'slowmotion'
   else:
     raise ValueError(f"Sample id {sample_id} not recognized for augmentation type")
 
@@ -318,6 +334,12 @@ def get_shift_for_sample_id(folder_feature):
       return step_shift * 10
     if 'zoom' in folder_feature:
       return step_shift * 11
+    if 'reverse' in folder_feature:
+      return step_shift * 16
+    if 'timelapse' in folder_feature:
+      return step_shift * 17
+    if 'slowmotion' in folder_feature:
+      return step_shift * 18
     return 0
   
 class SAMPLE_FRAME_STRATEGY(Enum):
@@ -496,6 +518,14 @@ def generate_csv_augmented(original_csv_path, dict_augmentation, out_csv_path,pa
       return 83
     elif type_augm == 'shift':
       return 93
+    elif type_augm == 'zoom':
+      return 103
+    elif type_augm == 'reverse':
+      return 113
+    elif type_augm == 'timelapse':
+      return 123
+    elif type_augm == 'slowmotion':
+      return 133
     else:
       raise ValueError(f'Unknown augmentation type: {type_augm}')
   list_df = []

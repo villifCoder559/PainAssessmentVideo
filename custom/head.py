@@ -619,6 +619,39 @@ class BaseHead(nn.Module):
       
       list_train_losses.append(train_loss / len(train_loader))
       list_val_losses.append(dict_eval['val_loss'] if dict_eval is not None else 0.0)
+      
+      # Save model at certain epochs
+      if helper.SAVE_MODEL_EVERY_N_EPOCHS > 0 and epoch % helper.SAVE_MODEL_EVERY_N_EPOCHS == 0 and epoch != 0:
+        model_path_epoch = os.path.join(saving_path, f'model_epoch_{epoch}.pt')
+        torch.save(self.state_dict(), model_path_epoch)
+        fig,ax = plt.subplots(1,1,figsize=(15,10))
+        input_dict_loss_acc= {
+          'list_1':list_train_losses,
+          'list_2':list_val_losses,
+          'output_path':None,
+          'title':f'Train loss, validation loss',
+          'point':None,
+          'ax':ax,
+          'x_label':'Epochs',
+          'y_label_1':'Train loss',
+          'y_label_2':'Validation loss',
+          'y_label_3':None,
+          'y_lim_1':[0, 5],
+          'y_lim_2':[0, 5],
+          'y_lim_3':None,
+          'step_ylim_1':0.25,
+          'step_ylim_2':0.25,
+          'step_ylim_3':None,
+          'dict_to_string':None,
+          'color_1':'tab:red',
+          'color_2':'tab:blue',
+          'color_3':None,
+        }
+        tools.plot_losses_and_test_new(**input_dict_loss_acc)
+        fig.savefig(os.path.join(saving_path, f'loss_acc_epoch_{epoch}.png'), dpi=300)
+        plt.close(fig)
+        print(f'Checkpoint saved at epoch {epoch} to {model_path_epoch} and plotted the loss.')
+      
       if dict_test_as_eval is not None:
         list_test_losses.append(dict_test_as_eval['val_loss'])
         l1_error_test_list.append(dict_test_as_eval['val_l1_error'])
