@@ -721,6 +721,7 @@ if __name__ == '__main__':
   parser.add_argument('--consider_only_lasts_n_chunks', nargs='*', type=int, default=[0], help='Consider only the last n chunks of each video during training and evaluation. Default is 0 (consider all chunks)')
   
   # Training parameters
+  parser.add_argument('--save_model_every_n_epochs', type=int, default=0, help='Save model every n epochs. Default is 0 (disabled)')
   parser.add_argument('--balance_batches', type=int,nargs='*', default=[0], help='Try to balance batches using customSampler if possible. Default is 0 (disabled)')
   parser.add_argument('--type_group', type=int,nargs='*', default=[0], help='Type of group for stratified sampling. Default is 0 (StratifiedGroupKFold) else (split in equal numeber of subjects per group)')
   parser.add_argument('--lr', type=float, nargs='*', default=[0.0001], help='Learning rate(s)')
@@ -887,6 +888,10 @@ if __name__ == '__main__':
   dict_args['stride_window_in_video'] = 16 # To avoid errors but not used
   if dict_args['warm_up_scheduler'][0] is not None and dict_args['scheduler_name'][0] == 'onecycle':
     raise ValueError("Onecycle scheduler already includes warm-up phase. Remove warm_up_scheduler argument.")
+  
+  if dict_args['save_model_every_n_epochs']:
+    helper.SAVE_MODEL_EVERY_N_EPOCHS = dict_args['save_model_every_n_epochs']
+    print(f"Models will be saved every {helper.SAVE_MODEL_EVERY_N_EPOCHS} epochs.\n")
   
   if dict_args['plot_live_loss']:
     helper.PLOT_LIVE_LOSS = True
