@@ -2158,13 +2158,13 @@ def plot_losses_and_test_new(list_1,title, list_2=None,output_path=None,point=No
   # ax2.legend()
   lines, labels = ax1.get_legend_handles_labels()
   if list_2 is not None:
-      lines2, labels2 = ax2.get_legend_handles_labels()
-      lines += lines2
-      labels += labels2
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    lines += lines2
+    labels += labels2
   if point is not None:
-      lines3, labels3 = ax3.get_legend_handles_labels()
-      lines += lines3
-      labels += labels3
+    lines3, labels3 = ax3.get_legend_handles_labels()
+    lines += lines3
+    labels += labels3
   ax1.legend(lines, labels, loc='best')
   # Add additional text on the 
   if dict_to_string:
