@@ -1584,7 +1584,7 @@ def generate_video_from_loss_plots(run_output_folder, test_id):
   video = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'avc1'), 1, (width, height))
   for image in list_images:
     if image.shape != (height, width, layers):
-      print(f'Image {image} has different shape, resizing to {(height, width)}')
+      print(f'Image has different shape, resizing to {(height, width)}')
       image = cv2.resize(image, (width, height))
     video.write(image)
   video.release()
@@ -1600,7 +1600,7 @@ def plot_separated_losses_adversarial(data, run_output_folder, test_id):
     main_loss = [v[1] for v in dict_sub_fold['train_val']['list_train_adv_losses']]
     epochs = list(range(len(adv_loss)))
     loss = str(data['config']['criterion']).lower()
-    plt.figure(figsize=(15, 10))
+    plt.figure(figsize=(18, 9))
     plt.plot(epochs, adv_loss, label='Adversarial Loss')
     plt.plot(epochs, main_loss, label=f'{loss.capitalize()} Loss')
     plt.legend()
@@ -1632,7 +1632,7 @@ def plot_run_details(results_data, output_root,only_csv, dict_args,plot_only_los
       plot_grouped_k_fold(data, os.path.join(output_root), test_id)
       plot_losses(data, os.path.join(output_root), test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
       plot_separated_losses_adversarial(data, os.path.join(output_root), test_id)
-      plot_confusion_matrices(data, os.path.join(output_root), test_id)
+      # plot_confusion_matrices(data, os.path.join(output_root), test_id)
       if not plot_only_loss:
         plot_lr_wd_across_epochs(data, os.path.join(output_root), test_id)
         if is_unbc:
@@ -1714,7 +1714,7 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='Plot results from a folder') 
   parser.add_argument('--parent_folder', type=str, required=True,
                       help='Path to folder containing all the results')
-  parser.add_argument('--loss_plot_type', type=str, default='dist', help='Type of loss plot: dist or loss')
+  parser.add_argument('--loss_plot_type', type=str, default='loss', help='Type of loss plot: dist or loss')
   parser.add_argument('--filter', type=str, default='',
                       help='Optional filter criteria in format key1=val1,key2=val2')
   parser.add_argument('--only_csv', action='store_true',
