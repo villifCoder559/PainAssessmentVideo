@@ -1,3 +1,4 @@
+import sys
 import custom.dataset as ds
 import cv2
 import torch
@@ -18,7 +19,7 @@ argument_parser.add_argument('--zoom', action='store_true')
 args = argument_parser.parse_args()
 
 video_root = args.video_root
-video_output_root = args.video_root + "_augmented"
+video_output_root = args.video_root 
 if not os.path.exists(video_root):
   raise ValueError(f"Video root does not exist: {video_root}")
 
@@ -107,5 +108,14 @@ with open(os.path.join(video_output_root, "augmentation_info.txt"), 'w') as f:
   for k,v in augmentation_dict.items():
     f.write(f"{k}: {v}\n")
   print(f"Saved augmentation info to {f.name}")
-
+  
+import sys
+command = {'launch_command':" ".join(sys.argv),
+           'video_root':video_root,
+           'video_output_root':video_output_root,
+           'augmentation_dict':augmentation_dict}
+with open(os.path.join(video_output_root, "augmentation_command.txt"), 'w') as f:
+  for key, value in command.items():
+    f.write(f"{key}: {value}\n")
+  print(f"Saved augmentation command to {f.name}")
 
