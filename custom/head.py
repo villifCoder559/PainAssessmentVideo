@@ -13,7 +13,7 @@ from custom.optimizers import OptimizerFactory
 from custom.helper import CUSTOM_DATASET_TYPE
 import torch.nn.init as init
 import custom.helper as helper
-from custom.dataset import customBatchSampler
+from custom.dataset import balancedBatchSampler
 from torch.nn.utils.rnn import pack_padded_sequence,pack_padded_sequence
 from custom.dataset import get_dataset_and_loader
 import custom.dataset as dataset_utils
@@ -107,9 +107,8 @@ class AdvAlpha:
     return self.alpha_values[current_step]
 
 class BaseHead(nn.Module):
-  def __init__(self, model,is_classification):
+  def __init__(self, is_classification):
     super(BaseHead, self).__init__()
-    # self.model = model
     self.is_classification = is_classification
       
   def log_performance(self, stage, loss, accuracy,epoch=-1,dict_kwarg=None,num_epochs=-1,list_grad_norm=None,wds=None,lrs=None):
@@ -1217,15 +1216,17 @@ class BaseHead(nn.Module):
   
 class LinearHead(BaseHead):
   def __init__(self, input_dim, num_classes, dim_reduction):
-    super().__init__(self,is_classification=True if num_classes > 1 else False)
+    super().__init__(is_classification=True if num_classes > 1 else False)
     self._model = LinearProbe(input_dim=input_dim, num_classes=num_classes,dim_reduction=dim_reduction)
-    is_classification = True if num_classes > 1 else False
-    self.is_classification = is_classification
     self.num_classes = num_classes
+
+  def forward(self, x, **kwargs):
+    logits = self._model(x)
+    return {'logits': logits, 'embeddings': None}
 
 class PooledHeadMLP(BaseHead):
   def __init__(self, input_dim, num_classes, mlp_ratio=4.0, dropout=0.0):
-    super().__init__(self,is_classification=True if num_classes > 1 else False)
+    super().__init__(is_classification=True if num_classes > 1 else False)
     self.mlp = jepa_MLP(in_features=input_dim,
                         hidden_features=int(input_dim * mlp_ratio),
                         act_layer=nn.GELU,
@@ -1235,27 +1236,6 @@ class PooledHeadMLP(BaseHead):
     self.linear = nn.Linear(input_dim, num_classes)
     self.embedding_reduction = helper.EMBEDDING_REDUCTION.NONE
     self._initialize_weights()
-  
-  def forward(self, x: torch.Tensor, **kwargs):
-    # x = x.mean(dim=(0,1,2,3)) # [B*chunks, T, S, S, embed_dim] -> [B,1,1,1,embed_dim]
-    # x = x.squeeze(dim=1).squeeze(dim=1).squeeze(dim=1) # [B, embed_dim] 
-    x = self.mlp(x)
-    x = self.linear(x)
-    return {'logits': x, 'embeddings': None}
-  
-  def _initialize_weights(self,init_type='default'):
-    # Initialize the weights
-    if init_type == 'default':
-      for module in self.modules():
-        if isinstance(module, nn.Linear):
-          nn.init.trunc_normal_(module.weight, std=0.02)
-          if module.bias is not None:
-            nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.LayerNorm):
-          nn.init.ones_(module.weight)
-          nn.init.zeros_(module.bias)
-    else:
-      raise NotImplementedError(f'Unknown init_type {init_type}')
     
 class AttentiveHeadJEPA(BaseHead):
   def __init__(self,
