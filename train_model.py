@@ -216,6 +216,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   latent_masking = _suggest(trial, 'latent_masking', kwargs['latent_masking'], kwargs['optuna_categorical'])
   shift_augm = _suggest(trial, 'shift_augm', kwargs['shift_augm'], kwargs['optuna_categorical'])
   consider_only_lasts_n_chunks = trial.suggest_categorical('consider_only_lasts_n_chunks', kwargs['consider_only_lasts_n_chunks'])
+  use_filtered_augmentation_sampler = trial.suggest_categorical('use_filtered_augmentation_sampler', kwargs['use_filtered_augmentation_sampler'])
+  filtered_augm_strategy = trial.suggest_categorical('filtered_augm_strategy', kwargs['filtered_augm_strategy'])
   # scheduler and optimizer params
   exclude_bias_wd = trial.suggest_categorical('exclude_bias_wd', kwargs['exclude_bias_wd'])
   warm_up_epochs = _suggest(trial, 'warm_up_epochs', kwargs['warm_up_epochs'], kwargs['optuna_categorical'])
@@ -454,6 +456,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'balance_batches':balance_batches,
     'consider_only_lasts_n_chunks': consider_only_lasts_n_chunks,
     'latent_coefficient': latent_coefficient,
+    'use_filtered_augmentation_sampler': use_filtered_augmentation_sampler,
+    'filtered_augm_strategy': filtered_augm_strategy,
   }
   add_kwargs = {**add_kwargs, **head_dependent_add_kwargs}
    
@@ -719,6 +723,12 @@ if __name__ == '__main__':
   parser.add_argument('--is_subject_independent', type=int, choices=[0,1], default=1, help='Subject-independent split. Default is 1 (True)')
   parser.add_argument('--skip_test', type=int, default=0, help='Skip test phase after training. Default is 0 (False)')
   parser.add_argument('--consider_only_lasts_n_chunks', nargs='*', type=int, default=[0], help='Consider only the last n chunks of each video during training and evaluation. Default is 0 (consider all chunks)')
+  parser.add_argument('--use_filtered_augmentation_sampler', nargs='*',type=int, default=[0], help='Use filtered augmentation sampler for data loading. '+\
+                      'Default is 0 (False) else set the n of augmentation to keep per sample')
+  parser.add_argument('--filtered_augm_strategy', type=int, nargs='*',default=[0], help="Strategy for filtered augmentation sampler."+
+                      " 1: Randomly keep n samples from what augments are available. "+
+                      " 2: Randomly choose n types from available augm. types (h_flip, jitter, ...) "+
+                      "n is the number provided in use_filtered_augmentation_sampler argument. Default is 0 (not used)")
   
   # Training parameters
   parser.add_argument('--save_model_every_n_epochs', type=int, default=0, help='Save model every n epochs. Default is 0 (disabled)')
@@ -901,6 +911,13 @@ if __name__ == '__main__':
   
   if dict_args['save_best_model']:
     helper.SAVE_PTH_MODEL = True
+  
+  if any(dict_args['use_filtered_augmentation_sampler']) and any(dict_args['balance_batches']):
+    raise ValueError("Cannot use both filtered augmentation sampler and balanced batches at the same time.")
+  
+  if any(dict_args['use_filtered_augmentation_sampler']) ^ any(dict_args['filtered_augm_strategy']):
+    raise ValueError("Both use_filtered_augmentation_sampler and filtered_augm_strategy must be set together.")
+  
   
   if dict_args['log_xattn']:
     helper.LOG_CROSS_ATTENTION['enable']= True 
