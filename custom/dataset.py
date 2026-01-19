@@ -1174,7 +1174,7 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_cla
 # def fake_collate(batch): # to avoid strange error when use customSampler
 #   return batch[0]  
 
-class customBatchSampler(BatchSampler):
+class balancedBatchSampler(BatchSampler):
   def __init__(self, batch_size, shuffle,path_cvs_dataset=None, random_state=42,df=None):
     if df is None:
       csv_array,_ = tools.get_array_from_csv(path_cvs_dataset)
@@ -1214,6 +1214,108 @@ class customBatchSampler(BatchSampler):
 
   def __len__(self):
     return self.n_batches
+
+class FilteredAugmentationBatchSampler(BatchSampler):
+  def __init__(self, df, batch_size, shuffle, n_keep_augmentations, augmentation_strategy, root_folder_features=None, drop_last=False, seed=42):
+    self.batch_size = batch_size
+    self.shuffle = shuffle
+    self.n_keep_augmentations = n_keep_augmentations
+    self.augmentation_strategy = augmentation_strategy # 1: random samples, 2: random types
+    self.drop_last = drop_last
+    
+    self.log_augmented_usage = {idx: 0 for idx in df.index}
+    self.base_id_groups = {} # base_id -> {'original': idx, 'augmented': {type: idx}}
+    self.available_augmentation_types = set()
+    
+    # Get available augmentations from folder if possible
+    if root_folder_features:
+      try:
+        self.available_augmentation_types = set(helper.get_augmentation_availables(root_folder_features))
+      except Exception as e:
+        print(f"Warning: Could not get available augmentations from folder: {e}")
+    
+    for idx, row in df.iterrows():
+      sample_id = row['sample_id']
+      if sample_id <= helper.step_shift:
+        base_id = sample_id
+        is_original = True
+        aug_type = None
+      else:
+        base_id = (sample_id - 1) % helper.step_shift + 1
+        is_original = False
+        aug_type = helper.get_augmentation_type(sample_id)
+        if aug_type:
+          self.available_augmentation_types.add(aug_type)
+      
+      if base_id not in self.base_id_groups:
+        self.base_id_groups[base_id] = {'original': None, 'augmented': {}}
+        
+      if is_original:
+        self.base_id_groups[base_id]['original'] = idx
+      elif aug_type:
+        self.base_id_groups[base_id]['augmented'][aug_type] = idx
+
+    self.available_augmentation_types = sorted(list(self.available_augmentation_types))
+    self._calculate_length()
+
+  def _calculate_length(self):
+    total_samples = 0
+    for group in self.base_id_groups.values():
+      if group['original'] is not None:
+        total_samples += 1
+      
+      n_available = len(group['augmented'])
+      # Approximation for length
+      total_samples += min(self.n_keep_augmentations, n_available)
+
+    if self.drop_last:
+      self.n_batches = total_samples // self.batch_size
+    else:
+      self.n_batches = (total_samples + self.batch_size - 1) // self.batch_size
+
+  def __len__(self):
+    return self.n_batches
+
+  def __iter__(self):
+    selected_indices = []
+    
+    for group in self.base_id_groups.values():
+      if group['original'] is not None:
+        selected_indices.append(group['original'])
+      
+      augmented_indices_to_keep = []
+      if self.augmentation_strategy == 1:
+        # Strategy 1: Randomly keep n samples from what is available
+        available_indices = list(group['augmented'].values())
+        if available_indices:
+          n_to_pick = min(self.n_keep_augmentations, len(available_indices))
+          augmented_indices_to_keep = np.random.choice(available_indices, size=n_to_pick, replace=False).tolist()
+          
+      elif self.augmentation_strategy == 2:
+        # Strategy 2: Randomly choose n types from GLOBAL available types
+        if self.available_augmentation_types:
+          n_types_to_pick = min(self.n_keep_augmentations, len(self.available_augmentation_types))
+          picked_types = np.random.choice(self.available_augmentation_types, size=n_types_to_pick, replace=False)
+          augmented_indices_to_keep = [group['augmented'][t] for t in picked_types if t in group['augmented']]
+      else:
+        raise ValueError(f"Unknown augmentation strategy: {self.augmentation_strategy}")
+      selected_indices.extend(augmented_indices_to_keep)
+      for idx in augmented_indices_to_keep:
+        self.log_augmented_usage[idx] += 1
+
+    if self.shuffle:
+      np.random.shuffle(selected_indices)
+      
+    batch = []
+    for idx in selected_indices:
+      batch.append(idx)
+      if len(batch) == self.batch_size:
+        yield batch
+        batch = []
+    
+    if len(batch) > 0 and not self.drop_last:
+      yield batch
+
 
   
 def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: float = 0.1) -> torch.Tensor:
@@ -1307,9 +1409,27 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
     raise ValueError(f'Unknown dataset type: {dataset_type}. Choose one of {CUSTOM_DATASET_TYPE}')
   
   if is_training:
-    if kwargs['balance_batches']:
+    if kwargs['use_filtered_augmentation_sampler']:
+      sampler = FilteredAugmentationBatchSampler(df=dataset_.df,
+                                                  batch_size=batch_size,
+                                                  shuffle=shuffle_training_batch,
+                                                  n_keep_augmentations=kwargs['use_filtered_augmentation_sampler'],
+                                                  augmentation_strategy=kwargs['filtered_augm_strategy'],
+                                                  root_folder_features=root_folder_features,
+                                                  drop_last=False,
+                                                  seed=42)
+      loader_ = DataLoader(dataset=dataset_,
+                          batch_sampler=sampler,
+                          collate_fn=dataset_._custom_collate,
+                          # batch_size=1,
+                          num_workers=n_workers,
+                          persistent_workers=persistent_workers,
+                          prefetch_factor=prefetch_factor,
+                          pin_memory=pin_memory)
+      print(f'Use FilteredAugmentationBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
+    elif kwargs['balance_batches']:
       try:
-        customBatchSampler_train = customBatchSampler(df=dataset_.df, 
+        customBatchSampler_train = balancedBatchSampler(df=dataset_.df, 
                                             batch_size=batch_size,
                                             shuffle=shuffle_training_batch)
         if n_workers > 1:
