@@ -61,6 +61,8 @@ def get_grouped_losses(data, config):
       train_class_loss = np.array(res[upper_dict][value])
     else:
       train_class_loss = np.array(res[upper_dict][value][best_epoch])
+    if len(train_class_labels) == 0:
+      print(f'No {value} found in results for {k_fold} - skipping')
     for k,loss in zip(train_class_labels, train_class_loss):
       if k not in dict_grouped_losses[k_fold][key_target_dict]:
         dict_grouped_losses[k_fold][key_target_dict][k] = []
@@ -104,42 +106,40 @@ def get_grouped_losses(data, config):
       }
      
     for sub_k, res in sub_k_dict.items():
-
       if 'train_val' in res:
         best_epoch = res['train_val']['best_model_idx']
         # Get overall train and val loss
         dict_grouped_losses[k_fold]['train_loss'].append(res['train_val']['train_losses'][best_epoch])
-        
       if not final_flag:
         dict_grouped_losses[k_fold]['val_loss'].append(res['train_val']['val_losses'][best_epoch])
       else:
         dict_grouped_losses[k_fold]['test_loss'].append(res['test']['test_loss'])
-      
       if not isinstance(config['criterion'],losses.RESupConLoss):
-        
         # Get train loss per class
         if 'train_val' in res:
           update_dict_grouped_losses(key='train_unique_y',value='train_loss_per_class',key_target_dict='class_train_loss',
                                     k_fold=k_fold, res=res, best_epoch=best_epoch)
         
-        # Get val/test loss per class
-        update_dict_grouped_losses(key='val_unique_y' if not final_flag else 'test_unique_y',
-                                  value='val_loss_per_class' if not final_flag else 'test_loss_per_class',
-                                  key_target_dict='class_val_loss' if not final_flag else 'class_test_loss',
-                                  upper_dict= 'train_val' if not final_flag else 'test',
-                                  k_fold=k_fold, res=res, best_epoch=best_epoch)      
+        # Get val/test loss per class, only if available
+        if ('train_val' in res and res['train_val']['count_y_val'] is not None) or final_flag:
+          update_dict_grouped_losses(key='val_unique_y' if not final_flag else 'test_unique_y',
+                                    value='val_loss_per_class' if not final_flag else 'test_loss_per_class',
+                                    key_target_dict='class_val_loss' if not final_flag else 'class_test_loss',
+                                    upper_dict= 'train_val' if not final_flag else 'test',
+                                    k_fold=k_fold, res=res, best_epoch=best_epoch)      
         
         # Get train loss per subject
         if 'train_val' in res:
           update_dict_grouped_losses(k_fold=k_fold, res=res, best_epoch=best_epoch,
                                     key='train_unique_subject_ids', value='train_loss_per_subject', key_target_dict='subject_train_loss')
         
-        # Get val/test loss per subject
-        update_dict_grouped_losses(k_fold=k_fold, res=res, best_epoch=best_epoch,
-                                  key='val_unique_subject_ids' if not final_flag else 'test_unique_subject_ids',
-                                  value='val_loss_per_subject' if not final_flag else 'test_loss_per_subject',
-                                  upper_dict='train_val' if not final_flag else 'test',
-                                  key_target_dict='subject_val_loss' if not final_flag else 'subject_test_loss')
+        # Get val/test loss per subject, only if available
+        if ('train_val' in res and res['train_val']['count_y_val'] is not None) or final_flag:
+          update_dict_grouped_losses(k_fold=k_fold, res=res, best_epoch=best_epoch,
+                                    key='val_unique_subject_ids' if not final_flag else 'test_unique_subject_ids',
+                                    value='val_loss_per_subject' if not final_flag else 'test_loss_per_subject',
+                                    upper_dict='train_val' if not final_flag else 'test',
+                                    key_target_dict='subject_val_loss' if not final_flag else 'subject_test_loss')
       
     # compute the mean loss per class and subject
     for k,v in dict_grouped_losses[k_fold].items():
@@ -672,6 +672,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         loss_per_subject_val = data['results'][key]['train_val'].get('val_loss_per_subject', None)
         loss_per_subject_val = loss_per_subject_val if (loss_per_subject_val != None).all() else None
         dict_per_subject_test = data['results'][key].get('test', None)
+        # dict_per_subject_test = data['results'][key.split('_')[0]].get('test', None)
         loss_list = [loss_per_subject_train, loss_per_subject_val, dict_per_subject_test]
         total_plots = sum([1 for loss in loss_list if loss is not None])
         fig, axs = plt.subplots(total_plots, 1, figsize=(20, 20))
@@ -689,7 +690,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                         criterion=data['config']['criterion'],
                                         list_stoic_subject=helper.stoic_subjects,
                                         y_lim=y_lim,
-                                        ax=axs[count_axs])
+                                        ax=axs[count_axs] if total_plots > 1 else axs)
           count_axs += 1
         # Val Loss
         if loss_per_subject_val is not None:
@@ -1212,14 +1213,14 @@ def generate_csv_row(data,config,time_, test_id):
     all_test_l1_error = {}
     test_l1_errors = {}
   
-  if 'list_val_l1_error' not in data[f'k0_cross_val_sub_0']['train_val']:
+  if 'list_val_l1_error' not in data[f'k0_cross_val_sub_0']['train_val'] or len(data[f'k0_cross_val_sub_0']['train_val']['list_val_l1_error']) == 0:
     val_l1_error = {}
     val_l2_error = {}
   else:
     val_l1_error = {f'mean_val_l1_error_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_l1_error'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
     val_l2_error = {f'mean_val_l2_error_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_l2_error'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   
-  if 'list_val_icc' not in data[f'k0_cross_val_sub_0']['train_val']:
+  if 'list_val_icc' not in data[f'k0_cross_val_sub_0']['train_val'] or len(data[f'k0_cross_val_sub_0']['train_val']['list_val_ICC']) == 0:
     val_icc_error_mean = {}
     val_ccc_error_mean = {}
     val_pearson_corr_mean = {}
@@ -1227,6 +1228,7 @@ def generate_csv_row(data,config,time_, test_id):
     val_icc_error_mean = {f'mean_val_icc_error_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_ICC'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
     val_ccc_error_mean = {f'mean_val_ccc_error_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_CCC'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
     val_pearson_corr_mean = {f'mean_val_pearson_corr_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_pearson_correlation'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx'][0]] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  
   total_mean_train_losses_best_epoch = {f'total_mean_train_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_train_accuracy_best_epoch = {f'total_mean_train_accuracy_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_val_accuracy_best_epoch = {f'total_mean_val_accuracy_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
@@ -1612,6 +1614,14 @@ def plot_separated_losses_adversarial(data, run_output_folder, test_id):
     plt.savefig(os.path.join(test_output_folder, f'{test_id}_separated_losses_adversarial_{key}.png'))
     plt.close()
 
+def clean_data(result, config):
+# remove all non-final folds if use_test_as_val is True and k_fold is 87 (special case)
+  if not config['skip_test'] and not config['validate'] and config['k_fold'] == 87:
+    for key in list(result.keys()):
+      if 'final' not in key:
+        del result[key]
+  
+  
 def plot_run_details(results_data, output_root,only_csv, dict_args,plot_only_loss=False):
   list_row_csv = []
   generate_subject_class_loss_csv(results_data,output_root)
@@ -1623,12 +1633,12 @@ def plot_run_details(results_data, output_root,only_csv, dict_args,plot_only_los
       print(f'No TEST file found in {file}')
       continue
     grid_search_folder = Path(file).parts[-3]
-    # run_output_folder = os.path.join(output_root)
     is_unbc = 'unbc' in "".join(data['config']['path_csv_dataset']).lower()
     list_row_csv.append(generate_csv_row(data['results'],data['config'],data['time'], test_id))
     if not only_csv:
+      clean_data(data['results'], data['config'])
       data['config']['model_type'] = data['config']['model_type'].name
-      # try:
+      
       plot_grouped_k_fold(data, os.path.join(output_root), test_id)
       plot_losses(data, os.path.join(output_root), test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
       plot_separated_losses_adversarial(data, os.path.join(output_root), test_id)
