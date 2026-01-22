@@ -9,7 +9,7 @@ from pathlib import Path
 import custom.helper as helper  
 from custom.dataset import customDataset
 import time
-
+import tqdm
 
 def load_data(pkl_file):
   if isinstance(pkl_file, dict):
@@ -102,13 +102,17 @@ def set_cmap(data, group_by, cmap):
   df = pd.read_csv(data['csv_path'], sep='\t', dtype={'sample_name': str})
   if group_by == "subjects":
     nr_subjects = len(set(df['subject_id']))
-    if cmap == 'jet':  # only change if default
+    if cmap is None or cmap == 'jet':  # only change if default
       if nr_subjects <= 10:
         cmap = 'tab10'  # better for categorical data
       elif nr_subjects <= 20:
         cmap = 'tab20'  
       else:
         cmap = 'tab20c'  # good for many categories
+  elif group_by == "labels":
+    if cmap is None:
+      cmap = 'jet'  # good for continuous data
+  
   return cmap
 
 def get_valid_indices(data, list_sample_ids):
@@ -140,12 +144,18 @@ def compute_valid_tsne_embeddings(data, return_valid_indices=False):
   return tsne_embeddings
 
 
-def run_tsne_and_plot(pkl_file, group_by, cmap, log_path_folder, 
+def run_tsne_and_plot(pkl_file, group_by, cmap,  
                       png_output_name=None,reduced_embeddings=None,save_plot=True,ax=None,
-                      add_title_info=""):
-  data = load_data(pkl_file)
+                      add_title_info="",log_path_folder=None):
+  
+  # print(f'Log path folder: {log_path_folder}')
+  if not isinstance(pkl_file, dict):
+    log_path_folder = str(Path(pkl_file).parent)
+    data = load_data(pkl_file)
+  else:
+    data = pkl_file
   if reduced_embeddings is None:
-    reduced_embeddings, valid_indices = compute_valid_tsne_embeddings(data, return_valid_indices=True)
+    reduced_embeddings, valid_indices, _ = compute_valid_tsne_embeddings(data, return_valid_indices=True)
   else:
     reduced_embeddings, valid_indices = reduced_embeddings
     
@@ -174,12 +184,29 @@ def run_tsne_and_plot(pkl_file, group_by, cmap, log_path_folder,
 def main():
   parser = argparse.ArgumentParser(description="Plot t-SNE from embeddings in a pickle file from log_cross_attention_from_model.py")
   parser.add_argument("--pkl_file", type=str, required=True, help="Path to the pickle file containing embeddings and labels.")
-  parser.add_argument("--group_by", type=str, choices=["labels", "subjects"], default="labels", help="Group visualization by labels or subjects.")
-  parser.add_argument("--cmap", type=str, default="jet", help="Colormap for the plot.") # jet, tab20, viridis, etc
+  parser.add_argument("--group_by", type=str, choices=["labels", "subjects", "all"], default="labels", help="Group visualization by labels or subjects.")
+  parser.add_argument("--cmap", type=str, default=None, help="Colormap for the plot.") # jet, tab20, viridis, etc
   args = parser.parse_args()
-  
-  log_path_folder = str(Path(args.pkl_file).parent)
-  run_tsne_and_plot(args.pkl_file, args.group_by, args.cmap, log_path_folder)
+  list_pkl_files = []
+  if os.path.isdir(args.pkl_file):
+    root_folder = args.pkl_file
+    print(f"Searching for pkl files in folder: {root_folder}")
+    for root, dirs, files in os.walk(root_folder):
+      for file in files:
+        if file.endswith(".pkl") and 'xattn_embeds_' in file:
+          list_pkl_files.append(os.path.join(root, file))
+    print(f"Found {len(list_pkl_files)} pkl files.")
+    
+    for pkl_path in tqdm.tqdm(list_pkl_files, desc="Processing pkl files..."):
+      if args.group_by == "labels" or args.group_by == "all":
+        run_tsne_and_plot(pkl_path, "labels", None)
+      if args.group_by == "subjects" or args.group_by == "all":
+        run_tsne_and_plot(pkl_path, "subjects", None)
+  else:
+    if args.group_by == "labels" or args.group_by == "all":
+      run_tsne_and_plot(args.pkl_file, "labels", args.cmap)
+    if args.group_by == "subjects" or args.group_by == "all":
+      run_tsne_and_plot(args.pkl_file, "subjects", args.cmap)
   
 
 if __name__ == "__main__":
