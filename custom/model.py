@@ -403,13 +403,17 @@ class Model_Advanced: # Scenario_Advanced
     # Stratified training for BIOVID dataset
     if 'parta' in self.path_to_extracted_features.lower() and kwargs.get('stratified_training', False):
       list_augmentations_available = helper.get_augmentation_availables(self.path_to_extracted_features)
-      if kwargs['stratified_training'] == 2:
-        list_augmentations_available.append('latent_basic')
-      elif kwargs['stratified_training'] == 3:
-        list_augmentations_available.append('latent_masking')
-      elif kwargs['stratified_training'] == 4:
-        list_augmentations_available.append('latent_basic')
-        list_augmentations_available.append('latent_masking')
+      if kwargs['only_augments'] is not None:
+        list_augmentations_available = kwargs['only_augments'].split(',')
+        # list_augmentations_available = [augm for augm in list_only_augments]
+      else:
+        if kwargs['stratified_training'] == 2:
+          list_augmentations_available.append('latent_basic')
+        elif kwargs['stratified_training'] == 3:
+          list_augmentations_available.append('latent_masking')
+        elif kwargs['stratified_training'] == 4:
+          list_augmentations_available.append('latent_basic')
+          list_augmentations_available.append('latent_masking')
         
       dict_augmented = {augm: 1 for augm in list_augmentations_available}
       helper.generate_csv_augmented(original_csv_path=train_csv_path,
