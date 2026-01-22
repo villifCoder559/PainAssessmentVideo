@@ -29,7 +29,7 @@ def get_pth_path_best_models(proj_dir):
   model_paths = []
   for root, dirs, files in os.walk(proj_dir):
     for file in files:
-      if file.endswith(".pth"):
+      if file.endswith(".pth") or file.endswith(".pt"):
         full_path = os.path.join(root, file)
         if any(final_pth in full_path for final_pth in final_pth_paths):
           model_paths.append(full_path)
