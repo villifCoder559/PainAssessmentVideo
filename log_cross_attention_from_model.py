@@ -6,10 +6,20 @@ import time
 from pathlib import Path
 import shutil
 import pandas as pd
-
+import tqdm
 import custom.helper as helper
 from custom.model import Model_Advanced
 
+
+def clean_csv_from_augmentations(csv_path):
+  df = pd.read_csv(csv_path, sep='\t', dtype={'sample_name': str})
+  print(f'Remove augmentations with threshold step shift: {helper.step_shift}')
+  mask_to_keep = df['sample_id'] <= helper.step_shift
+  df_clean = df[mask_to_keep]
+  cleaned_csv_path = csv_path.replace('.csv', '_cleaned.csv')
+  df_clean.to_csv(cleaned_csv_path, index=False, sep='\t')
+  return cleaned_csv_path
+  
 def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None, nr_samples=None,free_space=False,
                                    disable_video_embeddings=False, disable_cross_attention=False):
   # Initialize logging flags
@@ -41,6 +51,9 @@ def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None
   else:
     test_csv_path = os.path.join(*Path(model_pth_path).parts[:-2], 'test.csv')
 
+  # Remove augmentations from CSV if present
+  test_csv_path = clean_csv_from_augmentations(test_csv_path) 
+  
   # Optionally create subset CSV
   if nr_samples is not None:
     df = pd.read_csv(test_csv_path, sep='\t', dtype={'sample_name': str})
@@ -62,7 +75,7 @@ def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None
   test_pretarined_args = {
     'path_model_weights': model_pth_path,
     'state_dict': None,
-    'csv_path': test_csv_path,
+    'csv_path': test_csv_path ,
     'criterion': config_model['config']['criterion'],
     'is_test': True,
     'concatenate_temporal': config_model['config']['concatenate_temp_dim'],
@@ -135,6 +148,28 @@ def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None
     print(f'Saved config logging to {config_txt_path}')
   return dict_res
 
+
+def get_all_pth_files_in_folders(dict_args):
+  list_pth_files = []
+  folders_to_search = [f'k{i}_cross_val_sub_{j}' for idxs in dict_args['idx_pth_folders'] for i,j in [map(int, idxs.split(','))]]
+  for root, dirs, files in os.walk(dict_args['model_pth_path']):
+    if any(folder in root for folder in folders_to_search):
+      for file in files:
+        if file.endswith(".pth"):
+          list_pth_files.append(os.path.join(root, file))  
+  print(f"Found {len(list_pth_files)} .pth files.")
+  return list_pth_files
+
+
+def get_csv_paths_for_pth(model_pth_path):
+  train_path = os.path.join(*Path(model_pth_path).parts[:-1], 'train.csv')
+  test_path = os.path.join(*Path(model_pth_path).parts[:-2], 'test.csv')
+  if not os.path.exists(test_path):
+    test_path = os.path.join(*Path(model_pth_path).parts[:-1], 'val.csv')
+  assert os.path.isfile(test_path), f"Test CSV file {test_path} does not exist."
+  assert os.path.isfile(train_path), f"Train CSV file {train_path} does not exist."
+  return [train_path, test_path]
+
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument('--model_pth_path', type=str, required=True,
@@ -149,11 +184,42 @@ if __name__ == '__main__':
                       help='Disable logging video embeddings (enabled by default)')
   parser.add_argument('--disable_cross_attention', action='store_true',
                       help='Disable logging cross-attention (enabled by default)')
+  parser.add_argument('--idx_pth_folders', nargs='*', type=str, default=None,
+                      help='List of folder paths containing model .pth files to process.'+
+                      ' Ex: 0,0 2,3. They means k0_cross_val_sub_0 and k2_cross_val_sub_3')
   dict_args = vars(parser.parse_args())
   
-  log_cross_attention_from_model(csv_path=dict_args['csv_path'],
-                                 disable_video_embeddings=dict_args['disable_video_embeddings'],
-                                 disable_cross_attention=dict_args['disable_cross_attention'],
-                                 model_pth_path=dict_args['model_pth_path'],
-                                 split_chunks=dict_args['split_chunks'],
-                                 nr_samples=dict_args['nr_samples'])
+  # MULTIPLE .pth files in specified folders
+  if dict_args['idx_pth_folders'] is not None:
+    assert os.path.isdir(dict_args['model_pth_path']), "When using --idx_pth_folders, --model_pth_path must be a directory."
+    list_pth_files = get_all_pth_files_in_folders(dict_args)
+    
+    # Process each .pth file found to generate logs
+    for pth_path in tqdm.tqdm(list_pth_files, desc="Processing .pth files..."):
+      dict_args['model_pth_path'] = pth_path      
+      if dict_args['csv_path'] is None:
+        csv_paths = get_csv_paths_for_pth(pth_path)
+      else:
+        csv_paths = [dict_args['csv_path']]
+      for csv_path in csv_paths:
+        assert os.path.isfile(csv_path), f"CSV file {csv_path} does not exist."
+        log_cross_attention_from_model(csv_path=csv_path,
+                                    disable_video_embeddings=dict_args['disable_video_embeddings'],
+                                    disable_cross_attention=dict_args['disable_cross_attention'],
+                                    model_pth_path=dict_args['model_pth_path'],
+                                    split_chunks=dict_args['split_chunks'],
+                                    nr_samples=dict_args['nr_samples'])
+  else:
+  # SINGLE .pth file
+    if dict_args['csv_path'] is None:
+      csv_paths = get_csv_paths_for_pth(dict_args['model_pth_path'])
+    else:
+      csv_paths = [dict_args['csv_path']]
+      
+    for csv_path in csv_paths:
+      log_cross_attention_from_model(csv_path=csv_path,
+                                    disable_video_embeddings=dict_args['disable_video_embeddings'],
+                                    disable_cross_attention=dict_args['disable_cross_attention'],
+                                    model_pth_path=dict_args['model_pth_path'],
+                                    split_chunks=dict_args['split_chunks'],
+                                    nr_samples=dict_args['nr_samples'])
