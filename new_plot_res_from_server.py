@@ -553,11 +553,33 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         
         # Plot GRADIENT
         if (grad_norm_mean > 0).any():
-          tools.plot_with_std(ax=axs[1][1],x=list(range(len(grad_norm_mean))),mean=grad_norm_mean,std=grad_norm_std,
-                              title='Mean and std of GRADIENT norm',x_label='Epochs',y_label='Gradient norm',y_lim=[0, 15],
+          tools.plot_with_std(ax=axs[1][1],
+                              x=list(range(len(grad_norm_mean))),
+                              mean=grad_norm_mean,
+                              std=grad_norm_std,
+                              title='Mean and std of GRADIENT norm',
+                              x_label='Epochs',
+                              y_label='Gradient norm',
+                              y_lim=[0, 100],
                               cap_line=data['config']['clip_grad_norm'] if data['config']['clip_grad_norm'] else None,
                               )
-          
+          l2_norm_grad_task = data['results'][key]['train_val']['grad_task_norm_epoch']
+          l2_norm_grad_adv = data['results'][key]['train_val']['grad_adv_norm_epoch']
+          if l2_norm_grad_adv != [] and l2_norm_grad_task != []:
+            fig_adv, axs_adv = plt.subplots(1,1,figsize=(20,10))
+            # axs_adv = axs_adv.flatten()
+            axs_adv.plot(l2_norm_grad_task,  label=f"Gradient of {data['config']['criterion']}")
+            axs_adv.plot(l2_norm_grad_adv, label="Gradient of CE Identity Aware Network")
+
+            axs_adv.set_xlabel("Epochs")
+            axs_adv.set_ylabel("Value")
+            axs_adv.legend()
+
+            fig_adv.suptitle("Separated gradient Norm of the losses during training")
+            fig_adv.tight_layout()
+            fig_adv.savefig(os.path.join(test_output_folder, f'{test_id}_separated_gradient_losses_{key}.png'))
+            plt.close(fig_adv)
+            
         # Plot prediction confidence if available
         if 'list_train_confidence_prediction_right_mean' in data['results'][key]['train_val'] and data['results'][key]['train_val']['list_val_confidence_prediction_right_mean']:
           tools.plot_with_std(ax=axs[2][0],x=list(range(len(train_prediction_confidence_right_mean))),
@@ -1642,7 +1664,7 @@ def plot_run_details(results_data, output_root,only_csv, dict_args,plot_only_los
       plot_grouped_k_fold(data, os.path.join(output_root), test_id)
       plot_losses(data, os.path.join(output_root), test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
       plot_separated_losses_adversarial(data, os.path.join(output_root), test_id)
-      # plot_confusion_matrices(data, os.path.join(output_root), test_id)
+      plot_confusion_matrices(data, os.path.join(output_root), test_id)
       if not plot_only_loss:
         plot_lr_wd_across_epochs(data, os.path.join(output_root), test_id)
         if is_unbc:
