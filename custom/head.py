@@ -80,7 +80,7 @@ class AdvAlpha:
     """
     alphas = []
     for current_step in range(self.total_steps):
-      p = float(current_step) / self.total_steps
+      p = float(current_step) / (self.total_steps - 1)  # Normalize to [0, 1]
       if self.method == 'sigmoid':
         alpha = 2.0 / (1.0 + np.exp(-self.gamma * p)) - 1.0
       elif self.method == 'linear':
@@ -641,9 +641,14 @@ class BaseHead(nn.Module):
       # print(f'  Evaluation time: {dict_log_time["eval"]:.4f}')
       
       epoch_log_time = time.time()
+      
       if epoch == 0 or \
-           helper.SAVE_LAST_EPOCH_MODEL or \
-           (dict_eval is not None and dict_eval[key_for_early_stopping] < best_eval_loss if key_for_early_stopping == 'val_loss' else dict_eval[key_for_early_stopping] > best_eval_loss):
+         helper.SAVE_LAST_EPOCH_MODEL or \
+         (  epoch >= min(50, num_epochs//2) 
+            and dict_eval is not None 
+            and dict_eval[key_for_early_stopping] < best_eval_loss 
+                  if key_for_early_stopping == 'val_loss' 
+                  else dict_eval[key_for_early_stopping] > best_eval_loss):
         best_eval_loss = dict_eval[key_for_early_stopping] if dict_eval is not None else 0.0
         best_model_state = copy.deepcopy(self.state_dict())
         best_model_state = {key: value.cpu() for key, value in best_model_state.items()}
@@ -1268,7 +1273,7 @@ class AttentiveHeadJEPA(BaseHead):
       backbone: custom_backbone.BackboneBase = None,
       embedding_reduction: helper.EMBEDDING_REDUCTION = None,
       complete_block=True):
-    super().__init__(self,is_classification=True if num_classes > 1 else False)
+    super().__init__(is_classification=True if num_classes > 1 else False)
     self.pooler = jepa_attentive_pooler.AttentivePooler(
             num_queries=num_queries,
             embed_dim=embed_dim,
@@ -1517,23 +1522,23 @@ class AttentiveHeadJEPA(BaseHead):
         print(f'LOADED Head weights from {self.head_init_path}\n  {state_dict.keys()}')
         print(f'\nHead weights loaded from {self.head_init_path}')
         # freeze pooler weights
-        for param in self.pooler.parameters():
-          param.requires_grad = False
-        print(f'======== FROZEN Head weights loaded from {self.head_init_path}========\n')
+        # for param in self.pooler.parameters():
+        #   param.requires_grad = False
+        # print(f'======== FROZEN Head weights loaded from {self.head_init_path}========\n')
       
       ## Initialize linear layer ##
-      if self.coral_loss:
-        self.linear.coral_weights.reset_parameters()
-        if self.adversarial_head is not None:
-          torch.nn.init.xavier_uniform_(self.adversarial_head.weight,gain=0.1)
-          torch.nn.init.zeros_(self.adversarial_head.bias)
-      else:
-        if self.linear is not None and not isinstance(self.linear, nn.Identity):
-          torch.nn.init.xavier_uniform_(self.linear.weight,gain=0.1)
-          torch.nn.init.zeros_(self.linear.bias)
-        if self.adversarial_head is not None:
-          torch.nn.init.xavier_uniform_(self.adversarial_head.weight,gain=0.1)
-          torch.nn.init.zeros_(self.adversarial_head.bias)
+      # if self.coral_loss:
+      #   self.linear.coral_weights.reset_parameters()
+      #   if self.adversarial_head is not None:
+      #     torch.nn.init.xavier_uniform_(self.adversarial_head.weight,gain=0.1)
+      #     torch.nn.init.zeros_(self.adversarial_head.bias)
+      # else:
+      #   if self.linear is not None and not isinstance(self.linear, nn.Identity):
+      #     torch.nn.init.xavier_uniform_(self.linear.weight,gain=0.1)
+      #     torch.nn.init.zeros_(self.linear.bias)
+      #   if self.adversarial_head is not None:
+      #     torch.nn.init.xavier_uniform_(self.adversarial_head.weight,gain=0.1)
+      #     torch.nn.init.zeros_(self.adversarial_head.bias)
     else:
       raise NotImplementedError(f'Initialization method {init_type} not implemented')
   
