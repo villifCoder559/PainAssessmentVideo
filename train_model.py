@@ -983,7 +983,7 @@ if __name__ == '__main__':
   parser.add_argument('--latent_masking', type=float, nargs='*', default=[0.0], help='Latent masking prob.')
   parser.add_argument('--shift_augm', type=float, nargs='*', default=[0.0], help='Shift prob.')
   parser.add_argument('--latent_coefficient', type=float, nargs='*', default=[0.0], help='Latent coeff.')
-  parser.add_argument('--key_early_stopping', type=str, default='val_accuracy', help='Metric for early stopping.')
+  parser.add_argument('--key_early_stopping', type=str, default=None, help='Metric for early stopping.')
   parser.add_argument('--p_early_stop', type=int, default=2000, help='Patience.')
   parser.add_argument('--min_delta', type=float, default=0.001, help='Min delta.')
   parser.add_argument('--threshold_mode', type=str, default='abs', help='Threshold mode.')
@@ -1026,7 +1026,7 @@ if __name__ == '__main__':
   parser.add_argument('--n_trials', type=int, default=100, help='Number of trials.')
   parser.add_argument('--timeout', type=float, default=14, help='Timeout in hours.')
 
-  args = parser.parse_args()
+  args = parser.parse_args() 
   args.timeout = int(args.timeout * 3600)  # Convert hours to seconds
   dict_args = vars(args)
 
@@ -1044,7 +1044,12 @@ if __name__ == '__main__':
   if dict_args['save_model_every_n_epochs']:
     helper.SAVE_MODEL_EVERY_N_EPOCHS = dict_args['save_model_every_n_epochs']
     print(f"Models will be saved every {helper.SAVE_MODEL_EVERY_N_EPOCHS} epochs.\n")
-
+  if dict_args['key_early_stopping'] is None:
+    if dict_args['loss'] == 'ce':
+      dict_args['key_for_early_stopping'] = 'val_accuracy'
+    else:
+      dict_args['key_for_early_stopping'] = 'val_loss'
+  
   if dict_args['plot_live_loss']:
     helper.PLOT_LIVE_LOSS = True
 
