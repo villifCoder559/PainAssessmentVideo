@@ -368,7 +368,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         # add test_id in dict_to_string
         dict_to_string += f'\nTest ID: {test_id}'
         dict_to_string += f'\nfold_subfold: {key.split("_")[0]}_{key.split("_")[-1]}'
-        y_lim_loss = 5.1
+        y_lim_loss = 5.0
         step_lim = 0.25
         if isinstance(data['config']['criterion'],torch.nn.MSELoss):
           y_lim_loss = 15.1
@@ -1622,19 +1622,31 @@ def plot_separated_losses_adversarial(data, run_output_folder, test_id):
   for key,dict_sub_fold in data['results'].items():
     adv_loss = [v[0] for v in dict_sub_fold['train_val']['list_train_adv_losses']]
     main_loss = [v[1] for v in dict_sub_fold['train_val']['list_train_adv_losses']]
+    adv_accuracy = dict_sub_fold['train_val']['list_train_adv_accuracies']
     epochs = list(range(len(adv_loss)))
     loss = str(data['config']['criterion']).lower()
-    plt.figure(figsize=(18, 9))
-    plt.plot(epochs, adv_loss, label='Adversarial Loss')
-    plt.plot(epochs, main_loss, label=f'{loss.capitalize()} Loss')
-    plt.legend()
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.title(f'Training - {test_id} - Adversarial and {loss.capitalize()} Loss')
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(os.path.join(test_output_folder, f'{test_id}_separated_losses_adversarial_{key}.png'))
-    plt.close()
+    fig, ax = plt.subplots(2,1,figsize=(18, 9))
+    unique_subjects = list(dict_sub_fold["train_val"]["count_subject_ids_train"].keys())
+    ax[0].plot(epochs, adv_loss, label='Adversarial Loss', color='#AAAA00')
+    ax[0].plot(epochs, main_loss, label=f'{loss.capitalize()} Loss', color='red')
+    ax[0].legend()
+    ax[0].set_xlabel('Epochs')
+    ax[0].set_ylabel('Loss')
+    ax[0].set_title(f'Training - {test_id} - Adversarial and {loss.capitalize()} Loss')
+    ax[0].grid(True)
+    ax[1].plot(epochs, adv_accuracy, label='Adversarial Accuracy', color='green')
+    ax[1].set_xlabel('Epochs')
+    ax[1].set_ylabel('Adversarial Accuracy')
+    ax[1].set_title(f'Training - {test_id} - Adversarial Accuracy - tot_subjects: {len(unique_subjects)}')
+    # set random guess accuracy line
+    random_guess_accuracy = 1.0 / len(unique_subjects) if len(unique_subjects) > 0 else 0
+    ax[1].axhline(y=random_guess_accuracy, color='black', linestyle='--', label='Random Guess Accuracy')
+    ax[1].legend()
+    ax[1].set_ylim(0, 1)
+    ax[1].grid(True)
+    fig.tight_layout()
+    fig.savefig(os.path.join(test_output_folder, f'{test_id}_separated_losses_adversarial_{key}.png'))
+    plt.close(fig)
 
 def clean_data(result, config):
 # remove all non-final folds if use_test_as_val is True and k_fold is 87 (special case)
