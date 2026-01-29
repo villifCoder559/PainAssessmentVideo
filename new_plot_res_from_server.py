@@ -1189,15 +1189,24 @@ def generate_csv_row(data,config,time_, test_id):
   
   mean_train_losses_last_epoch = {f'mean_train_loss_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_val_losses_last_epoch = {f'mean_val_loss_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  
-  mean_train_accuracies_last_epoch = {f'mean_train_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_accuracy'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  mean_val_accuracies_last_epoch = {f'mean_val_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_accuracy'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  if data['k0_cross_val_sub_0']['train_val']['list_val_accuracy'] == []:
+    mean_val_accuracies_last_epoch = {}
+    mean_train_accuracies_last_epoch = {}
+    mean_train_accuracies_best_epoch = {}
+    mean_val_accuracies_best_epoch = {}
+    total_mean_train_accuracy_best_epoch = {}
+    total_mean_val_accuracy_best_epoch = {}
+  else:
+    mean_train_accuracies_last_epoch = {f'mean_train_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_accuracy'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+    mean_val_accuracies_last_epoch = {f'mean_val_accuracy_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_accuracy'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+    mean_train_accuracies_best_epoch = {f'mean_train_accuracy_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+    mean_val_accuracies_best_epoch = {f'mean_val_accuracy_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+    total_mean_train_accuracy_best_epoch = {f'total_mean_train_accuracy_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
+    total_mean_val_accuracy_best_epoch = {f'total_mean_val_accuracy_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
     
   mean_train_losses_best_epoch = {f'mean_train_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_val_losses_best_epoch = {f'mean_val_loss_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   
-  mean_train_accuracies_best_epoch = {f'mean_train_accuracy_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-  mean_val_accuracies_best_epoch = {f'mean_val_accuracy_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   
   # if list_final_test != []: 
   #   mean_test_accuracies = {f'mean_test_{metric}_best_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['test'][test_key] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
@@ -1252,8 +1261,6 @@ def generate_csv_row(data,config,time_, test_id):
     val_pearson_corr_mean = {f'mean_val_pearson_corr_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_pearson_correlation'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx'][0]] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   
   total_mean_train_losses_best_epoch = {f'total_mean_train_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-  total_mean_train_accuracy_best_epoch = {f'total_mean_train_accuracy_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_train_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
-  total_mean_val_accuracy_best_epoch = {f'total_mean_val_accuracy_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_accuracy'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_mean_val_losses_best_epoch = {f'total_mean_val_loss_best_ep': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   total_median_val_losses_best_epoch = {f'total_median_val_loss_best_ep': np.median([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for i in range(real_k_fold) for j in range(real_sub_fold)])}
   best_epoch_values = [data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx'] for i in range(real_k_fold) for j in range(real_sub_fold)]
@@ -1622,31 +1629,19 @@ def plot_separated_losses_adversarial(data, run_output_folder, test_id):
   for key,dict_sub_fold in data['results'].items():
     adv_loss = [v[0] for v in dict_sub_fold['train_val']['list_train_adv_losses']]
     main_loss = [v[1] for v in dict_sub_fold['train_val']['list_train_adv_losses']]
-    adv_accuracy = dict_sub_fold['train_val']['list_train_adv_accuracies']
     epochs = list(range(len(adv_loss)))
     loss = str(data['config']['criterion']).lower()
-    fig, ax = plt.subplots(2,1,figsize=(18, 9))
-    unique_subjects = list(dict_sub_fold["train_val"]["count_subject_ids_train"].keys())
-    ax[0].plot(epochs, adv_loss, label='Adversarial Loss', color='#AAAA00')
-    ax[0].plot(epochs, main_loss, label=f'{loss.capitalize()} Loss', color='red')
-    ax[0].legend()
-    ax[0].set_xlabel('Epochs')
-    ax[0].set_ylabel('Loss')
-    ax[0].set_title(f'Training - {test_id} - Adversarial and {loss.capitalize()} Loss')
-    ax[0].grid(True)
-    ax[1].plot(epochs, adv_accuracy, label='Adversarial Accuracy', color='green')
-    ax[1].set_xlabel('Epochs')
-    ax[1].set_ylabel('Adversarial Accuracy')
-    ax[1].set_title(f'Training - {test_id} - Adversarial Accuracy - tot_subjects: {len(unique_subjects)}')
-    # set random guess accuracy line
-    random_guess_accuracy = 1.0 / len(unique_subjects) if len(unique_subjects) > 0 else 0
-    ax[1].axhline(y=random_guess_accuracy, color='black', linestyle='--', label='Random Guess Accuracy')
-    ax[1].legend()
-    ax[1].set_ylim(0, 1)
-    ax[1].grid(True)
-    fig.tight_layout()
-    fig.savefig(os.path.join(test_output_folder, f'{test_id}_separated_losses_adversarial_{key}.png'))
-    plt.close(fig)
+    plt.figure(figsize=(18, 9))
+    plt.plot(epochs, adv_loss, label='Adversarial Loss')
+    plt.plot(epochs, main_loss, label=f'{loss.capitalize()} Loss')
+    plt.legend()
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.title(f'Training - {test_id} - Adversarial and {loss.capitalize()} Loss')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(test_output_folder, f'{test_id}_separated_losses_adversarial_{key}.png'))
+    plt.close()
 
 def clean_data(result, config):
 # remove all non-final folds if use_test_as_val is True and k_fold is 87 (special case)
