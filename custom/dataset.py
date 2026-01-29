@@ -992,7 +992,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
                            stratified_training=stratified_training)
   
 # Alternative version with even more optimizations for large batches
-def highly_optimized_custom_collate(batch, pid, concatenate_temporal=False, smooth_labels=0.0,
+def highly_optimized_custom_collate(batch, pid, is_training,concatenate_temporal=False, smooth_labels=0.0,
   soft_labels_mat=None, coral_loss=False, num_classes=None,concatenate_quadrants=False, split_chunks=False,xattn_mask=None):
   """Highly optimized version using vectorized operations where possible"""
   
@@ -1106,11 +1106,14 @@ def highly_optimized_custom_collate(batch, pid, concatenate_temporal=False, smoo
     subject_id = torch.repeat_interleave(subject_id, repeats=repeats, dim=0)
     sample_id = torch.repeat_interleave(sample_id, repeats=repeats, dim=0)
     labels = torch.repeat_interleave(labels, repeats=repeats, dim=0)
-  # Handle label transformations (same as before)
-  if smooth_labels > 0.0:
+  
+  # Handle label smoothing when in training mode
+  if is_training and smooth_labels > 0.0:
     labels = smooth_labels_batch(gt_classes=labels, num_classes=num_classes,
       smoothing=smooth_labels)
-  elif soft_labels_mat is not None:
+  
+  # Handle label transformations (same as before)
+  if soft_labels_mat is not None:
     labels = soft_labels_mat[labels].to(torch.float32)
   elif coral_loss:
     labels = levels_from_labelbatch(labels, num_classes, dtype=torch.float32)
@@ -1136,6 +1139,7 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_cla
     with profile_workers(f'{pid}_collate_preprocess_time',helper.time_profiling_enabled,helper.time_profile_dict):
       dict_res = highly_optimized_custom_collate(batch=batch,
                                                 pid=pid,
+                                                is_training = model.training,
                                                 concatenate_temporal=concatenate_temporal,
                                                 smooth_labels=smooth_labels,
                                                 soft_labels_mat=soft_labels_mat,
@@ -1318,33 +1322,98 @@ class FilteredAugmentationBatchSampler(BatchSampler):
 
 
   
-def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: float = 0.1) -> torch.Tensor:
-  """
-  Create label-smoothed targets for a batch of ground truth classes.
+# def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: float = 0.1) -> torch.Tensor:
+#   """
+#   Create label-smoothed targets for a batch of ground truth classes.
   
-  Args:
-    gt_classes (torch.Tensor): 1D tensor of shape (batch_size,) with ground truth class indices.
-    num_classes (int): The total number of classes.
-    smoothing (float): Smoothing factor in [0, 1). Default is 0.1.
+#   Args:
+#     gt_classes (torch.Tensor): 1D tensor of shape (batch_size,) with ground truth class indices.
+#     num_classes (int): The total number of classes.
+#     smoothing (float): Smoothing factor in [0, 1). Default is 0.1.
   
-  Returns:
-    torch.Tensor: A tensor of shape (batch_size, num_classes) with smoothed probabilities.
-  """
-  assert 0 <= smoothing < 1, "Smoothing value should be in the range [0, 1)"
-  # Probability for the ground truth class
-  confidence = 1.0 - smoothing
-  # Value for all other classes
-  smooth_value = smoothing / (num_classes - 1)
+#   Returns:
+#     torch.Tensor: A tensor of shape (batch_size, num_classes) with smoothed probabilities.
+#   """
+#   assert 0 <= smoothing < 1, "Smoothing value should be in the range [0, 1)"
+#   # Probability for the ground truth class
+#   confidence = 1.0 - smoothing
+#   # Value for all other classes
+#   smooth_value = smoothing / (num_classes - 1)
   
-  batch_size = gt_classes.size(0)
-  # Create a tensor filled with smooth_value for each sample and class
-  smoothed_labels = torch.full((batch_size, num_classes), smooth_value)
-  # Set the ground truth class indices to have the confidence value
-  smoothed_labels[torch.arange(batch_size), gt_classes] = confidence
+#   batch_size = gt_classes.size(0)
+#   # Create a tensor filled with smooth_value for each sample and class
+#   smoothed_labels = torch.full((batch_size, num_classes), smooth_value)
+#   # Set the ground truth class indices to have the confidence value
+#   smoothed_labels[torch.arange(batch_size), gt_classes] = confidence
   
-  return smoothed_labels
+#   return smoothed_labels
 
+# import torch
 
+def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: float = 0.2) -> torch.Tensor:
+  """
+  Highly optimized implementation of neighbor-only label smoothing.
+  
+  Logic:
+    - GT: 1.0 - smoothing
+    - Neighbors: smoothing / 2
+    - Edge Correction: If a neighbor is missing (e.g., gt=0), 
+      the existing neighbor gets the full smoothing value.
+  """
+  B = gt_classes.size(0)
+  device = gt_classes.device
+  
+  # 1. Initialize output tensor (Faster than creating empty and filling)
+  out = torch.zeros((B, num_classes), device=device, dtype=torch.float32)
+  
+  # 2. Set Ground Truth Confidence
+  # Uses advanced indexing: out[row_indices, col_indices] = value
+  row_indices = torch.arange(B, device=device)
+  out[row_indices, gt_classes] = 1.0 - smoothing
+  
+  # Pre-calculate smoothing values
+  half_smooth = smoothing * 0.5
+  
+  # 3. Handle LEFT Neighbors (Indices: gt - 1)
+  # Mask: Where does a left neighbor exist? (gt > 0)
+  mask_left = gt_classes > 0
+  if mask_left.any():
+    # Compute indices for valid left neighbors
+    idx_left = gt_classes[mask_left] - 1
+    
+    # Create value array filled with half_smooth
+    vals_left = torch.full((mask_left.sum(),), half_smooth, device=device)
+    
+    # EDGE CASE OPTIMIZATION: 
+    # If gt was the Max Class (e.g. 4), it has no right neighbor.
+    # So the Left neighbor gets the FULL smoothing value.
+    # We check the original gt values using the same mask
+    is_right_edge = (gt_classes[mask_left] == num_classes - 1)
+    vals_left[is_right_edge] = smoothing
+    
+    # Assign values in one go
+    out[mask_left, idx_left] = vals_left
+
+  # 4. Handle RIGHT Neighbors (Indices: gt + 1)
+  # Mask: Where does a right neighbor exist? (gt < max)
+  mask_right = gt_classes < num_classes - 1
+  if mask_right.any():
+    # Compute indices
+    idx_right = gt_classes[mask_right] + 1
+    
+    # Create value array filled with half_smooth
+    vals_right = torch.full((mask_right.sum(),), half_smooth, device=device)
+    
+    # EDGE CASE OPTIMIZATION:
+    # If gt was 0, it has no left neighbor.
+    # So the Right neighbor gets the FULL smoothing value.
+    is_left_edge = (gt_classes[mask_right] == 0)
+    vals_right[is_left_edge] = smoothing
+    
+    # Assign values in one go
+    out[mask_right, idx_right] = vals_right
+
+  return out
  
 def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_training_batch,is_training,dataset_type,concatenate_temporal,model,
                            label_smooth,soft_labels,is_coral_loss,stride_inside_window=1,num_clips_per_video=1,sample_frame_strategy=None,n_workers=None,backbone_dict=None,split_chunks=False,prefetch_factor=None,**kwargs):
