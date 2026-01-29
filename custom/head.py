@@ -1306,7 +1306,7 @@ class AttentiveHeadJEPA(BaseHead):
     self.head_init_path = head_init_path
     self.coral_loss = coral_loss
     
-    if remove_head:
+    if remove_head: # used for Supervised Contrastive Learning
       self.linear = nn.Identity()
       print('\n=== Removed classification head from AttentiveHeadJEPA ===\n')
     else:
@@ -1522,9 +1522,9 @@ class AttentiveHeadJEPA(BaseHead):
         print(f'LOADED Head weights from {self.head_init_path}\n  {state_dict.keys()}')
         print(f'\nHead weights loaded from {self.head_init_path}')
         # freeze pooler weights
-        # for param in self.pooler.parameters():
-        #   param.requires_grad = False
-        # print(f'======== FROZEN Head weights loaded from {self.head_init_path}========\n')
+        for param in self.pooler.parameters():
+          param.requires_grad = False
+        print(f'======== FROZEN Head weights loaded from {self.head_init_path}========\n')
       
       ## Initialize linear layer ##
       # if self.coral_loss:
