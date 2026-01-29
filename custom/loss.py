@@ -412,7 +412,7 @@ class RESupConLoss(nn.Module):
   
   def __init__(self, 
                temperature=0.1,
-               theta=1.1,
+               theta=1,
                lambda_weight=4.0,
                spearman_reg="l2",
                spearman_reg_strength=1.0):
@@ -511,6 +511,64 @@ class RESupConLoss(nn.Module):
   def __str__(self):
     cfg = self.get_config()
     return f'RESupConLoss(temp={cfg["sup_con_temperature"]}, theta={cfg["sup_cont_theta"]}, λ={cfg["lambda_weight"]}, spearman_reg={cfg["spearman_reg"]}, spearman_reg_strength={cfg["spearman_reg_strength"]})'
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class PHuberCrossEntropy(nn.Module):
+  """
+  Partially Huberised softmax Cross-Entropy (PHuber-CE).
+
+  Loss per sample:
+    p_y = softmax(logits)[i, target[i]]
+    threshold = 1 / tau
+
+    if p_y <= threshold:
+        loss = -tau * p_y + log(tau) + 1
+    else:
+        loss = -log(p_y)
+
+  Args:
+    tau: > 1. Controls where the loss switches to the linearised region.
+    eps: numerical eps for stability when taking log or clamping probs.
+    reduction: 'mean' | 'sum' | 'none'
+  """
+  def __init__(self, tau: float = 10.0, eps: float = 1e-8, reduction: str = 'mean'):
+    super().__init__()
+    assert tau > 0, "tau should be > 0 (paper uses tau > 1 for the PHuber variant)"
+    self.tau = float(tau)
+    self.eps = float(eps)
+    self.reduction = reduction
+
+  def forward(self, logits: torch.Tensor, targets: torch.Tensor):
+    """
+    logits: (N, C) raw model outputs
+    targets: (N,) long (class indices)
+    """
+    device = logits.device
+    # compute probabilities
+    probs = F.softmax(logits, dim=1)
+    # gather p(theta, y)
+    p_y = probs.gather(1, targets.view(-1, 1)).squeeze(1).clamp(min=self.eps)
+
+    thresh = 1.0 / self.tau
+    # linearised branch
+    log_tau = torch.log(torch.tensor(self.tau, device=device, dtype=logits.dtype))
+    linear_branch = - self.tau * p_y + log_tau + 1.0
+    # standard cross-entropy branch
+    log_branch = - torch.log(p_y)
+
+    loss_per_sample = torch.where(p_y <= thresh, linear_branch, log_branch)
+
+    if self.reduction == 'mean':
+      return loss_per_sample.mean()
+    elif self.reduction == 'sum':
+      return loss_per_sample.sum()
+    else:
+      return loss_per_sample
+
 
 class SupConWeightedLoss(torch.nn.Module):
   """
