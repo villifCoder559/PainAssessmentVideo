@@ -1031,6 +1031,11 @@ if __name__ == '__main__':
   dict_args = vars(args)
 
   # --- Global Constants & Side Effects ---
+  if dict_args['key_early_stopping'] is None:
+    if dict_args['loss'][0] == 'ce':
+      dict_args['key_early_stopping'] = 'val_accuracy'
+    else:
+      dict_args['key_early_stopping'] = 'val_loss'
   validate_arguments(dict_args)
 
   dict_args['pooling_embedding_reduction'] = helper.EMBEDDING_REDUCTION.get_embedding_reduction(
@@ -1044,11 +1049,6 @@ if __name__ == '__main__':
   if dict_args['save_model_every_n_epochs']:
     helper.SAVE_MODEL_EVERY_N_EPOCHS = dict_args['save_model_every_n_epochs']
     print(f"Models will be saved every {helper.SAVE_MODEL_EVERY_N_EPOCHS} epochs.\n")
-  if dict_args['key_early_stopping'] is None:
-    if dict_args['loss'] == 'ce':
-      dict_args['key_for_early_stopping'] = 'val_accuracy'
-    else:
-      dict_args['key_for_early_stopping'] = 'val_loss'
   
   if dict_args['plot_live_loss']:
     helper.PLOT_LIVE_LOSS = True
