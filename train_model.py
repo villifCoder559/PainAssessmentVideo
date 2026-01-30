@@ -141,6 +141,8 @@ def get_loss(loss_name, dict_args=None):
       temperature=dict_args['contrastive_loss_temp'],
       theta=dict_args['contrastive_loss_theta'],
       lambda_weight=dict_args['contrastive_lambda_weight'],
+      spearman_reg=dict_args['spearman_reg'],
+      spearman_reg_strength=dict_args['spearman_reg_strength'],
     )
   elif loss_lower == 'coral':
     return coral_loss
@@ -188,6 +190,7 @@ def get_composite_loss_module(loss_types, losses_weights, **kwargs):
         'loss_weight': weight
       })
     elif loss_type == 'contrastive_reg':
+      raise ValueError("Contrastive regression loss not supported in composite loss.")
       list_losses.append({
         'type': 'contrastive_reg',
         'contrastive_loss_temp': kwargs['contrastive_loss_temp'],
@@ -385,6 +388,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   contrastive_loss_temp = _suggest(trial, 'contrastive_loss_temp', kwargs['contrastive_loss_temp'], kwargs['optuna_categorical'])
   contrastive_loss_theta = _suggest(trial, 'contrastive_loss_theta', kwargs['contrastive_loss_theta'], kwargs['optuna_categorical'])
   contrastive_lambda_weight = trial.suggest_categorical('contrastive_lambda_weight', kwargs['contrastive_lambda_weight'])
+  contrastive_spearman_reg = trial.suggest_categorical('spearman_reg', kwargs['spearman_reg'])
+  contrastive_spearman_reg_strength = _suggest(trial, 'spearman_reg_strength', kwargs['spearman_reg_strength'], kwargs['optuna_categorical'])
   delta_huber = _suggest(trial, 'delta_huber', kwargs['delta_huber'], kwargs['optuna_categorical'])
   
   # --- Suggest Training Strategy Params ---
@@ -430,6 +435,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'contrastive_loss_temp': contrastive_loss_temp,
     'contrastive_loss_theta': contrastive_loss_theta,
     'contrastive_lambda_weight': contrastive_lambda_weight,
+    'spearman_reg': contrastive_spearman_reg,
+    'spearman_reg_strength': contrastive_spearman_reg_strength,
   }
 
   if kwargs['loss']:
@@ -934,6 +941,8 @@ if __name__ == '__main__':
   parser.add_argument('--contrastive_loss_temp', type=float, nargs='*', default=[0.07], help='Temp for contrastive loss.')
   parser.add_argument('--contrastive_loss_theta', type=float, nargs='*', default=[1.1], help='Theta for contrastive loss.')
   parser.add_argument('--contrastive_lambda_weight', type=float, nargs='*', default=[4.0], help='Lambda weight for contrastive loss.')
+  parser.add_argument('--spearman_reg', type=str, nargs='*', choices=['l2', 'kl'], default=['l2'], help='Spearman regression type.')
+  parser.add_argument('--spearman_reg_strength', type=float, nargs='*', default=[0.0], help='Spearman regression strength.')
   parser.add_argument('--stratified_training', type=int, nargs='*', default=[0], help='Use stratified sampling. If Biovid it adds the following latent augm:'+
                                                                               ' 2: latent_basic; '+
                                                                               ' 3: latent_masking; '+
