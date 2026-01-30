@@ -229,6 +229,7 @@ class SpearmanCorrelationLossOptimized(nn.Module):
   
   def __init__(self, regularization="l2", regularization_strength=1.0):
     super(SpearmanCorrelationLossOptimized, self).__init__()
+    assert regularization in ["l2", "kl"], "Regularization must be 'l2' or 'kl'"
     self.regularization = regularization
     self.regularization_strength = regularization_strength
   
@@ -435,7 +436,8 @@ class RESupConLoss(nn.Module):
     )
     self.spearman_loss = SpearmanCorrelationLossOptimized(
       regularization=spearman_reg,
-      regularization_strength=spearman_reg_strength
+      regularization_strength=spearman_reg_strength,
+      
     )
     self.lambda_weight = lambda_weight
     self.sup_cont_theta = theta
