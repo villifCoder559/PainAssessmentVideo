@@ -376,6 +376,9 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         elif isinstance(data['config']['criterion'],cdw_cross_entropy_loss.CDW_CELoss):
           y_lim_loss = 35.1
           step_lim = 6
+        elif isinstance(data['config']['criterion'],losses.RESupConLoss):
+          y_lim_loss = 20.1
+          step_lim = 3
         # y_lim_loss = 15.1 if isinstance(data['config']['criterion'],torch.nn.MSELoss) else 5.1
         x_lim_loss = -1.1 if isinstance(data['config']['criterion'],losses.RESupConLoss) else 0
         
