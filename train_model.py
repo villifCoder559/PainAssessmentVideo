@@ -379,6 +379,9 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   concatenate_quadrants = trial.suggest_categorical('concatenate_quadrants', kwargs['concatenate_quadrants'])
   stratified_training = trial.suggest_categorical('stratified_training', kwargs['stratified_training'])
   only_augments = trial.suggest_categorical('only_augments', kwargs['only_augments'])
+  sampler_augmented_only_types = trial.suggest_categorical('sampler_augmented_only_types', kwargs['sampler_augmented_only_types'])
+  sampler_loader_type = trial.suggest_categorical('sampler_loader_type', kwargs['sampler_loader_type'])
+  
   # --- Suggest Loss Params ---
   cdw_ce_alpha = _suggest(trial, 'cdw_ce_alpha', kwargs['cdw_ce_alpha'], kwargs['optuna_categorical'])
   cdw_ce_power_transform = trial.suggest_categorical('cdw_ce_power_transform', kwargs['cdw_ce_transform'])
@@ -416,7 +419,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   }
   
   consider_only_lasts_n_chunks = trial.suggest_categorical('consider_only_lasts_n_chunks', kwargs['consider_only_lasts_n_chunks'])
-  use_filtered_augmentation_sampler = trial.suggest_categorical('use_filtered_augmentation_sampler', kwargs['use_filtered_augmentation_sampler'])
+  filtered_augm_n_keep = trial.suggest_categorical('filtered_augm_n_keep', kwargs['filtered_augm_n_keep'])
   filtered_augm_strategy = trial.suggest_categorical('filtered_augm_strategy', kwargs['filtered_augm_strategy'])
 
   # --- Scheduler Config ---
@@ -625,9 +628,11 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'balance_batches': balance_batches,
     'consider_only_lasts_n_chunks': consider_only_lasts_n_chunks,
     'latent_coefficient': latent_coefficient,
-    'use_filtered_augmentation_sampler': use_filtered_augmentation_sampler,
+    'filtered_augm_n_keep': filtered_augm_n_keep,
     'filtered_augm_strategy': filtered_augm_strategy,
     'only_augments': only_augments,
+    'sampler_loader_type': sampler_loader_type,
+    'sampler_augmented_only_types': sampler_augmented_only_types,
   }
   add_kwargs.update(head_dependent_add_kwargs)
   
@@ -778,30 +783,51 @@ def load_yaml_as_flat_dict(yaml_path):
 
 def validate_arguments(dict_args):
   """Validates the parsed arguments and raises errors for invalid configurations."""
-  
+  list_augmentations_available = helper.get_augmentation_availables(dict_args['ffsp'])
+  list_augmentations_available.extend(['latent_masking','latent_basic'])
   if dict_args['only_augments'][0] is not None:
     if dict_args['stratified_training'][0] != 1:
       raise ValueError("only_augments can only be used with stratified_training set to 1.")
-    list_augmentations_available = helper.get_augmentation_availables(dict_args['ffsp'])
-    list_augmentations_available.extend(['latent_masking','latent_basic'])
+    # list_augmentations_available = helper.get_augmentation_availables(dict_args['ffsp'])
     for augm in dict_args['only_augments']:
       list_augm = augm.split(',')
       for a in list_augm:
         if a not in list_augmentations_available:
           raise ValueError(f"Augmentation '{a}' not available in features folder '{dict_args['ffsp']}'. Available: {list_augmentations_available}")
 
+  if dict_args['loss'] == 'contrastive_reg':
+    for augm in dict_args['sampler_augmented_only_types']:
+      if augm is None:
+        raise ValueError("sampler_augmented_only_types cannot contain None when using contrastive_reg loss.")
+      split_array = augm.split(',')
+      for a in split_array:
+        if a not in list_augmentations_available:
+          raise ValueError(f"Augmentation '{a}' not available in features folder '{dict_args['ffsp']}'. Available: {list_augmentations_available}")
   
+  for el in dict_args['sampler_loader_type']:
+    if el == 'augmented_only':
+      if dict_args['sampler_augmented_only_types'] is None:
+        raise ValueError("sampler_augmented_only_types must be set when using 'augmented_only' sampler_loader_type.")
+      else:
+        for augm in dict_args['sampler_augmented_only_types']:
+          if augm is None:
+            raise ValueError("sampler_augmented_only_types cannot contain None when using 'augmented_only' sampler_loader_type.")
+          split_array = augm.split(',')
+          for a in split_array:
+            if a is None or a not in list_augmentations_available:
+              raise ValueError(f"Augmentation '{augm}' not available in features folder '{dict_args['ffsp']}'. Available: {list_augmentations_available}")
+      
   if dict_args['warm_up_scheduler'][0] is not None and dict_args['scheduler_name'][0] == 'onecycle':
     raise ValueError("Onecycle scheduler already includes warm-up phase. Remove warm_up_scheduler argument.")
 
   if dict_args['loss'] and dict_args['composite_loss'] is not None:
     raise ValueError("Cannot use both primary loss and composite loss at the same time. Choose one.")
 
-  if any(dict_args['use_filtered_augmentation_sampler']) and any(dict_args['balance_batches']):
+  if any(dict_args['filtered_augm_n_keep']) and any(dict_args['balance_batches']):
     raise ValueError("Cannot use both filtered augmentation sampler and balanced batches at the same time.")
 
-  if any(dict_args['use_filtered_augmentation_sampler']) ^ any(dict_args['filtered_augm_strategy']):
-    raise ValueError("Both use_filtered_augmentation_sampler and filtered_augm_strategy must be set together.")
+  if any(dict_args['filtered_augm_n_keep']) ^ any(dict_args['filtered_augm_strategy']):
+    raise ValueError("Both filtered_augm_n_keep and filtered_augm_strategy must be set together.")
 
   if 'caer' in dict_args['csv']:
     print("\n Detected CAER, FORCE SPLIT INDICES FOR TRAINING K-FOLD \n")
@@ -905,11 +931,13 @@ if __name__ == '__main__':
   parser.add_argument('--is_subject_independent', type=int, choices=[0, 1], default=1, help='Subject-independent split.')
   parser.add_argument('--skip_test', type=int, default=0, help='Skip test phase.')
   parser.add_argument('--consider_only_lasts_n_chunks', nargs='*', type=int, default=[0], help='Consider only last n chunks.')
-  parser.add_argument('--use_filtered_augmentation_sampler', nargs='*', type=int, default=[0], help='Use filtered augmentation sampler.')
+  parser.add_argument('--sampler_loader_type', type=str,nargs='*', default=['balanced'], help='Sampler loader type availables: selective_augm, augmented_only, balanced, standard')
+  parser.add_argument('--filtered_augm_n_keep', nargs='*', type=int, default=[0], help='Samples to keep from each augmentation type.')
+  parser.add_argument('--sampler_augmented_only_types', type=str, nargs='*', default=[None], help="Types of augmentations to use when sampler_loader_type is 'augmented_only'. Options can be like: 'hflip', 'jitter', 'rotation,jitter', 'latent_basic', 'latent_masking', 'shift_augm'.")
   parser.add_argument('--filtered_augm_strategy', type=int, nargs='*', default=[0], help="Strategy for filtered augmentation sampler."+
                       " 1: Randomly keep n samples from what augmentation is available (all h_flip, all jitter, etc.)"+
                       " 2: Randomly choose n types from GLOBAL available types where"+
-                      " n is --use_filtered_augmentation_sampler")
+                      " n is --filtered_augm_n_keep")
   parser.add_argument('--save_model_every_n_epochs', type=int, default=0, help='Save model every n epochs.')
   parser.add_argument('--balance_batches', type=int, nargs='*', default=[0], help='Try to balance batches.')
   parser.add_argument('--type_group', type=int, nargs='*', default=[0], help='Type of group for stratified sampling.')
@@ -939,10 +967,10 @@ if __name__ == '__main__':
   parser.add_argument('--composite_loss_lambda', nargs='*', type=float, default=None, help='Lambda for composite loss.')
   parser.add_argument('--use_sdpa', type=int, nargs='*', default=[1], help='Use SDPA.')
   parser.add_argument('--contrastive_loss_temp', type=float, nargs='*', default=[0.07], help='Temp for contrastive loss.')
-  parser.add_argument('--contrastive_loss_theta', type=float, nargs='*', default=[1.1], help='Theta for contrastive loss.')
+  parser.add_argument('--contrastive_loss_theta', type=float, nargs='*', default=[0.9], help='Theta for contrastive loss.')
   parser.add_argument('--contrastive_lambda_weight', type=float, nargs='*', default=[4.0], help='Lambda weight for contrastive loss.')
   parser.add_argument('--spearman_reg', type=str, nargs='*', choices=['l2', 'kl'], default=['l2'], help='Spearman regression type.')
-  parser.add_argument('--spearman_reg_strength', type=float, nargs='*', default=[0.0], help='Spearman regression strength.')
+  parser.add_argument('--spearman_reg_strength', type=float, nargs='*', default=[1.0], help='Spearman regression strength.')
   parser.add_argument('--stratified_training', type=int, nargs='*', default=[0], help='Use stratified sampling. If Biovid it adds the following latent augm:'+
                                                                               ' 2: latent_basic; '+
                                                                               ' 3: latent_masking; '+

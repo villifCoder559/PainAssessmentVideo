@@ -362,7 +362,27 @@ class Model_Advanced: # Scenario_Advanced
     self.backbone.model.to('cpu')
     torch.cuda.empty_cache()
   
-
+  def augment_csv(self, train_csv_path,target_list_string=None,stratified_training=False):
+    list_augmentations_available = helper.get_augmentation_availables(self.path_to_extracted_features)
+    if target_list_string is not None:
+      list_augmentations_available = target_list_string.split(',')
+      # list_augmentations_available = [augm for augm in list_only_augments]
+    else:
+      if stratified_training == 2:
+        list_augmentations_available.append('latent_basic')
+      elif stratified_training == 3:
+        list_augmentations_available.append('latent_masking')
+      elif stratified_training == 4:
+        list_augmentations_available.append('latent_basic')
+        list_augmentations_available.append('latent_masking')
+      
+    dict_augmented = {augm: 1 for augm in list_augmentations_available}
+    helper.generate_csv_augmented(original_csv_path=train_csv_path,
+                                  dict_augmentation=dict_augmented,
+                                  out_csv_path=train_csv_path,
+                                  stratified_training=stratified_training)
+    print(f'\n\nStratified training BIOVID CSV generated at {train_csv_path}.') 
+      
   def train(self, train_csv_path, val_csv_path, num_epochs, criterion,
             lr,saving_path,round_output_loss,
             shuffle_training_batch,init_network,
@@ -401,26 +421,17 @@ class Model_Advanced: # Scenario_Advanced
       print(f"Stratification completed. New class distribution:\n{df_final['class_id'].value_counts().sort_index()}")
       
     # Stratified training for BIOVID dataset
-    if 'parta' in self.path_to_extracted_features.lower() and kwargs.get('stratified_training', False):
-      list_augmentations_available = helper.get_augmentation_availables(self.path_to_extracted_features)
-      if kwargs['only_augments'] is not None:
-        list_augmentations_available = kwargs['only_augments'].split(',')
-        # list_augmentations_available = [augm for augm in list_only_augments]
-      else:
-        if kwargs['stratified_training'] == 2:
-          list_augmentations_available.append('latent_basic')
-        elif kwargs['stratified_training'] == 3:
-          list_augmentations_available.append('latent_masking')
-        elif kwargs['stratified_training'] == 4:
-          list_augmentations_available.append('latent_basic')
-          list_augmentations_available.append('latent_masking')
-        
-      dict_augmented = {augm: 1 for augm in list_augmentations_available}
-      helper.generate_csv_augmented(original_csv_path=train_csv_path,
-                                    dict_augmentation=dict_augmented,
-                                    out_csv_path=train_csv_path,
-                                    stratified_training=kwargs['stratified_training'])
-      print(f'\n\nStratified training BIOVID CSV generated at {train_csv_path}.') 
+    if 'parta' in self.path_to_extracted_features.lower():
+      if kwargs.get('stratified_training', False):
+        self.augment_csv(train_csv_path=train_csv_path,
+                         target_list_string=kwargs['only_augments'],
+                         stratified_training=kwargs['stratified_training'])
+      elif kwargs.get('sampler_augmented_only_types', False):
+        self.augment_csv(train_csv_path=train_csv_path,
+                         target_list_string=kwargs['sampler_augmented_only_types'],
+                         stratified_training=0),
+                         
+      
     # use_test_as_val
     
     dict_results = self.head.start_train(batch_size=batch_size,

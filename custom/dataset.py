@@ -965,8 +965,16 @@ class customDatasetWhole(torch.utils.data.Dataset):
       return batch
 
   def _custom_collate(self,batch):
-    return _custom_collate(batch,self.instance_model_name,self.concatenate_temporal,self.model,self.num_classes,self.smooth_labels,self.soft_labels,self.coral_loss,self.concatenate_quadrants,
-                           self.xattn_mask,self.split_chunks)  
+    return _custom_collate(batch,self.instance_model_name,
+                           self.concatenate_temporal,
+                           self.model,
+                           self.num_classes,
+                           self.smooth_labels,
+                           self.soft_labels,
+                           self.coral_loss,
+                           self.concatenate_quadrants,
+                           self.xattn_mask,
+                           self.split_chunks)  
 
   def get_unique_subjects(self):
     return np.sort(self.df['subject_id'].unique().tolist())
@@ -1174,9 +1182,7 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_cla
     subject_id = torch.tensor([sample['subject_id'][0] for sample in batch], dtype=torch.int32)
     sample_id = torch.tensor([sample['sample_id'] for sample in batch], dtype=torch.int32)
     return {'x':features},labels,subject_id,sample_id
-
-# def fake_collate(batch): # to avoid strange error when use customSampler
-#   return batch[0]  
+ 
 
 class balancedBatchSampler(BatchSampler):
   def __init__(self, batch_size, shuffle,path_cvs_dataset=None, random_state=42,df=None):
@@ -1219,8 +1225,8 @@ class balancedBatchSampler(BatchSampler):
   def __len__(self):
     return self.n_batches
 
-class FilteredAugmentationBatchSampler(BatchSampler):
-  def __init__(self, df, batch_size, shuffle, n_keep_augmentations, augmentation_strategy, root_folder_features=None, drop_last=False, seed=42):
+class SelectiveAugmentationBatchSampler(BatchSampler):
+  def __init__(self, df, batch_size, shuffle, n_keep_augmentations, augmentation_strategy, root_folder_features=None, drop_last=False):
     self.batch_size = batch_size
     self.shuffle = shuffle
     self.n_keep_augmentations = n_keep_augmentations
@@ -1321,34 +1327,146 @@ class FilteredAugmentationBatchSampler(BatchSampler):
       yield batch
 
 
-  
-# def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: float = 0.1) -> torch.Tensor:
-#   """
-#   Create label-smoothed targets for a batch of ground truth classes.
-  
-#   Args:
-#     gt_classes (torch.Tensor): 1D tensor of shape (batch_size,) with ground truth class indices.
-#     num_classes (int): The total number of classes.
-#     smoothing (float): Smoothing factor in [0, 1). Default is 0.1.
-  
-#   Returns:
-#     torch.Tensor: A tensor of shape (batch_size, num_classes) with smoothed probabilities.
-#   """
-#   assert 0 <= smoothing < 1, "Smoothing value should be in the range [0, 1)"
-#   # Probability for the ground truth class
-#   confidence = 1.0 - smoothing
-#   # Value for all other classes
-#   smooth_value = smoothing / (num_classes - 1)
-  
-#   batch_size = gt_classes.size(0)
-#   # Create a tensor filled with smooth_value for each sample and class
-#   smoothed_labels = torch.full((batch_size, num_classes), smooth_value)
-#   # Set the ground truth class indices to have the confidence value
-#   smoothed_labels[torch.arange(batch_size), gt_classes] = confidence
-  
-#   return smoothed_labels
+class AugmentedOnlyBatchSampler(BatchSampler):
+  def __init__(self, df, batch_size, augmentations, shuffle=True, random_state=42, balance_batch=True,root_folder_features=None):
+    """
+    BatchSampler that creates batches containing ONLY augmented versions of samples.
+    
+    Logic:
+    1. Filters df to find 'original' samples (sample_id <= helper.step_shift).
+    2. Uses StratifiedKFold on these original samples to determine which 'base' samples go into a batch.
+       The number of base samples per batch is batch_size // n_augmentations.
+    3. For each selected base sample, finds the requested augmented versions.
+    4. The final batch consists ONLY of these augmented versions.
+    
+    Args:
+        df (pd.DataFrame): The full dataset dataframe.
+        batch_size (int): The desired output batch size.
+        augmentations (str): Comma-separated string of augmentations (e.g. "hflip,jitter").
+        shuffle (bool): Whether to shuffle the data (via StratifiedKFold).
+        random_state (int): Random seed for reproducibility.
+        balance_batch (bool): Whether to use StratifiedKFold (True) or simple random sampling (False).
+        root_folder_features (str): Path to the root folder of features, used to get all available augmentations.
+    """
+    self.df = df
+    self.batch_size = batch_size
+    self.augmentations_list = [aug.strip() for aug in augmentations.split(',')]
+    self.n_augment = len(self.augmentations_list)
+    self.shuffle = shuffle
+    self.random_state = random_state
+    self.balance_batch = balance_batch
+    self.batches = []
+    self.root_folder_features = root_folder_features
+    self.available_augmentation_types = None
+    
+    # Get available augmentations from folder if possible
+    if root_folder_features:
+      try:
+        self.available_augmentation_types = set(helper.get_augmentation_availables(root_folder_features))
+      except Exception as e:
+        print(f"Warning: Could not get available augmentations from folder: {e}")
+        
+    
+    if self.n_augment == 0:
+      raise ValueError("At least one augmentation must be specified.")
+      
+    self.sub_batch_size = self.batch_size // self.n_augment
+    
+    if self.sub_batch_size < 1:
+      raise ValueError(f"Batch size {self.batch_size} is too small for {self.n_augment} augmentations. "
+                       f"Must be at least {self.n_augment}.")
 
-# import torch
+    # 1. Filter for original samples
+    self.original_df = self.df[self.df['sample_id'] <= helper.step_shift].copy()
+    if len(self.original_df) == 0:
+        raise ValueError("No original samples (sample_id <= step_shift) found in the dataframe.")
+        
+    self.y_labels = self.original_df['class_id'].to_numpy().astype(int)
+    self.original_indices = self.original_df.index.to_numpy() # Indices in the global df
+    
+    # 2. Create lookup map: sample_id -> global dataframe index
+    # We need to map sample_ids back to the indices expected by the DataLoader (which iterates over the full df)
+    self.sample_id_to_idx = dict(zip(self.df['sample_id'], self.df.index))
+    
+    # Calculate number of batches
+    nr_samples = len(self.y_labels)
+    self.calculated_n_splits = math.ceil(nr_samples / self.sub_batch_size)
+    
+    if self.balance_batch:
+      # Check if we can perform stratified sampling
+      _, count = np.unique(self.y_labels, return_counts=True)
+      min_class_count = np.min(count)
+      if self.calculated_n_splits > min_class_count:
+        raise ValueError(f"Cannot create stratified batches: "+
+                         f"the calculated number of splits {self.calculated_n_splits} is higher than the minimum class count {min_class_count}. ")
+        
+    self.initialize()
+
+  def initialize(self):
+    self.batches = []
+    
+    # Get the indices of original samples (relative to self.original_df) that will form each batch
+    batch_indices_list = []
+    
+    if self.balance_batch:
+      try:
+        rnd_state = self.random_state if self.shuffle else None
+        skf = StratifiedKFold(n_splits=self.calculated_n_splits,
+                                   shuffle=self.shuffle,
+                                   random_state=rnd_state)
+        # split returns indices relative to the input array (which matches self.original_df rows)
+        for _, test_indices in skf.split(np.zeros(len(self.y_labels)), self.y_labels):
+          batch_indices_list.append(test_indices)
+            
+      except ValueError as e:
+        raise ValueError(f"Failed to initialize StratifiedKFold: {e}. Check if batch size is appropriate for class distribution.") from e
+    else:
+      # Simple random sampling
+      indices = np.arange(len(self.y_labels))
+      if self.shuffle:
+        rng = np.random.default_rng(self.random_state)
+        rng.shuffle(indices)
+        
+      # Split into chunks of size sub_batch_size
+      for i in range(0, len(indices), self.sub_batch_size):
+        batch_indices_list.append(indices[i : i + self.sub_batch_size])
+
+    # Now construct the actual batches with augmented global indices
+    for indices_in_orig in batch_indices_list:
+      final_batch = []
+      
+      for idx_in_orig in indices_in_orig:
+        original_row = self.original_df.iloc[idx_in_orig]
+        original_sample_id = original_row['sample_id']
+        
+        # Find the requested augmented versions
+        for aug_type in self.augmentations_list:
+          shift = helper.get_shift_for_sample_id(aug_type)
+          augmented_sample_id = original_sample_id + shift
+          
+          if augmented_sample_id not in self.sample_id_to_idx:
+            raise ValueError(f"Augmented sample {augmented_sample_id} (original: {original_sample_id}, type: {aug_type}) "
+                             f"not found in the dataset.")
+            
+          global_idx = self.sample_id_to_idx[augmented_sample_id]
+          final_batch.append(global_idx)
+      
+      if len(final_batch) > 0:
+        self.batches.append(final_batch)
+
+    self.n_batches = len(self.batches)
+
+  def __iter__(self):
+    for batch in self.batches:
+      yield batch
+
+    # Update random state and re-initialize for next epoch
+    self.random_state += 13
+    self.initialize()
+
+  def __len__(self):
+    return self.n_batches
+
 
 def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: float = 0.2) -> torch.Tensor:
   """
@@ -1477,57 +1595,48 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
   else:
     raise ValueError(f'Unknown dataset type: {dataset_type}. Choose one of {CUSTOM_DATASET_TYPE}')
   
+  # Trainloader
   if is_training:
-    if kwargs['use_filtered_augmentation_sampler']:
-      sampler = FilteredAugmentationBatchSampler(df=dataset_.df,
+    if kwargs['sampler_loader_type'] == 'selective_augm':
+      sampler = SelectiveAugmentationBatchSampler(df=dataset_.df,
                                                   batch_size=batch_size,
                                                   shuffle=shuffle_training_batch,
-                                                  n_keep_augmentations=kwargs['use_filtered_augmentation_sampler'],
+                                                  n_keep_augmentations=kwargs['filtered_augm_n_keep'],
                                                   augmentation_strategy=kwargs['filtered_augm_strategy'],
                                                   root_folder_features=root_folder_features,
                                                   drop_last=False,
                                                   seed=42)
-      loader_ = DataLoader(dataset=dataset_,
-                          batch_sampler=sampler,
-                          collate_fn=dataset_._custom_collate,
-                          # batch_size=1,
-                          num_workers=n_workers,
-                          persistent_workers=persistent_workers,
-                          prefetch_factor=prefetch_factor,
-                          pin_memory=pin_memory)
       print(f'Use FilteredAugmentationBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
-    elif kwargs['balance_batches']:
-      try:
-        customBatchSampler_train = balancedBatchSampler(df=dataset_.df, 
-                                            batch_size=batch_size,
-                                            shuffle=shuffle_training_batch)
-        if n_workers > 1:
-          loader_ = DataLoader(
-                              dataset=dataset_,
-                              batch_sampler=customBatchSampler_train,
-                              collate_fn=dataset_._custom_collate,
-                              # batch_size=1,
-                              num_workers=n_workers,
-                              persistent_workers= persistent_workers,
-                              prefetch_factor=prefetch_factor,
-                              pin_memory=pin_memory)
-          print(f'Use custom Dataloader with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
-        else:
-          loader_ = DataLoader(
-                              dataset=dataset_,
-                              batch_sampler=customBatchSampler_train,
-                              collate_fn=dataset_._custom_collate,
-                              # batch_size=1,
-                              pin_memory=True)
-          print(f'Use custom Dataloader!')
-      except Exception as e:
-        # raise ValueError(f'Error in customBatchSampler: {e}') from e
-        print(f'Err in custom BatchSampler: {e}')
-        print(f'Use standard DataLoader')
-        loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate,num_workers=n_workers,persistent_workers=True)
-    else:
-      loader_ = DataLoader(dataset=dataset_, batch_size=batch_size, shuffle=shuffle_training_batch,collate_fn=dataset_._custom_collate,num_workers=n_workers,persistent_workers=True)
-      print(f'\nBALANCING BATCHES DISABLED, using standard dataloader\n')
+    elif kwargs['sampler_loader_type'] == 'augmented_only':
+      sampler = AugmentedOnlyBatchSampler(df=dataset_.df,
+                                          batch_size=batch_size,
+                                          augmentations=kwargs['sampler_augmented_only_types'],
+                                          shuffle=shuffle_training_batch,
+                                          balance_batch=True,
+                                          root_folder_features=root_folder_features)
+      print(f'Use AugmentedOnlyBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
+    elif kwargs['sampler_loader_type'] == 'balanced':
+      sampler = balancedBatchSampler(df=dataset_.df, 
+                                      batch_size=batch_size,
+                                      shuffle=shuffle_training_batch)
+      print(f'Use balancedBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
+    elif kwargs['sampler_loader_type'] == 'standard':
+      loader_ = DataLoader(dataset=dataset_, 
+                           batch_size=batch_size,
+                           shuffle=shuffle_training_batch,
+                           collate_fn=dataset_._custom_collate,
+                           num_workers=n_workers,
+                           persistent_workers=True)
+      print(f'Use standard DataLoader with {n_workers} workers!\nPersistent workers: True')
+    loader_ = DataLoader(dataset=dataset_,
+                        batch_sampler=sampler,
+                        collate_fn=dataset_._custom_collate,
+                        # batch_size=1,
+                        num_workers=n_workers,
+                        persistent_workers=persistent_workers,
+                        prefetch_factor=prefetch_factor,
+                        pin_memory=pin_memory)
+  # Eval loader
   else:
     if n_workers > 1:
       nr_batches = len(dataset_.df) // batch_size + 1

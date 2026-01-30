@@ -977,6 +977,7 @@ class BaseHead(nn.Module):
     list_val_ground_truths = []
     l1_error = 0.0
     l2_error = 0.0
+    # debug_dict = {}
     with torch.no_grad():
       val_loss = 0.0
       loss_per_class = torch.zeros(2,len(val_loader.dataset.get_unique_classes()))
