@@ -740,3 +740,148 @@ class CCCLoss(nn.Module):
       return loss.sum()
     else:  # 'none'
       return loss
+
+class LabelDifference(nn.Module):
+  def __init__(self, distance_type='l1'):
+    super(LabelDifference, self).__init__()
+    self.distance_type = distance_type
+
+  def forward(self, labels):
+    # labels: [bs, label_dim]
+    # output: [bs, bs]
+    if self.distance_type == 'l1':
+      return torch.abs(labels[:, None, :] - labels[None, :, :]).sum(dim=-1)
+    else:
+      raise ValueError(self.distance_type)
+
+
+class FeatureSimilarity(nn.Module):
+  def __init__(self, similarity_type='l2'):
+    super(FeatureSimilarity, self).__init__()
+    self.similarity_type = similarity_type
+
+  def forward(self, features):
+    # labels: [bs, feat_dim]
+    # output: [bs, bs]
+    if self.similarity_type == 'l2':
+      return - (features[:, None, :] - features[None, :, :]).norm(2, dim=-1)
+    else:
+      raise ValueError(self.similarity_type)
+
+
+class RnCLoss(nn.Module):
+  ## From original implementation https://github.com/kaiwenzha/Rank-N-Contrast/blob/main/loss.py 
+  ## Paper: "Rank-N-Contrast: Learning Continuous Representations for Regression" 
+  ## link :https://arxiv.org/pdf/2210.01189 (NeurIPS 2023 (Spotlight))
+  def __init__(self, temperature=2, label_diff='l1', feature_sim='l2'):
+    super(RnCLoss, self).__init__()
+    self.t = temperature
+    self.label_diff_fn = LabelDifference(label_diff)
+    self.feature_sim_fn = FeatureSimilarity(feature_sim)
+
+  def forward(self, features, labels):
+    # features: [bs, 2, feat_dim]
+    # labels: [bs, label_dim]
+
+    features = torch.cat([features[:, 0], features[:, 1]], dim=0)  # [2bs, feat_dim]
+    labels = labels.repeat(2, 1)  # [2bs, label_dim]
+
+    label_diffs = self.label_diff_fn(labels)
+    logits = self.feature_sim_fn(features).div(self.t)
+    logits_max, _ = torch.max(logits, dim=1, keepdim=True)
+    logits -= logits_max.detach()
+    exp_logits = logits.exp()
+
+    n = logits.shape[0]  # n = 2bs
+
+    # remove diagonal
+    logits = logits.masked_select((1 - torch.eye(n).to(logits.device)).bool()).view(n, n - 1)
+    exp_logits = exp_logits.masked_select((1 - torch.eye(n).to(logits.device)).bool()).view(n, n - 1)
+    label_diffs = label_diffs.masked_select((1 - torch.eye(n).to(logits.device)).bool()).view(n, n - 1)
+
+    loss = 0.
+    for k in range(n - 1):
+      pos_logits = logits[:, k]  # 2bs
+      pos_label_diffs = label_diffs[:, k]  # 2bs
+      neg_mask = (label_diffs >= pos_label_diffs.view(-1, 1)).float()  # [2bs, 2bs - 1]
+      pos_log_probs = pos_logits - torch.log((neg_mask * exp_logits).sum(dim=-1))  # 2bs
+      loss += - (pos_log_probs / (n * (n - 1))).sum()
+
+    return loss
+
+
+class RnCLossV2(nn.Module):
+  ## Optimized version of RnCLoss with vectorized computations,
+  ## Tested using python tests/test_rnc_v2.py
+
+  def __init__(self, temperature=2, label_diff='l1', feature_sim='l2'):
+    super(RnCLossV2, self).__init__()
+    self.t = temperature
+    self.label_diff_fn = LabelDifference(label_diff)
+    self.feature_sim_fn = FeatureSimilarity(feature_sim)
+
+  def forward(self, features, labels):
+    # features: [2bs, feat_dim]
+    # labels: [2bs, label_dim]
+
+    # Calculate pairwise differences/similarities
+    # Output shape: [N, N] where N = 2bs
+    label_diffs = self.label_diff_fn(labels)
+    logits = self.feature_sim_fn(features).div(self.t)
+
+    # Numerical stability
+    logits_max, _ = torch.max(logits, dim=1, keepdim=True)
+    logits = logits - logits_max.detach()
+    exp_logits = logits.exp()
+
+    n = logits.shape[0]  # n = 2bs
+    device = logits.device
+
+    # Remove diagonals
+    # Mask creation: [N, N] identity matrix inverted
+    mask = ~torch.eye(n, dtype=torch.bool, device=device)
+
+    # Reshape to [N, N-1]
+    logits = logits[mask].view(n, n - 1)
+    exp_logits = exp_logits[mask].view(n, n - 1)
+    label_diffs = label_diffs[mask].view(n, n - 1)
+
+    # --- Vectorized Optimization ---
+
+    # 1. Sort label_diffs along the row (dim=1)
+    # sorted_diffs: [N, N-1], sorted values
+    # sort_idx: [N, N-1], indices to permute exp_logits
+    sorted_diffs, sort_idx = torch.sort(label_diffs, dim=1)
+
+    # 2. Permute exp_logits to match the sorted order of label_diffs
+    sorted_exp = torch.gather(exp_logits, 1, sort_idx)
+
+    # 3. Compute suffix sums (cumulative sum from right to left)
+    # cumsum of reversed array, then reverse back
+    # denominators_sorted[i, k] = sum(sorted_exp[i, k:])
+    denominators_sorted = torch.cumsum(sorted_exp.flip(1), dim=1).flip(1)
+
+    # 4. Map back to original elements
+    # For each element j in the original (diagonal-removed) row i:
+    # We want sum_{l} exp_logits[i, l] such that label_diffs[i, l] >= label_diffs[i, j]
+    # In the sorted array, this corresponds to the suffix sum starting at the first index
+    # where sorted_diffs[i, rank] >= label_diffs[i, j].
+    # searchsorted finds the first index where value could be inserted while maintaining order.
+    # Since sorted_diffs contains label_diffs[i, j], it finds that index.
+
+    # ranks: [N, N-1]
+    ranks = torch.searchsorted(sorted_diffs, label_diffs, right=False)
+
+    # 5. Retrieve the denominators using the ranks
+    denominators = torch.gather(denominators_sorted, 1, ranks)
+
+    # 6. Compute Log-Probs
+    # log_prob = logit - log(denominator)
+    # Add epsilon to denominator for safety, though it's sum of exps so usually > 0
+    log_probs = logits - torch.log(denominators + 1e-12)
+
+    # 7. Mean loss
+    # The original code sums and divides by n*(n-1)
+    loss = -log_probs.mean()
+
+    return loss

@@ -146,9 +146,13 @@ def get_loss(loss_name, dict_args=None):
     )
   elif loss_lower == 'coral':
     return coral_loss
+  elif loss_lower == 'rncloss':
+    return losses.RnCLossV2(
+      temperature=dict_args['contrastive_loss_temp'],
+    )
   else:
     raise ValueError(
-      f'Loss not found: {loss_name}. Valid options: l1, l2, ce, cdw_ce, sim_loss, coral'
+      f'Loss not found: {loss_name}. Valid options: l1, l2, ce, cdw_ce, sim_loss, coral, contrastive_reg, rncloss'
     )
 
 
