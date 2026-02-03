@@ -758,6 +758,8 @@ class LabelDifference(nn.Module):
   def forward(self, labels):
     # labels: [bs, label_dim]
     # output: [bs, bs]
+    if labels.dim() == 1:
+      labels = labels.unsqueeze(-1)
     if self.distance_type == 'l1':
       return torch.abs(labels[:, None, :] - labels[None, :, :]).sum(dim=-1)
     else:
