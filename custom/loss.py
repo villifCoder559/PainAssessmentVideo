@@ -429,6 +429,12 @@ class RESupConLoss(nn.Module):
       spearman_reg: Regularization for differentiable ranking ('l2' or 'kl')
       spearman_reg_strength: Regularization strength for ranking
     """
+    # Assert all self are not None
+    assert temperature is not None, "temperature must be provided"
+    assert theta is not None, "theta must be provided"
+    assert lambda_weight is not None, "lambda_weight must be provided"
+    assert spearman_reg is not None, "spearman_reg must be provided"
+    assert spearman_reg_strength is not None, "spearman_reg_strength must be provided"
     super(RESupConLoss, self).__init__()
     self.supcon_loss = SupConLossModified(
       temperature=temperature,
@@ -779,7 +785,7 @@ class RnCLoss(nn.Module):
     self.label_diff_fn = LabelDifference(label_diff)
     self.feature_sim_fn = FeatureSimilarity(feature_sim)
 
-  def forward(self, features, labels):
+  def forward(self, features, labels, **kwargs):
     # features: [bs, 2, feat_dim]
     # labels: [bs, label_dim]
 
@@ -820,7 +826,7 @@ class RnCLossV2(nn.Module):
     self.label_diff_fn = LabelDifference(label_diff)
     self.feature_sim_fn = FeatureSimilarity(feature_sim)
 
-  def forward(self, features, labels):
+  def forward(self, features, labels, **kwargs):
     # features: [2bs, feat_dim]
     # labels: [2bs, label_dim]
 
@@ -891,7 +897,7 @@ class DisentangledLoss(nn.Module):
   Loss module for disentangled representation learning with explicit gradient flow control.
   Enforces separation between pain and subject identity features.
   """
-  def __init__(self, loss_fns, split_idx, lambdas, ortho_lambda=0.0, return_dict=False):
+  def __init__(self, loss_fns, split_idx, lambdas, ortho_lambda=0.0, return_dict=True):
     """
     Args:
       loss_fns: tuple/list of 2 callables [pain_loss_fn, subject_loss_fn]
@@ -914,11 +920,13 @@ class DisentangledLoss(nn.Module):
     self.ortho_lambda = ortho_lambda
     self.return_dict = return_dict
 
-  def forward(self, features, targets):
+  def forward(self, features, target_pain, target_subj):
     """
     Args:
       features: Tensor[B, C]
-      targets: Tensor[B, V, 2] where targets[:,:,0] is pain, targets[:,:,1] is subject
+      target_pain: Tensor[B, V]
+      target_subj: Tensor[B, V]
+      **kwargs: additional args for loss functions if needed
     """
     if features.dim() != 2:
       raise ValueError(f"Expected features shape [B, C], got {features.shape}")
@@ -927,11 +935,11 @@ class DisentangledLoss(nn.Module):
     if not (0 < self.split_idx < C):
       raise ValueError(f"split_idx {self.split_idx} must be between 0 and {C}")
       
-    if targets.dim() != 3 or targets.shape[2] != 2:
-      raise ValueError(f"Expected targets shape [B, V, 2], got {targets.shape}")
+    # if targets.dim() != 3 or targets.shape[2] != 2:
+    #   raise ValueError(f"Expected targets shape [B, V, 2], got {targets.shape}")
 
     # 1. Split features
-    # Slicing creates new nodes in the graph, ensuring gradient separation
+    # Slicing ensures gradient separation
     # unless losses introduce cross-dependencies (which standard losses don't).
     feat_pain = features[:, :self.split_idx]
     feat_subj = features[:, self.split_idx:]
@@ -942,15 +950,14 @@ class DisentangledLoss(nn.Module):
     # loss_subj only backprops through feat_subj
     
     # Extract targets: assume loss functions handle [B, V]
-    target_pain = targets[:, :, 0]
-    target_subj = targets[:, :, 1]
+    # target_pain = targets[:, :, 0]
+    # target_subj = targets[:, :, 1]
     
     loss_pain = self.loss_pain_fn(feat_pain, target_pain)
     loss_subj = self.loss_subj_fn(feat_subj, target_subj)
     
     total_loss = self.lambda_pain * loss_pain + self.lambda_subj * loss_subj
     
-    ortho_loss = torch.tensor(0.0, device=features.device)
     
     # 3. Orthogonality Loss
     if self.ortho_lambda > 0:
@@ -969,14 +976,15 @@ class DisentangledLoss(nn.Module):
       ortho_loss_val = (cross_cov ** 2).sum()
       
       total_loss = total_loss + self.ortho_lambda * ortho_loss_val
-      ortho_loss = ortho_loss_val
-
-    if self.return_dict:
-      return {
-        "total": total_loss,
-        "pain": loss_pain,
-        "subject": loss_subj,
-        "ortho": ortho_loss if self.ortho_lambda > 0 else 0.0
-      }
+      # ortho_loss = ortho_loss_val
     
-    return total_loss
+    log_loss = {
+      'total_loss': total_loss.item(),
+      'loss_pain': loss_pain.item(),
+      'loss_subj': loss_subj.item(),
+      'lambda_pain': self.lambda_pain,
+      'lambda_subj': self.lambda_subj,
+      'ortho_lambda': self.ortho_lambda,
+    }
+    
+    return total_loss, log_loss

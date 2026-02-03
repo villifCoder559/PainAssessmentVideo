@@ -522,10 +522,15 @@ def reduce_logs_for_subfold(dict_train, skip_reduction=False):
   target_nr_matricies = count_epochs//10 if count_epochs > 10 else 1
   reduced_dict_train = dict_train
   for key, v in dict_train['dict_results'].items():
+    # if v is None or len(v) == 0:
+    print(f'Key: {key}')
+    #   continue
     if key != 'best_model_state':
       if key in list_to_reduce_for_logs:
         # Keep results every target_nr_matricies epochs
         if not skip_reduction:
+          if v is None or len(v) == 0:
+            continue
           reduced_dict_train[key] = {f'{epoch}': v[epoch] for epoch in range(0, count_epochs, target_nr_matricies)}
           if str(count_epochs - 1) not in reduced_dict_train[key].keys():
             reduced_dict_train[key].update({f'{count_epochs - 1}': v[count_epochs - 1]})

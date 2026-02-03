@@ -377,12 +377,15 @@ class BaseHead(nn.Module):
       print('The criterion requires to return the video embeddings from the model during training\n')
     is_composite_loss = isinstance(criterion, losses.CompositeLoss)
     is_resupcon_loss = isinstance(criterion, losses.RESupConLoss)
+    is_disentangled_loss = isinstance(criterion, losses.DisentangledLoss)
     max_train_class = train_unique_classes.max().item() + 1 # start from 0
     l1_error_val_list = []
     l2_error_val_list = []
     train_loader_len = len(train_loader)
     grad_adv_norm_epoch = []
     grad_task_norm_epoch = []
+    train_dict_log_loss_steps = []
+    val_dict_log_loss_steps = []
     for epoch in range(num_epochs):
       start_epoch = time.time()
       self.train() 
@@ -462,6 +465,12 @@ class BaseHead(nn.Module):
           if is_composite_loss:
             loss = criterion(**dict_out)
             loss = loss['total_loss'] 
+          elif is_disentangled_loss:
+            batch_subjects = batch_subjects.to(device)
+            loss, dict_log_loss = criterion(features=dict_out['logits'],
+                                            target_pain=batch_y,
+                                            target_subj=batch_subjects)
+            train_dict_log_loss_steps.append(dict_log_loss)
           else:
             loss = criterion(dict_out['logits'], batch_y)
             
@@ -565,7 +574,7 @@ class BaseHead(nn.Module):
         
         count_batch+=1
 
-        if not is_resupcon_loss:
+        if not is_resupcon_loss and not is_disentangled_loss:
           if self.is_classification:
             if is_coral_loss:
               predictions = outputs.detach().cpu() # outputs are already labels for coral loss
@@ -615,7 +624,8 @@ class BaseHead(nn.Module):
       time_eval = time.time()
       dict_eval = None
       if val_csv_path is not None:
-        dict_eval = self.evaluate(criterion=criterion,is_test=False,
+        dict_eval = self.evaluate(criterion=criterion,
+                                  is_test=False,
                                   unique_val_classes=val_unique_classes,
                                   unique_val_subjects=val_unique_subjects,
                                   val_loader=val_loader,
@@ -654,15 +664,18 @@ class BaseHead(nn.Module):
         best_model_state = {key: value.cpu() for key, value in best_model_state.items()}
         best_model_epoch = epoch
         best_epoch = True
-      
+        
+ 
       list_train_losses.append(train_loss / len(train_loader))
       list_val_losses.append(dict_eval['val_loss'] if dict_eval is not None else 0.0)
+      if dict_eval is not None and 'val_dict_log_loss_steps' in dict_eval:
+        val_dict_log_loss_steps.append(dict_eval['val_dict_log_loss_steps'])
       if adv_criterion is not None:
         list_train_adv_losses.append([batch_adv_loss / len(train_loader), batch_original_loss / len(train_loader)])
         list_train_adv_accuracies.append(sum((batch_adv_predictions == batch_adv_gt).float()).item() / len(batch_adv_predictions))
       
       # Save model at certain epochs
-      if helper.SAVE_MODEL_EVERY_N_EPOCHS > 0 and epoch % helper.SAVE_MODEL_EVERY_N_EPOCHS == 0 and epoch != 0:
+      if helper.SAVE_MODEL_EVERY_N_EPOCHS > 0 and epoch % helper.SAVE_MODEL_EVERY_N_EPOCHS == 0:
         model_path_epoch = os.path.join(saving_path, f'model_epoch_{epoch}.pt')
         torch.save(self.state_dict(), model_path_epoch)
         fig,ax = plt.subplots(1,1,figsize=(15,10))
@@ -697,7 +710,7 @@ class BaseHead(nn.Module):
         list_test_losses.append(dict_test_as_eval['val_loss'])
         l1_error_test_list.append(dict_test_as_eval['val_l1_error'])
         l2_error_test_list.append(dict_test_as_eval['val_l2_error'])
-      if not is_resupcon_loss:
+      if not is_resupcon_loss and not is_disentangled_loss:
         np_list_train_epoch_predictions = np.concatenate(list_train_epoch_predictions, axis=0)
         np_list_train_ground_truths = np.concatenate(list_train_ground_truths, axis=0)
         train_ICC = tools.intraclass_icc(np.column_stack((np_list_train_ground_truths, np_list_train_epoch_predictions)))
@@ -713,7 +726,7 @@ class BaseHead(nn.Module):
           l1_error_val_list.append(dict_eval['val_l1_error'])
           l2_error_val_list.append(dict_eval['val_l2_error'])
       
-      if helper.LOG_CONFIDENCE_PREDICTION and not is_resupcon_loss:
+      if helper.LOG_CONFIDENCE_PREDICTION and not is_resupcon_loss and not is_disentangled_loss:
         list_train_confidence_prediction_right_mean.append(np.mean(batch_train_confidence_prediction_right_mean) if len(batch_train_confidence_prediction_right_mean) > 0 else 0)
         list_train_confidence_prediction_wrong_mean.append(np.mean(batch_train_confidence_prediction_wrong_mean) if len(batch_train_confidence_prediction_wrong_mean) > 0 else 0)
         list_train_confidence_prediction_right_std.append(np.std(batch_train_confidence_prediction_right_mean) if len(batch_train_confidence_prediction_right_mean) > 0 else 0)
@@ -746,7 +759,7 @@ class BaseHead(nn.Module):
             list_test_losses_per_subject.append(dict_test_as_eval['val_loss_per_subject'])
             list_test_accuracy_per_subject.append(dict_test_as_eval['val_accuracy_per_subject'])
 
-      if helper.LOG_CONFIDENCE_PREDICTION and not is_resupcon_loss:
+      if helper.LOG_CONFIDENCE_PREDICTION and not is_resupcon_loss and not is_disentangled_loss:
         list_val_confidence_prediction_right_mean.append(dict_eval['val_prediction_confidence_right_mean'] if dict_eval is not None else 0.0)
         list_val_confidence_prediction_wrong_mean.append(dict_eval['val_prediction_confidence_wrong_mean'] if dict_eval is not None else 0.0)
         list_val_confidence_prediction_right_std.append(dict_eval['val_prediction_confidence_right_std'] if dict_eval is not None else 0.0)
@@ -757,7 +770,7 @@ class BaseHead(nn.Module):
           list_test_confidence_prediction_right_std.append(dict_test_as_eval['val_prediction_confidence_right_std'])
           list_test_confidence_prediction_wrong_std.append(dict_test_as_eval['val_prediction_confidence_wrong_std'])
 
-      if not is_resupcon_loss:
+      if not is_resupcon_loss and not is_disentangled_loss:
         list_val_confusion_matricies.append(dict_eval['val_confusion_matrix'] if dict_eval is not None else None)
         train_confusion_matrix.compute()
         train_dict_precision_recall = tools.evaluate_classification_from_confusion_matrix(confusion_matrix=train_confusion_matrix,list_real_classes=train_unique_classes)
@@ -873,7 +886,11 @@ class BaseHead(nn.Module):
       print('Load and save best model for next steps...')
       torch.save(best_model_state, os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth'))
       print(f"Best model weights saved to {os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth')}")
-
+    
+    train_dict_log_loss_epochs = {}
+    if train_dict_log_loss_steps != []:
+      train_dict_log_loss_epochs = self.get_dict_loss_per_epoch(train_dict_log_loss_steps, len(train_loader))
+      
     logs = {
       'train_losses': list_train_losses,
       'train_loss_per_class': np.array(list_train_losses_per_class),
@@ -940,6 +957,8 @@ class BaseHead(nn.Module):
       'list_train_adv_accuracies': list_train_adv_accuracies,
       'grad_adv_norm_epoch': grad_adv_norm_epoch,
       'grad_task_norm_epoch': grad_task_norm_epoch,
+      'train_dict_log_loss_epochs': train_dict_log_loss_epochs,
+      'val_dict_log_loss_steps': val_dict_log_loss_steps,
       'train_batch_sampler_name': (train_loader.batch_sampler.__class__.__module__ + "." + train_loader.batch_sampler.__class__.__name__),
       # 'list_samples': list_list_samples,
       # 'list_y': list_list_y
@@ -972,12 +991,13 @@ class BaseHead(nn.Module):
     self.eval() 
     is_composite_loss = isinstance(criterion, losses.CompositeLoss)
     is_resupcon_loss = isinstance(criterion, losses.RESupConLoss)
-    
+    is_disentangled_loss = isinstance(criterion, losses.DisentangledLoss)
     list_val_epoch_predictions = []
     list_val_ground_truths = []
     l1_error = 0.0
     l2_error = 0.0
     # debug_dict = {}
+    val_dict_log_loss_steps = []
     with torch.no_grad():
       val_loss = 0.0
       loss_per_class = torch.zeros(2,len(val_loader.dataset.get_unique_classes()))
@@ -1023,7 +1043,7 @@ class BaseHead(nn.Module):
         with autocast(device_type=device, dtype=amp_dtype, enabled=enable_autocast): # Use autocast for mixed precision training
           dict_out = self(**dict_batch_X)
 
-        if dict_out['logits'].shape[1] == 1 and not is_resupcon_loss: # if regression I don't need to keep dim 1
+        if dict_out['logits'].shape[1] == 1 and not (is_resupcon_loss or is_disentangled_loss): # if regression I don't need to keep dim 1
           dict_out['logits'] = dict_out['logits'].squeeze(1)
 
         if return_embeddings:
@@ -1040,6 +1060,12 @@ class BaseHead(nn.Module):
           loss = criterion(**dict_out)
           loss = loss['total_loss'] if isinstance(loss, dict) else loss
           outputs = dict_out['logits']
+        elif is_disentangled_loss:
+          batch_subjects = batch_subjects.to(device)
+          loss, dict_log_loss = criterion(features=dict_out['logits'],
+                                          target_pain=batch_y,
+                                          target_subj=batch_subjects)
+          val_dict_log_loss_steps.append(dict_log_loss)
         else:
           outputs = dict_out['logits']
           loss = criterion(outputs, batch_y)
@@ -1050,7 +1076,7 @@ class BaseHead(nn.Module):
         #   loss = loss + adv_loss * kwargs['adversarial_loss_lambda']
         val_loss += loss.item()
         
-        if not is_resupcon_loss:
+        if not is_resupcon_loss and not is_disentangled_loss:
           if is_coral_loss:
             outputs = proba_to_label(torch.sigmoid(outputs)) # convert probabilities to labels for coral loss
             batch_y = torch.sum(batch_y, dim=1) # convert levels to labels for coral loss
@@ -1103,7 +1129,7 @@ class BaseHead(nn.Module):
         count += 1
       
       val_loss = val_loss / len(val_loader)
-      if not is_resupcon_loss:
+      if not is_resupcon_loss and not is_disentangled_loss:
         val_confusion_matricies.compute()
         if save_log and helper.LOG_PER_CLASS:
           loss_per_class = loss_per_class[0] / loss_per_class[1] # loss_per_class[0] is loss per class, loss_per_class[1] is total number of samples
@@ -1152,6 +1178,7 @@ class BaseHead(nn.Module):
         'dict_precision_recall': dict_precision_recall,
         'test_l1_error': l1_error,
         'test_l2_error': l2_error,
+        'test_loss_log_epochs': self.get_dict_loss_per_epoch(val_dict_log_loss_steps, len(val_loader)) if is_disentangled_loss else [],
       }
     else:
       return {
@@ -1173,6 +1200,7 @@ class BaseHead(nn.Module):
         'dict_precision_recall': dict_precision_recall,
         'val_l1_error': l1_error,
         'val_l2_error': l2_error,
+        'val_loss_log_epochs': self.get_dict_loss_per_epoch(val_dict_log_loss_steps, len(val_loader)) if is_disentangled_loss else [],
       }      
 
   def log_and_save_gradients(model, epoch, batch_idx, saving_path):
@@ -1218,6 +1246,20 @@ class BaseHead(nn.Module):
         norm += torch.linalg.vector_norm(param.grad, ord=2)
         # norm += torch.norm(param.grad, p='fro').item()
     return norm
+  
+  def get_dict_loss_per_epoch(self,dict_log_loss_steps, nr_batches):
+    train_dict_log_loss_epochs = {}
+    for dict_log in dict_log_loss_steps:
+      for k,v in dict_log.items():
+        if k not in train_dict_log_loss_epochs:
+          train_dict_log_loss_epochs[k] = []
+        train_dict_log_loss_epochs[k].append(v)
+    for k,v in train_dict_log_loss_epochs.items():
+      tensor_per_epoch = torch.tensor(v).reshape(-1,nr_batches)
+      tensor_per_epoch = tensor_per_epoch.mean(dim=1)
+      train_dict_log_loss_epochs[k] = tensor_per_epoch.numpy()
+    return train_dict_log_loss_epochs
+  
   
   
 class LinearHead(BaseHead):

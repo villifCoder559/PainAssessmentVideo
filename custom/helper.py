@@ -63,7 +63,6 @@ LOG_LOSS_ACCURACY = False
 LOG_GRADIENT_NORM = False
 SAVE_LAST_EPOCH_MODEL = False
 FORCE_SPLIT_K_FOLD = False # Only for CAER dataset!, turns on in the train_model.py script
-
 SAVE_PTH_MODEL = False
 
 LOG_CROSS_ATTENTION = {
