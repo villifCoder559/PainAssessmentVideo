@@ -435,7 +435,7 @@ class BaseHead(nn.Module):
         if batch_y.dtype == torch.int32: # if ce not has label smoothing
           if isinstance(criterion, (torch.nn.HuberLoss, torch.nn.MSELoss, torch.nn.L1Loss)):
             batch_y = batch_y.float()
-          elif isinstance(criterion, torch.nn.CrossEntropyLoss):
+          elif isinstance(criterion, torch.nn.CrossEntropyLoss) or isinstance(criterion, losses.PHuberCrossEntropy):
             batch_y = batch_y.long()
         batch_y = batch_y.to(device)
         
@@ -1026,7 +1026,7 @@ class BaseHead(nn.Module):
         sample_per_subject_count[tmp] += count_sample_per_subject
         if isinstance(criterion, torch.nn.HuberLoss):
           batch_y = batch_y.float()
-        elif isinstance(criterion, torch.nn.CrossEntropyLoss):
+        elif isinstance(criterion, torch.nn.CrossEntropyLoss) or isinstance(criterion, losses.PHuberCrossEntropy):
           batch_y = batch_y.long()
         
         dict_batch_X = {key: value.to(device) if value is not None else None for key, value in dict_batch_X.items()}

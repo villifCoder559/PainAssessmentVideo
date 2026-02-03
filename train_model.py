@@ -128,6 +128,10 @@ def get_loss(loss_name, dict_args=None):
       delta=dict_args['cdw_ce_delta'],
       transform=dict_args['transform']
     )
+  elif loss_lower == 'huber_ce':
+    return losses.PHuberCrossEntropy(
+      tau=dict_args['delta_huber'] 
+    )
   elif loss_lower == 'sim_loss':
     if dict_args is None:
       raise ValueError("dict_args is required for 'sim_loss'.")
@@ -620,7 +624,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       return past.value
 
   # --- Final Argument Assembly ---
-  if num_classes == 1 and loss in ['cdw_ce', 'ce', 'ce_weight', 'sim_loss']:
+  if num_classes == 1 and loss in ['cdw_ce', 'ce', 'ce_weight', 'sim_loss', 'huber_ce']:
     raise ValueError('Loss function not supported for regression. Use l1 or l2 loss.')
      
   dict_args_loss = {
@@ -898,7 +902,7 @@ def validate_arguments(dict_args):
     if method not in helper.QUERIES_AGG_METHOD:
        raise ValueError(f"Invalid queries aggregation method: {method}")
 
-  if not None in dict_args['delta_huber'] and 'huber' not in dict_args['loss']:
+  if not None in dict_args['delta_huber'] and 'huber' not in dict_args['loss'][0]:
      raise ValueError("delta_huber is set but loss is not 'huber'.")
 
   if dict_args['loss'] is not None and 'huber' in dict_args['loss'] and any(d <= 0 for d in dict_args['delta_huber'] if d is not None):
@@ -1116,10 +1120,11 @@ if __name__ == '__main__':
 
   # --- Global Constants & Side Effects ---
   if dict_args['key_early_stopping'] is None:
-    if dict_args['loss'][0] == 'ce':
+    if 'ce' in dict_args['loss'][0]:
       dict_args['key_early_stopping'] = 'val_accuracy'
     else:
       dict_args['key_early_stopping'] = 'val_loss'
+    print(f"\n*********key_early_stopping not set. Set: {dict_args['key_early_stopping']}*********\n")
   validate_arguments(dict_args)
 
   dict_args['pooling_embedding_reduction'] = helper.EMBEDDING_REDUCTION.get_embedding_reduction(
