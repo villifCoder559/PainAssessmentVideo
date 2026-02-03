@@ -157,10 +157,10 @@ def get_loss(loss_name, dict_args=None):
   elif loss_lower == 'coral':
     return coral_loss
   elif loss_lower == 'rncloss':
-    if ',' not in dict_args['contrastive_loss_temp']:
-      dict_args['contrastive_loss_temp'] = float(dict_args['contrastive_loss_temp'])
-    else:
-      dict_args['contrastive_loss_temp'] = [float(t) for t in dict_args['contrastive_loss_temp'].split(',')]
+    # if ',' not in dict_args['contrastive_loss_temp']:
+    dict_args['contrastive_loss_temp'] = float(dict_args['contrastive_loss_temp'])
+    # else:
+    #   dict_args['contrastive_loss_temp'] = [float(t) for t in dict_args['contrastive_loss_temp'].split(',')]
     return losses.RnCLossV2(
       temperature=dict_args['contrastive_loss_temp'])
   else:
@@ -1120,7 +1120,7 @@ if __name__ == '__main__':
 
   # --- Global Constants & Side Effects ---
   if dict_args['key_early_stopping'] is None:
-    if 'ce' in dict_args['loss'][0]:
+    if dict_args['loss'] and 'ce' in dict_args['loss'][0]:
       dict_args['key_early_stopping'] = 'val_accuracy'
     else:
       dict_args['key_early_stopping'] = 'val_loss'
