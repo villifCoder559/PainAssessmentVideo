@@ -137,6 +137,12 @@ def get_loss(loss_name, dict_args=None):
       device='cuda'
     )
   elif loss_lower == 'contrastive_reg':
+    # if ',' not in dict_args['contrastive_loss_temp']:
+    dict_args['contrastive_loss_temp'] = float(dict_args['contrastive_loss_temp'])
+    dict_args['contrastive_loss_theta'] = float(dict_args['contrastive_loss_theta'])
+    dict_args['contrastive_lambda_weight'] = float(dict_args['contrastive_lambda_weight']) 
+    dict_args['spearman_reg_strength'] = float(dict_args['spearman_reg_strength'])
+
     return losses.RESupConLoss(
       temperature=dict_args['contrastive_loss_temp'],
       theta=dict_args['contrastive_loss_theta'],
@@ -147,9 +153,12 @@ def get_loss(loss_name, dict_args=None):
   elif loss_lower == 'coral':
     return coral_loss
   elif loss_lower == 'rncloss':
+    if ',' not in dict_args['contrastive_loss_temp']:
+      dict_args['contrastive_loss_temp'] = float(dict_args['contrastive_loss_temp'])
+    else:
+      dict_args['contrastive_loss_temp'] = [float(t) for t in dict_args['contrastive_loss_temp'].split(',')]
     return losses.RnCLossV2(
-      temperature=dict_args['contrastive_loss_temp'],
-    )
+      temperature=dict_args['contrastive_loss_temp'])
   else:
     raise ValueError(
       f'Loss not found: {loss_name}. Valid options: l1, l2, ce, cdw_ce, sim_loss, coral, contrastive_reg, rncloss'
@@ -206,6 +215,15 @@ def get_composite_loss_module(loss_types, losses_weights, **kwargs):
       raise ValueError(f"Unsupported loss type in composite loss: {loss_type}")
 
   return losses.CompositeLoss(list_losses)
+
+def get_disentanglement_loss(loss_type, split_idx, lambdas,ortho_lambda, dict_args=None):
+  loss_fns = [get_loss(lt, dict_args) for lt in loss_type]
+  disentanglement_loss = losses.DisentangledLoss(
+    lambdas=lambdas,
+    loss_fns=loss_fns,
+    split_idx=split_idx,
+    ortho_lambda=ortho_lambda)
+  return disentanglement_loss
 
 
 def get_class_weights(csv_path):
@@ -446,11 +464,14 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'spearman_reg_strength': contrastive_spearman_reg_strength,
   }
 
+  remove_head = True if loss == 'contrastive_reg' else False
   if kwargs['loss']:
     loss = trial.suggest_categorical('loss', kwargs['loss'])
-  else:
+  elif kwargs['composite_loss']:
     composite_loss = get_composite_loss_module(kwargs['composite_loss'], kwargs['composite_loss_lambda'], **loss_args)
-
+  elif kwargs['disent_loss_p_s'][0] is not None:
+    remove_head = True
+    
   if loss and loss == 'cdw_ce' and label_smooth > 0:
     raise ValueError('Label smoothing not supported for CDW loss. Use label_smooth=0.')
 
@@ -461,20 +482,21 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     input_dim *= 8  # 8 temporal segments
   elif concatenate_quadrants:
     input_dim *= 4  # 4 quadrants
-
+  
   # --- Determine Num Classes ---
+  num_classes = 0
   if composite_loss is not None:
     num_classes = 1  # regression
     print(f"\nComposite loss detected. Setting num_classes to 1 for regression.\n")
     if 'ce' in [l['type'] for l in composite_loss.config_losses]:
       raise ValueError("Classification loss (ce) not supported in composite loss for regression.")
-  else:
+  elif loss is not None:
     if loss in ['l1', 'l2', 'huber']:
       num_classes = 1
       print(f"\nRegression task detected. Setting num_classes to 1 for {loss} loss.")
     else:
       num_classes = pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique()
-
+  
   # --- Head Specific Params ---
   head_name = kwargs['head']
   adapter_dict = {
@@ -541,7 +563,6 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       xattn_mask = ~(xattn_mask < apply_xattn_mask)
       print(f"\nATTENTION_MASK DETECTED! Applied with threshold {apply_xattn_mask}. {xattn_mask.sum().item()} cells kept.\n")
       del video_analysis_dict
-
     head_params = {
       'input_dim': input_dim,
       'q_k_v_dim': q_k_v_dim if q_k_v_dim is not None else emb_dim,
@@ -559,7 +580,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'pos_enc': pos_enc,
       'coral_loss': True if loss == 'coral' else False,
       'depth': nr_blocks,
-      'remove_head': True if loss == 'contrastive_reg' else False,
+      'remove_head': remove_head,
       'cross_block_after_transformers': cross_block_after_transformers,
       'num_queries': num_queries,
       'agg_method': queries_agg_method,
@@ -611,10 +632,22 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'transform': cdw_ce_power_transform
   }
 
-  if composite_loss is None:
+  if loss is not None:
     criterion = get_loss(loss, dict_args=dict_args_loss)
-  else:
+  elif composite_loss is not None:
     criterion = composite_loss
+  elif kwargs['disent_loss_p_s'][0] is not None:
+    loss_type = trial.suggest_categorical('disent_loss_p_s', kwargs['disent_loss_p_s'])
+    loss_type = loss_type.lower().split(',')
+    lambda_weight = trial.suggest_categorical('disent_loss_lambda', kwargs['disent_loss_lambda'])
+    lambda_weight = [float(lw) for lw in lambda_weight.split(',')]
+    split_idx = trial.suggest_categorical('disent_split_idx', kwargs['disent_split_idx'])
+    ortho_lambda = _suggest(trial, 'disent_ortho_lambda', kwargs['disent_ortho_lambda'], kwargs['optuna_categorical'])
+    criterion = get_disentanglement_loss(loss_type=loss_type,
+                                         lambdas=lambda_weight,
+                                         split_idx=split_idx,
+                                         ortho_lambda=ortho_lambda,
+                                         dict_args=dict_args_loss)
 
   add_kwargs = {
     'dict_args_loss': dict_args_loss,
@@ -789,6 +822,12 @@ def validate_arguments(dict_args):
   """Validates the parsed arguments and raises errors for invalid configurations."""
   list_augmentations_available = helper.get_augmentation_availables(dict_args['ffsp'])
   list_augmentations_available.extend(['latent_masking','latent_basic'])
+  
+  # Set only one of disent_loss_p_s or loss
+  if not ((dict_args['disent_loss_p_s'][0] is None) ^ (dict_args['loss'] is None)):
+    raise ValueError("Set either disent_loss_p_s or loss, not both.")
+  
+  
   if dict_args['only_augments'][0] is not None:
     if dict_args['stratified_training'][0] != 1:
       raise ValueError("only_augments can only be used with stratified_training set to 1.")
@@ -958,6 +997,10 @@ if __name__ == '__main__':
   parser.add_argument('--concatenate_temp_dim', type=int, nargs='*', default=[0], help='Concatenate temporal dimension.')
   parser.add_argument('--concatenate_quadrants', type=int, nargs='*', default=[0], help='Concatenate quadrants dimension.')
   parser.add_argument('--loss', type=str, nargs='*', default=None, help="Loss function.")
+  parser.add_argument('--disent_loss_p_s', type=str, nargs='*', default=[None], help="Disentanglement loss type. First is for pain, second for subject id. Ex: l1,ce. ")
+  parser.add_argument('--disent_loss_lambda', type=str, nargs='*', default=[None], help="Disentanglement loss lambda. First is for pain, second for subject id. Ex: 1.0,0.1 ")
+  parser.add_argument('--disent_split_idx', type=int, nargs='*', default=[None], help="Index to split features for disentanglement.")
+  parser.add_argument('--disent_ortho_lambda', type=float, nargs='*', default=[0.0], help="Orthogonality loss lambda for disentanglement. (0 to disable).")
   parser.add_argument('--add_CCC_loss', type=float, nargs='*', default=[0.0], help='Add CCC loss.')
   parser.add_argument('--cdw_ce_alpha', type=float, nargs='*', default=[2], help='Alpha for CDW loss.')
   parser.add_argument('--cdw_ce_transform', type=str, nargs='*', default=['power'], help='Transform for CDW loss.')
@@ -970,11 +1013,11 @@ if __name__ == '__main__':
   parser.add_argument('--composite_loss', nargs='*', type=str, default=None, help='Composite loss type.')
   parser.add_argument('--composite_loss_lambda', nargs='*', type=float, default=None, help='Lambda for composite loss.')
   parser.add_argument('--use_sdpa', type=int, nargs='*', default=[1], help='Use SDPA.')
-  parser.add_argument('--contrastive_loss_temp', type=float, nargs='*', default=[0.07], help='Temp for contrastive loss.')
-  parser.add_argument('--contrastive_loss_theta', type=float, nargs='*', default=[0.9], help='Theta for contrastive loss.')
-  parser.add_argument('--contrastive_lambda_weight', type=float, nargs='*', default=[4.0], help='Lambda weight for contrastive loss.')
+  parser.add_argument('--contrastive_loss_temp', type=str, nargs='*', default=[None], help='Temp for contrastive loss.')
+  parser.add_argument('--contrastive_loss_theta', type=str, nargs='*', default=[None], help='Theta for contrastive loss.')
+  parser.add_argument('--contrastive_lambda_weight', type=str, nargs='*', default=[None], help='Lambda weight for contrastive loss.')
   parser.add_argument('--spearman_reg', type=str, nargs='*', choices=['l2', 'kl'], default=['l2'], help='Spearman regression type.')
-  parser.add_argument('--spearman_reg_strength', type=float, nargs='*', default=[1.0], help='Spearman regression strength.')
+  parser.add_argument('--spearman_reg_strength', type=str, nargs='*', default=[None], help='Spearman regression strength.')
   parser.add_argument('--stratified_training', type=int, nargs='*', default=[0], help='Use stratified sampling. If Biovid it adds the following latent augm:'+
                                                                               ' 2: latent_basic; '+
                                                                               ' 3: latent_masking; '+
