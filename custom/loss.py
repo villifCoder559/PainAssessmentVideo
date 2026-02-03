@@ -543,32 +543,35 @@ class PHuberCrossEntropy(nn.Module):
     eps: numerical eps for stability when taking log or clamping probs.
     reduction: 'mean' | 'sum' | 'none'
   """
-  def __init__(self, tau: float = 10.0, eps: float = 1e-8, reduction: str = 'mean'):
+  def __init__(self, tau: float = 10.0, reduction: str = 'mean'):
     super().__init__()
-    assert tau > 0, "tau should be > 0 (paper uses tau > 1 for the PHuber variant)"
+    assert tau > 1, "tau should be > 1 (paper uses tau > 1 for the PHuber variant)"
     self.tau = float(tau)
-    self.eps = float(eps)
     self.reduction = reduction
+    self.register_buffer('log_tau', torch.log(torch.tensor(tau, dtype=torch.float32)))
 
   def forward(self, logits: torch.Tensor, targets: torch.Tensor):
     """
     logits: (N, C) raw model outputs
     targets: (N,) long (class indices)
     """
-    device = logits.device
-    # compute probabilities
-    probs = F.softmax(logits, dim=1)
-    # gather p(theta, y)
-    p_y = probs.gather(1, targets.view(-1, 1)).squeeze(1).clamp(min=self.eps)
+    # compute log probabilities
+    log_probs = F.log_softmax(logits, dim=1)
+    # gather log(p(theta, y))
+    log_p_y = log_probs.gather(1, targets.view(-1, 1)).squeeze(1)
+    
+    # linearised branch requires p_y
+    p_y = log_p_y.exp()
 
-    thresh = 1.0 / self.tau
-    # linearised branch
-    log_tau = torch.log(torch.tensor(self.tau, device=device, dtype=logits.dtype))
+    log_tau = self.log_tau.to(logits.dtype)
+    # Threshold in log space: p_y <= 1/tau  <==>  log_p_y <= -log(tau)
+    thresh_log = -log_tau
+
     linear_branch = - self.tau * p_y + log_tau + 1.0
-    # standard cross-entropy branch
-    log_branch = - torch.log(p_y)
+    # standard cross-entropy branch: -log(p_y) is just -log_p_y
+    log_branch = - log_p_y
 
-    loss_per_sample = torch.where(p_y <= thresh, linear_branch, log_branch)
+    loss_per_sample = torch.where(log_p_y <= thresh_log, linear_branch, log_branch)
 
     if self.reduction == 'mean':
       return loss_per_sample.mean()
