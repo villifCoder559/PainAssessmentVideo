@@ -1359,7 +1359,7 @@ def plot_confusion_matrices(data, root_output_folder, test_id, additional_info='
   os.makedirs(test_output_folder, exist_ok=True)
   if isinstance(data['config']['criterion'],losses.RESupConLoss):
     return  # No confusion matrix for RESupConLoss
-  
+  is_cross_entropy = isinstance(data['config']['criterion'],torch.nn.CrossEntropyLoss) or isinstance(data['config']['criterion'],losses.PHuberCrossEntropy)
   #### Plot confusion matrix for each epoch ####
   for key,dict_sub_fold in data['results'].items():
     
@@ -1376,26 +1376,58 @@ def plot_confusion_matrices(data, root_output_folder, test_id, additional_info='
     
     # Plot confusion matrix for each epoch
     for epoch in dict_train_conf_matrix.keys():
-      if int(epoch) == best_epoch_idx:
+      if int(epoch) == best_epoch_idx and dict_test_conf_matrix is not None:
         fig, axs = plt.subplots(3, 1, figsize=(5, 15))
+        if is_cross_entropy:
+          fig_l1_error, axs_l1_error = plt.subplots(3, 1, figsize=(5, 15))
       else:
         fig, axs = plt.subplots(2, 1, figsize=(5, 10))
+        if is_cross_entropy:
+          fig_l1_error, axs_l1_error = plt.subplots(2, 1, figsize=(5, 10))
       axs_count = 0
       kk = key.split('_')
       if len(kk) > 2:
         kk = f'{kk[0]}_{kk[-1]}'
       else:
         kk = key
-      tools.plot_confusion_matrix(dict_train_conf_matrix[epoch], ax=axs[axs_count], title=f'TRAIN - Epoch {epoch} - {test_id}\n{kk}')
+      tools.plot_confusion_matrix(dict_train_conf_matrix[epoch], ax=axs[axs_count], title=f'TRAIN - Epoch {epoch} - {test_id} - {kk}')
+      if is_cross_entropy:
+        dict_mae_per_class = compute_mae_per_class(conf_matrix=dict_train_conf_matrix[epoch])
+        tools.plot_error_per_class(mae_per_class=[dict_mae_per_class[i] for i in sorted(dict_mae_per_class.keys())],
+                                  unique_classes=sorted(dict_mae_per_class.keys()),
+                                  criterion='L1',
+                                  ax=axs_l1_error[0],
+                                  title=f'TRAIN -Loss per class - Epoch {epoch} - {kk} - {test_id}',
+                                  y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
       axs_count += 1
       if data['config'].get('validate', True) and dict_val_conf_matrix is not None:
-        tools.plot_confusion_matrix(dict_val_conf_matrix[epoch], ax=axs[axs_count], title=f'VAL - Epoch {epoch} - {test_id}\n{kk}')
+        tools.plot_confusion_matrix(dict_val_conf_matrix[epoch], ax=axs[axs_count], title=f'VAL - Epoch {epoch} - {test_id} - {kk}')
+        if is_cross_entropy:
+          dict_mae_per_class = compute_mae_per_class(conf_matrix=dict_val_conf_matrix[epoch])
+          tools.plot_error_per_class(mae_per_class=[dict_mae_per_class[i] for i in sorted(dict_mae_per_class.keys())],
+                                    unique_classes=sorted(dict_mae_per_class.keys()),
+                                    criterion='L1',
+                                    ax=axs_l1_error[1],
+                                    title=f'VAL -Loss per class - Epoch {epoch} - {kk} - {test_id}',
+                                    y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
         axs_count += 1
       if int(epoch) == best_epoch_idx and dict_test_conf_matrix is not None:
-        tools.plot_confusion_matrix(dict_test_conf_matrix[epoch], ax=axs[axs_count], title=f'TEST - Epoch {epoch} - {test_id}\n{kk}')
-        fig.tight_layout()
+        tools.plot_confusion_matrix(dict_test_conf_matrix[epoch], ax=axs[axs_count], title=f'TEST - Epoch {epoch} - {test_id} - {kk}')
+        if is_cross_entropy:
+          dict_mae_per_class = compute_mae_per_class(conf_matrix=dict_test_conf_matrix[epoch])
+          tools.plot_error_per_class(mae_per_class=[dict_mae_per_class[i] for i in sorted(dict_mae_per_class.keys())],
+                                    unique_classes=sorted(dict_mae_per_class.keys()),
+                                    criterion='L1',
+                                    ax=axs_l1_error[2],
+                                    title=f'TEST -Loss per class - Epoch {epoch} - {kk} - {test_id}',
+                                    y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
+      fig.tight_layout()
       fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_confusion_matrix_{key}_epoch_{epoch}.png'))
       plt.close(fig)
+      if is_cross_entropy:
+        fig_l1_error.tight_layout()
+        fig_l1_error.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_loss_per_class_L1_conf_matrix_{key}_epoch_{epoch}.png'))
+        plt.close(fig_l1_error)
       
   return # Skipping for now to save time
   #### Plot only best epoch confusion matrix in percentage ####
@@ -1442,6 +1474,56 @@ def convert_conf_matrix_to_percent(conf_matrix: MulticlassConfusionMatrix):
     # Convert to percentages
     percent_matrix = matrix / row_sums * 100    
     return percent_matrix
+
+
+def compute_mae_per_class(conf_matrix, compute_column_wise=False):
+    """
+    Computes the Mean Absolute Error (MAE) for each class from a confusion matrix.
+    Ordinal labels are assumed to correspond to indices.
+    
+    Args:
+        conf_matrix: Confusion matrix (raw counts) as Tensor, ndarray or MulticlassConfusionMatrix.
+        compute_column_wise: If True, also computes MAE based on predicted labels.
+        
+    Returns:
+        A dictionary with class indices as keys and MAE values as values (row-wise by default).
+        If compute_column_wise is True, returns a dictionary with 'row_mae' and 'col_mae'.
+    """
+    matrix = conf_matrix.confmat if hasattr(conf_matrix, "confmat") else conf_matrix
+    if isinstance(matrix, np.ndarray):
+      matrix = torch.from_numpy(matrix)
+    matrix = matrix.float()
+    
+    n_classes = matrix.shape[0]
+    device = matrix.device
+    
+    # Row-wise MAE: "Given the true class is i, what is the average error of predictions?"
+    row_mae = {}
+    for i in range(n_classes):
+      row_sum = matrix[i, :].sum()
+      if row_sum == 0:
+        continue
+      else:
+        # Absolute distance between true class i and all possible predictions j
+        distances = torch.abs(torch.arange(n_classes, device=device) - i)
+        mae = (matrix[i, :] * distances).sum() / row_sum
+        row_mae[i] = mae.item()
+            
+    if compute_column_wise:
+      # Column-wise MAE: "Given the prediction is j, what is the average error from the true label?"
+      col_mae = {}
+      for j in range(n_classes):
+        col_sum = matrix[:, j].sum()
+        if col_sum == 0:
+          continue
+        else:
+          # Absolute distance between predicted class j and all possible true labels i
+          distances = torch.abs(torch.arange(n_classes, device=device) - j)
+          mae = (matrix[:, j] * distances).sum() / col_sum
+          col_mae[j] = mae.item()
+      return {"row_mae": row_mae, "col_mae": col_mae}
+        
+    return row_mae
 
 
 def get_best_result(data):
