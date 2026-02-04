@@ -467,15 +467,19 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'spearman_reg': contrastive_spearman_reg,
     'spearman_reg_strength': contrastive_spearman_reg_strength,
   }
-
-  remove_head = True if loss == 'contrastive_reg' else False
+  remove_head = False
   if kwargs['loss']:
     loss = trial.suggest_categorical('loss', kwargs['loss'])
-  elif kwargs['composite_loss']:
-    composite_loss = get_composite_loss_module(kwargs['composite_loss'], kwargs['composite_loss_lambda'], **loss_args)
+    remove_head = True if (loss == 'contrastive_reg' or loss == 'rncloss') else False
+  elif kwargs['composite_loss'][0] is not None:
+    composite_loss = trial.suggest_categorical('composite_loss', kwargs['composite_loss'])
+    composite_loss = composite_loss.split(',')
+    composite_loss_lambda = trial.suggest_categorical('composite_loss_lambda', kwargs['composite_loss_lambda'])
+    composite_loss_lambda = [float(l) for l in composite_loss_lambda.split(',')]
+    composite_loss = get_composite_loss_module(composite_loss, composite_loss_lambda, **loss_args)
   elif kwargs['disent_loss_p_s'][0] is not None:
     remove_head = True
-    
+  print(f'*********\nREMOVE HEAD: {remove_head}\n*********')
   if loss and loss == 'cdw_ce' and label_smooth > 0:
     raise ValueError('Label smoothing not supported for CDW loss. Use label_smooth=0.')
 
@@ -653,6 +657,12 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
                                          ortho_lambda=ortho_lambda,
                                          dict_args=dict_args_loss)
 
+  # Pre-trained Check
+  if (isinstance(criterion, losses.RESupConLoss) or isinstance(criterion, losses.DisentangledLoss) or isinstance(criterion, losses.RnCLossV2)) and kwargs['head_init_path']:
+    list_pth_path = get_pth_path_from_project_folder(kwargs['head_init_path'])
+    if len(list_pth_path) < np.prod(kwargs['stop']):
+      raise ValueError(f"Not enough pretrained models in {kwargs['head_init_path']}.")
+  
   add_kwargs = {
     'dict_args_loss': dict_args_loss,
     'add_CCC_loss': add_CCC_loss,
@@ -677,11 +687,6 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   }
   add_kwargs.update(head_dependent_add_kwargs)
   
-  # Pre-trained Check
-  if isinstance(criterion, losses.RESupConLoss) and kwargs['head_init_path']:
-    list_pth_path = get_pth_path_from_project_folder(kwargs['head_init_path'])
-    if len(list_pth_path) < np.prod(kwargs['stop']):
-      raise ValueError(f"Not enough pretrained models in {kwargs['head_init_path']}.")
 
   print(f"\n[Trial {trial.number}] Params: {trial.params}")
   
@@ -828,8 +833,14 @@ def validate_arguments(dict_args):
   list_augmentations_available.extend(['latent_masking','latent_basic'])
   
   # Set only one of disent_loss_p_s or loss
-  if not ((dict_args['disent_loss_p_s'][0] is None) ^ (dict_args['loss'] is None)):
-    raise ValueError("Set either disent_loss_p_s or loss, not both.")
+  provided = [
+    (dict_args['disent_loss_p_s'][0] is not None),
+    (dict_args['loss'] is not None),
+    (dict_args['composite_loss'][0] is not None)
+  ]
+  if sum(provided) != 1:
+    print(dict_args['disent_loss_p_s'][0], dict_args['loss'], dict_args['composite_loss'][0])
+    raise ValueError("Set either disent_loss_p_s or loss or composite_loss, not multiple.")
   
   
   if dict_args['only_augments'][0] is not None:
@@ -867,7 +878,7 @@ def validate_arguments(dict_args):
   if dict_args['warm_up_scheduler'][0] is not None and dict_args['scheduler_name'][0] == 'onecycle':
     raise ValueError("Onecycle scheduler already includes warm-up phase. Remove warm_up_scheduler argument.")
 
-  if dict_args['loss'] and dict_args['composite_loss'] is not None:
+  if dict_args['loss'] and dict_args['composite_loss'][0] is not None:
     raise ValueError("Cannot use both primary loss and composite loss at the same time. Choose one.")
 
   if any(dict_args['filtered_augm_n_keep']) and any(dict_args['balance_batches']):
@@ -1014,8 +1025,8 @@ if __name__ == '__main__':
   parser.add_argument('--num_clips_per_video', type=int, nargs='*', default=[1], help='Num clips per video.')
   parser.add_argument('--sample_frame_strategy', type=str, nargs='*', default=['sliding_window'], help="Sampling strategy.")
   parser.add_argument('--stride_inside_window', type=int, nargs='*', default=[1], help='Stride inside window.')
-  parser.add_argument('--composite_loss', nargs='*', type=str, default=None, help='Composite loss type.')
-  parser.add_argument('--composite_loss_lambda', nargs='*', type=float, default=None, help='Lambda for composite loss.')
+  parser.add_argument('--composite_loss', nargs='*', type=str, default=[None], help='Composite loss type.')
+  parser.add_argument('--composite_loss_lambda', nargs='*', type=str, default=[None], help='Lambda for composite loss.')
   parser.add_argument('--use_sdpa', type=int, nargs='*', default=[1], help='Use SDPA.')
   parser.add_argument('--contrastive_loss_temp', type=str, nargs='*', default=[None], help='Temp for contrastive loss.')
   parser.add_argument('--contrastive_loss_theta', type=str, nargs='*', default=[None], help='Theta for contrastive loss.')

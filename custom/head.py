@@ -378,6 +378,8 @@ class BaseHead(nn.Module):
     is_composite_loss = isinstance(criterion, losses.CompositeLoss)
     is_resupcon_loss = isinstance(criterion, losses.RESupConLoss)
     is_disentangled_loss = isinstance(criterion, losses.DisentangledLoss)
+    is_rnc_loss = isinstance(criterion, losses.RnCLossV2) or isinstance(criterion, losses.RnCLoss)
+    
     max_train_class = train_unique_classes.max().item() + 1 # start from 0
     l1_error_val_list = []
     l2_error_val_list = []
@@ -471,6 +473,9 @@ class BaseHead(nn.Module):
                                             target_pain=batch_y,
                                             target_subj=batch_subjects)
             train_dict_log_loss_steps.append(dict_log_loss)
+          elif is_rnc_loss:
+            loss = criterion(features=dict_out['logits'],
+                             labels=batch_y)
           else:
             loss = criterion(dict_out['logits'], batch_y)
             
@@ -541,7 +546,7 @@ class BaseHead(nn.Module):
           wd_scheduler.step()
           
         start_logs = time.time()
-        if not is_resupcon_loss and (helper.LOG_PER_CLASS or helper.LOG_PER_SUBJECT or helper.LOG_CONFIDENCE_PREDICTION):
+        if not is_resupcon_loss and not is_rnc_loss and (helper.LOG_PER_CLASS or helper.LOG_PER_SUBJECT or helper.LOG_CONFIDENCE_PREDICTION):
           if is_coral_loss:
             outputs = proba_to_label(torch.sigmoid(outputs)) # convert probabilities to labels for coral loss
             batch_y = torch.sum(batch_y, dim=1) # convert levels to labels for coral loss
@@ -574,7 +579,7 @@ class BaseHead(nn.Module):
         
         count_batch+=1
 
-        if not is_resupcon_loss and not is_disentangled_loss:
+        if not is_resupcon_loss and not is_disentangled_loss and not is_rnc_loss:
           if self.is_classification:
             if is_coral_loss:
               predictions = outputs.detach().cpu() # outputs are already labels for coral loss
@@ -656,9 +661,9 @@ class BaseHead(nn.Module):
          helper.SAVE_LAST_EPOCH_MODEL or \
          (  epoch >= min(50, num_epochs//2) 
             and dict_eval is not None 
-            and dict_eval[key_for_early_stopping] < best_eval_loss 
+            and (dict_eval[key_for_early_stopping] < best_eval_loss 
                   if key_for_early_stopping == 'val_loss' 
-                  else dict_eval[key_for_early_stopping] > best_eval_loss):
+                  else dict_eval[key_for_early_stopping] > best_eval_loss)):
         best_eval_loss = dict_eval[key_for_early_stopping] if dict_eval is not None else 0.0
         best_model_state = copy.deepcopy(self.state_dict())
         best_model_state = {key: value.cpu() for key, value in best_model_state.items()}
@@ -709,7 +714,7 @@ class BaseHead(nn.Module):
         list_test_losses.append(dict_test_as_eval['val_loss'])
         l1_error_test_list.append(dict_test_as_eval['val_l1_error'])
         l2_error_test_list.append(dict_test_as_eval['val_l2_error'])
-      if not is_resupcon_loss and not is_disentangled_loss:
+      if not is_resupcon_loss and not is_disentangled_loss and not is_rnc_loss:
         np_list_train_epoch_predictions = np.concatenate(list_train_epoch_predictions, axis=0)
         np_list_train_ground_truths = np.concatenate(list_train_ground_truths, axis=0)
         train_ICC = tools.intraclass_icc(np.column_stack((np_list_train_ground_truths, np_list_train_epoch_predictions)))
@@ -769,7 +774,7 @@ class BaseHead(nn.Module):
           list_test_confidence_prediction_right_std.append(dict_test_as_eval['val_prediction_confidence_right_std'])
           list_test_confidence_prediction_wrong_std.append(dict_test_as_eval['val_prediction_confidence_wrong_std'])
 
-      if not is_resupcon_loss and not is_disentangled_loss:
+      if not is_resupcon_loss and not is_disentangled_loss and not is_rnc_loss:
         list_val_confusion_matricies.append(dict_eval['val_confusion_matrix'] if dict_eval is not None else None)
         train_confusion_matrix.compute()
         train_dict_precision_recall = tools.evaluate_classification_from_confusion_matrix(confusion_matrix=train_confusion_matrix,list_real_classes=train_unique_classes)
@@ -991,6 +996,7 @@ class BaseHead(nn.Module):
     is_composite_loss = isinstance(criterion, losses.CompositeLoss)
     is_resupcon_loss = isinstance(criterion, losses.RESupConLoss)
     is_disentangled_loss = isinstance(criterion, losses.DisentangledLoss)
+    is_rnc_loss = isinstance(criterion, losses.RnCLossV2) or isinstance(criterion, losses.RnCLoss)
     list_val_epoch_predictions = []
     list_val_ground_truths = []
     l1_error = 0.0
@@ -1065,6 +1071,9 @@ class BaseHead(nn.Module):
                                           target_pain=batch_y,
                                           target_subj=batch_subjects)
           val_dict_log_loss_steps.append(dict_log_loss)
+        elif is_rnc_loss:
+          loss = criterion(features=dict_out['logits'],
+                            labels=batch_y)
         else:
           outputs = dict_out['logits']
           loss = criterion(outputs, batch_y)
@@ -1075,7 +1084,7 @@ class BaseHead(nn.Module):
         #   loss = loss + adv_loss * kwargs['adversarial_loss_lambda']
         val_loss += loss.item()
         
-        if not is_resupcon_loss and not is_disentangled_loss:
+        if not is_resupcon_loss and not is_disentangled_loss and not is_rnc_loss:
           if is_coral_loss:
             outputs = proba_to_label(torch.sigmoid(outputs)) # convert probabilities to labels for coral loss
             batch_y = torch.sum(batch_y, dim=1) # convert levels to labels for coral loss
@@ -1128,7 +1137,7 @@ class BaseHead(nn.Module):
         count += 1
       
       val_loss = val_loss / len(val_loader)
-      if not is_resupcon_loss and not is_disentangled_loss:
+      if not is_resupcon_loss and not is_disentangled_loss and not is_rnc_loss:
         val_confusion_matricies.compute()
         if save_log and helper.LOG_PER_CLASS:
           loss_per_class = loss_per_class[0] / loss_per_class[1] # loss_per_class[0] is loss per class, loss_per_class[1] is total number of samples
