@@ -664,8 +664,7 @@ class BaseHead(nn.Module):
         best_model_state = {key: value.cpu() for key, value in best_model_state.items()}
         best_model_epoch = epoch
         best_epoch = True
-        
- 
+      
       list_train_losses.append(train_loss / len(train_loader))
       list_val_losses.append(dict_eval['val_loss'] if dict_eval is not None else 0.0)
       if dict_eval is not None and 'val_dict_log_loss_steps' in dict_eval:
@@ -1541,6 +1540,12 @@ class AttentiveHeadJEPA(BaseHead):
   def set_init_path(self, head_init_path):
     self.head_init_path = head_init_path
     
+    
+  def _init_weights(self):
+    trunc_normal_(self.pooler.query_tokens, std=self.pooler.init_std)
+    self.pooler.apply(self.pooler._init_weights)
+    self.pooler._rescale_blocks()
+
   def _initialize_weights(self,init_type='default'):
     if self.backbone is not None:
       # self.backbone.load_pretrained_weights() 
@@ -1550,9 +1555,8 @@ class AttentiveHeadJEPA(BaseHead):
     if init_type == 'default':
       ## Initialize pooler ##
       if self.head_init_path is None:
-        trunc_normal_(self.pooler.query_tokens, std=self.pooler.init_std)
-        self.pooler.apply(self.pooler._init_weights)
-        self.pooler._rescale_blocks()
+        self._init_weights()
+        print('\nHead weights initialized from scratch\n')
       else: 
         state_dict = torch.load(self.head_init_path, weights_only=True)
         # Remove final linear layer for classification/regression 
@@ -1592,13 +1596,19 @@ class AttentiveHeadJEPA(BaseHead):
     list_sample_id = kwargs['list_sample_id'].numpy() # problem if use torch.uint16 -> no problem when save results.pkl using np.uint16
     
     helper.LOG_CROSS_ATTENTION[f"debug_xattn_{helper.LOG_CROSS_ATTENTION['state']}"].append((list_sample_id,xattn))
-    
-# class AttentiveHead(BaseHead):
-#   def __init__(self,input_dim,num_classes,num_heads,dropout,pos_enc):
-#     model = AttentiveProbe(input_dim=input_dim,num_classes=num_classes,num_heads=num_heads,dropout=dropout,pos_enc=pos_enc)
-#     is_classification = True if num_classes > 1 else False
-#     super().__init__(model,is_classification)
   
+  def freeze_pooler(self):
+    for param in self.pooler.parameters():
+      param.requires_grad = False
+    print('FROZEN pooler parameters')
+  
+  def add_linear_head(self,num_classes, coral_loss=False):
+    if coral_loss:
+      self.linear = CoralLayer(self.pooler.embed_dim, num_classes)
+    else: 
+      self.linear = nn.Linear(self.pooler.embed_dim, num_classes, bias=True)
+    print(f'Added linear head with {num_classes} classes to AttentiveHeadJEPA')
+
 class GRUHead(BaseHead):
   def __init__(self, input_dim, hidden_size, num_layers, dropout, output_size,layer_norm):
     super().__init__(self,True if output_size > 1 else False)

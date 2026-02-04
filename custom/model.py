@@ -432,8 +432,7 @@ class Model_Advanced: # Scenario_Advanced
                          stratified_training=0),
                          
       
-    # use_test_as_val
-    
+    # Stage 1
     dict_results = self.head.start_train(batch_size=batch_size,
                                           criterion=criterion,
                                           lr=lr,
@@ -478,3 +477,5 @@ class Model_Advanced: # Scenario_Advanced
               'count_subject_ids_train':count_subject_ids_train,
               'count_subject_ids_val':count_subject_ids_val
               }    
+
+

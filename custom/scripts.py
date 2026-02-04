@@ -213,9 +213,7 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
     clip_grad_norm,stop_after_kth_fold,regularization_lambda_L2,
     trial,validate,**kwargs
   )
-  # all_best_epochs = [fold_results_kth[f'k{fold_idx}_cross_val_sub_{i}']['train']['dict_results']['best_model_idx'] for i in range(len(fold_results_kth))]
-  # epochs = np.mean(all_best_epochs)
-  # epochs = max(int(epochs + epochs * 0.1), 2) # add 10% more epochs
+  
   if kwargs['return_best_model_state']:
     state_dict = fold_results_kth[f'k{fold_idx}_cross_val']['best_model']['best_model_state']
     
