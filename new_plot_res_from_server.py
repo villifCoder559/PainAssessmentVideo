@@ -821,7 +821,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                       ax=axs[count_axs])
           count_axs += 1
         # Val Loss
-        if val_loss_per_class is not None and val_loss_per_class[0] is not None:
+        if val_loss_per_class is not None and val_loss_per_class[0] is not None and np.sum(val_loss_per_class[0]) != 0:
           if data['results'][key]['train_val']['val_unique_y'].shape[0] != val_loss_per_class[best_epoch].shape[0]:
             
             raise ValueError('Number of unique classes does not match number of classes in val_loss_per_class')
@@ -867,7 +867,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                       ax=axs[count_axs])
           count_axs += 1
         # Val Loss
-        if val_accuracy_per_class is not None and val_accuracy_per_class[0] is not None:
+        if val_accuracy_per_class is not None and val_accuracy_per_class[0] is not None and val_accuracy_per_class[0].reshape(-1).sum() != 0:
           if data['results'][key]['train_val']['val_unique_y'].shape[0] != val_loss_per_class[best_epoch].shape[0]:
             
             raise ValueError('Number of unique classes does not match number of classes in val_loss_per_class')
@@ -1357,7 +1357,7 @@ def generate_csv_row(data,config,time_, test_id):
 def plot_confusion_matrices(data, root_output_folder, test_id, additional_info=''):
   test_output_folder = os.path.join(root_output_folder, test_id)
   os.makedirs(test_output_folder, exist_ok=True)
-  if isinstance(data['config']['criterion'],losses.RESupConLoss):
+  if isinstance(data['config']['criterion'],losses.RESupConLoss) or isinstance(data['config']['criterion'],losses.RnCLossV2) or isinstance(data['config']['criterion'],losses.DisentangledLoss):
     return  # No confusion matrix for RESupConLoss
   is_cross_entropy = isinstance(data['config']['criterion'],torch.nn.CrossEntropyLoss) or isinstance(data['config']['criterion'],losses.PHuberCrossEntropy)
   #### Plot confusion matrix for each epoch ####
@@ -1553,7 +1553,7 @@ def get_best_result(data):
 
 def plot_accuray_per_class_across_epochs(data, run_output_folder, test_id, additional_info=''):
   # Assuming val_accuracy and val_loss are already stacked arrays of shape (n_epochs, n_classes)
-  if isinstance(data['config']['criterion'],losses.RESupConLoss):
+  if isinstance(data['config']['criterion'],losses.RESupConLoss) or isinstance(data['config']['criterion'],losses.RnCLossV2) or isinstance(data['config']['criterion'],losses.DisentangledLoss):
     return  # No accuracy per class for RESupConLoss
   for key in data['results'].keys():
     if 'final' in key:
@@ -1756,6 +1756,7 @@ def plot_run_details(results_data, output_root,only_csv, dict_args,plot_only_los
       plot_grouped_k_fold(data, os.path.join(output_root), test_id)
       plot_losses(data, os.path.join(output_root), test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
       plot_separated_losses_adversarial(data, os.path.join(output_root), test_id)
+      # if 
       plot_confusion_matrices(data, os.path.join(output_root), test_id)
       if not plot_only_loss:
         plot_lr_wd_across_epochs(data, os.path.join(output_root), test_id)
