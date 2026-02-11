@@ -379,6 +379,12 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         elif isinstance(data['config']['criterion'],losses.RESupConLoss):
           y_lim_loss = 20.1
           step_lim = 3
+        elif isinstance(data['config']['criterion'],losses.RnCLossV2):
+          y_lim_loss = 10.1
+          step_lim = 1
+        elif isinstance(data['config']['criterion'],losses.DisentangledLoss):
+          y_lim_loss = 15.1
+          step_lim = 2
         # y_lim_loss = 15.1 if isinstance(data['config']['criterion'],torch.nn.MSELoss) else 5.1
         x_lim_loss = -1.1 if isinstance(data['config']['criterion'],losses.RESupConLoss) else 0
         
