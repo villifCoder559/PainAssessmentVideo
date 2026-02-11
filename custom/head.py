@@ -388,6 +388,8 @@ class BaseHead(nn.Module):
     grad_task_norm_epoch = []
     train_dict_log_loss_steps = []
     val_dict_log_loss_steps = []
+    # dict_log_loader = {}
+    # dict_view_logger = {}
     for epoch in range(num_epochs):
       start_epoch = time.time()
       self.train() 
@@ -423,10 +425,22 @@ class BaseHead(nn.Module):
       batch_original_loss = 0.0
       batch_adv_grad_norm = []
       batch_task_grad_norm = []
+      # dict_batch_loader = {}
+      # dict_batch_view_loader = {}
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
         end_load_batch = time.time()
         dict_log_time['load_batch'] = dict_log_time.get('load_batch',0) + end_load_batch - start_load_batch
         time_to_count_subjects = time.time()
+        # for sample in sample_id:
+        #   aug_type = helper.get_augmentation_type(sample)
+        #   original_sample_id = sample - helper.get_shift_for_sample_id(aug_type)
+        #   original_sample_id = original_sample_id.item()
+        #   if original_sample_id not in dict_batch_view_loader:
+        #     dict_batch_view_loader[original_sample_id] = 0
+        #   dict_batch_view_loader[original_sample_id] += 1
+        #   if aug_type not in dict_batch_loader:
+        #     dict_batch_loader[aug_type] = 0
+        #   dict_batch_loader[aug_type] += 1
         tmp = torch.isin(train_unique_subjects,batch_subjects)
         _,count_sample_per_subject = torch.unique(batch_subjects, return_counts=True)
         sample_per_subject_count[tmp] += count_sample_per_subject
@@ -481,7 +495,6 @@ class BaseHead(nn.Module):
             
           if adv_criterion is not None:
             adv_logits = dict_out['adv_logits']
-            # create adversarial labels as the opposite of the true labels
             adv_loss = adv_criterion(adv_logits, batch_subjects)
             
             batch_adv_loss += adv_loss.item()
@@ -619,6 +632,8 @@ class BaseHead(nn.Module):
       # End of train loader
       list_lrs.append(list_batch_lr)
       list_wds.append(list_batch_wd)
+      # dict_log_loader[epoch]= dict_batch_loader
+      # dict_view_logger[epoch] = {'max': max(dict_batch_view_loader.values()), 'min': min(dict_batch_view_loader.values())}
       if adv_criterion is not None:
         list_train_adv_losses.append([batch_adv_loss / len(train_loader), batch_original_loss / len(train_loader)])
         batch_adv_predictions = torch.cat(batch_adv_predictions)
