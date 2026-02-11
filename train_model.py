@@ -146,7 +146,6 @@ def get_loss(loss_name, dict_args=None):
     dict_args['contrastive_loss_theta'] = float(dict_args['contrastive_loss_theta'])
     dict_args['contrastive_lambda_weight'] = float(dict_args['contrastive_lambda_weight']) 
     dict_args['spearman_reg_strength'] = float(dict_args['spearman_reg_strength'])
-
     return losses.RESupConLoss(
       temperature=dict_args['contrastive_loss_temp'],
       theta=dict_args['contrastive_loss_theta'],
@@ -154,15 +153,18 @@ def get_loss(loss_name, dict_args=None):
       spearman_reg=dict_args['spearman_reg'],
       spearman_reg_strength=dict_args['spearman_reg_strength'],
     )
+  elif loss_lower == 'only_contrastive':
+    dict_args['only_contrastive_temp'] = float(dict_args['only_contrastive_temp'])
+    dict_args['only_contrastive_theta'] = float(dict_args['only_contrastive_theta'])
+    return losses.SupConLossModified(
+      temperature=dict_args['only_contrastive_temp'],
+      theta=dict_args['only_contrastive_theta']
+    )
   elif loss_lower == 'coral':
     return coral_loss
   elif loss_lower == 'rncloss':
-    # if ',' not in dict_args['contrastive_loss_temp']:
-    dict_args['contrastive_loss_temp'] = float(dict_args['contrastive_loss_temp'])
-    # else:
-    #   dict_args['contrastive_loss_temp'] = [float(t) for t in dict_args['contrastive_loss_temp'].split(',')]
-    return losses.RnCLossV2(
-      temperature=dict_args['contrastive_loss_temp'])
+    dict_args['rncloss_temp'] = float(dict_args['rncloss_temp'])
+    return losses.RnCLossV2(temperature=dict_args['rncloss_temp'])
   else:
     raise ValueError(
       f'Loss not found: {loss_name}. Valid options: l1, l2, ce, cdw_ce, sim_loss, coral, contrastive_reg, rncloss'
@@ -420,7 +422,10 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   contrastive_spearman_reg = trial.suggest_categorical('spearman_reg', kwargs['spearman_reg'])
   contrastive_spearman_reg_strength = _suggest(trial, 'spearman_reg_strength', kwargs['spearman_reg_strength'], kwargs['optuna_categorical'])
   delta_huber = _suggest(trial, 'delta_huber', kwargs['delta_huber'], kwargs['optuna_categorical'])
-  
+  rncloss_temp = _suggest(trial, 'rncloss_temp', kwargs['rncloss_temp'], kwargs['optuna_categorical'])
+  only_contrastive_temp = _suggest(trial, 'only_contrastive_temp', kwargs['only_contrastive_temp'], kwargs['optuna_categorical'])
+  only_contrastive_theta = _suggest(trial, 'only_contrastive_theta', kwargs['only_contrastive_theta'], kwargs['optuna_categorical'])
+
   # --- Suggest Training Strategy Params ---
   perfect_bal_strategy = trial.suggest_categorical('perfect_bal_strategy', kwargs['perfect_bal_strategy'])
   balance_batches = trial.suggest_categorical('balance_batches', kwargs['balance_batches'])
@@ -466,6 +471,9 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'contrastive_lambda_weight': contrastive_lambda_weight,
     'spearman_reg': contrastive_spearman_reg,
     'spearman_reg_strength': contrastive_spearman_reg_strength,
+    'rncloss_temp': rncloss_temp,
+    'only_contrastive_temp': only_contrastive_temp,
+    'only_contrastive_theta': only_contrastive_theta,
   }
   remove_head = False
   if kwargs['loss']:
@@ -868,6 +876,8 @@ def validate_arguments(dict_args):
         raise ValueError("sampler_augmented_only_types must be set when using 'augmented_only' sampler_loader_type.")
       else:
         for augm in dict_args['sampler_augmented_only_types']:
+          if augm.startswith('strategy'):
+            continue  # Skip strategy-based sampler types  
           if augm is None:
             raise ValueError("sampler_augmented_only_types cannot contain None when using 'augmented_only' sampler_loader_type.")
           split_array = augm.split(',')
@@ -1028,6 +1038,9 @@ if __name__ == '__main__':
   parser.add_argument('--composite_loss', nargs='*', type=str, default=[None], help='Composite loss type.')
   parser.add_argument('--composite_loss_lambda', nargs='*', type=str, default=[None], help='Lambda for composite loss.')
   parser.add_argument('--use_sdpa', type=int, nargs='*', default=[1], help='Use SDPA.')
+  parser.add_argument('--rncloss_temp', type=str, nargs='*', default=[None], help='Temperature for RnCLoss.')
+  parser.add_argument('--only_contrastive_temp', type=str, nargs='*', default=[None], help='Only contrastive loss temperature.')
+  parser.add_argument('--only_contrastive_theta', type=str, nargs='*', default=[None], help='Only contrastive loss theta.')
   parser.add_argument('--contrastive_loss_temp', type=str, nargs='*', default=[None], help='Temp for contrastive loss.')
   parser.add_argument('--contrastive_loss_theta', type=str, nargs='*', default=[None], help='Theta for contrastive loss.')
   parser.add_argument('--contrastive_lambda_weight', type=str, nargs='*', default=[None], help='Lambda weight for contrastive loss.')

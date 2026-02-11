@@ -363,8 +363,9 @@ class Model_Advanced: # Scenario_Advanced
     torch.cuda.empty_cache()
   
   def augment_csv(self, train_csv_path,target_list_string=None,stratified_training=False):
+    
     list_augmentations_available = helper.get_augmentation_availables(self.path_to_extracted_features)
-    if target_list_string is not None:
+    if target_list_string is not None and not target_list_string.startswith('strategy'):
       list_augmentations_available = target_list_string.split(',')
       # list_augmentations_available = [augm for augm in list_only_augments]
     else:
@@ -377,6 +378,7 @@ class Model_Advanced: # Scenario_Advanced
         list_augmentations_available.append('latent_masking')
       
     dict_augmented = {augm: 1 for augm in list_augmentations_available}
+    
     helper.generate_csv_augmented(original_csv_path=train_csv_path,
                                   dict_augmentation=dict_augmented,
                                   out_csv_path=train_csv_path,

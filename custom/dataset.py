@@ -1350,22 +1350,47 @@ class AugmentedOnlyBatchSampler(BatchSampler):
     """
     self.df = df
     self.batch_size = batch_size
-    self.augmentations_list = [aug.strip() for aug in augmentations.split(',')]
-    self.n_augment = len(self.augmentations_list)
     self.shuffle = shuffle
     self.random_state = random_state
     self.balance_batch = balance_batch
     self.batches = []
     self.root_folder_features = root_folder_features
     self.available_augmentation_types = None
+    self.strategy = None
     
     # Get available augmentations from folder if possible
     if root_folder_features:
       try:
-        self.available_augmentation_types = set(helper.get_augmentation_availables(root_folder_features))
+        self.available_augmentation_types = sorted(list(set(helper.get_augmentation_availables(root_folder_features))))
       except Exception as e:
         print(f"Warning: Could not get available augmentations from folder: {e}")
-        
+    
+    if augmentations.startswith('strategy'):
+      if root_folder_features is None:
+        raise ValueError("root_folder_features is required when using augmentation strategies.")
+      
+      if self.available_augmentation_types is None or len(self.available_augmentation_types) == 0:
+         raise ValueError(f"Could not retrieve available augmentations from {root_folder_features}. Required for strategy.")
+
+      parts = augmentations.split(',')
+      strategy_name = parts[0]
+      try:
+        self.k = int(parts[1])
+      except (IndexError, ValueError):
+        raise ValueError(f"Invalid format for strategy. Expected 'strategyX,K', got '{augmentations}'")
+      
+      if strategy_name == 'strategy1': # Select augmentations for the whole epoch
+        self.strategy = 1
+      elif strategy_name == 'strategy2': # Select random augmentations for each sample independently
+        self.strategy = 2
+      else:
+        raise ValueError(f"Unknown strategy: {strategy_name}")
+      
+      self.n_augment = self.k
+      self.augmentations_list = [] # Placeholder, determined at runtime
+    else:
+      self.augmentations_list = [aug.strip() for aug in augmentations.split(',')]
+      self.n_augment = len(self.augmentations_list)
     
     if self.n_augment == 0:
       raise ValueError("At least one augmentation must be specified.")
@@ -1431,6 +1456,11 @@ class AugmentedOnlyBatchSampler(BatchSampler):
       for i in range(0, len(indices), self.sub_batch_size):
         batch_indices_list.append(indices[i : i + self.sub_batch_size])
 
+    # Strategy 1: Select augmentations for the whole epoch
+    epoch_augmentations = None
+    if self.strategy == 1:
+      epoch_augmentations = np.random.choice(self.available_augmentation_types, size=self.k, replace=False)
+
     # Now construct the actual batches with augmented global indices
     for indices_in_orig in batch_indices_list:
       final_batch = []
@@ -1439,8 +1469,16 @@ class AugmentedOnlyBatchSampler(BatchSampler):
         original_row = self.original_df.iloc[idx_in_orig]
         original_sample_id = original_row['sample_id']
         
+        # Determine augmentations to use
+        if self.strategy == 1:
+            augmentations_to_use = epoch_augmentations
+        elif self.strategy == 2: # 
+            augmentations_to_use = np.random.choice(self.available_augmentation_types, size=self.k, replace=False)
+        else:
+            augmentations_to_use = self.augmentations_list
+
         # Find the requested augmented versions
-        for aug_type in self.augmentations_list:
+        for aug_type in augmentations_to_use:
           shift = helper.get_shift_for_sample_id(aug_type)
           augmented_sample_id = original_sample_id + shift
           
