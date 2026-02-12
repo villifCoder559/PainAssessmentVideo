@@ -4,6 +4,7 @@ import numpy as np
 import os
 import argparse
 from openTSNE import TSNE
+import umap
 import pandas as pd
 from pathlib import Path
 import custom.helper as helper  
@@ -38,7 +39,7 @@ def get_custom_ds(data):
 
 
 
-def plot_tsne(reduced_embeddings, labels, output_folder, save_plot=True,v_max=None,v_min=None, title="t-SNE Visualization", group_by="pain",cmap='viridis', output_path=None,ax = None):
+def plot_reducted_embeddings(reduced_embeddings, labels, output_folder, save_plot=True,v_max=None,v_min=None, title="t-SNE Visualization", group_by="pain",cmap='viridis', output_path=None,ax = None, reduction_name="t-SNE"):
   if ax is None:
     fig,ax = plt.subplots(figsize=(12, 8))
   unique_labels = np.unique(labels)
@@ -60,12 +61,12 @@ def plot_tsne(reduced_embeddings, labels, output_folder, save_plot=True,v_max=No
                s=30)
   ax.legend(title=group_by)
   # plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-  ax.set_xlabel("t-SNE Dimension 1")
-  ax.set_ylabel("t-SNE Dimension 2")
+  ax.set_xlabel(f"{reduction_name} Dimension 1")
+  ax.set_ylabel(f"{reduction_name} Dimension 2")
   ax.set_title(title)
   # plt.title(title)
-  # plt.xlabel("t-SNE Dimension 1")
-  # plt.ylabel("t-SNE Dimension 2")
+  # plt.xlabel(f"{reduction_name} Dimension 1")
+  # plt.ylabel(f"{reduction_name} Dimension 2")
   
   if not save_plot:
     return
@@ -73,10 +74,10 @@ def plot_tsne(reduced_embeddings, labels, output_folder, save_plot=True,v_max=No
   os.makedirs(output_folder, exist_ok=True)
   if output_path is None:
     timestamp = int(time.time())
-    output_path = os.path.join(output_folder, f'tsne_plot_{group_by}_{timestamp}.png')
+    output_path = os.path.join(output_folder, f'{reduction_name.lower()}_plot_{group_by}_{timestamp}.png')
   plt.savefig(output_path)
   plt.close()
-  print(f"t-SNE plot saved to {output_path}")
+  print(f"{reduction_name} plot saved to {output_path}")
   # dict_tsne = {
   #   'embeddings_2d': reduced_embeddings,
   #   'labels': labels
@@ -143,10 +144,32 @@ def compute_valid_tsne_embeddings(data, return_valid_indices=False):
     return tsne_embeddings, valid_indices, list_sample_ids[valid_indices]
   return tsne_embeddings
 
+def compute_valid_umap_embeddings(data, return_valid_indices=False):
+  list_sample_ids = np.array(data['video_embeddings']['sample_ids'])
+  valid_indices = get_valid_indices(data, list_sample_ids)
+  
+  embeddings_data = data['video_embeddings']['embeddings']
+  embeddings = [
+      desc.cpu().numpy() 
+      for batch_list in embeddings_data 
+      for desc in batch_list
+  ]
+  embeddings = np.array(embeddings)
+  
+  # Filter out augmented samples if any
+  embeddings = embeddings[valid_indices]
+  
+  # Compute UMAP
+  reducer = umap.UMAP(random_state=42)
+  umap_embeddings = reducer.fit_transform(embeddings)
+  if return_valid_indices:
+    return umap_embeddings, valid_indices, list_sample_ids[valid_indices]
+  return umap_embeddings
+
 
 def run_tsne_and_plot(pkl_file, group_by, cmap,  
                       png_output_name=None,reduced_embeddings=None,save_plot=True,ax=None,
-                      add_title_info="",log_path_folder=None):
+                      add_title_info="",log_path_folder=None, reduction_method="tsne"):
   
   # print(f'Log path folder: {log_path_folder}')
   if not isinstance(pkl_file, dict):
@@ -154,8 +177,17 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
     data = load_data(pkl_file)
   else:
     data = pkl_file
+  
+  if reduction_method == 'umap':
+    reduction_title = "UMAP"
+  else:
+    reduction_title = "t-SNE"
+
   if reduced_embeddings is None:
-    reduced_embeddings, valid_indices, _ = compute_valid_tsne_embeddings(data, return_valid_indices=True)
+    if reduction_method == 'umap':
+      reduced_embeddings, valid_indices, _ = compute_valid_umap_embeddings(data, return_valid_indices=True)
+    else:
+      reduced_embeddings, valid_indices, _ = compute_valid_tsne_embeddings(data, return_valid_indices=True)
   else:
     reduced_embeddings, valid_indices = reduced_embeddings
     
@@ -165,11 +197,11 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
   
   cmap = set_cmap(data, group_by, cmap)
   if add_title_info:
-    title = f"t-SNE tot samples: {len(subject_ids)} - subject_ids: {set(subject_ids)}" + add_title_info
+    title = f"{reduction_title} tot samples: {len(subject_ids)} - subject_ids: {set(subject_ids)}" + add_title_info
   else:
-    title = f"t-SNE grouped by {group_by} - tot samples: {len(subject_ids)} - subject_ids: {set(subject_ids)}" + add_title_info
+    title = f"{reduction_title} grouped by {group_by} - tot samples: {len(subject_ids)} - subject_ids: {set(subject_ids)}" + add_title_info
   
-  plot_tsne(reduced_embeddings = reduced_embeddings,
+  plot_reducted_embeddings(reduced_embeddings = reduced_embeddings,
             labels = labels,
             output_folder = log_path_folder,
             title = title,
@@ -177,15 +209,16 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
             group_by = group_by,
             save_plot=save_plot,
             cmap = cmap,
-            ax = ax)
+            ax = ax,
+            reduction_name = reduction_title)
   
 
-
 def main():
-  parser = argparse.ArgumentParser(description="Plot t-SNE from embeddings in a pickle file from log_cross_attention_from_model.py")
+  parser = argparse.ArgumentParser(description="Plot t-SNE or UMAP from embeddings in a pickle file from log_cross_attention_from_model.py")
   parser.add_argument("--pkl_file", type=str, required=True, help="Path to the pickle file containing embeddings and labels.")
   parser.add_argument("--group_by", type=str, choices=["labels", "subjects", "all"], default="labels", help="Group visualization by labels or subjects.")
   parser.add_argument("--cmap", type=str, default=None, help="Colormap for the plot.") # jet, tab20, viridis, etc
+  parser.add_argument("--reduction_method", type=str, choices=["tsne", "umap"], default="tsne", help="Dimensionality reduction method to use.")
   args = parser.parse_args()
   list_pkl_files = []
   if os.path.isdir(args.pkl_file):
@@ -199,15 +232,15 @@ def main():
     
     for pkl_path in tqdm.tqdm(list_pkl_files, desc="Processing pkl files..."):
       if args.group_by == "labels" or args.group_by == "all":
-        run_tsne_and_plot(pkl_path, "labels", None)
+        run_tsne_and_plot(pkl_path, "labels", None, reduction_method=args.reduction_method)
       if args.group_by == "subjects" or args.group_by == "all":
-        run_tsne_and_plot(pkl_path, "subjects", None)
+        run_tsne_and_plot(pkl_path, "subjects", None, reduction_method=args.reduction_method)
   else:
     if args.group_by == "labels" or args.group_by == "all":
-      run_tsne_and_plot(args.pkl_file, "labels", args.cmap)
+      run_tsne_and_plot(args.pkl_file, "labels", args.cmap, reduction_method=args.reduction_method)
     if args.group_by == "subjects" or args.group_by == "all":
-      run_tsne_and_plot(args.pkl_file, "subjects", args.cmap)
-  
+      run_tsne_and_plot(args.pkl_file, "subjects", args.cmap, reduction_method=args.reduction_method)
+
 
 if __name__ == "__main__":
   main()
