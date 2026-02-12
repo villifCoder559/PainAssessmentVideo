@@ -709,8 +709,8 @@ class BaseHead(nn.Module):
           'y_label_1':'Train loss',
           'y_label_2':'Validation loss',
           'y_label_3':None,
-          'y_lim_1':[0, 5],
-          'y_lim_2':[0, 5],
+          'y_lim_1':[0, 15],
+          'y_lim_2':[0, 15],
           'y_lim_3':None,
           'step_ylim_1':0.25,
           'step_ylim_2':0.25,
@@ -721,7 +721,7 @@ class BaseHead(nn.Module):
           'color_3':None,
         }
         tools.plot_losses_and_test_new(**input_dict_loss_acc)
-        fig.savefig(os.path.join(saving_path, f'loss_acc_epoch_{epoch}.png'), dpi=300)
+        fig.savefig(os.path.join(saving_path, f'loss_training.png'), dpi=300)
         plt.close(fig)
         print(f'Checkpoint saved at epoch {epoch} to {model_path_epoch} and plotted the loss.')
       
@@ -1592,24 +1592,26 @@ class AttentiveHeadJEPA(BaseHead):
         self.pooler.load_state_dict(state_dict)
         print(f'LOADED Head weights from {self.head_init_path}\n  {state_dict.keys()}')
         print(f'\nHead weights loaded from {self.head_init_path}')
-        # freeze pooler weights
+        # freeze pooler weights loaded,
         for param in self.pooler.parameters():
-          param.requires_grad = False
-        print(f'======== FROZEN Head weights loaded from {self.head_init_path}========\n')
-      
-      ## Initialize linear layer ##
-      # if self.coral_loss:
-      #   self.linear.coral_weights.reset_parameters()
-      #   if self.adversarial_head is not None:
-      #     torch.nn.init.xavier_uniform_(self.adversarial_head.weight,gain=0.1)
-      #     torch.nn.init.zeros_(self.adversarial_head.bias)
-      # else:
-      #   if self.linear is not None and not isinstance(self.linear, nn.Identity):
-      #     torch.nn.init.xavier_uniform_(self.linear.weight,gain=0.1)
-      #     torch.nn.init.zeros_(self.linear.bias)
-      #   if self.adversarial_head is not None:
-      #     torch.nn.init.xavier_uniform_(self.adversarial_head.weight,gain=0.1)
-      #     torch.nn.init.zeros_(self.adversarial_head.bias)
+          param.requires_grad = False 
+        
+        
+      # Initialize linear layer ##
+      if self.coral_loss:
+        self.linear.coral_weights.reset_parameters()
+        if self.adversarial_head is not None:
+          torch.nn.init.xavier_uniform_(self.adversarial_head.weight,gain=0.1)
+          torch.nn.init.zeros_(self.adversarial_head.bias)
+      else:
+        if self.linear is not None and not isinstance(self.linear, nn.Identity):
+          torch.nn.init.xavier_uniform_(self.linear.weight,gain=0.1)
+          torch.nn.init.zeros_(self.linear.bias)
+        if self.adversarial_head is not None:
+          torch.nn.init.xavier_uniform_(self.adversarial_head.weight,gain=0.1)
+          torch.nn.init.zeros_(self.adversarial_head.bias)
+      print(f'All trainable params sum: {sum(p.numel() for p in self.parameters() if p.requires_grad)}')
+      print(f'======== FROZEN Head weights loaded from {self.head_init_path}========\n')
     else:
       raise NotImplementedError(f'Initialization method {init_type} not implemented')
   
