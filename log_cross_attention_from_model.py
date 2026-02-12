@@ -155,7 +155,7 @@ def get_all_pth_files_in_folders(dict_args):
   for root, dirs, files in os.walk(dict_args['model_pth_path']):
     if any(folder in root for folder in folders_to_search):
       for file in files:
-        if file.endswith(".pth"):
+        if file.endswith(".pth") or file.endswith(".pt"):
           list_pth_files.append(os.path.join(root, file))  
   print(f"Found {len(list_pth_files)} .pth files.")
   return list_pth_files
