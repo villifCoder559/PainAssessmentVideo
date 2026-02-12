@@ -1659,21 +1659,28 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                       shuffle=shuffle_training_batch)
       print(f'Use balancedBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
     elif kwargs['sampler_loader_type'] == 'standard':
-      loader_ = DataLoader(dataset=dataset_, 
+      sampler = None
+      print(f'Use standard DataLoader with {n_workers} workers!\nPersistent workers: True')
+    else:
+      raise ValueError(f"Unknown sampler_loader_type: {kwargs['sampler_loader_type']}. Choose from 'selective_augm', 'augmented_only', 'balanced', 'standard'.")
+    if sampler is not None:
+      loader_ = DataLoader(dataset=dataset_,
+                          batch_sampler=sampler,
+                          collate_fn=dataset_._custom_collate,
+                          # batch_size=1,
+                          num_workers=n_workers,
+                          persistent_workers=persistent_workers,
+                          prefetch_factor=prefetch_factor,
+                          pin_memory=pin_memory)
+    else:
+      loader_ = DataLoader(dataset=dataset_,
                            batch_size=batch_size,
                            shuffle=shuffle_training_batch,
                            collate_fn=dataset_._custom_collate,
                            num_workers=n_workers,
-                           persistent_workers=True)
-      print(f'Use standard DataLoader with {n_workers} workers!\nPersistent workers: True')
-    loader_ = DataLoader(dataset=dataset_,
-                        batch_sampler=sampler,
-                        collate_fn=dataset_._custom_collate,
-                        # batch_size=1,
-                        num_workers=n_workers,
-                        persistent_workers=persistent_workers,
-                        prefetch_factor=prefetch_factor,
-                        pin_memory=pin_memory)
+                           persistent_workers=persistent_workers,
+                           prefetch_factor=prefetch_factor,
+                           pin_memory=pin_memory)
   # Eval loader
   else:
     if n_workers > 1:
