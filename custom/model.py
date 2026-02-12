@@ -428,10 +428,10 @@ class Model_Advanced: # Scenario_Advanced
         self.augment_csv(train_csv_path=train_csv_path,
                          target_list_string=kwargs['only_augments'],
                          stratified_training=kwargs['stratified_training'])
-      elif kwargs.get('sampler_augmented_only_types', False):
-        self.augment_csv(train_csv_path=train_csv_path,
-                         target_list_string=kwargs['sampler_augmented_only_types'],
-                         stratified_training=0),
+    if kwargs.get('sampler_augmented_only_types', False) and not kwargs.get('stratified_training', False):
+      self.augment_csv(train_csv_path=train_csv_path,
+                        target_list_string=kwargs['sampler_augmented_only_types'],
+                        stratified_training=0),
                          
       
     # Stage 1
