@@ -526,7 +526,7 @@ def generate_csv_augmented(original_csv_path, dict_augmentation, out_csv_path,pa
     elif type_augm == 'slowmotion':
       return 133
     else:
-      raise ValueError(f'Unknown augmentation type: {type_augm}')
+      return 21
   list_df = []
   df = pd.read_csv(original_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
   list_df.append(df)
