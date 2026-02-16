@@ -3,14 +3,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import argparse
+import re
 from openTSNE import TSNE
 import umap
 import pandas as pd
 from pathlib import Path
-import custom.helper as helper  
+import custom.helper as helper
 from custom.dataset import customDataset
 import time
 import tqdm
+import shutil
 
 def load_data(pkl_file):
   if isinstance(pkl_file, dict):
@@ -38,10 +40,12 @@ def get_custom_ds(data):
   return custom_ds
 
 
-
 def plot_reducted_embeddings(reduced_embeddings, labels, output_folder, save_plot=True,v_max=None,v_min=None, title="t-SNE Visualization", group_by="pain",cmap='viridis', output_path=None,ax = None, reduction_name="t-SNE"):
   if ax is None:
     fig,ax = plt.subplots(figsize=(12, 8))
+  else:
+    fig = ax.figure
+
   unique_labels = np.unique(labels)
   if group_by == 'labels': # continuous colormap
     normalized_unique_labels = (unique_labels - np.min(unique_labels)) / (np.max(unique_labels) - np.min(unique_labels))
@@ -49,7 +53,10 @@ def plot_reducted_embeddings(reduced_embeddings, labels, output_folder, save_plo
     colors = colormap(normalized_unique_labels)
     colors = [colormap(label) for label in normalized_unique_labels]
   else: # categorical colormap
-    colormap = plt.get_cmap(cmap)
+    if cmap == 'nipy_spectral':
+      colormap = plt.get_cmap(cmap, len(unique_labels))
+    else:
+      colormap = plt.get_cmap(cmap)
     colors = [colormap(i) for i in range(len(unique_labels))]
     
   for color, label in zip(colors, unique_labels):
@@ -59,14 +66,12 @@ def plot_reducted_embeddings(reduced_embeddings, labels, output_folder, save_plo
                label=str(label), 
                color=color,
                s=30)
-  ax.legend(title=group_by)
-  # plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+  if len(unique_labels) <= 20:  # Only show legend if not too many labels
+    ax.legend(title=group_by)
   ax.set_xlabel(f"{reduction_name} Dimension 1")
   ax.set_ylabel(f"{reduction_name} Dimension 2")
   ax.set_title(title)
-  # plt.title(title)
-  # plt.xlabel(f"{reduction_name} Dimension 1")
-  # plt.ylabel(f"{reduction_name} Dimension 2")
+
   
   if not save_plot:
     return
@@ -78,11 +83,6 @@ def plot_reducted_embeddings(reduced_embeddings, labels, output_folder, save_plo
   plt.savefig(output_path)
   plt.close()
   print(f"{reduction_name} plot saved to {output_path}")
-  # dict_tsne = {
-  #   'embeddings_2d': reduced_embeddings,
-  #   'labels': labels
-  # }
-  # return dict_tsne
 
 # NOTE: pkl_file extracted from log_cross_attention_from_model.py
 def determine_labels(data, group_by, return_subject_ids=False):
@@ -105,11 +105,11 @@ def set_cmap(data, group_by, cmap):
     nr_subjects = len(set(df['subject_id']))
     if cmap is None or cmap == 'jet':  # only change if default
       if nr_subjects <= 10:
-        cmap = 'tab10'  # better for categorical data
+        cmap = 'tab10'
       elif nr_subjects <= 20:
         cmap = 'tab20'  
       else:
-        cmap = 'tab20c'  # good for many categories
+        cmap = 'nipy_spectral'  # good for many categories
   elif group_by == "labels":
     if cmap is None:
       cmap = 'jet'  # good for continuous data
@@ -166,6 +166,42 @@ def compute_valid_umap_embeddings(data, return_valid_indices=False):
     return umap_embeddings, valid_indices, list_sample_ids[valid_indices]
   return umap_embeddings
 
+def create_gallery_link(pkl_file_path, plot_path):
+  try:
+    if not isinstance(pkl_file_path, str):
+      return
+
+    # Find the folder matching pattern k{i}_cross_val_sub_{j}
+    abs_pkl_path = os.path.abspath(pkl_file_path)
+    parts = Path(abs_pkl_path).parts
+    
+    gallery_root = None
+    for i, part in enumerate(parts):
+      if re.fullmatch(r'k\d+_cross_val_sub_\d+', part):
+        gallery_root = Path(*parts[:i+1])
+        break
+          # break
+            
+    if gallery_root:
+      gallery_dir = gallery_root / "tsne_plots_gallery"
+      os.makedirs(gallery_dir, exist_ok=True)
+      
+      plot_name = os.path.basename(plot_path)
+      link_path = gallery_dir / plot_name
+      # create a copy of the plot in the gallery directory
+      
+      if os.path.lexists(link_path):
+        os.remove(link_path)
+      
+      shutil.copy2(plot_path, link_path)
+      print(f"Copied plot to gallery: {link_path} -> {plot_path}")
+      # os.symlink(plot_path, link_path)
+      # print(f"Created gallery link: {link_path} -> {plot_path}")
+    else:
+      print("Could not find pth_idx_folder pattern (k..._cross_val_sub_...) to create gallery link.")
+
+  except Exception as e:
+    print(f"Error creating gallery link: {e}")
 
 def run_tsne_and_plot(pkl_file, group_by, cmap,  
                       png_output_name=None,reduced_embeddings=None,save_plot=True,ax=None,
@@ -183,6 +219,11 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
   else:
     reduction_title = "t-SNE"
 
+  # Extract model name
+  model_name = "unknown_model"
+  if 'model_pth_path' in data:
+      model_name = Path(data['model_pth_path']).stem
+  
   if reduced_embeddings is None:
     if reduction_method == 'umap':
       reduced_embeddings, valid_indices, _ = compute_valid_umap_embeddings(data, return_valid_indices=True)
@@ -190,17 +231,89 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
       reduced_embeddings, valid_indices, _ = compute_valid_tsne_embeddings(data, return_valid_indices=True)
   else:
     reduced_embeddings, valid_indices = reduced_embeddings
+  csv_name = os.path.basename(data['csv_path'])
+  # Handle group_by "all"
+  if group_by == "all":
+    fig,axes = plt.subplots(1, 2, figsize=(24, 10))
     
+    # Plot Subjects (Left)
+    labels_subj, subject_ids_subj = determine_labels(data, "subjects", return_subject_ids=True)
+    labels_subj = labels_subj[valid_indices]
+    subject_ids_subj = subject_ids_subj[valid_indices]
+    cmap_subj = set_cmap(data, "subjects", cmap)
+    
+    title_subj = f"{model_name} - {csv_name} - {reduction_title} (Subjects)\ntot samples: {len(subject_ids_subj)} - subject_ids: {set(subject_ids_subj) if len(set(subject_ids_subj)) <= 20 else f'tot ({len(set(subject_ids_subj))})'}" + add_title_info
+    
+    plot_reducted_embeddings(reduced_embeddings=reduced_embeddings,
+                              labels=labels_subj,
+                              output_folder=log_path_folder,
+                              title=title_subj,
+                              group_by="subjects",
+                              save_plot=False,
+                              cmap=cmap_subj,
+                              ax=axes[0],
+                              reduction_name=reduction_title)
+    
+    # Plot Labels (Right)
+    labels_lbl, subject_ids_lbl = determine_labels(data, "labels", return_subject_ids=True)
+    labels_lbl = labels_lbl[valid_indices]
+    cmap_lbl = set_cmap(data, "labels", cmap)
+    
+    title_lbl = f"{model_name} - {csv_name} - {reduction_title} (Labels)"
+    
+    plot_reducted_embeddings(reduced_embeddings=reduced_embeddings,
+                              labels=labels_lbl,
+                              output_folder=log_path_folder,
+                              title=title_lbl,
+                              group_by="labels",
+                              save_plot=False,
+                              cmap=cmap_lbl,
+                              ax=axes[1],
+                              reduction_name=reduction_title)
+    
+    plt.tight_layout()
+    if save_plot:
+      os.makedirs(log_path_folder, exist_ok=True)
+      timestamp = int(time.time())
+      final_output_name = png_output_name
+      if final_output_name is None:
+        final_output_name = os.path.join(log_path_folder, f'{model_name}_{csv_name}_{reduction_title.lower()}_plot_all_{timestamp}.png')
+      else:
+        # Ensure model name is in filename if user provided one, or prepending to it
+        if model_name not in os.path.basename(final_output_name):
+            dirname = os.path.dirname(final_output_name)
+            basename = os.path.basename(final_output_name)
+            final_output_name = os.path.join(dirname, f"{model_name}_{csv_name}_{basename}")
+
+      plt.savefig(final_output_name)
+      plt.close()
+      print(f"{reduction_title} plot (all) saved to {final_output_name}")
+      if not isinstance(pkl_file, dict):
+        create_gallery_link(pkl_file, final_output_name)
+    return
+
+
+  # Standard cases (single plot)
   labels, subject_ids = determine_labels(data, group_by, return_subject_ids=True)
   labels = labels[valid_indices]
   subject_ids = subject_ids[valid_indices]
   
   cmap = set_cmap(data, group_by, cmap)
   if add_title_info:
-    title = f"{reduction_title} tot samples: {len(subject_ids)} - subject_ids: {set(subject_ids)}" + add_title_info
+    title = f"{model_name} - {csv_name} - {reduction_title} tot samples: {len(subject_ids)} - subject_ids: {set(subject_ids)}" + add_title_info
   else:
-    title = f"{reduction_title} grouped by {group_by} - tot samples: {len(subject_ids)} - subject_ids: {set(subject_ids)}" + add_title_info
+    title = f"{model_name} - {csv_name} - {reduction_title} grouped by {group_by} - tot samples: {len(subject_ids)} - subject_ids: {set(subject_ids)}" + add_title_info
   
+  # Prepend model name to output filename if not present
+  if png_output_name is None:
+    timestamp = int(time.time())
+    png_output_name = os.path.join(log_path_folder, f'{model_name}_{csv_name}_{reduction_title.lower()}_plot_{group_by}_{timestamp}.png')
+  else:
+    if model_name not in os.path.basename(png_output_name):
+      dirname = os.path.dirname(png_output_name)
+      basename = os.path.basename(png_output_name)
+      png_output_name = os.path.join(dirname, f"{model_name}_{csv_name}_{basename}")
+
   plot_reducted_embeddings(reduced_embeddings = reduced_embeddings,
             labels = labels,
             output_folder = log_path_folder,
@@ -211,7 +324,9 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
             cmap = cmap,
             ax = ax,
             reduction_name = reduction_title)
-  
+
+  if save_plot and not isinstance(pkl_file, dict):
+    create_gallery_link(pkl_file, png_output_name)
 
 def main():
   parser = argparse.ArgumentParser(description="Plot t-SNE or UMAP from embeddings in a pickle file from log_cross_attention_from_model.py")
@@ -231,16 +346,18 @@ def main():
     print(f"Found {len(list_pkl_files)} pkl files.")
     
     for pkl_path in tqdm.tqdm(list_pkl_files, desc="Processing pkl files..."):
-      if args.group_by == "labels" or args.group_by == "all":
-        run_tsne_and_plot(pkl_path, "labels", None, reduction_method=args.reduction_method)
-      if args.group_by == "subjects" or args.group_by == "all":
-        run_tsne_and_plot(pkl_path, "subjects", None, reduction_method=args.reduction_method)
-  else:
-    if args.group_by == "labels" or args.group_by == "all":
-      run_tsne_and_plot(args.pkl_file, "labels", args.cmap, reduction_method=args.reduction_method)
-    if args.group_by == "subjects" or args.group_by == "all":
-      run_tsne_and_plot(args.pkl_file, "subjects", args.cmap, reduction_method=args.reduction_method)
+      if args.group_by == "all":
+        run_tsne_and_plot(pkl_path, "all", None, reduction_method=args.reduction_method)
+      else:
+        # Call once if group_by is specific, or twice if previously "all" but handled differently
+        # Since "all" is now handled inside run_tsne_and_plot as a single plot:
+        run_tsne_and_plot(pkl_path, args.group_by, args.cmap, reduction_method=args.reduction_method)
 
+  else:
+    if args.group_by == "all":
+      run_tsne_and_plot(args.pkl_file, "all", args.cmap, reduction_method=args.reduction_method)
+    else:
+      run_tsne_and_plot(args.pkl_file, args.group_by, args.cmap, reduction_method=args.reduction_method)
 
 if __name__ == "__main__":
   main()
