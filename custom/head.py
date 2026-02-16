@@ -1338,6 +1338,7 @@ class AttentiveHeadJEPA(BaseHead):
       adversarial_out_dim=None,
       backbone: custom_backbone.BackboneBase = None,
       embedding_reduction: helper.EMBEDDING_REDUCTION = None,
+      skip_init_weights=False, # used only for model debugging in log_cross_attention_from_model.py script
       complete_block=True):
     super().__init__(is_classification=True if num_classes > 1 else False)
     self.pooler = jepa_attentive_pooler.AttentivePooler(
@@ -1403,7 +1404,10 @@ class AttentiveHeadJEPA(BaseHead):
     else:
       self.adversarial_head = None
     # Init weights
-    self._initialize_weights()  
+    if not skip_init_weights:
+      self._initialize_weights()
+    else:
+      print('===== Skipped head weights initialization =====\n')  
     
   def apply_pos_enc(self, x):
     if self.pos_enc_tensor is None or self.pos_enc_tensor.shape[0] != x.size(1):
@@ -1582,6 +1586,7 @@ class AttentiveHeadJEPA(BaseHead):
         self._init_weights()
         print('\nHead weights initialized from scratch\n')
       else: 
+        assert self.head_init_path is not None, 'head_init_path must be specified to load head weights'
         state_dict = torch.load(self.head_init_path, weights_only=True)
         # Remove final linear layer for classification/regression 
         layers = list(state_dict.keys())

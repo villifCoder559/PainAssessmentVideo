@@ -793,9 +793,9 @@ class RnCLoss(nn.Module):
   def forward(self, features, labels, **kwargs):
     # features: [bs, 2, feat_dim]
     # labels: [bs, label_dim]
-
-    features = torch.cat([features[:, 0], features[:, 1]], dim=0)  # [2bs, feat_dim]
-    labels = labels.repeat(2, 1)  # [2bs, label_dim]
+    # 
+    # features = torch.cat([features[:, 0], features[:, 1]], dim=0)  # [2bs, feat_dim]
+    # labels = labels.repeat(2, 1)  # [2bs, label_dim]
 
     label_diffs = self.label_diff_fn(labels)
     logits = self.feature_sim_fn(features).div(self.t)

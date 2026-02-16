@@ -154,6 +154,7 @@ class Model_Advanced: # Scenario_Advanced
                                           coral_loss=head_params['coral_loss'],
                                           complete_block=head_params['complete_block'],
                                           cross_block_after_transformers=head_params['cross_block_after_transformers'],
+                                          skip_init_weights=head_params.get('skip_init_weights', False)
                                           )
     elif head == 'POOL_MLP':
       self.head = PooledHeadMLP(**head_params)
