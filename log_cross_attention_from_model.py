@@ -43,6 +43,7 @@ def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None
 
   # Model instantiation
   model_advanced_params = config_model['model_advanced_params']
+  model_advanced_params['head_params']['skip_init_weights'] = True  # Skip head weight initialization to avoid loading issues
   model = Model_Advanced(**model_advanced_params)
 
   # Decide test CSV
