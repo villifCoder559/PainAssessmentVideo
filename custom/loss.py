@@ -820,7 +820,7 @@ class RnCLoss(nn.Module):
 
     return loss
 
-
+logits_log_list = []
 class RnCLossV2(nn.Module):
   ## Optimized version of RnCLoss with vectorized computations,
   ## Tested using python tests/test_rnc_v2.py
@@ -830,6 +830,7 @@ class RnCLossV2(nn.Module):
     self.t = temperature
     self.label_diff_fn = LabelDifference(label_diff)
     self.feature_sim_fn = FeatureSimilarity(feature_sim)
+    # self.last_stats = {}
 
   def forward(self, features, labels, **kwargs):
     # features: [2bs, feat_dim]
@@ -838,13 +839,26 @@ class RnCLossV2(nn.Module):
     # Calculate pairwise differences/similarities
     # Output shape: [N, N] where N = 2bs
     label_diffs = self.label_diff_fn(labels)
-    logits = self.feature_sim_fn(features).div(self.t)
+    raw_logits = self.feature_sim_fn(features).div(self.t)
 
     # Numerical stability
-    logits_max, _ = torch.max(logits, dim=1, keepdim=True)
-    logits = logits - logits_max.detach()
+    logits_max, _ = torch.max(raw_logits, dim=1, keepdim=True)
+    logits = raw_logits - logits_max.detach()
     exp_logits = logits.exp()
 
+    # with torch.no_grad():
+    #   # If max(logits) is very small relative to 0 before the shift, 
+    #   # or if the spread is huge, we have issues.
+    #   self.last_stats['max_logit'] = raw_logits.max().item()
+    #   self.last_stats['min_logit'] = raw_logits.min().item()
+    #   self.last_stats['avg_logit'] = raw_logits.mean().item()
+      
+    #   # Entropy check: High entropy = uniform distribution (good flow)
+    #   # Low entropy = one value dominates (saturation)
+    #   probs = torch.softmax(raw_logits, dim=1)
+    #   entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=1).mean()
+    #   self.last_stats['entropy'] = entropy.item()
+            
     n = logits.shape[0]  # n = 2bs
     device = logits.device
 
@@ -855,6 +869,7 @@ class RnCLossV2(nn.Module):
     # Reshape to [N, N-1]
     logits = logits[mask].view(n, n - 1)
     exp_logits = exp_logits[mask].view(n, n - 1)
+    # logits_log_list.append(logits.clone().detach().cpu())
     label_diffs = label_diffs[mask].view(n, n - 1)
 
     # --- Vectorized Optimization ---
