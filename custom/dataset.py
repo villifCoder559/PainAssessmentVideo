@@ -1362,6 +1362,7 @@ class AugmentedOnlyBatchSampler(BatchSampler):
     if root_folder_features:
       try:
         self.available_augmentation_types = sorted(list(set(helper.get_augmentation_availables(root_folder_features))))
+        print(f"\n\nAvailable augmentation types retrieved from folder: {self.available_augmentation_types}")
       except Exception as e:
         print(f"Warning: Could not get available augmentations from folder: {e}")
     
@@ -1650,7 +1651,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                           batch_size=batch_size,
                                           augmentations=kwargs['sampler_augmented_only_types'],
                                           shuffle=shuffle_training_batch,
-                                          balance_batch=True,
+                                          balance_batch=False,
                                           root_folder_features=root_folder_features)
       print(f'Use AugmentedOnlyBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
     elif kwargs['sampler_loader_type'] == 'balanced':
