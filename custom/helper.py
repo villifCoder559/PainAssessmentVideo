@@ -109,13 +109,15 @@ step_shift = None  ## keep none to force setting it before use
 
 def set_step_shift(folder_feature):
   global step_shift
-  if 'unbc' in folder_feature.lower(): # UNBC-McMaster dataset
+  if 'unbc' in folder_feature.lower(): # UNBC-McMaster dataset, sample_id starts from 1, 
     step_shift = 200
   elif 'caer' in folder_feature.lower(): # CAER dataset
     step_shift = 13176
-  elif 'parta' in folder_feature.lower() or 'biovid' in folder_feature.lower(): # Biovid Part A
+  elif 'parta' in folder_feature.lower() or 'biovid' in folder_feature.lower(): # Biovid Part A, sample_id starts from 1 
     step_shift = 8700
-  else:
+  elif 'agedb' in folder_feature.lower(): # AgeDB dataset, sample_id starts from 1 
+    step_shift = 16487 
+  else:  
     raise ValueError(f'Dataset not recognized in folder_feature: {folder_feature}')
 
 def transform_sample_id(original_sample_id, augmentation_type):
@@ -451,6 +453,10 @@ class EMBEDDING_REDUCTION(Enum):
   
   ADAPTIVE_POOLING_3D = (0,0,0) # [B,emb,t,p,p] -> [B,emb,2,2,2] ex: [3,768,8,14,14] -> [3,768,2,2,2]
   
+  # [B,t,p,p,emb] -> [B,t,1,1,emb] with masked positions excluded (face boundaries)
+  # Applies masked spatial mean reducing over S,S dimensions while excluding specified positions
+  SPATIAL_MASKED = 'spatial_masked'
+  
   def get_embedding_reduction(pooling_embedding_reduction):
     if pooling_embedding_reduction.lower() == 'spatial':
       return EMBEDDING_REDUCTION.MEAN_SPATIAL
@@ -462,8 +468,10 @@ class EMBEDDING_REDUCTION(Enum):
       return EMBEDDING_REDUCTION.NONE
     elif pooling_embedding_reduction.lower() == 'adaptive_pooling_3d':
       return EMBEDDING_REDUCTION.ADAPTIVE_POOLING_3D
+    elif pooling_embedding_reduction.lower() == 'spatial_masked':
+      return EMBEDDING_REDUCTION.SPATIAL_MASKED
     else:
-      raise ValueError(f'Pooling embedding reduction not recognized: {pooling_embedding_reduction}. Can be spatial, temporal, all or none')
+      raise ValueError(f'Pooling embedding reduction not recognized: {pooling_embedding_reduction}. Can be spatial, temporal, all, adaptive_pooling_3d, spatial_masked or none')
 
 class INSTANCE_MODEL_NAME(Enum): # model.__class__.__name__
   LINEARPROBE = 'LinearProbe'
