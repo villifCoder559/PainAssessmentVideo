@@ -22,6 +22,127 @@ import sys
 import time
 # import torch.nn as nn
 
+
+def masked_spatial_mean(features, excluded_positions_s14=None):
+    """
+    Apply masked spatial mean reduction to features, excluding face boundary positions.
+    
+    Args:
+        features (torch.Tensor): Tensor of shape [B, T, S, S, C] where:
+            - B: batch size
+            - T: temporal dimension
+            - S: spatial dimension (height and width, must be 14 or 16)
+            - C: number of channels
+        excluded_positions_s14 (list, optional): List of (row, col) tuples to exclude for S=14.
+            If None, uses default face boundary exclusions.
+            Negative indices follow Python convention (e.g., -1 is last position).
+    
+    Returns:
+        torch.Tensor: Tensor of shape [B, T, 1, 1, C] with mean computed only over 
+                     non-excluded positions.
+    
+    Raises:
+        ValueError: If S is not 14 or 16, or if input shape is invalid.
+    
+    Examples:
+        >>> features = torch.randn(2, 8, 14, 14, 256)  # batch_size=2, temporal=8, spatial=14, channels=256
+        >>> output = masked_spatial_mean(features)
+        >>> print(output.shape)  # torch.Size([2, 8, 1, 1, 256])
+    """
+    if len(features.shape) != 5:
+        raise ValueError(f"Expected 5D tensor [B,T,S,S,C], got shape {features.shape}")
+    
+    B, T, S_h, S_w, C = features.shape
+    
+    if S_h != S_w:
+        raise ValueError(f"Expected square spatial dimensions, got [{S_h}, {S_w}]")
+    
+    S = S_h
+    
+    if S not in [10, 14, 16]:
+        raise ValueError(f"S must be 10, 14, or 16, got {S}")
+    
+    # Default excluded positions for S=14 (face boundary exclusions)
+    if excluded_positions_s14 is None:
+        excluded_positions_s14 = [
+            (0, 0), (0, 1), (0, 2), (0, -3), (0, -2), (0, -1),
+            (1, 0), (1, -1),
+            (2, 0), (2, -1),
+            (-5, 0), (-5, -1),
+            (-4, 0), (-4, -1),
+            (-3, 0), (-3, 1), (-3, -2), (-3, -1),
+            (-2, 0), (-2, 1), (-2, 2), (-2, -3), (-2, -2), (-2, -1),
+            (-1, 0), (-1, 1), (-1, 2), (-1, 3), (-1, 4), (-1, -5), (-1, -4), (-1, -3), (-1, -2), (-1, -1)
+        ]
+    
+    # Get excluded positions for current S
+    if S == 14:
+        excluded_pos = excluded_positions_s14
+    elif S == 16:  # S == 16
+        # Scale positions from S=14 to S=16 proportionally
+        scale_factor = S / 14
+        excluded_pos = []
+        for row, col in excluded_positions_s14:
+            # Convert negative indices to positive for S=14
+            r = row if row >= 0 else 14 + row
+            c = col if col >= 0 else 14 + col
+            
+            # Scale positions
+            r_scaled = int(round(r * scale_factor))
+            c_scaled = int(round(c * scale_factor))
+            
+            # Handle boundary cases
+            r_scaled = min(r_scaled, S - 1)
+            c_scaled = min(c_scaled, S - 1)
+            
+            excluded_pos.append((r_scaled, c_scaled))
+        
+        excluded_pos = list(set(excluded_pos))  # Remove duplicates
+    elif S == 10:
+      excluded_pos = [
+            # Top Section (Row 0 and 1)
+            (0, 0), (0, 1), (0, -2), (0, -1),
+            (1, 0), (1, -1),
+            
+            # Bottom Section (Rows 7, 8, and 9)
+            (-3, 0), (-3, -1),
+            (-2, 0), (-2, 1), (-2, -2), (-2, -1),
+            (-1, 0), (-1, 1), (-1, 2), (-1, -3), (-1, -2), (-1, -1)]
+    # Convert to positive indices and create exclusion set
+    excluded_set = set()
+    for row, col in excluded_pos:
+        r = row if row >= 0 else S + row
+        c = col if col >= 0 else S + col
+        if 0 <= r < S and 0 <= c < S:
+            excluded_set.add((r, c))
+    
+    # Create mask: True where we want to include, False where we exclude
+    mask = torch.ones(S, S, dtype=torch.bool, device=features.device)
+    for r, c in excluded_set:
+        mask[r, c] = False
+    
+    # Apply mask to features
+    # Reshape for broadcasting: [S, S] → [1, 1, S, S, 1]
+    mask_expanded = mask.view(1, 1, S, S, 1)
+    # Preserve dtype of input
+    mask_float = mask_expanded.float().to(dtype=features.dtype)
+    masked_features = features * mask_float
+    
+    # Count valid positions
+    valid_count = mask.sum().float()
+    
+    # Sum over spatial dimensions [B, T, S, S, C] → [B, T, C]
+    sum_over_spatial = masked_features.sum(dim=(2, 3))
+    
+    # Divide by count to get mean
+    mean = sum_over_spatial / valid_count
+    
+    # Reshape to [B, T, 1, 1, C]
+    result = mean.unsqueeze(2).unsqueeze(2)
+    
+    return result
+
+
 def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,enable_batch_extraction,batch_size_feat_extraction,n_workers,saving_chunk_size=100,  preprocess_align = False,
          preprocess_crop_detection = False,preprocess_frontalize = True,path_dataset=None,path_labels=None,stride_window=16,clip_length=16,
          log_file_path=None,root_saving_folder_path=None,backbone_type='video',from_=None,to_=None,save_big_feature=False,h_flip=False,num_clips_per_video=None,
@@ -54,6 +175,9 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
           feature = feature.permute(0,4,1,2,3) # [1,768,8,14,14]
           feature = torch.nn.functional.adaptive_avg_pool3d(feature,output_size=adaptive_avg_pool3d_out_shape) # [1,768,2,2,2]
           feature = feature.permute(0,2,3,4,1) # [1,2,2,2,768]
+        elif pooling_embedding_reduction == EMBEDDING_REDUCTION.SPATIAL_MASKED:
+          # Apply masked spatial mean: [1,T,S,S,C] -> [1,T,1,1,C]
+          feature = masked_spatial_mean(feature)
         else:
           feature = torch.mean(feature,dim=pooling_embedding_reduction.value,keepdim=True)
       if float_16:
@@ -91,12 +215,15 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
         print(f'extracting features from {path[0]}')
         data = data.to(device)
         with torch.no_grad():
-          feature = backbone.forward_features(x=data) # [1,8,14,14,768]
+          feature = backbone.forward_features(x=data) # [1,T,S,S,C]
         if isinstance(backbone,VideoBackbone) and pooling_embedding_reduction != EMBEDDING_REDUCTION.NONE:
           if adaptive_avg_pool3d_out_shape is not None and pooling_embedding_reduction == EMBEDDING_REDUCTION.ADAPTIVE_POOLING_3D:
             feature = feature.permute(0,4,1,2,3) # [1,768,8,14,14]
             feature = torch.nn.functional.adaptive_avg_pool3d(feature,output_size=adaptive_avg_pool3d_out_shape) # [1,768,2,2,2]
             feature = feature.permute(0,2,3,4,1) # [1,2,2,2,768]
+          elif pooling_embedding_reduction == EMBEDDING_REDUCTION.SPATIAL_MASKED:
+            # Apply masked spatial mean: [1,T,S,S,C] -> [1,T,1,1,C]
+            feature = masked_spatial_mean(feature)
           else:
             feature = torch.mean(feature,dim=pooling_embedding_reduction.value,keepdim=True)
         if float_16:
@@ -315,7 +442,7 @@ if __name__ == "__main__":
   parser.add_argument('--model_type', type=str, required=False, default="B")
   parser.add_argument('--backbone_model_path', type=str, required=False, default=None, help='Path to custom model for feats_extraction')
   parser.add_argument('--saving_after', type=int, required=False, default=8800,help='Number of batch to save in one file')
-  parser.add_argument('--emb_red', type=str, default='spatial', help='Embedding reduction. Can be spatial, temporal, all, none, adaptive_pooling_3d')
+  parser.add_argument('--emb_red', type=str, default='spatial', help='Embedding reduction. Can be spatial, temporal, all, none, adaptive_pooling_3d, spatial_masked')
   # parser.add_argument('--prep_al', action='store_true', help='Preprocess align') # deprecated not use
   # parser.add_argument('--prep_crop', action='store_true', help='Preprocess crop') # deprecated not use
   # parser.add_argument('--prep_front', action='store_true', help='Preprocess frontalize') # deprecated not use
