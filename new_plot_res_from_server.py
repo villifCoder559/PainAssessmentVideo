@@ -219,7 +219,7 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
     
 def plot_CCC_ICC_pearson(data, run_output_folder, test_id, additional_info=''):
   def plot_metric(dict_value_to_plot, metric_name, ax: plt.Axes, best_epoch_idx, title_suffix='', y_lim_bottom = -1, y_lim_top = 1):
-
+    
     for phase in dict_value_to_plot[metric_name]:
       values = dict_value_to_plot[metric_name][phase]
       if isinstance(values, float) or isinstance(values, int):
@@ -507,8 +507,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
             
             # axs[2][0]: loss per subject val (or test)
             dict_per_subject_test = data['results'][key].get('test', None)
-            
-            if dict_per_subject_test is None or dict_per_subject_test == {}:
+            if dict_per_subject_test is None:
               loss_per_subject_val = data['results'][key]['train_val'].get('val_loss_per_subject', None)
               unique_subject_ids_val=data['results'][key]['train_val']['val_unique_subject_ids']
               
@@ -538,7 +537,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
               
             # axs[2][1]: loss per class val (or test)
             dict_per_subject_test = data['results'][key].get('test', None)
-            if dict_per_subject_test is None or dict_per_subject_test == {}:
+            if dict_per_subject_test is None:
               loss_per_class_val = data['results'][key]['train_val'].get('val_loss_per_class', None)
               tools.plot_error_per_class(mae_per_class=loss_per_class_val[best_epoch],
                                          unique_classes=data['results'][key]['train_val']['val_unique_y'],
@@ -570,7 +569,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                               title='Mean and std of GRADIENT norm',
                               x_label='Epochs',
                               y_label='Gradient norm',
-                              y_lim=[0, 20],
+                              y_lim=[0, 100],
                               cap_line=data['config']['clip_grad_norm'] if data['config']['clip_grad_norm'] else None,
                               )
           l2_norm_grad_task = data['results'][key]['train_val']['grad_task_norm_epoch']
