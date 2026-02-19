@@ -10,6 +10,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.ops import StochasticDepth
 
+# Global debug flags
+XATTN_LOG_ENABLED = False
+XATTN_LOG_DATA = []
 
 class MLP(nn.Module):
     def __init__(
@@ -196,7 +199,7 @@ class CrossAttention(nn.Module):
         if mask is not None:
             if mask.ndim == 2:
                 mask = mask[:, None, None,:].expand(B, self.num_heads, n, N)
-        if self.use_sdpa and not return_xattn:
+        if self.use_sdpa and not return_xattn and not XATTN_LOG_ENABLED:
             with torch.nn.attention.sdpa_kernel(backends=torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION):
                 # if mask is not None:
                 #     print("Debug")
@@ -210,6 +213,10 @@ class CrossAttention(nn.Module):
             if mask is not None:
                 xattn = xattn.masked_fill(~mask, float('-inf'))
             xattn = xattn.softmax(dim=-1)  # (batch_size, num_heads, query_len, seq_len)
+            
+            if XATTN_LOG_ENABLED:
+                XATTN_LOG_DATA.append(xattn.detach().cpu())
+
             xattn = self.attn_drop(xattn)
             q = (xattn @ v)
         q = q.transpose(1, 2).reshape(B, n, self.q_k_v_dim)  # (batch_size, query_len, feature_dim)
