@@ -21,8 +21,8 @@ import tqdm
 import copy
 from jepa.src.models.attentive_pooler import AttentiveClassifier as AttentiveClassifierJEPA
 
-from jepa.src.models.utils.modules import MLP as jepa_MLP
 from jepa.src.models.utils import pos_embs
+from jepa.src.models.utils import modules 
 from optuna.exceptions import TrialPruned
 import pickle
 import matplotlib.pyplot as plt
@@ -390,6 +390,10 @@ class BaseHead(nn.Module):
     val_dict_log_loss_steps = []
     # dict_log_loader = {}
     # dict_view_logger = {}
+    # epoch_mean_std_features = {}
+    epoch_rncloss_logs_list = []
+    epoch_mean_features_log_norm = []
+    epoch_std_features_log_norm = []
     for epoch in range(num_epochs):
       start_epoch = time.time()
       self.train() 
@@ -425,12 +429,17 @@ class BaseHead(nn.Module):
       batch_original_loss = 0.0
       batch_adv_grad_norm = []
       batch_task_grad_norm = []
+      batch_rncloss_logs_list = []
       # dict_batch_loader = {}
       # dict_batch_view_loader = {}
+      # batch_mean_std_feats = {}
+      batch_mean_features_log_norm = []
+      batch_std_features_log_norm = []
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
         end_load_batch = time.time()
         dict_log_time['load_batch'] = dict_log_time.get('load_batch',0) + end_load_batch - start_load_batch
         time_to_count_subjects = time.time()
+        # feat_std = features.std(dim=0).mean().item()
         # for sample in sample_id:
         #   aug_type = helper.get_augmentation_type(sample)
         #   original_sample_id = sample - helper.get_shift_for_sample_id(aug_type)
@@ -445,7 +454,6 @@ class BaseHead(nn.Module):
         _,count_sample_per_subject = torch.unique(batch_subjects, return_counts=True)
         sample_per_subject_count[tmp] += count_sample_per_subject
         dict_log_time['count_subjects'] = dict_log_time.get('count_subjects',0) + time.time() - time_to_count_subjects
-
         transfer_to_device = time.time() 
         # HuberLoss requires float32 inputs
         if batch_y.dtype == torch.int32: # if ce not has label smoothing
@@ -472,6 +480,15 @@ class BaseHead(nn.Module):
           dict_out = self(**dict_batch_X) # input [batch, seq_len, emb_dim]
           if dict_out['logits'].shape[1] == 1: # if regression I don't need to keep dim 1
             dict_out['logits'] = dict_out['logits'].squeeze(1)
+          std_features = dict_out['logits'].detach().cpu().std(dim=0).mean().item()
+          avg_norm = dict_out['logits'].detach().cpu().norm(p=2, dim = 1).mean().item()
+          batch_mean_features_log_norm.append(avg_norm)
+          batch_std_features_log_norm.append(std_features)
+          # print(f'  Std of features for batch {count_batch}: {avg_norm:.4f} | {std_features:.4f}')
+          # batch_feats = dict_out['logits'].detach().cpu()
+          # batch_mean = batch_feats.mean().item()
+          # batch_std = batch_feats.std().item()
+          # batch_mean_std_feats[count_batch] = (batch_mean, batch_std)
           
           # if kwargs['CCC_loss']:
           #   loss = criterion(outputs, batch_y) + (kwargs['add_CCC_loss'] * kwargs['CCC_loss'](outputs, batch_y))
@@ -490,6 +507,8 @@ class BaseHead(nn.Module):
           elif is_rnc_loss:
             loss = criterion(features=dict_out['logits'],
                              labels=batch_y)
+            batch_rncloss_logs_list.append(criterion.last_stats)
+            
           else:
             loss = criterion(dict_out['logits'], batch_y)
             
@@ -628,7 +647,16 @@ class BaseHead(nn.Module):
           dict_log_time['batch_logs'] = dict_log_time.get('batch_logs',0) + time.time()-start_logs 
           # dict_log_time['batch'] = dict_log_time.get('batch',0) + time.time()-end_load_batch
         start_load_batch = time.time()
-      
+        
+        
+      epoch_mean_features_log_norm.append(np.mean(batch_mean_features_log_norm))
+      epoch_std_features_log_norm.append(np.mean(batch_std_features_log_norm))
+      epoch_rncloss_logs_list.append(batch_rncloss_logs_list)
+      # epoch_mean_std_features[epoch] = batch_mean_std_feats
+      # # print(f'  Mean and std of features for epoch {epoch}:')
+      # for batch_id, (mean, std) in batch_mean_std_feats.items():
+      #   print(f'    Batch {batch_id}: mean={mean:.4f}, std={std:.4f}')
+      # print(f'  Epoch mean and std of features: mean={np.mean([m for m,s in batch_mean_std_feats.values()]):.5f}, std={np.mean([s for m,s in batch_mean_std_feats.values()]):.5f}')
       # End of train loader
       list_lrs.append(list_batch_lr)
       list_wds.append(list_batch_wd)
@@ -694,17 +722,18 @@ class BaseHead(nn.Module):
         list_train_adv_accuracies.append(sum((batch_adv_predictions == batch_adv_gt).float()).item() / len(batch_adv_predictions))
       
       # Save model at certain epochs
-      if helper.SAVE_MODEL_EVERY_N_EPOCHS > 0 and epoch % helper.SAVE_MODEL_EVERY_N_EPOCHS == 0:
+      if helper.SAVE_MODEL_EVERY_N_EPOCHS > 0 and epoch % helper.SAVE_MODEL_EVERY_N_EPOCHS == 0 and epoch != 0:
         model_path_epoch = os.path.join(saving_path, f'model_epoch_{epoch}.pt')
         torch.save(self.state_dict(), model_path_epoch)
-        fig,ax = plt.subplots(1,1,figsize=(15,10))
+        fig,ax = plt.subplots(2,1,figsize=(15,10))
+        ax = ax.flatten()
         input_dict_loss_acc= {
           'list_1':list_train_losses,
           'list_2':list_val_losses,
           'output_path':None,
           'title':f'Train loss, validation loss',
           'point':None,
-          'ax':ax,
+          'ax':ax[0],
           'x_label':'Epochs',
           'y_label_1':'Train loss',
           'y_label_2':'Validation loss',
@@ -720,8 +749,31 @@ class BaseHead(nn.Module):
           'color_2':'tab:blue',
           'color_3':None,
         }
+        input_dict_std_mean_feats = {
+          'list_1':epoch_mean_features_log_norm,
+          'list_2':epoch_std_features_log_norm,
+          'output_path':None,
+          'title':f'Mean and std of features',
+          'point':None,
+          'ax':ax[1],
+          'x_label':'Epochs',
+          'y_label_1':'Mean features',
+          'y_label_2':'Std features',
+          'y_label_3':None,
+          'y_lim_1':[0, max(35, np.max(epoch_mean_features_log_norm))],
+          'y_lim_2':[0, 0.1],
+          'y_lim_3':None,
+          'step_ylim_1':None,
+          'step_ylim_2':0.02,
+          'step_ylim_3':None,
+          'dict_to_string':None,
+          'color_1':'tab:red',
+          'color_2':'tab:blue',
+          'color_3':None,
+        }
         tools.plot_losses_and_test_new(**input_dict_loss_acc)
-        fig.savefig(os.path.join(saving_path, f'loss_training.png'), dpi=300)
+        tools.plot_losses_and_test_new(**input_dict_std_mean_feats)
+        fig.savefig(os.path.join(saving_path, f'loss_logs.png'), dpi=300)
         plt.close(fig)
         print(f'Checkpoint saved at epoch {epoch} to {model_path_epoch} and plotted the loss.')
       
@@ -1298,7 +1350,7 @@ class LinearHead(BaseHead):
 class PooledHeadMLP(BaseHead):
   def __init__(self, input_dim, num_classes, mlp_ratio=4.0, dropout=0.0):
     super().__init__(is_classification=True if num_classes > 1 else False)
-    self.mlp = jepa_MLP(in_features=input_dim,
+    self.mlp = modules.MLP_custom(in_features=input_dim,
                         hidden_features=int(input_dim * mlp_ratio),
                         act_layer=nn.GELU,
                         out_features=input_dim,
