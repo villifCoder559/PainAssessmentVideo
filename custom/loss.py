@@ -830,7 +830,7 @@ class RnCLossV2(nn.Module):
     self.t = temperature
     self.label_diff_fn = LabelDifference(label_diff)
     self.feature_sim_fn = FeatureSimilarity(feature_sim)
-    # self.last_stats = {}
+    self.last_stats = {}
 
   def forward(self, features, labels, **kwargs):
     # features: [2bs, feat_dim]
@@ -846,18 +846,20 @@ class RnCLossV2(nn.Module):
     logits = raw_logits - logits_max.detach()
     exp_logits = logits.exp()
 
-    # with torch.no_grad():
-    #   # If max(logits) is very small relative to 0 before the shift, 
-    #   # or if the spread is huge, we have issues.
-    #   self.last_stats['max_logit'] = raw_logits.max().item()
-    #   self.last_stats['min_logit'] = raw_logits.min().item()
-    #   self.last_stats['avg_logit'] = raw_logits.mean().item()
-      
-    #   # Entropy check: High entropy = uniform distribution (good flow)
-    #   # Low entropy = one value dominates (saturation)
-    #   probs = torch.softmax(raw_logits, dim=1)
-    #   entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=1).mean()
-    #   self.last_stats['entropy'] = entropy.item()
+    with torch.no_grad():
+      # check if self.last_stats exists, if not skip logging
+      if hasattr(self, 'last_stats'):
+        # If max(logits) is very small relative to 0 before the shift, 
+        # or if the spread is huge, we have issues.
+        self.last_stats['max_logit'] = raw_logits.max().item()
+        self.last_stats['min_logit'] = raw_logits.min().item()
+        self.last_stats['avg_logit'] = raw_logits.mean().item()
+        
+        # Entropy check: High entropy = uniform distribution (good flow)
+        # Low entropy = one value dominates (saturation)
+        probs = torch.softmax(raw_logits, dim=1)
+        entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=1).mean()
+        self.last_stats['entropy'] = entropy.item()
             
     n = logits.shape[0]  # n = 2bs
     device = logits.device
