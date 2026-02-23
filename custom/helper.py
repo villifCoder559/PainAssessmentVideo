@@ -129,13 +129,18 @@ def set_step_shift(folder_feature):
   elif 'parta' in folder_feature.lower() or 'biovid' in folder_feature.lower(): # Biovid Part A, sample_id starts from 1 
     step_shift = 8700
   elif 'agedb' in folder_feature.lower(): # AgeDB dataset, sample_id starts from 1 
-    step_shift = 16487 
+    step_shift = 16488
   else:  
     raise ValueError(f'Dataset not recognized in folder_feature: {folder_feature}')
 
 def transform_sample_id(original_sample_id, augmentation_type):
   return original_sample_id + get_shift_for_sample_id(augmentation_type)
 
+def get_original_sample_id(sample_id):
+  if sample_id <= step_shift:
+    return sample_id
+  else:
+    return ((sample_id - 1) % step_shift) + 1
 
 def is_hflip_augmentation(sample_id):
   return sample_id > step_shift and sample_id <= step_shift * 2

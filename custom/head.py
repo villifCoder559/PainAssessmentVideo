@@ -480,10 +480,10 @@ class BaseHead(nn.Module):
           dict_out = self(**dict_batch_X) # input [batch, seq_len, emb_dim]
           if dict_out['logits'].shape[1] == 1: # if regression I don't need to keep dim 1
             dict_out['logits'] = dict_out['logits'].squeeze(1)
-          std_features = dict_out['logits'].detach().cpu().std(dim=0).mean().item()
-          avg_norm = dict_out['logits'].detach().cpu().norm(p=2, dim = 1).mean().item()
-          batch_mean_features_log_norm.append(avg_norm)
-          batch_std_features_log_norm.append(std_features)
+          # std_features = dict_out['logits'].detach().cpu().std(dim=0).mean().item()
+          # avg_norm = dict_out['logits'].detach().cpu().norm(p=2, dim = 1).mean().item()
+          # batch_mean_features_log_norm.append(avg_norm)
+          # batch_std_features_log_norm.append(std_features)
           # print(f'  Std of features for batch {count_batch}: {avg_norm:.4f} | {std_features:.4f}')
           # batch_feats = dict_out['logits'].detach().cpu()
           # batch_mean = batch_feats.mean().item()
@@ -649,9 +649,9 @@ class BaseHead(nn.Module):
         start_load_batch = time.time()
         
         
-      epoch_mean_features_log_norm.append(np.mean(batch_mean_features_log_norm))
-      epoch_std_features_log_norm.append(np.mean(batch_std_features_log_norm))
-      epoch_rncloss_logs_list.append(batch_rncloss_logs_list)
+      # epoch_mean_features_log_norm.append(np.mean(batch_mean_features_log_norm))
+      # epoch_std_features_log_norm.append(np.mean(batch_std_features_log_norm))
+      # epoch_rncloss_logs_list.append(batch_rncloss_logs_list)
       # epoch_mean_std_features[epoch] = batch_mean_std_feats
       # # print(f'  Mean and std of features for epoch {epoch}:')
       # for batch_id, (mean, std) in batch_mean_std_feats.items():
@@ -749,30 +749,31 @@ class BaseHead(nn.Module):
           'color_2':'tab:blue',
           'color_3':None,
         }
-        input_dict_std_mean_feats = {
-          'list_1':epoch_mean_features_log_norm,
-          'list_2':epoch_std_features_log_norm,
-          'output_path':None,
-          'title':f'Mean and std of features',
-          'point':None,
-          'ax':ax[1],
-          'x_label':'Epochs',
-          'y_label_1':'Mean features',
-          'y_label_2':'Std features',
-          'y_label_3':None,
-          'y_lim_1':[0, max(35, np.max(epoch_mean_features_log_norm))],
-          'y_lim_2':[0, 0.1],
-          'y_lim_3':None,
-          'step_ylim_1':None,
-          'step_ylim_2':0.02,
-          'step_ylim_3':None,
-          'dict_to_string':None,
-          'color_1':'tab:red',
-          'color_2':'tab:blue',
-          'color_3':None,
-        }
+        # input_dict_std_mean_feats = {
+        #   'list_1':epoch_mean_features_log_norm,
+        #   'list_2':epoch_std_features_log_norm,
+        #   'output_path':None,
+        #   'title':f'Mean and std of features',
+        #   'point':None,
+        #   'ax':ax[1],
+        #   'x_label':'Epochs',
+        #   'y_label_1':'Mean features',
+        #   'y_label_2':'Std features',
+        #   'y_label_3':None,
+        #   'y_lim_1':[0, max(35, np.max(epoch_mean_features_log_norm))],
+        #   'y_lim_2':[0, 0.1],
+        #   'y_lim_3':None,
+        #   'step_ylim_1':None,
+        #   'step_ylim_2':0.02,
+        #   'step_ylim_3':None,
+        #   'dict_to_string':None,
+        #   'color_1':'tab:red',
+        #   'color_2':'tab:blue',
+        #   'color_3':None,
+        # }
+        
         tools.plot_losses_and_test_new(**input_dict_loss_acc)
-        tools.plot_losses_and_test_new(**input_dict_std_mean_feats)
+        # tools.plot_losses_and_test_new(**input_dict_std_mean_feats)
         fig.savefig(os.path.join(saving_path, f'loss_logs.png'), dpi=300)
         plt.close(fig)
         print(f'Checkpoint saved at epoch {epoch} to {model_path_epoch} and plotted the loss.')
