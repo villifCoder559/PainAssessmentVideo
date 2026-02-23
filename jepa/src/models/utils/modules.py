@@ -9,10 +9,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.ops import StochasticDepth
+import jepa.src.models.utils.modules as m
+from custom import helper
+
 
 # Global debug flags
 XATTN_LOG_ENABLED = False
 XATTN_LOG_DATA = []
+
+def get_xattn_logs():
+    return XATTN_LOG_DATA
 
 class MLP(nn.Module):
     def __init__(
@@ -209,7 +215,8 @@ class CrossAttention(nn.Module):
                                                    scale=self.scale)
                 xattn = None
         else:
-            xattn = (q @ k.transpose(-2, -1)) * self.scale
+            xattn = (q @ k.transpose(-2, -1)) * self.scale # q -> (batch_size, num_heads, query_len, feature_dim_per_head), k -> (batch_size, num_heads, seq_len, feature_dim_per_head) => 
+            # xattn -> (batch_size, num_heads, query_len=1 , seq_len)
             if mask is not None:
                 xattn = xattn.masked_fill(~mask, float('-inf'))
             xattn = xattn.softmax(dim=-1)  # (batch_size, num_heads, query_len, seq_len)
@@ -265,7 +272,26 @@ class CrossAttentionBlock(nn.Module):
         self.residual_drop = StochasticDepth(residual_drop,drop_path_mode) if residual_drop > 0.0 else nn.Identity()
 
     def forward(self, q, x, mask=None, return_xattn=False):
-        y,xattn = self.xattn(q, self.norm1(x), mask=mask, return_xattn=return_xattn)
+        y, xattn = self.xattn(q, self.norm1(x), mask=mask, return_xattn=return_xattn)
+        
+        # Log L2 norms of q and y after xattn output, before residual drop
+        if helper.LOG_NORM_CROSS_ATTN_BLOCK['enable']:
+            # Calculate L2 norm (mean over batch dimension)
+            q_norm = torch.norm(q, p=2, dim=-1).mean().item()  # Mean over batch
+            y_norm = torch.norm(y, p=2, dim=-1).mean().item()  # Mean over batch
+            
+            # Calculate contribution ratio of y vs q
+            contribution_ratio = y_norm / (q_norm + 1e-8) if q_norm > 0 else 0.0
+            
+            log_entry = {
+                'q_norm': q_norm,
+                'y_norm': y_norm,
+                'contribution_ratio': contribution_ratio
+            }
+            helper.LOG_NORM_CROSS_ATTN_BLOCK['logs'].append(log_entry)
+        
         q = q + self.residual_drop(y)
         q = q + self.residual_drop(self.mlp(self.norm2(q)))
         return q, xattn
+
+
