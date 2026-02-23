@@ -813,7 +813,10 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     summary_res['cross_attention_debug'] = helper.LOG_CROSS_ATTENTION
     helper.LOG_CROSS_ATTENTION = {'enable':helper.LOG_CROSS_ATTENTION['enable'],
                                   'state':'train'}
-
+  if helper.LOG_NORM_CROSS_ATTN_BLOCK['enable']:
+    summary_res['norm_cross_attn_block_debug'] = helper.LOG_NORM_CROSS_ATTN_BLOCK
+    helper.LOG_NORM_CROSS_ATTN_BLOCK = {'enable':helper.LOG_NORM_CROSS_ATTN_BLOCK['enable'],
+                                        'logs':[]}
   model_advanced.free_gpu_memory()
   del model_advanced
   torch.cuda.empty_cache()
