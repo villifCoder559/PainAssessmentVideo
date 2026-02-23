@@ -76,6 +76,19 @@ LOG_VIDEO_EMBEDDINGS = {
   'labels':[],
   'sample_ids':[]
 }
+
+LOG_NORM_CROSS_ATTN_BLOCK = {
+  'enable': True,
+  'logs':[]
+}
+  
+def init_log_norm_cross_attn_block():
+  global LOG_NORM_CROSS_ATTN_BLOCK
+  LOG_NORM_CROSS_ATTN_BLOCK = {
+    'enable': False,
+    'logs':[]
+  }
+
 def init_log_cross_attention():
   global LOG_CROSS_ATTENTION
   LOG_CROSS_ATTENTION = {
