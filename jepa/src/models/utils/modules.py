@@ -295,3 +295,98 @@ class CrossAttentionBlock(nn.Module):
         return q, xattn
 
 
+class SelfAttentionWithCLS(nn.Module):
+    def __init__(
+        self,
+        dim,
+        num_heads,
+        q_k_v_dim=None,
+        qkv_bias=False,
+        attn_drop=0.,
+        proj_drop=0.,
+        use_sdpa=True
+    ):
+        super().__init__()
+        self.num_heads = num_heads
+        self.q_k_v_dim = q_k_v_dim if q_k_v_dim is not None else dim
+        head_dim = self.q_k_v_dim // num_heads
+        self.scale = head_dim ** -0.5
+        self.qkv = nn.Linear(dim, self.q_k_v_dim * 3, bias=qkv_bias)
+        self.attn_drop_value = attn_drop
+        self.proj = nn.Linear(self.q_k_v_dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+        self.use_sdpa = use_sdpa
+
+    def forward(self, z):
+        B, N, C = z.shape
+        qkv = self.qkv(z).reshape(B, N, 3, self.num_heads, self.q_k_v_dim // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        if self.use_sdpa:
+            with torch.nn.attention.sdpa_kernel(backends=torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION):
+                z = F.scaled_dot_product_attention(
+                    q, k, v,
+                    dropout_p=self.attn_drop_value if self.training else 0.0,
+                    scale=self.scale
+                )
+        else:
+            attn = (q @ k.transpose(-2, -1)) * self.scale
+            attn = attn.softmax(dim=-1)
+            z = (attn @ v)
+
+        z = z.transpose(1, 2).reshape(B, N, self.q_k_v_dim)
+        z = self.proj(z)
+        z = self.proj_drop(z)
+        return z, None
+
+
+class SelfAttentionBlockWithCLS(nn.Module):
+    def __init__(
+        self,
+        dim,
+        num_heads,
+        q_k_v_dim=None,
+        mlp_ratio=4.,
+        drop=0.0,
+        attn_drop=0.0,
+        residual_drop=0.0,
+        qkv_bias=False,
+        act_layer=nn.GELU,
+        norm_layer=nn.LayerNorm,
+        drop_path_mode='row',
+        custom_mlp=False,
+        use_sdpa=True
+    ):
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.attn = SelfAttentionWithCLS(
+            dim,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            q_k_v_dim=q_k_v_dim,
+            use_sdpa=use_sdpa,
+            attn_drop=attn_drop,
+            proj_drop=drop)
+        self.norm2 = norm_layer(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        if not custom_mlp:
+            self.mlp = MLP(
+                in_features=dim,
+                hidden_features=mlp_hidden_dim,
+                act_layer=act_layer,
+                drop=drop)
+        else:
+            self.mlp = MLP_custom(
+                in_features=dim,
+                reduction_ratio=mlp_ratio,
+                act_layer=act_layer,
+                drop=drop)
+        self.residual_drop = StochasticDepth(residual_drop, drop_path_mode) if residual_drop > 0.0 else nn.Identity()
+
+    def forward(self, z, mask=None, return_xattn=False):
+        y, _ = self.attn(self.norm1(z))
+        z = z + self.residual_drop(y)
+        z = z + self.residual_drop(self.mlp(self.norm2(z)))
+        return z, None
+
+

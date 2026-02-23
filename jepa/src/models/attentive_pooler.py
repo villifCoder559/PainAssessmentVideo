@@ -19,7 +19,8 @@ if os.path.abspath('jepa') not in sys.path:
 from src.models.utils.modules import (
     Block,
     CrossAttention,
-    CrossAttentionBlock
+    CrossAttentionBlock,
+    SelfAttentionBlockWithCLS
 )
 from src.utils.tensors import trunc_normal_
 from jepa.src.models.utils import pos_embs
@@ -55,7 +56,22 @@ class AttentivePooler(nn.Module):
         self.cross_block_after_transformers = cross_block_after_transformers
         # self.pos_enc_tensor = None
         self.complete_block = complete_block
-        if complete_block:
+        if complete_block == 2:
+            self.cross_attention_block = SelfAttentionBlockWithCLS(
+                dim=embed_dim,
+                num_heads=num_cross_heads,
+                q_k_v_dim=q_k_v_dim,
+                mlp_ratio=mlp_ratio,
+                qkv_bias=qkv_bias,
+                drop=mlp_dropout,
+                attn_drop=attn_dropout,
+                residual_drop=residual_dropout,
+                use_sdpa=use_sdpa,
+                custom_mlp=custom_mlp,
+                drop_path_mode=drop_path_mode,
+                norm_layer=norm_layer)
+            self.q_norm = norm_layer(embed_dim)
+        elif complete_block == 1 or complete_block is True:
             self.cross_attention_block = CrossAttentionBlock(
                 dim=embed_dim,
                 num_heads=num_cross_heads,
@@ -78,6 +94,7 @@ class AttentivePooler(nn.Module):
                 proj_drop=mlp_dropout,
                 use_sdpa=use_sdpa,
                 qkv_bias=qkv_bias)
+        
 
         self.blocks = None
         if depth > 1:
@@ -93,7 +110,7 @@ class AttentivePooler(nn.Module):
                     attn_drop=attn_dropout,
                     norm_layer=norm_layer)
                 for i in range(depth-1)])
-            print(f'Using {len(self.blocks)} transformer blocks')
+            print(f'Using {len(self.blocks)} blocks')
 
         self.init_std = init_std
         trunc_normal_(self.query_tokens, std=self.init_std)
@@ -104,7 +121,10 @@ class AttentivePooler(nn.Module):
         def rescale(param, layer_id):
             param.div_(math.sqrt(2.0 * layer_id))
 
-        if self.complete_block:
+        if self.complete_block == 2:
+            rescale(self.cross_attention_block.attn.proj.weight.data, 1)
+            rescale(self.cross_attention_block.mlp.fc2.weight.data, 1)
+        elif self.complete_block == 1 or self.complete_block is True:
             rescale(self.cross_attention_block.xattn.proj.weight.data, 1)
             rescale(self.cross_attention_block.mlp.fc2.weight.data, 1)
         else:
@@ -128,6 +148,20 @@ class AttentivePooler(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x, mask,return_xattn=False): # x: [B, T, C], mask: [B, T] (use for attention mask)
+        if self.complete_block == 2:
+            # Generate query tokens for each sample in the batch, and concatenate with input tokens
+            q = self.query_tokens.expand(len(x), 1, 1)
+            q = self.q_norm(q)
+            x = self.q_norm(x)
+            z = torch.cat([q, x], dim=1)
+
+            z, _ = self.cross_attention_block(z)
+            if self.blocks is not None:
+                for blk in self.blocks:
+                    z = blk(z)
+            q = z[:, :q.shape[1], :]
+            return q, None
+
         if self.cross_block_after_transformers:
             if self.blocks is not None:
                 for blk in self.blocks:
