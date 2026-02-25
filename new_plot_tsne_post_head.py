@@ -85,7 +85,7 @@ def plot_reducted_embeddings(reduced_embeddings, labels, output_folder, save_plo
   print(f"{reduction_name} plot saved to {output_path}")
 
 # NOTE: pkl_file extracted from log_cross_attention_from_model.py
-def determine_labels(data, group_by, return_subject_ids=False):
+def determine_labels(data, group_by, return_subject_ids=False, top_n_subjects=None):
   df = pd.read_csv(data['csv_path'], sep='\t', dtype={'sample_name': str})
   if group_by == "labels":
     labels = np.array(data['video_embeddings']['labels'])
@@ -98,6 +98,36 @@ def determine_labels(data, group_by, return_subject_ids=False):
   if return_subject_ids:
     return labels, np.array(df['subject_id'])
   return labels
+
+def filter_top_n_subjects(embeddings, labels, n_subjects):
+  """
+  Filter embeddings and labels to keep only the top N subjects with the most samples.
+  
+  Args:
+    embeddings: numpy array of embeddings
+    labels: numpy array of subject labels
+    n_subjects: number of top subjects to keep
+    
+  Returns:
+    filtered_embeddings, filtered_labels, selected_subjects
+  """
+  if n_subjects is None or n_subjects <= 0:
+    return embeddings, labels, np.unique(labels)
+  
+  # Count samples per subject
+  unique_subjects, counts = np.unique(labels, return_counts=True)
+  
+  # Get the indices of the top N subjects by count
+  top_indices = np.argsort(counts)[-n_subjects:]
+  top_subjects = unique_subjects[top_indices]
+  
+  # Create mask for samples from top subjects
+  mask = np.isin(labels, top_subjects)
+  
+  filtered_embeddings = embeddings[mask]
+  filtered_labels = labels[mask]
+  
+  return filtered_embeddings, filtered_labels, top_subjects
 
 def set_cmap(data, group_by, cmap):
   df = pd.read_csv(data['csv_path'], sep='\t', dtype={'sample_name': str})
@@ -205,7 +235,7 @@ def create_gallery_link(pkl_file_path, plot_path):
 
 def run_tsne_and_plot(pkl_file, group_by, cmap,  
                       png_output_name=None,reduced_embeddings=None,save_plot=True,ax=None,
-                      add_title_info="",log_path_folder=None, reduction_method="tsne"):
+                      add_title_info="",log_path_folder=None, reduction_method="tsne", top_n_subjects=None):
   
   # print(f'Log path folder: {log_path_folder}')
   if not isinstance(pkl_file, dict):
@@ -232,6 +262,7 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
   else:
     reduced_embeddings, valid_indices = reduced_embeddings
   csv_name = os.path.basename(data['csv_path'])
+  
   # Handle group_by "all"
   if group_by == "all":
     fig,axes = plt.subplots(1, 2, figsize=(24, 10))
@@ -240,11 +271,19 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
     labels_subj, subject_ids_subj = determine_labels(data, "subjects", return_subject_ids=True)
     labels_subj = labels_subj[valid_indices]
     subject_ids_subj = subject_ids_subj[valid_indices]
+    
+    # Filter by top N subjects if specified
+    if top_n_subjects and top_n_subjects > 0:
+      reduced_emb_subj, labels_subj, top_subjects = filter_top_n_subjects(reduced_embeddings, labels_subj, top_n_subjects)
+    else:
+      reduced_emb_subj = reduced_embeddings
+      top_subjects = np.unique(labels_subj)
+    
     cmap_subj = set_cmap(data, "subjects", cmap)
     
-    title_subj = f"{model_name} - {csv_name} - {reduction_title} (Subjects)\ntot samples: {len(subject_ids_subj)} - subject_ids: {set(subject_ids_subj) if len(set(subject_ids_subj)) <= 20 else f'tot ({len(set(subject_ids_subj))})'}" + add_title_info
+    title_subj = f"{model_name} - {csv_name} - {reduction_title} (Subjects)\ntot samples: {len(labels_subj)} - subject_ids: {set(top_subjects) if len(set(top_subjects)) <= 20 else f'tot ({len(set(top_subjects))})'}" + add_title_info
     
-    plot_reducted_embeddings(reduced_embeddings=reduced_embeddings,
+    plot_reducted_embeddings(reduced_embeddings=reduced_emb_subj,
                               labels=labels_subj,
                               output_folder=log_path_folder,
                               title=title_subj,
@@ -257,11 +296,18 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
     # Plot Labels (Right)
     labels_lbl, subject_ids_lbl = determine_labels(data, "labels", return_subject_ids=True)
     labels_lbl = labels_lbl[valid_indices]
+    
+    # Filter by top N subjects if specified (for consistent filtering)
+    if top_n_subjects and top_n_subjects > 0:
+      reduced_emb_lbl, labels_lbl, _ = filter_top_n_subjects(reduced_embeddings, labels_lbl, top_n_subjects)
+    else:
+      reduced_emb_lbl = reduced_embeddings
+    
     cmap_lbl = set_cmap(data, "labels", cmap)
     
     title_lbl = f"{model_name} - {csv_name} - {reduction_title} (Labels)"
     
-    plot_reducted_embeddings(reduced_embeddings=reduced_embeddings,
+    plot_reducted_embeddings(reduced_embeddings=reduced_emb_lbl,
                               labels=labels_lbl,
                               output_folder=log_path_folder,
                               title=title_lbl,
@@ -298,11 +344,19 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
   labels = labels[valid_indices]
   subject_ids = subject_ids[valid_indices]
   
+  # Filter by top N subjects if specified and grouping by subjects
+  reduced_emb = reduced_embeddings
+  if group_by == "subjects" and top_n_subjects and top_n_subjects > 0:
+    reduced_emb, labels, top_subjects = filter_top_n_subjects(reduced_embeddings, labels, top_n_subjects)
+    subject_ids = np.array([s for s in top_subjects])
+  else:
+    top_subjects = np.unique(labels) if group_by == "subjects" else None
+  
   cmap = set_cmap(data, group_by, cmap)
   if add_title_info:
-    title = f"{model_name} - {csv_name} - {reduction_title} tot samples: {len(subject_ids)} - subject_ids: {set(subject_ids)}" + add_title_info
+    title = f"{model_name} - {csv_name} - {reduction_title} tot samples: {len(labels)} - subject_ids: {set(subject_ids) if group_by == 'labels' or (top_subjects is None or len(top_subjects) <= 20) else f'tot ({len(set(subject_ids))})'}" + add_title_info
   else:
-    title = f"{model_name} - {csv_name} - {reduction_title} grouped by {group_by} - tot samples: {len(subject_ids)} - subject_ids: {set(subject_ids)}" + add_title_info
+    title = f"{model_name} - {csv_name} - {reduction_title} grouped by {group_by} - tot samples: {len(labels)} - subject_ids: {set(subject_ids) if group_by == 'labels' or (top_subjects is None or len(top_subjects) <= 20) else f'tot ({len(set(subject_ids))})'}" + add_title_info
   
   # Prepend model name to output filename if not present
   if png_output_name is None:
@@ -314,7 +368,7 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
       basename = os.path.basename(png_output_name)
       png_output_name = os.path.join(dirname, f"{model_name}_{csv_name}_{basename}")
 
-  plot_reducted_embeddings(reduced_embeddings = reduced_embeddings,
+  plot_reducted_embeddings(reduced_embeddings = reduced_emb,
             labels = labels,
             output_folder = log_path_folder,
             title = title,
@@ -334,6 +388,7 @@ def main():
   parser.add_argument("--group_by", type=str, choices=["labels", "subjects", "all"], default="labels", help="Group visualization by labels or subjects.")
   parser.add_argument("--cmap", type=str, default=None, help="Colormap for the plot.") # jet, tab20, viridis, etc
   parser.add_argument("--reduction_method", type=str, choices=["tsne", "umap"], default="tsne", help="Dimensionality reduction method to use.")
+  parser.add_argument("--top_n_subjects", type=int, default=None, help="Number of subjects with the most samples to plot. If not specified, all subjects are plotted.")
   args = parser.parse_args()
   list_pkl_files = []
   if os.path.isdir(args.pkl_file):
@@ -347,17 +402,17 @@ def main():
     
     for pkl_path in tqdm.tqdm(list_pkl_files, desc="Processing pkl files..."):
       if args.group_by == "all":
-        run_tsne_and_plot(pkl_path, "all", None, reduction_method=args.reduction_method)
+        run_tsne_and_plot(pkl_path, "all", None, reduction_method=args.reduction_method, top_n_subjects=args.top_n_subjects)
       else:
         # Call once if group_by is specific, or twice if previously "all" but handled differently
         # Since "all" is now handled inside run_tsne_and_plot as a single plot:
-        run_tsne_and_plot(pkl_path, args.group_by, args.cmap, reduction_method=args.reduction_method)
+        run_tsne_and_plot(pkl_path, args.group_by, args.cmap, reduction_method=args.reduction_method, top_n_subjects=args.top_n_subjects)
 
   else:
     if args.group_by == "all":
-      run_tsne_and_plot(args.pkl_file, "all", args.cmap, reduction_method=args.reduction_method)
+      run_tsne_and_plot(args.pkl_file, "all", args.cmap, reduction_method=args.reduction_method, top_n_subjects=args.top_n_subjects)
     else:
-      run_tsne_and_plot(args.pkl_file, args.group_by, args.cmap, reduction_method=args.reduction_method)
+      run_tsne_and_plot(args.pkl_file, args.group_by, args.cmap, reduction_method=args.reduction_method, top_n_subjects=args.top_n_subjects)
 
 if __name__ == "__main__":
   main()
