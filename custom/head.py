@@ -380,6 +380,8 @@ class BaseHead(nn.Module):
     is_disentangled_loss = isinstance(criterion, losses.DisentangledLoss)
     is_rnc_loss = isinstance(criterion, losses.RnCLossV2) or isinstance(criterion, losses.RnCLoss)
     
+    # save .pth model before the traingn for the future logs of the untrained model
+    torch.save(self.state_dict(), os.path.join(saving_path, f'model_epoch_-1.pt'))
     max_train_class = train_unique_classes.max().item() + 1 # start from 0
     l1_error_val_list = []
     l2_error_val_list = []
@@ -738,11 +740,11 @@ class BaseHead(nn.Module):
           'y_label_1':'Train loss',
           'y_label_2':'Validation loss',
           'y_label_3':None,
-          'y_lim_1':[0, 15],
-          'y_lim_2':[0, 15],
+          'y_lim_1':[0, 8],
+          'y_lim_2':[0, 8],
           'y_lim_3':None,
-          'step_ylim_1':0.25,
-          'step_ylim_2':0.25,
+          'step_ylim_1':2,
+          'step_ylim_2':2,
           'step_ylim_3':None,
           'dict_to_string':None,
           'color_1':'tab:red',
