@@ -1383,7 +1383,8 @@ class AttentiveHeadJEPA(BaseHead):
       backbone: custom_backbone.BackboneBase = None,
       embedding_reduction: helper.EMBEDDING_REDUCTION = None,
       skip_init_weights=False, # used only for model debugging in log_cross_attention_from_model.py script
-      complete_block=True):
+      complete_block=True,
+      type_head=0):
     super().__init__(is_classification=True if num_classes > 1 else False)
     self.pooler = jepa_attentive_pooler.AttentivePooler(
             num_queries=num_queries,
@@ -1416,11 +1417,25 @@ class AttentiveHeadJEPA(BaseHead):
     self.grid_size_pos = grid_size_pos
     self.head_init_path = head_init_path
     self.coral_loss = coral_loss
+    self.type_head = type_head
     
     if remove_head: # used for Supervised Contrastive Learning
       self.linear = nn.Identity()
       print('\n=== Removed classification head from AttentiveHeadJEPA ===\n')
+    elif type_head == 1:
+      # MLP followed by linear/coral layer
+      mlp = modules.MLP(in_features=embed_dim, 
+                         hidden_features=int(embed_dim * mlp_ratio), 
+                         out_features=embed_dim,
+                         act_layer=nn.GELU,
+                         drop=0.0)
+      if coral_loss:
+        final_layer = CoralLayer(embed_dim, num_classes)
+      else:
+        final_layer = nn.Linear(embed_dim, num_classes, bias=True)
+      self.linear = nn.Sequential(mlp, final_layer)
     else:
+      # type_head == 0 (actual behaviour)
       # Coral loss setup
       if coral_loss:
         self.linear = CoralLayer(embed_dim, num_classes)
@@ -1647,18 +1662,20 @@ class AttentiveHeadJEPA(BaseHead):
         
         
       # Initialize linear layer ##
-      if self.coral_loss:
-        self.linear.coral_weights.reset_parameters()
-        if self.adversarial_head is not None:
-          torch.nn.init.xavier_uniform_(self.adversarial_head.weight,gain=0.1)
-          torch.nn.init.zeros_(self.adversarial_head.bias)
-      else:
-        if self.linear is not None and not isinstance(self.linear, nn.Identity):
-          torch.nn.init.xavier_uniform_(self.linear.weight,gain=0.1)
-          torch.nn.init.zeros_(self.linear.bias)
-        if self.adversarial_head is not None:
-          torch.nn.init.xavier_uniform_(self.adversarial_head.weight,gain=0.1)
-          torch.nn.init.zeros_(self.adversarial_head.bias)
+      def init_layer(m):
+        if isinstance(m, nn.Linear):
+          torch.nn.init.xavier_uniform_(m.weight, gain=0.1)
+          if m.bias is not None:
+            torch.nn.init.zeros_(m.bias)
+        elif isinstance(m, CoralLayer):
+          m.coral_weights.reset_parameters()
+
+      if not isinstance(self.linear, nn.Identity):
+        self.linear.apply(init_layer)
+        
+      if self.adversarial_head is not None:
+        torch.nn.init.xavier_uniform_(self.adversarial_head.weight,gain=0.1)
+        torch.nn.init.zeros_(self.adversarial_head.bias)
       print(f'All trainable params sum: {sum(p.numel() for p in self.parameters() if p.requires_grad)}')
       print(f'======== FROZEN Head weights loaded from {self.head_init_path}========\n')
     else:
