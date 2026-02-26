@@ -650,20 +650,9 @@ class BaseHead(nn.Module):
           # dict_log_time['batch'] = dict_log_time.get('batch',0) + time.time()-end_load_batch
         start_load_batch = time.time()
         
-        
-      # epoch_mean_features_log_norm.append(np.mean(batch_mean_features_log_norm))
-      # epoch_std_features_log_norm.append(np.mean(batch_std_features_log_norm))
-      # epoch_rncloss_logs_list.append(batch_rncloss_logs_list)
-      # epoch_mean_std_features[epoch] = batch_mean_std_feats
-      # # print(f'  Mean and std of features for epoch {epoch}:')
-      # for batch_id, (mean, std) in batch_mean_std_feats.items():
-      #   print(f'    Batch {batch_id}: mean={mean:.4f}, std={std:.4f}')
-      # print(f'  Epoch mean and std of features: mean={np.mean([m for m,s in batch_mean_std_feats.values()]):.5f}, std={np.mean([s for m,s in batch_mean_std_feats.values()]):.5f}')
       # End of train loader
       list_lrs.append(list_batch_lr)
       list_wds.append(list_batch_wd)
-      # dict_log_loader[epoch]= dict_batch_loader
-      # dict_view_logger[epoch] = {'max': max(dict_batch_view_loader.values()), 'min': min(dict_batch_view_loader.values())}
       if adv_criterion is not None:
         list_train_adv_losses.append([batch_adv_loss / len(train_loader), batch_original_loss / len(train_loader)])
         batch_adv_predictions = torch.cat(batch_adv_predictions)
@@ -724,7 +713,7 @@ class BaseHead(nn.Module):
         list_train_adv_accuracies.append(sum((batch_adv_predictions == batch_adv_gt).float()).item() / len(batch_adv_predictions))
       
       # Save model at certain epochs
-      if helper.SAVE_MODEL_EVERY_N_EPOCHS > 0 and epoch % helper.SAVE_MODEL_EVERY_N_EPOCHS == 0 and epoch != 0:
+      if helper.SAVE_MODEL_EVERY_N_EPOCHS > 0 and epoch % helper.SAVE_MODEL_EVERY_N_EPOCHS == 0:
         model_path_epoch = os.path.join(saving_path, f'model_epoch_{epoch}.pt')
         torch.save(self.state_dict(), model_path_epoch)
         fig,ax = plt.subplots(2,1,figsize=(15,10))
