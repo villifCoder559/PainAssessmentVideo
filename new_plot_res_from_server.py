@@ -1763,8 +1763,8 @@ def plot_run_details(results_data, output_root,only_csv, dict_args,plot_only_los
       plot_losses(data, os.path.join(output_root), test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
       plot_separated_losses_adversarial(data, os.path.join(output_root), test_id)
       # if 
-      plot_confusion_matrices(data, os.path.join(output_root), test_id)
       if not plot_only_loss:
+        plot_confusion_matrices(data, os.path.join(output_root), test_id)
         plot_lr_wd_across_epochs(data, os.path.join(output_root), test_id)
         if is_unbc:
           generate_video_from_loss_plots(os.path.join(output_root), test_id)
