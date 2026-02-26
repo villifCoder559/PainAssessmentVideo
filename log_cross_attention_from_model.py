@@ -165,12 +165,12 @@ def get_all_pth_files_in_folders(dict_args):
 def get_csv_paths_for_pth(model_pth_path):
   train_path = os.path.join(*Path(model_pth_path).parts[:-1], 'train.csv')
   test_path = os.path.join(*Path(model_pth_path).parts[:-2], 'test.csv')
-  # if not os.path.exists(test_path):
-  val_path = os.path.join(*Path(model_pth_path).parts[:-1], 'val.csv')
+  if not os.path.exists(test_path):
+    test_path = os.path.join(*Path(model_pth_path).parts[:-1], 'val.csv')
   assert os.path.isfile(test_path), f"Test CSV file {test_path} does not exist."
   assert os.path.isfile(train_path), f"Train CSV file {train_path} does not exist."
-  assert os.path.isfile(val_path), f"Val CSV file {val_path} does not exist."
-  return [train_path, val_path, test_path]
+  # assert os.path.isfile(val_path), f"Val CSV file {val_path} does not exist."
+  return [train_path,  test_path]
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
