@@ -409,7 +409,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   only_augments = trial.suggest_categorical('only_augments', kwargs['only_augments'])
   sampler_augmented_only_types = trial.suggest_categorical('sampler_augmented_only_types', kwargs['sampler_augmented_only_types'])
   sampler_loader_type = trial.suggest_categorical('sampler_loader_type', kwargs['sampler_loader_type'])
-  
+
   # --- Suggest Loss Params ---
   cdw_ce_alpha = _suggest(trial, 'cdw_ce_alpha', kwargs['cdw_ce_alpha'], kwargs['optuna_categorical'])
   cdw_ce_power_transform = trial.suggest_categorical('cdw_ce_power_transform', kwargs['cdw_ce_transform'])
@@ -567,8 +567,9 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     custom_mlp = trial.suggest_categorical('custom_mlp', kwargs['custom_mlp'])
     drop_path_mode = trial.suggest_categorical('drop_path_mode', kwargs['drop_path_mode'])
     apply_xattn_mask = trial.suggest_categorical('apply_xattn_mask', kwargs['apply_xattn_mask'])
-
+    type_head = trial.suggest_categorical('type_head', kwargs['type_head'])
     xattn_mask = None
+    
     if apply_xattn_mask > 0:
       grid_size = 16 if kwargs['mt'] == 'G' else 14
       pkl_path = os.path.join(kwargs['path_video_dataset'], f'video_analysis_grid_{grid_size}_{grid_size}.pkl')
@@ -600,6 +601,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'cross_block_after_transformers': cross_block_after_transformers,
       'num_queries': num_queries,
       'agg_method': queries_agg_method,
+      'type_head': type_head,
       'complete_block': trial.suggest_categorical('complete_block', kwargs['complete_block']),
       'embedding_reduction': kwargs['embedding_reduction'],
     }
@@ -1061,6 +1063,7 @@ if __name__ == '__main__':
   parser.add_argument('--drop_path_mode', type=str, nargs='*', default=['row'], help='Drop path mode.')
   parser.add_argument('--mlp_ratio', type=float, nargs='*', default=[2.0], help='MLP ratio.')
   parser.add_argument('--custom_mlp', type=int, nargs='*', default=[0], help='Use custom MLP.')
+  parser.add_argument('--type_head', type=int, nargs='*', default=[0], help='Type of head. 0: only finale liner, 1: MLP + linear')
   parser.add_argument('--pos_enc', type=int, nargs='*', default=[0], help='Use positional encoding.')
   parser.add_argument('--nr_blocks', type=int, nargs='*', default=[1], help='Number of blocks.')
   parser.add_argument('--cross_block_after_transformers', type=int, nargs='*', default=[0], help='Cross block after transformers.')
