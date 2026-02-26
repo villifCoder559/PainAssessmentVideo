@@ -78,26 +78,33 @@ def process_one_video(video_path):
   out_dir = os.path.dirname(out_path)
   if out_dir:
     os.makedirs(out_dir, exist_ok=True)
-
-  if worker_config['only_oval']:
-    list_frames, FPS = face_extractor.generate_face_oval_video(
-      path_video_input=original_video_path,
-      path_video_output=out_path,
-      generate_video=False,
-      interpolation_mod_chunk=worker_config.get('interpolation_mod_chunk'),
-    )
-    dict_result = {'list_frontalized_frame': list_frames, 'FPS': FPS}
-  else:
-    dict_result = face_extractor.frontalized_video(
-      video_path=original_video_path,
-      ref_landmarks=worker_config['ref_landmarks'],
-      only_landmarks_crop=worker_config['only_oval'],
-      align_before_front=worker_config.get('align_before_front', False),
-      interpolation_mod_chunk=worker_config.get('interpolation_mod_chunk'),
-      extra_landmark_smoothing=None
-    )
+  try:
+    if worker_config['only_oval']:
+      list_frames, FPS = face_extractor.generate_face_oval_video(
+        path_video_input=original_video_path,
+        path_video_output=out_path,
+        generate_video=False,
+        interpolation_mod_chunk=worker_config.get('interpolation_mod_chunk'),
+      )
+      dict_result = {'list_frontalized_frame': list_frames, 'FPS': FPS}
+    else:
+      dict_result = face_extractor.frontalized_video(
+        video_path=original_video_path,
+        ref_landmarks=worker_config['ref_landmarks'],
+        only_landmarks_crop=worker_config['only_oval'],
+        align_before_front=worker_config.get('align_before_front', False),
+        interpolation_mod_chunk=worker_config.get('interpolation_mod_chunk'),
+        extra_landmark_smoothing=None
+      )
+  except Exception as e:
+    print(f'Error processing video {video_path}: {repr(e)}')
+    return out
 
   if worker_config.get('generate_video'):
+    if len(dict_result['list_frontalized_frame']) == 0:
+      print(f'No frontalized frames for video {video_path}. Skipping video generation.')
+      out['error'] = f'No frontalized frames in {video_path}'
+      return out
     tools.generate_video_from_list_frame(
       list_frame=dict_result['list_frontalized_frame'],
       fps=dict_result['FPS'],
