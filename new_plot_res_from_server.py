@@ -840,14 +840,17 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                     ax=axs[count_axs])
           count_axs += 1
         # Test Loss
-        if accuracy_per_class_test is not None and accuracy_per_class_test != {}:
-          tools.plot_error_per_class(mae_per_class=accuracy_per_class_test['test_loss_per_class'],
-                                  unique_classes=data['results'][key]['test']['test_unique_y'],
-                                  title=f'TEST {key} - {test_id}',
-                                  criterion=data['config']['criterion'],
-                                  # accuracy_per_class=data['results'][key]['test']['test_accuracy_per_class'],
-                                  y_lim=y_lim,
-                                  ax=axs[count_axs])
+        if accuracy_per_class_test is not None and accuracy_per_class_test != {} and isinstance:
+          try:
+            tools.plot_error_per_class(mae_per_class=accuracy_per_class_test['test_loss_per_class'],
+                                    unique_classes=data['results'][key]['test']['test_unique_y'],
+                                    title=f'TEST {key} - {test_id}',
+                                    criterion=data['config']['criterion'],
+                                    # accuracy_per_class=data['results'][key]['test']['test_accuracy_per_class'],
+                                    y_lim=y_lim,
+                                    ax=axs[count_axs])
+          except Exception as e:
+            print(f"Error plotting test loss per class for {key} - {test_id}: {e}")
         fig.tight_layout()
         fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_mae_per_class_{key}.png'))
         plt.close(fig)
@@ -887,13 +890,16 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
           count_axs += 1
         # Test Loss
         if dict_test is not None and dict_test != {}:
-          tools.plot_error_per_class(unique_classes=data['results'][key]['test']['test_unique_y'],
-                                  # mae_per_class=dict_per_class_test['test_loss_per_class'],
-                                  title=f'TEST {key} - {test_id}',
-                                  criterion=data['config']['criterion'],
-                                  accuracy_per_class=dict_test['test_accuracy_per_class'],
-                                  y_lim=y_lim,
-                                  ax=axs[count_axs])
+          try:
+            tools.plot_error_per_class(unique_classes=data['results'][key]['test']['test_unique_y'],
+                                    # mae_per_class=dict_per_class_test['test_loss_per_class'],
+                                    title=f'TEST {key} - {test_id}',
+                                    criterion=data['config']['criterion'],
+                                    accuracy_per_class=dict_test['test_accuracy_per_class'],
+                                    y_lim=y_lim,
+                                    ax=axs[count_axs])
+          except Exception as e:
+            print(f"Error plotting test accuracy per class for {key} - {test_id}: {e}")
         fig.tight_layout()
         fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_accuracy_per_class_{key}.png'))
         plt.close(fig)
