@@ -178,21 +178,25 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
        
     unique_subject_ids_train = list(train_subject_loss.keys())
     unique_subject_ids_val = list(val_subject_loss.keys())
-    
+    y_lim = 10
+    if 'unbc' in "".join(data['config']['path_csv_dataset']).lower():
+      y_lim = 3
+    elif 'agedb' in "".join(data['config']['path_csv_dataset']).lower():
+      y_lim = 15
       
     tools.plot_error_per_subject(loss_per_subject=[train_subject_loss[k] for k in sorted(train_subject_loss.keys())],
                                   unique_subject_ids=sorted(unique_subject_ids_train),
                                   criterion=data['config']['criterion'],
                                   title=f'Grouped mean TRAIN Loss per Subject - {k_fold} - {test_id}',
                                   ax=ax[0],
-                                  y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
+                                  y_lim=y_lim)
     title_plt = 'VAL' if 'subject_val_loss' in grouped_losses else 'TEST'
     tools.plot_error_per_subject(loss_per_subject=[val_subject_loss[k] for k in sorted(val_subject_loss.keys())],
                                   unique_subject_ids=sorted(unique_subject_ids_val),
                                   criterion=data['config']['criterion'],
                                   title=f'Grouped mean {title_plt} Loss per Subject - {k_fold} - {test_id}',
                                   ax=ax[1],
-                                  y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
+                                  y_lim=y_lim)
     fig.tight_layout()
     fig.savefig(os.path.join(grouped_output_folder, f'{test_id}{additional_info}_grouped_loss_per_subject_{k_fold}.png'))
     plt.close(fig)
@@ -206,13 +210,13 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
                                criterion=data['config']['criterion'],
                                ax=ax[0],
                                title=f'Grouped mean TRAIN Loss per Class - {k_fold} - {test_id}',
-                                y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
+                                y_lim=y_lim)
     tools.plot_error_per_class(mae_per_class=[val_class_loss[k] for k in sorted(val_class_loss.keys())],
                                 unique_classes=sorted(val_class_loss.keys()),
                                 criterion=data['config']['criterion'],
                                 ax=ax[1],
                                 title=f'Grouped mean {title_plt} Loss per Class - {k_fold} - {test_id}',
-                                y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
+                                y_lim=y_lim)
     fig.tight_layout()
     fig.savefig(os.path.join(grouped_output_folder, f'{test_id}{additional_info}_grouped_loss_per_class_{k_fold}.png'))
     plt.close(fig)
@@ -368,8 +372,8 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         # add test_id in dict_to_string
         dict_to_string += f'\nTest ID: {test_id}'
         dict_to_string += f'\nfold_subfold: {key.split("_")[0]}_{key.split("_")[-1]}'
-        y_lim_loss = 5.0
-        step_lim = 0.25
+        y_lim_loss = 20.0
+        step_lim = 2.0
         if isinstance(data['config']['criterion'],torch.nn.MSELoss):
           y_lim_loss = 15.1
           step_lim = 3
