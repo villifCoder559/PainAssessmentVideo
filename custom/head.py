@@ -1434,7 +1434,8 @@ class AttentiveHeadJEPA(BaseHead):
       else:
         final_layer = nn.Linear(embed_dim, num_classes, bias=True)
       self.linear = nn.Sequential(mlp, final_layer)
-    else:
+      print('\n=== Added MLP before the final layer in AttentiveHeadJEPA ===\n')
+    elif type_head == 0:
       # type_head == 0 (actual behaviour)
       # Coral loss setup
       if coral_loss:
@@ -1444,7 +1445,8 @@ class AttentiveHeadJEPA(BaseHead):
           self.linear = nn.Linear(int(embed_dim * (mlp_ratio**2)), num_classes, bias=True) 
         else:
           self.linear = nn.Linear(embed_dim, num_classes, bias=True)
-    
+    else: 
+      raise NotImplementedError(f'Unknown type_head {type_head}')
     # Aggregator setup if num_queries > 1  
     if num_queries == 1:
       self.aggregator = nn.Identity() 
