@@ -303,7 +303,7 @@ class SupConLossModified(nn.Module):
   Zhou et al., PAKDD 2024, Section 4.2
   """
   
-  def __init__(self, temperature=0.1, theta=1.1):
+  def __init__(self, temperature=0.1, theta=0.9):
     """
     Args:
       temperature: Temperature parameter for scaling similarities
