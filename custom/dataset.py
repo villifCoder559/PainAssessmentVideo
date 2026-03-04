@@ -217,9 +217,18 @@ class customDataset(torch.utils.data.Dataset):
   def __len__(self):
     """Return the number of samples in the dataset"""
     return len(self.video_labels)
+
+  @staticmethod
+  def apply_frame_permutation(tensors, seed=None):
+    """Randomly permute frame order for a tensor of shape [B, C, H, W]."""
+    if tensors.shape[0] <= 1:
+      return tensors, None
+    rng = np.random.default_rng(seed)
+    frame_permutation = rng.permutation(tensors.shape[0])
+    return tensors[frame_permutation], frame_permutation
   
   @staticmethod
-  def preprocess_images(tensors,crop_size=None,to_visualize=False,get_params=False,h_flip=False,color_jitter=False,rotation=False,spatial_shift=False,zoom=False):
+  def preprocess_images(tensors,crop_size=None,to_visualize=False,get_params=False,h_flip=False,color_jitter=False,rotation=False,spatial_shift=False,zoom=False,framepermute=False,framepermute_seed=None):
     """
     Preprocess a batch of image tensors.
     
@@ -233,6 +242,10 @@ class customDataset(torch.utils.data.Dataset):
     Returns:
         torch.Tensor: Preprocessed tensor of shape (B, C, 224, 224).
     """
+    if framepermute:
+      tensors, frame_permutation = customDataset.apply_frame_permutation(tensors, seed=framepermute_seed)
+    else:
+      frame_permutation = None
     tensors = tv_tensors.Video(tensors)
     # Define preprocessing constants
     # crop_size = (224, 224)
@@ -292,6 +305,12 @@ class customDataset(torch.utils.data.Dataset):
                                np.random.uniform(neg_degrees[0], neg_degrees[1])])
       transform.append(v2.RandomRotation(degrees=(angle, angle)))
       params['rotation'] = v2.RandomRotation.get_params(degrees=transform[-1].degrees)
+
+    if framepermute:
+      params['framepermute'] = {
+        'seed': framepermute_seed,
+        'indices': frame_permutation.tolist() if frame_permutation is not None else None
+      }
       
     # Define transform pipeline
     if not to_visualize:
@@ -303,6 +322,9 @@ class customDataset(torch.utils.data.Dataset):
     else:
       if crop_size is not None:
         transform += [v2.Resize(crop_size)]
+        
+    if len(transform) == 0:
+      return tensors, params if get_params else tensors
     transform = v2.Compose(transform)
     
     if get_params:
@@ -1759,8 +1781,15 @@ def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,consider_only
         mask_grid = torch.rand(S,S,dtype=features.dtype) < latent_coefficient # mask % of the grid, if 0 all unmasked
         mask_grid = mask_grid.view(1,1,S,S,1)
       features = features.masked_fill(mask_grid, 0.0) # set to zero the masked values
+  
   ##################################
-    
+  ## shuffle temporal dimension of the features, dim 0 and 1
+  # def shuffle_dim(x, dim):
+  #   idx = torch.randperm(x.size(dim))
+  #   return x.index_select(dim, idx)
+  # features = shuffle_dim(features, dim=1) # shuffle temporal dimension
+  # features = shuffle_dim(features, dim=0) # shuffle chunk dimension
+  ######
   return {
       'features': features,     # [8,8,1,1,768]-> [chunks,Temporal,Space,Space,Emb]
       'labels': labels,         # [8]
