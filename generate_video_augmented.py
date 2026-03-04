@@ -16,6 +16,8 @@ argument_parser.add_argument('--color_jitter', action='store_true')
 argument_parser.add_argument('--h_flip', action='store_true')
 argument_parser.add_argument('--rotation', action='store_true')
 argument_parser.add_argument('--zoom', action='store_true')
+argument_parser.add_argument('--framepermute', action='store_true')
+argument_parser.add_argument('--framepermute_seed', type=int, default=22)
 args = argument_parser.parse_args()
 
 video_root = args.video_root
@@ -28,7 +30,8 @@ augmentation_dict = {
   'color_jitter': args.color_jitter,
   'h_flip': args.h_flip,
   'rotation': args.rotation,
-  'zoom': args.zoom
+  'zoom': args.zoom,
+  'framepermute': args.framepermute
 }
 
 if np.all([not v for v in augmentation_dict.values()]):
@@ -77,7 +80,9 @@ for video_path in tqdm.tqdm(list_video_path, desc="Processing videos..."):
                                     h_flip=augmentation_dict['h_flip'],
                                     rotation=augmentation_dict['rotation'],
                                     zoom=augmentation_dict['zoom'],
-                                    spatial_shift=augmentation_dict['shift'])
+                                    spatial_shift=augmentation_dict['shift'],
+                                    framepermute=augmentation_dict['framepermute'],
+                                    framepermute_seed=args.framepermute_seed)
   video_id = os.path.splitext(os.path.basename(video_path))[0]
   params_all[video_id] = params
   
@@ -113,7 +118,8 @@ import sys
 command = {'launch_command':" ".join(sys.argv),
            'video_root':video_root,
            'video_output_root':video_output_root,
-           'augmentation_dict':augmentation_dict}
+           'augmentation_dict':augmentation_dict,
+           'framepermute_seed': args.framepermute_seed}
 with open(os.path.join(video_output_root, "augmentation_command.txt"), 'w') as f:
   for key, value in command.items():
     f.write(f"{key}: {value}\n")
