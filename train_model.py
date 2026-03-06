@@ -433,6 +433,9 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   sample_frame_strategy = trial.suggest_categorical('sample_frame_strategy', kwargs['sample_frame_strategy'])
   stride_inside_window = trial.suggest_categorical('stride_inside_window', kwargs['stride_inside_window'])
   use_sdpa = trial.suggest_categorical('use_sdpa', kwargs['use_sdpa'])
+  train_backbone = trial.suggest_categorical('train_backbone', kwargs['train_backbone'])
+  debug_grad_flow = trial.suggest_categorical('debug_grad_flow', kwargs['debug_grad_flow'])
+  debug_grad_flow_batches = trial.suggest_categorical('debug_grad_flow_batches', kwargs['debug_grad_flow_batches'])
   
   if use_sdpa and not hasattr(torch.nn.functional, "scaled_dot_product_attention"):
     raise ValueError("SDPA is not available in this PyTorch version. Set use_sdpa=0 or update PyTorch")
@@ -515,13 +518,17 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   
   # --- Head Specific Params ---
   head_name = kwargs['head']
-  adapter_dict = {
-    'type': trial.suggest_categorical('adapter_type', kwargs['adapter_type']),
-    'mlp_ratio': trial.suggest_categorical('adpater_mlp_ratio', kwargs['adpater_mlp_ratio']),
-    'kernel_size': trial.suggest_categorical('adapter_kernel_size', kwargs['adapter_kernel_size']),
-    'dilation': trial.suggest_categorical('adapter_dilation', kwargs['adapter_dilation']),
-    'num_adapters': trial.suggest_categorical('num_adapters', kwargs['num_adapters']),
-  }
+  num_adapters = trial.suggest_categorical('num_adapters', kwargs['num_adapters'])
+  if num_adapters > 0:
+    adapter_dict = {
+      'type': trial.suggest_categorical('adapter_type', kwargs['adapter_type']),
+      'mlp_ratio': trial.suggest_categorical('adpater_mlp_ratio', kwargs['adpater_mlp_ratio']),
+      'kernel_size': trial.suggest_categorical('adapter_kernel_size', kwargs['adapter_kernel_size']),
+      'dilation': trial.suggest_categorical('adapter_dilation', kwargs['adapter_dilation']),
+      'num_adapters': num_adapters,
+    }
+  else:
+    adapter_dict = None
 
   head_params = {}
   head_enum = None
@@ -630,6 +637,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'adversarial_loss_lambda': None,
     }
 
+  head_params['train_backbone'] = train_backbone
+
   # Avoid duplicate trials check
   for past in trial.study.trials:
     if past.state not in (optuna.trial.TrialState.COMPLETE, optuna.trial.TrialState.PRUNED):
@@ -694,6 +703,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'only_augments': only_augments,
     'sampler_loader_type': sampler_loader_type,
     'sampler_augmented_only_types': sampler_augmented_only_types,
+    'debug_grad_flow': debug_grad_flow,
+    'debug_grad_flow_batches': debug_grad_flow_batches,
   }
   add_kwargs.update(head_dependent_add_kwargs)
   
@@ -963,6 +974,18 @@ def validate_arguments(dict_args):
     if coeff < 0.0 or coeff > 1.0:
       raise ValueError("latent_coefficient values must be between 0 and 1.")
 
+  for train_backbone_flag in dict_args['train_backbone']:
+    if train_backbone_flag not in [0, 1]:
+      raise ValueError("train_backbone must be 0 or 1.")
+
+  for debug_grad_flow_flag in dict_args['debug_grad_flow']:
+    if debug_grad_flow_flag not in [0, 1]:
+      raise ValueError("debug_grad_flow must be 0 or 1.")
+
+  for n_debug_batches in dict_args['debug_grad_flow_batches']:
+    if n_debug_batches < 1:
+      raise ValueError("debug_grad_flow_batches must be >= 1.")
+
 
 if __name__ == '__main__':
   # --- Quick Parse for Config File ---
@@ -1040,6 +1063,9 @@ if __name__ == '__main__':
   parser.add_argument('--composite_loss', nargs='*', type=str, default=[None], help='Composite loss type.')
   parser.add_argument('--composite_loss_lambda', nargs='*', type=str, default=[None], help='Lambda for composite loss.')
   parser.add_argument('--use_sdpa', type=int, nargs='*', default=[1], help='Use SDPA.')
+  parser.add_argument('--train_backbone', type=int, nargs='*', default=[0], help='Train video backbone weights (1) or freeze them (0).')
+  parser.add_argument('--debug_grad_flow', type=int, nargs='*', default=[0], help='Log gradient-flow summary during training (1 to enable).')
+  parser.add_argument('--debug_grad_flow_batches', type=int, nargs='*', default=[1], help='Number of batches per epoch to log gradient-flow stats for.')
   parser.add_argument('--rncloss_temp', type=str, nargs='*', default=[None], help='Temperature for RnCLoss.')
   parser.add_argument('--only_contrastive_temp', type=str, nargs='*', default=[None], help='Only contrastive loss temperature.')
   parser.add_argument('--only_contrastive_theta', type=str, nargs='*', default=[None], help='Only contrastive loss theta.')
