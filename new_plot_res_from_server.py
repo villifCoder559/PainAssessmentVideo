@@ -166,7 +166,7 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
   for k_fold, grouped_losses in dict_grouped_losses.items():
     
     # Plot error per subject
-    fig, ax = plt.subplots(2,1,figsize=(15,10))
+    fig, ax = plt.subplots(2,1,figsize=(18,10))
     ax = ax.flatten()
     train_subject_loss = grouped_losses['subject_train_loss']
     val_subject_loss = grouped_losses['subject_val_loss'] if 'subject_val_loss' in grouped_losses else grouped_losses['subject_test_loss']
@@ -182,8 +182,7 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
     if 'unbc' in "".join(data['config']['path_csv_dataset']).lower():
       y_lim = 3
     elif 'agedb' in "".join(data['config']['path_csv_dataset']).lower():
-      y_lim = 15
-      
+      y_lim = 20
     tools.plot_error_per_subject(loss_per_subject=[train_subject_loss[k] for k in sorted(train_subject_loss.keys())],
                                   unique_subject_ids=sorted(unique_subject_ids_train),
                                   criterion=data['config']['criterion'],
@@ -202,9 +201,10 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
     plt.close(fig)
     
     # Plot error per class
-    fig, ax = plt.subplots(2,1,figsize=(15,10))
+    fig, ax = plt.subplots(2,1,figsize=(18,9))
     train_class_loss = grouped_losses['class_train_loss']
     val_class_loss = grouped_losses['class_val_loss'] if 'class_val_loss' in grouped_losses else grouped_losses['class_test_loss']
+    
     tools.plot_error_per_class(mae_per_class=[train_class_loss[k] for k in sorted(train_class_loss.keys())],
                                unique_classes=sorted(train_class_loss.keys()),
                                criterion=data['config']['criterion'],
@@ -822,6 +822,9 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         best_epoch = data['results'][key]['train_val']['best_model_idx']
         # Train Loss
         if train_loss_per_class is not None:
+          df = pd.DataFrame({'class': data['results'][key]['train_val']['train_unique_y'], 'mae': train_loss_per_class[best_epoch]})
+          df = df.sort_values('class')
+          df.to_csv(os.path.join(test_output_folder, f'{test_id}{additional_info}_train_loss_per_class_{key}.csv'), index=False)
           tools.plot_error_per_class(unique_classes=data['results'][key]['train_val']['train_unique_y'],
                                       mae_per_class=train_loss_per_class[best_epoch],
                                       title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
@@ -833,8 +836,10 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         # Val Loss
         if val_loss_per_class is not None and val_loss_per_class[0] is not None and np.sum(val_loss_per_class[0]) != 0:
           if data['results'][key]['train_val']['val_unique_y'].shape[0] != val_loss_per_class[best_epoch].shape[0]:
-            
             raise ValueError('Number of unique classes does not match number of classes in val_loss_per_class')
+          df = pd.DataFrame({'class': data['results'][key]['train_val']['val_unique_y'], 'mae': val_loss_per_class[best_epoch]})
+          df = df.sort_values('class')
+          df.to_csv(os.path.join(test_output_folder, f'{test_id}{additional_info}_val_loss_per_class_{key}.csv'), index=False)
           tools.plot_error_per_class(unique_classes=data['results'][key]['train_val']['val_unique_y'],
                                     mae_per_class=val_loss_per_class[best_epoch],
                                     title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
@@ -846,6 +851,9 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         # Test Loss
         if accuracy_per_class_test is not None and accuracy_per_class_test != {} and isinstance:
           try:
+            df = pd.DataFrame({'class': data['results'][key]['test']['test_unique_y'], 'mae': accuracy_per_class_test['test_loss_per_class']})
+            df = df.sort_values('class')
+            df.to_csv(os.path.join(test_output_folder, f'{test_id}{additional_info}_test_loss_per_class_{key}.csv'), index=False)
             tools.plot_error_per_class(mae_per_class=accuracy_per_class_test['test_loss_per_class'],
                                     unique_classes=data['results'][key]['test']['test_unique_y'],
                                     title=f'TEST {key} - {test_id}',
