@@ -160,6 +160,65 @@ class BaseHead(nn.Module):
         mask_grid = mask_grid.unsqueeze(0).unsqueeze(0).unsqueeze(-1)
         mask_grid = mask_grid.expand(B,T,S,S,C) # [B,T,S,S,C]
         features[i] = features[i].masked_fill(mask_grid, 0.0) # set to zero the masked values
+
+  def _get_grad_category(self, name):
+    if name.startswith('backbone.'):
+      return 'backbone'
+    if name.startswith('pooler.'):
+      return 'pooler'
+    if name.startswith('linear.'):
+      return 'linear'
+    if name.startswith('adversarial_head.'):
+      return 'adversarial_head'
+    return 'head_other'
+
+  def _collect_gradient_flow_stats(self, epoch, batch_idx):
+    categories = {
+      'backbone': {'trainable_params': 0, 'with_grad': 0, 'without_grad': 0, 'zero_grad': 0, 'norms': []},
+      'pooler': {'trainable_params': 0, 'with_grad': 0, 'without_grad': 0, 'zero_grad': 0, 'norms': []},
+      'linear': {'trainable_params': 0, 'with_grad': 0, 'without_grad': 0, 'zero_grad': 0, 'norms': []},
+      'adversarial_head': {'trainable_params': 0, 'with_grad': 0, 'without_grad': 0, 'zero_grad': 0, 'norms': []},
+      'head_other': {'trainable_params': 0, 'with_grad': 0, 'without_grad': 0, 'zero_grad': 0, 'norms': []},
+    }
+    
+    for name, param in self.named_parameters():
+      if not param.requires_grad:
+        continue
+      category = self._get_grad_category(name)
+      categories[category]['trainable_params'] += 1
+      if param.grad is None:
+        categories[category]['without_grad'] += 1
+        continue
+
+      grad_norm = torch.linalg.vector_norm(param.grad.detach()).item()
+      categories[category]['with_grad'] += 1
+      categories[category]['norms'].append(grad_norm)
+      if grad_norm == 0.0:
+        categories[category]['zero_grad'] += 1
+
+    def _finalize(stats):
+      norms = stats.pop('norms')
+      stats['mean_grad_norm'] = float(np.mean(norms)) if len(norms) > 0 else 0.0
+      stats['max_grad_norm'] = float(np.max(norms)) if len(norms) > 0 else 0.0
+      return stats
+
+    categories = {k: _finalize(v) for k, v in categories.items()}
+    return {
+      'epoch': int(epoch),
+      'batch_idx': int(batch_idx),
+      'categories': categories,
+      'backbone_has_trainable': categories['backbone']['trainable_params'] > 0,
+      'backbone_has_grads': categories['backbone']['with_grad'] > 0,
+    }
+
+  def _print_gradient_flow_stats(self, grad_flow_stats):
+    bb = grad_flow_stats['categories']['backbone']
+    print(
+      f"[GradFlow][E{grad_flow_stats['epoch']} B{grad_flow_stats['batch_idx']}] "
+      f"backbone trainable={bb['trainable_params']} with_grad={bb['with_grad']} "
+      f"without_grad={bb['without_grad']} zero_grad={bb['zero_grad']} "
+      f"mean_norm={bb['mean_grad_norm']:.3e}"
+    )
     
   def start_train(self, num_epochs, criterion, lr, saving_path, train_csv_path, val_csv_path ,batch_size,dataset_type,
                   round_output_loss, shuffle_training_batch, regularization_lambda_L1,concatenate_temp_dim,clip_grad_norm,
@@ -332,6 +391,7 @@ class BaseHead(nn.Module):
     list_train_pearson_correlation = []
     list_val_pearson_correlation = []
     epochs_gradient_per_module = {}
+    grad_flow_debug_logs = []
     early_stopping.reset()
     # list_memory_snap= []
     # tracemalloc.start()
@@ -349,7 +409,7 @@ class BaseHead(nn.Module):
 
     metric_for_stopping = "_".join(key_for_early_stopping.split('_')[1:]) # ex: val_accuracy -> accuracy. the second part must be metric from tools.evaluate_classification_from_confusion_matrix
     amp_dtype = torch.bfloat16 if helper.AMP_DTYPE == 'bfloat16' else torch.float16
-    enable_autocast = helper.AMP_ENABLED and amp_dtype == torch.bfloat16 # Use autocast for mixed precision training
+    enable_autocast = helper.AMP_ENABLED # Use autocast for mixed precision training (fp16/bf16)
     enable_scaler = helper.AMP_ENABLED and amp_dtype in [torch.float16] # Use GradScaler for mixed precision training
     scaler = GradScaler(device=device, enabled=enable_scaler)
     # check if adversarial_head exists and is not None
@@ -379,6 +439,8 @@ class BaseHead(nn.Module):
     is_resupcon_loss = isinstance(criterion, losses.RESupConLoss)
     is_disentangled_loss = isinstance(criterion, losses.DisentangledLoss)
     is_rnc_loss = isinstance(criterion, losses.RnCLossV2) or isinstance(criterion, losses.RnCLoss)
+    debug_grad_flow = bool(kwargs.get('debug_grad_flow', 0))
+    debug_grad_flow_batches = int(kwargs.get('debug_grad_flow_batches', 1))
     
     # save .pth model before the traingn for the future logs of the untrained model
     torch.save(self.state_dict(), os.path.join(saving_path, f'model_epoch_-1.pt'))
@@ -564,8 +626,10 @@ class BaseHead(nn.Module):
         dict_log_time['log_gradient'] = dict_log_time.get('log_gradient',0) + time.time() - log_gradient_start
         total_norm_epoch[epoch].append(total_norm.item())
         start_optimizer = time.time()
+        prev_scale = scaler.get_scale()
         scaler.step(optimizer)  # Use scaler to step the optimizer
         scaler.update()
+        optimizer_step_skipped = enable_scaler and (scaler.get_scale() < prev_scale)
         dict_log_time['optimizer'] = dict_log_time.get('optimizer',0) + time.time()-start_optimizer
         train_loss += loss.item()
         
@@ -574,9 +638,9 @@ class BaseHead(nn.Module):
         list_batch_lr.append(monitoring_values['lr'])
         list_batch_wd.append({'wd_no_bias': monitoring_values['wd_no_bias'], 'wd_bias': monitoring_values['wd_bias']})
         
-        if lr_scheduler:
+        if lr_scheduler and not optimizer_step_skipped:
           lr_scheduler.step()
-        if wd_scheduler:
+        if wd_scheduler and not optimizer_step_skipped:
           wd_scheduler.step()
           
         start_logs = time.time()
@@ -610,6 +674,11 @@ class BaseHead(nn.Module):
 
         if helper.LOG_GRADIENT_PER_MODULE:
           self.log_gradient_per_module(batch_dict_gradient_per_module)
+
+        if debug_grad_flow and count_batch < debug_grad_flow_batches:
+          grad_flow_stats = self._collect_gradient_flow_stats(epoch=epoch, batch_idx=count_batch)
+          grad_flow_debug_logs.append(grad_flow_stats)
+          self._print_gradient_flow_stats(grad_flow_stats)
         
         count_batch+=1
 
@@ -1023,6 +1092,7 @@ class BaseHead(nn.Module):
       'train_dict_log_loss_epochs': train_dict_log_loss_epochs,
       'val_dict_log_loss_steps': val_dict_log_loss_steps,
       'train_batch_sampler_name': (train_loader.batch_sampler.__class__.__module__ + "." + train_loader.batch_sampler.__class__.__name__),
+      'grad_flow_debug': grad_flow_debug_logs,
       # 'list_samples': list_list_samples,
       # 'list_y': list_list_y
     }
@@ -1079,7 +1149,7 @@ class BaseHead(nn.Module):
       list_batch_size = []
       
       amp_dtype = torch.bfloat16 if helper.AMP_DTYPE == 'bfloat16' else torch.float16
-      enable_autocast = helper.AMP_ENABLED and amp_dtype == torch.bfloat16
+      enable_autocast = helper.AMP_ENABLED
       return_embeddings = getattr(criterion, 'return_embeddings', False) or helper.LOG_VIDEO_EMBEDDINGS['enable']
       
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(val_loader,total=len(val_loader),desc=f'{("Validation" if not is_test else "Test")}'):
@@ -1638,8 +1708,11 @@ class AttentiveHeadJEPA(BaseHead):
   def _initialize_weights(self,init_type='default'):
     if self.backbone is not None:
       # self.backbone.load_pretrained_weights() 
-      for adapter in self.backbone.model.adapters:
-        adapter.init_weights()
+      if hasattr(self.backbone.model, 'adapters'):
+        for adapter in self.backbone.model.adapters:
+          adapter.init_weights()
+      else:
+        print(f'No adapters found in the backbone model.')
         
     if init_type == 'default':
       ## Initialize pooler ##
