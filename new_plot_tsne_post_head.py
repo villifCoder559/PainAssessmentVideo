@@ -68,6 +68,13 @@ def plot_reducted_embeddings(reduced_embeddings, labels, output_folder, save_plo
                s=30)
   if len(unique_labels) <= 20:  # Only show legend if not too many labels
     ax.legend(title=group_by)
+  # if colormap is continuous, add colorbar
+  if group_by == 'labels':
+    norm = plt.Normalize(vmin=v_min if v_min is not None else np.min(labels), vmax=v_max if v_max is not None else np.max(labels))
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = plt.colorbar(sm, ax=ax)
+    cbar.set_label(group_by)
   ax.set_xlabel(f"{reduction_name} Dimension 1")
   ax.set_ylabel(f"{reduction_name} Dimension 2")
   ax.set_title(title)
