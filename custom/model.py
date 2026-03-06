@@ -36,7 +36,13 @@ class Model_Advanced: # Scenario_Advanced
     """
     
     if model_type != MODEL_TYPE.ViT_image:
-      self.backbone = VideoBackbone(model_type, adapter_dict=adapter_dict,use_sdpa=use_sdpa)
+      freeze_backbone = not head_params.get('train_backbone', 0)
+      self.backbone = VideoBackbone(
+        model_type,
+        adapter_dict=adapter_dict,
+        use_sdpa=use_sdpa,
+        freeze_backbone=freeze_backbone,
+      )
     else:
       self.backbone = VitImageBackbone()
       if head_params.get('adapter_dict', None) is not None:

@@ -131,16 +131,20 @@ class customDataset(torch.utils.data.Dataset):
     # if rotation is not None:
     #   warnings.warn('The rotation is not implemented yet')
     # Image dimensions and channels
-    self.image_resize_w = image_resize_w
-    self.image_resize_h = image_resize_h
+    if backbone_dict is not None:
+      self.image_resize_h = backbone_dict['backbone'].img_size
+      self.image_resize_w = backbone_dict['backbone'].img_size
+    else:
+      self.image_resize_w = image_resize_w
+      self.image_resize_h = image_resize_h
     self.image_channels = 3
     self.consider_only_lasts_n_chunks = consider_only_lasts_n_chunks
     # Set sampling strategy method based on parameter
     self._set_sampling_strategy(sample_frame_strategy)
 
-    if 'caer' in path_dataset.lower():
-      print("\n Detected CAER, Change step shift \n")
-      helper.step_shift = 13176
+    # if 'caer' in path_dataset.lower():
+    #   print("\n Detected CAER, Change step shift \n")
+    #   helper.step_shift = 13176
     # Set video labels
     if video_labels is None and path_labels != None:
       self.set_path_labels(path_labels)
@@ -434,10 +438,11 @@ class customDataset(torch.utils.data.Dataset):
       color_jitter = True if augmentation_type == 'jitter' else False
       rotation = True if augmentation_type == 'rotation' else False
       spatial_shift = True if augmentation_type == 'shift' else False
+      zoom = True if augmentation_type == 'zoom' else False
       preprocessed_tensors = self.preprocess_images(frames_list, 
                                                     crop_size=(self.image_resize_h, self.image_resize_w),
                                                     color_jitter=color_jitter,
-                                                    h_flip=h_flip,
+                                                    h_flip=h_flip,zoom=zoom,
                                                     spatial_shift=spatial_shift,
                                                     rotation=rotation)
     preprocessed_tensors = preprocessed_tensors.reshape(nr_clips, nr_frames, *preprocessed_tensors.shape[1:]) # [nr_clips, nr_frames, C, H, W]
@@ -1632,6 +1637,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
   elif dataset_type.value == CUSTOM_DATASET_TYPE.BASE.value:
     if backbone_dict is not None:
       dataset_ = customDataset(path_dataset=root_folder_features,
+                               model_type=backbone_dict['backbone'].model_type,
                               sample_frame_strategy=sample_frame_strategy,
                               num_clips_per_video=num_clips_per_video,
                               path_labels=csv_path,

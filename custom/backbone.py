@@ -56,6 +56,7 @@ class VideoBackbone(BackboneBase):
     remove_head: bool = True,
     adapter_dict: dict = None,
     use_sdpa: bool = False,
+    freeze_backbone: bool = True,
     custom_model_path: bool = False,
   ):
     """Initialize the video backbone.
@@ -92,9 +93,14 @@ class VideoBackbone(BackboneBase):
       else:
         self.model = self._load_model_finetune(model_type, remove_head=remove_head, use_sdpa=use_sdpa)
       
-      # Freeze model parameters
-      for param in self.model.parameters():
-        param.requires_grad = False
+      if freeze_backbone:
+        for param in self.model.parameters():
+          param.requires_grad = False
+        print('VideoBackbone params are frozen (freeze_backbone=True).')
+      else:
+        for param in self.model.parameters():
+          param.requires_grad = True
+        print('VideoBackbone params are trainable (freeze_backbone=False).')
       
       # Cache important model parameters for efficient access
       self.tubelet_size = self.model.patch_embed.tubelet_size
@@ -288,7 +294,7 @@ class VideoBackbone(BackboneBase):
         setattr(model, layer_name, None)
         # print(f"Removed {layer_name} layer from model")
   
-  @torch.no_grad()
+  # @torch.no_grad()
   def forward_features(self, x: torch.Tensor, return_embedding: bool = True,return_attn: bool = False) -> torch.Tensor:
     """Extract features from video input. No preprocessing is applied, but the input tensor must be in the format [B,C,T,H,W].
     
@@ -307,19 +313,22 @@ class VideoBackbone(BackboneBase):
     self.model.to(self.device)
     x = x.to(self.device)
     # Extract features
-    self.model.eval()
-    with torch.no_grad():
-      # Forward pass
-      # print(f'Free GPU memory: {torch.cuda.memory_reserved() / 1e9} GB')
-      if 'forward_features' in dir(self.model):
-        args = {'x':x, 'return_embedding':return_embedding, 'return_attn':return_attn}
-        feat,attn = self.model.forward_features(**args)
-      else:
-        feat = self.model(x)
-        if 'last_hidden_state' in dir(feat):
-          feat = feat.last_hidden_state
-        attn = None
+    if not self.model.training:
+      self.model.eval()
+    # with torch.no_grad():
+    # Forward pass
+    # print(f'Free GPU memory: {torch.cuda.memory_reserved() / 1e9} GB')
+    if 'forward_features' in dir(self.model):
+      args = {'x':x, 'return_embedding':return_embedding, 'return_attn':return_attn}
+      feat,attn = self.model.forward_features(**args)
+    else:
+      feat = self.model(x)
+      if 'last_hidden_state' in dir(feat):
+        feat = feat.last_hidden_state
+      attn = None
       # Process and reshape features if needed
+      
+      
     if return_embedding:
       B = feat.shape[0]  # Batch size
       
