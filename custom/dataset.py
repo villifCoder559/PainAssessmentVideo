@@ -1268,6 +1268,7 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
     if root_folder_features:
       try:
         self.available_augmentation_types = set(helper.get_augmentation_availables(root_folder_features))
+        print(f"\n\nAvailable augmentation types retrieved from folder: {self.available_augmentation_types}")
       except Exception as e:
         print(f"Warning: Could not get available augmentations from folder: {e}")
     
@@ -1319,6 +1320,8 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
     for group in self.base_id_groups.values():
       if group['original'] is not None:
         selected_indices.append(group['original'])
+      else:
+        raise ValueError("Original sample missing for a group, which should not happen.")
       
       augmented_indices_to_keep = []
       if self.augmentation_strategy == 1:
@@ -1339,7 +1342,6 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
       selected_indices.extend(augmented_indices_to_keep)
       for idx in augmented_indices_to_keep:
         self.log_augmented_usage[idx] += 1
-
     if self.shuffle:
       np.random.shuffle(selected_indices)
       
@@ -1671,8 +1673,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                                   n_keep_augmentations=kwargs['filtered_augm_n_keep'],
                                                   augmentation_strategy=kwargs['filtered_augm_strategy'],
                                                   root_folder_features=root_folder_features,
-                                                  drop_last=False,
-                                                  seed=42)
+                                                  drop_last=False)
       print(f'Use FilteredAugmentationBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
     elif kwargs['sampler_loader_type'] == 'augmented_only':
       sampler = AugmentedOnlyBatchSampler(df=dataset_.df,

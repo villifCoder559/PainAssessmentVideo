@@ -386,7 +386,7 @@ class Model_Advanced: # Scenario_Advanced
         list_augmentations_available.append('latent_masking')
       
     dict_augmented = {augm: 1 for augm in list_augmentations_available}
-    
+    print(f'\nAugmenting BIOVID CSV with the following augmentations: {list_augmentations_available}')
     helper.generate_csv_augmented(original_csv_path=train_csv_path,
                                   dict_augmentation=dict_augmented,
                                   out_csv_path=train_csv_path,
@@ -434,12 +434,12 @@ class Model_Advanced: # Scenario_Advanced
     if 'parta' in self.path_to_extracted_features.lower():
       if kwargs.get('stratified_training', False):
         self.augment_csv(train_csv_path=train_csv_path,
-                         target_list_string=kwargs['only_augments'],
-                         stratified_training=kwargs['stratified_training'])
+                          target_list_string=kwargs['only_augments'],
+                          stratified_training=kwargs['stratified_training'])
     if kwargs.get('sampler_augmented_only_types', False) and not kwargs.get('stratified_training', False):
       self.augment_csv(train_csv_path=train_csv_path,
                         target_list_string=kwargs['sampler_augmented_only_types'],
-                        stratified_training=0),
+                        stratified_training=0)
                          
       
     # Stage 1

@@ -1752,7 +1752,7 @@ class AttentiveHeadJEPA(BaseHead):
         torch.nn.init.xavier_uniform_(self.adversarial_head.weight,gain=0.1)
         torch.nn.init.zeros_(self.adversarial_head.bias)
       print(f'All trainable params sum: {sum(p.numel() for p in self.parameters() if p.requires_grad)}')
-      print(f'======== FROZEN Head weights loaded from {self.head_init_path}========\n')
+      # print(f'======== FROZEN Head weights loaded from {self.head_init_path}========\n')
     else:
       raise NotImplementedError(f'Initialization method {init_type} not implemented')
   
