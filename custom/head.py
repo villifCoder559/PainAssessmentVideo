@@ -313,6 +313,7 @@ class BaseHead(nn.Module):
     # train_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
     train_unique_classes = torch.tensor(train_dataset.get_unique_classes())
     train_unique_subjects = torch.tensor(train_dataset.get_unique_subjects())
+    total_train_unique_subjects = len(train_unique_subjects)
     # val_unique_classes = np.array(list(range(self.model.num_classes))) # last class is for bad_classified in regression
     # if val_csv_path is not None:
     val_unique_classes = torch.tensor(val_dataset.get_unique_classes()) if val_csv_path is not None else torch.tensor([])
@@ -432,7 +433,10 @@ class BaseHead(nn.Module):
       print(f'Using autocast for mixed precision training with {amp_dtype} dtype')
     else:
       print(f'Using standard precision training without autocast')
-    return_embeddings = getattr(criterion, 'return_embeddings', False)
+    
+    return_embeddings = getattr(criterion, 'return_embeddings', False) or \
+                        kwargs['HSIC_lambda'] > 0.0 
+                        
     if return_embeddings:
       print('The criterion requires to return the video embeddings from the model during training\n')
     is_composite_loss = isinstance(criterion, losses.CompositeLoss)
@@ -602,11 +606,21 @@ class BaseHead(nn.Module):
               batch_adv_grad_norm.append(adv_norm*dict_batch_X['adv_alpha'])
               dict_log_time['log_adv_grad'] = dict_log_time.get('log_adv_grad',0) + time.time() - start_log_grad
             loss = loss + adv_loss * kwargs['adversarial_loss_lambda']
+          
           outputs = dict_out['logits']
           if regularization_lambda_L1 > 0:
             # Sum absolute values of all trainable parameters except biases
             l1_norm = sum(param.abs().sum() for name,param in self.named_parameters() if param.requires_grad and 'bias' not in name) 
             loss = loss + regularization_lambda_L1 * l1_norm 
+          if kwargs['HSIC_lambda']>0:
+            batch_subjects = batch_subjects.to(device)
+            hsic = losses.conditional_hsic_loss(
+                    z=dict_out['embeddings'],
+                    id_labels=batch_subjects,
+                    normalize_features=True,
+                    num_ids=total_train_unique_subjects,
+                    y_labels=batch_y)
+            loss = loss + kwargs['HSIC_lambda'] * hsic
         dict_log_time['forward'] = dict_log_time.get('forward',0) + time.time()-start_forward
         # dict_log_time['loss'] = dict_log_time.get('loss',0) + time.time()-start_loss
         # print(f'  Loss time: {dict_log_time['loss']-start_loss:.4f}')
@@ -1150,7 +1164,8 @@ class BaseHead(nn.Module):
       
       amp_dtype = torch.bfloat16 if helper.AMP_DTYPE == 'bfloat16' else torch.float16
       enable_autocast = helper.AMP_ENABLED
-      return_embeddings = getattr(criterion, 'return_embeddings', False) or helper.LOG_VIDEO_EMBEDDINGS['enable']
+      return_embeddings = getattr(criterion, 'return_embeddings', False) or \
+                          helper.LOG_VIDEO_EMBEDDINGS['enable']
       
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(val_loader,total=len(val_loader),desc=f'{("Validation" if not is_test else "Test")}'):
         list_batch_size.append(len(batch_y))
@@ -1637,7 +1652,7 @@ class AttentiveHeadJEPA(BaseHead):
     key_padding_mask = ~key_padding_mask # set True for attention, if True means use the token to compute the attention, otherwise don't use it 
     return x, key_padding_mask
   
-  def forward(self, x, key_padding_mask=None, return_video_emb=False,**kwargs):
+  def forward(self, x, key_padding_mask=None, return_video_emb=True,**kwargs):
     # Extract features from backbone (if needed)
     if self.backbone is not None:
       time_backbone_forward = time.time()

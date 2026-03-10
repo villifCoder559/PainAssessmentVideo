@@ -1010,3 +1010,77 @@ class DisentangledLoss(nn.Module):
     }
     
     return total_loss, log_loss
+
+
+def _safe_gram(x: torch.Tensor) -> torch.Tensor:
+  x = x.contiguous()
+  x = x.float()
+  x = torch.nan_to_num(x)
+  return x @ x.T
+
+
+def hsic_linear(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+  n = x.size(0)
+
+  K = _safe_gram(x)
+  L = _safe_gram(y)
+
+  K_row = K.mean(dim=1, keepdim=True)
+  K_col = K.mean(dim=0, keepdim=True)
+  Kc = K - K_row - K_col + K.mean()
+
+  L_row = L.mean(dim=1, keepdim=True)
+  L_col = L.mean(dim=0, keepdim=True)
+  Lc = L - L_row - L_col + L.mean()
+
+  full_sum = (Kc * Lc).sum()
+  diag_sum = (Kc.diag() * Lc.diag()).sum()
+
+  return (full_sum - diag_sum) / (n * (n - 3))
+
+
+def conditional_hsic_loss(
+  z: torch.Tensor,
+  id_labels: torch.Tensor,
+  y_labels: torch.Tensor,
+  num_ids: int,
+  min_group_size: int = 5,
+  normalize_features: bool = True,
+) -> torch.Tensor:
+  if normalize_features:
+    z = F.normalize(z, dim=1)
+
+  id_labels = id_labels.long()
+
+  unique_y, counts = torch.unique(y_labels, return_counts=True)
+
+  valid = counts >= min_group_size
+  unique_y = unique_y[valid]
+  counts = counts[valid]
+
+  if unique_y.numel() == 0:
+    return torch.zeros(1, device=z.device, dtype=z.dtype, requires_grad=True).squeeze()
+
+  total_hsic = torch.zeros(1, device=z.device, dtype=z.dtype)
+  total_weight = 0
+
+  for y_val, cnt in zip(unique_y, counts):
+    mask = y_labels == y_val
+    group_size = cnt.item()
+
+    z_y = z[mask]
+    id_y = id_labels[mask]
+
+    # Remap to local consecutive IDs within this group
+    # e.g. [0, 3, 7, 3] -> [0, 1, 2, 1]
+    # This avoids huge sparse one-hot matrices and
+    # out-of-range index crashes from batch ID gaps
+    _, id_y_local = torch.unique(id_y, return_inverse=True)
+    n_local = id_y_local.max().item() + 1
+    id_onehot = F.one_hot(id_y_local, num_classes=n_local).float()
+
+    hsic_val = hsic_linear(z_y, id_onehot)
+    total_hsic = total_hsic + hsic_val * group_size
+    total_weight += group_size
+
+  return total_hsic.squeeze() / total_weight
