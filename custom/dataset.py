@@ -1832,8 +1832,8 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
         df=dataset_.df,
         batch_size=batch_size,
         min_subjects_per_level=kwargs.get('min_subjects_per_level', 3),
-        include_augmented=kwargs.get('include_augmented', True),
-        require_all_levels=kwargs.get('require_all_levels', True),
+        include_augmented=True,
+        require_all_levels=True,
         shuffle=shuffle_training_batch,
         random_state=42
       )
