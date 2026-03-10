@@ -409,6 +409,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   only_augments = trial.suggest_categorical('only_augments', kwargs['only_augments'])
   sampler_augmented_only_types = trial.suggest_categorical('sampler_augmented_only_types', kwargs['sampler_augmented_only_types'])
   sampler_loader_type = trial.suggest_categorical('sampler_loader_type', kwargs['sampler_loader_type'])
+  min_subjects_per_level = trial.suggest_categorical('min_subjects_per_level', kwargs['min_subjects_per_level'])
 
   # --- Suggest Loss Params ---
   cdw_ce_alpha = _suggest(trial, 'cdw_ce_alpha', kwargs['cdw_ce_alpha'], kwargs['optuna_categorical'])
@@ -704,6 +705,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'only_augments': only_augments,
     'sampler_loader_type': sampler_loader_type,
     'sampler_augmented_only_types': sampler_augmented_only_types,
+    'min_subjects_per_level': min_subjects_per_level,
     'debug_grad_flow': debug_grad_flow,
     'debug_grad_flow_batches': debug_grad_flow_batches,
     'HSIC_lambda': HSIC_lambda,
@@ -886,6 +888,9 @@ def validate_arguments(dict_args):
           raise ValueError(f"Augmentation '{a}' not available in features folder '{dict_args['ffsp']}'. Available: {list_augmentations_available}")
   
   for el in dict_args['sampler_loader_type']:
+    if el == 'subject_batch':
+      if dict_args['min_subjects_per_level'] is None or dict_args['min_subjects_per_level'][0] < 1:
+        raise ValueError("min_subjects_per_level must be >= 1 when using 'subject_batch' sampler.")
     if el == 'augmented_only':
       if dict_args['sampler_augmented_only_types'] is None:
         raise ValueError("sampler_augmented_only_types must be set when using 'augmented_only' sampler_loader_type.")
@@ -1026,7 +1031,8 @@ if __name__ == '__main__':
   parser.add_argument('--is_subject_independent', type=int, choices=[0, 1], default=1, help='Subject-independent split.')
   parser.add_argument('--skip_test', type=int, default=0, help='Skip test phase.')
   parser.add_argument('--consider_only_lasts_n_chunks', nargs='*', type=int, default=[0], help='Consider only last n chunks.')
-  parser.add_argument('--sampler_loader_type', type=str,nargs='*', default=['balanced'], help='Sampler loader type availables: selective_augm, augmented_only, balanced, standard')
+  parser.add_argument('--sampler_loader_type', type=str,nargs='*', default=['balanced'], help='Sampler loader type availables: selective_augm, augmented_only, balanced, standard, subject_batch')
+  parser.add_argument('--min_subjects_per_level', nargs='*', type=int, default=[0], help='Min unique subjects per pain level per batch (used with subject_batch sampler).')
   parser.add_argument('--filtered_augm_n_keep', nargs='*', type=int, default=[0], help='Samples to keep from each augmentation type.')
   parser.add_argument('--sampler_augmented_only_types', type=str, nargs='*', default=[None], help="Types of augmentations to use when sampler_loader_type is 'augmented_only'. Options can be like: 'hflip', 'jitter', 'rotation,jitter', 'latent_basic', 'latent_masking', 'shift_augm'.")
   parser.add_argument('--filtered_augm_strategy', type=int, nargs='*', default=[0], help="Strategy for filtered augmentation sampler."+
