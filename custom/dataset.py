@@ -1536,6 +1536,145 @@ class AugmentedOnlyBatchSampler(BatchSampler):
     return self.n_batches
 
 
+class SubjectBatchSampler(BatchSampler):
+  """
+  Ensures each batch contains a minimum number of unique subjects per pain level,
+  so HSIC can measure dependence reliably.
+
+  Strategy: For each batch, sample subjects first, then sample instances from
+  each subject across pain levels. This guarantees subject diversity within
+  each pain-level group while maintaining class balance.
+  """
+
+  def __init__(self, df, batch_size, min_subjects_per_level,
+               include_augmented=True, require_all_levels=True,
+               shuffle=True, random_state=42):
+    self.df = df
+    self.batch_size = batch_size
+    self.min_subjects_per_level = min_subjects_per_level
+    self.include_augmented = include_augmented
+    self.require_all_levels = require_all_levels
+    self.shuffle = shuffle
+    self.random_state = random_state
+
+    # Filter out augmented samples if needed
+    if not include_augmented:
+      self.working_df = df[df['sample_id'] <= helper.step_shift].copy()
+    else:
+      self.working_df = df.copy()
+
+    # Extract pain levels
+    self.pain_levels = sorted(self.working_df['class_id'].unique())
+    self.n_levels = len(self.pain_levels)
+
+    # Build lookup: {class_id: {subject_id: [df_indices]}}
+    self.level_subject_map = {}
+    for level in self.pain_levels:
+      level_df = self.working_df[self.working_df['class_id'] == level]
+      subjects = level_df['subject_id'].unique()
+      self.level_subject_map[level] = {}
+      for subj in subjects:
+        indices = level_df[level_df['subject_id'] == subj].index.tolist()
+        self.level_subject_map[level][subj] = indices
+
+    # Validate min_subjects_per_level constraint
+    for level in self.pain_levels:
+      n_subjects = len(self.level_subject_map[level])
+      if n_subjects < min_subjects_per_level:
+        raise ValueError(
+          f"Pain level {level} has only {n_subjects} unique subjects, "
+          f"but min_subjects_per_level={min_subjects_per_level} is required."
+        )
+
+    # Compute derived values
+    self.samples_per_level = batch_size // self.n_levels
+
+    if self.samples_per_level < self.min_subjects_per_level:
+      raise ValueError(
+        f"samples_per_level ({self.samples_per_level}) < min_subjects_per_level "
+        f"({self.min_subjects_per_level}). Increase batch_size or decrease "
+        f"min_subjects_per_level."
+      )
+
+    self.initialize()
+
+  def initialize(self):
+    self.batches = []
+    rng = np.random.default_rng(self.random_state)
+
+    # Build shuffled subject lists and sample pools per level
+    level_data = {}
+    for level in self.pain_levels:
+      subjects = list(self.level_subject_map[level].keys())
+      if self.shuffle:
+        rng.shuffle(subjects)
+
+      pools = {}
+      for subj in subjects:
+        pool = list(self.level_subject_map[level][subj])
+        if self.shuffle:
+          rng.shuffle(pool)
+        pools[subj] = pool
+
+      level_data[level] = {'subjects': subjects, 'pools': pools}
+
+    # Number of batches limited by smallest level's total samples
+    min_total_samples = min(
+      sum(len(indices) for indices in self.level_subject_map[level].values())
+      for level in self.pain_levels
+    )
+    n_batches = min_total_samples // self.samples_per_level
+
+    # Generate each batch
+    for batch_idx in range(n_batches):
+      batch = []
+      for level in self.pain_levels:
+        ld = level_data[level]
+        subjects = ld['subjects']
+        pools = ld['pools']
+        n_subjects = len(subjects)
+
+        # Select min_subjects_per_level subjects via rotation
+        start = (batch_idx * self.min_subjects_per_level) % n_subjects
+        selected_subjects = []
+        for i in range(self.min_subjects_per_level):
+          idx = (start + i) % n_subjects
+          selected_subjects.append(subjects[idx])
+
+        # Distribute samples_per_level evenly across selected subjects
+        base_per_subject = self.samples_per_level // self.min_subjects_per_level
+        remainder = self.samples_per_level % self.min_subjects_per_level
+
+        for i, subj in enumerate(selected_subjects):
+          n_samples = base_per_subject + (1 if i < remainder else 0)
+          pool = pools[subj]
+
+          for _ in range(n_samples):
+            if len(pool) == 0:
+              # Refill and reshuffle
+              pool = list(self.level_subject_map[level][subj])
+              if self.shuffle:
+                rng.shuffle(pool)
+              pools[subj] = pool
+            batch.append(pool.pop())
+
+      if len(batch) > 0:
+        self.batches.append(batch)
+
+    self.n_batches = len(self.batches)
+
+  def __iter__(self):
+    for batch in self.batches:
+      yield batch
+
+    # Update random state for next epoch
+    self.random_state += 13
+    self.initialize()
+
+  def __len__(self):
+    return self.n_batches
+
+
 def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: float = 0.2) -> torch.Tensor:
   """
   Highly optimized implementation of neighbor-only label smoothing.
@@ -1688,11 +1827,22 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                       batch_size=batch_size,
                                       shuffle=shuffle_training_batch)
       print(f'Use balancedBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
+    elif kwargs['sampler_loader_type'] == 'subject_batch':
+      sampler = SubjectBatchSampler(
+        df=dataset_.df,
+        batch_size=batch_size,
+        min_subjects_per_level=kwargs.get('min_subjects_per_level', 3),
+        include_augmented=kwargs.get('include_augmented', True),
+        require_all_levels=kwargs.get('require_all_levels', True),
+        shuffle=shuffle_training_batch,
+        random_state=42
+      )
+      print(f'Use SubjectBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers}\nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
     elif kwargs['sampler_loader_type'] == 'standard':
       sampler = None
       print(f'Use standard DataLoader with {n_workers} workers!\nPersistent workers: True')
     else:
-      raise ValueError(f"Unknown sampler_loader_type: {kwargs['sampler_loader_type']}. Choose from 'selective_augm', 'augmented_only', 'balanced', 'standard'.")
+      raise ValueError(f"Unknown sampler_loader_type: {kwargs['sampler_loader_type']}. Choose from 'selective_augm', 'augmented_only', 'balanced', 'subject_batch', 'standard'.")
     if sampler is not None:
       loader_ = DataLoader(dataset=dataset_,
                           batch_sampler=sampler,
