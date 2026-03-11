@@ -5,6 +5,43 @@ import torch.nn.functional as F
 from torchsort import soft_rank
 from torch import Tensor
 
+class SimLoss(torch.nn.Module):
+  def __init__(self, number_of_classes, reduction_factor, device="cpu", epsilon=1e-8):
+    super().__init__()
+    assert number_of_classes > 0
+    self.__number_of_classes = number_of_classes
+    self.__device = device
+    self.epsilon = epsilon
+    self.r = reduction_factor
+    self.softmax = torch.nn.Softmax(dim=1)
+
+  def forward(self, x, y):
+    w = self.__w[y, :]
+    x = self.softmax(x)
+    return torch.mean(-torch.log(torch.sum(w * x, dim=1) + self.epsilon))
+
+  @property
+  def r(self):
+    return self.__r
+
+  @r.setter
+  def r(self, r):
+    assert r >= 0.0, "Reduction factor must be non-negative."
+    assert r < 1.0, "Reduction factor must be less than 1.0."
+    self.__r = r
+    self.__w = self.__generate_w(self.__number_of_classes, self.__r, self.__device)
+    # print(f'w matrix:\n{self.__w}')
+
+  def __generate_w(self, number_of_classes, reduction_factor, device):
+    w = torch.zeros((number_of_classes, number_of_classes)).to(device)
+    for j in range(number_of_classes):
+      for i in range(number_of_classes):
+        w[j, i] = reduction_factor ** np.abs(i - j)
+    return w
+
+  def __repr__(self):
+    return "SimilarityBasedCrossEntropy"
+  
 class CDW_CELoss(nn.Module):
   """
   Implementation of the Class Distance Weighted Cross-Entropy Loss as described in https://arxiv.org/abs/2202.05167
