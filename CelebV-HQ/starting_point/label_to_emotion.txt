@@ -1,0 +1,8 @@
+0: neutral
+1: happy
+2: fear
+3: surprise
+4: anger
+5: sadness
+6: disgust
+7: contempt
