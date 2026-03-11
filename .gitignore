@@ -149,3 +149,7 @@ MAE_DFER/saved/model/pretraining/*
 partA/*
 VideoMAEv2/pretrained/*
 MAE_DFER/saved/*
+AgeDB/features/*
+AgeDB/images_age/*
+AgeDB/video/*
+UNBC/*
