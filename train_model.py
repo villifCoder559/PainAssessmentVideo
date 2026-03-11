@@ -19,7 +19,6 @@ from coral_pytorch.losses import coral_loss
 
 # Custom imports
 
-from sim_loss.age_estimation.loss import SimLoss  # type: ignore
 
 import custom.scripts as scripts
 import custom.helper as helper
@@ -135,7 +134,7 @@ def get_loss(loss_name, dict_args=None):
   elif loss_lower == 'sim_loss':
     if dict_args is None:
       raise ValueError("dict_args is required for 'sim_loss'.")
-    return SimLoss(
+    return losses.SimLoss(
       number_of_classes=dict_args['num_classes'],
       reduction_factor=dict_args['sim_loss_reduction'],
       device='cuda'
