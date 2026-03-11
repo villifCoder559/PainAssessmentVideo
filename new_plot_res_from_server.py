@@ -4,8 +4,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import os
-import shutil
-from cdw_cross_entropy_loss import cdw_cross_entropy_loss
 import custom.tools as tools
 from torchmetrics.classification import MulticlassConfusionMatrix
 import tqdm
@@ -377,7 +375,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         if isinstance(data['config']['criterion'],torch.nn.MSELoss):
           y_lim_loss = 15.1
           step_lim = 3
-        elif isinstance(data['config']['criterion'],cdw_cross_entropy_loss.CDW_CELoss):
+        elif isinstance(data['config']['criterion'],losses.CDW_CELoss):
           y_lim_loss = 35.1
           step_lim = 6
         elif isinstance(data['config']['criterion'],losses.RESupConLoss):
