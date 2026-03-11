@@ -18,7 +18,7 @@ import yaml
 from coral_pytorch.losses import coral_loss
 
 # Custom imports
-from cdw_cross_entropy_loss import cdw_cross_entropy_loss
+
 from sim_loss.age_estimation.loss import SimLoss  # type: ignore
 
 import custom.scripts as scripts
@@ -122,7 +122,7 @@ def get_loss(loss_name, dict_args=None):
   elif loss_lower == 'cdw_ce':
     if dict_args is None:
       raise ValueError("dict_args is required for 'cdw_ce' loss.")
-    return cdw_cross_entropy_loss.CDW_CELoss(
+    return losses.CDW_CELoss(
       num_classes=dict_args['num_classes'],
       alpha=dict_args['alpha'],
       delta=dict_args['cdw_ce_delta'],
