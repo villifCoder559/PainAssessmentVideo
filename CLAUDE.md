@@ -89,6 +89,25 @@ Augmentations defined in `helper.py`: hflip, jitter, rotation, latent_basic, lat
 
 ## Environment
 
-- Set `QT_QPA_PLATFORM=xcb` when running with display (see `.vscode/launch.json`)
 - Features stored in safetensors format
 - PyTorch + CUDA required
+
+## Code Style
+
+- **Indentation: 2 spaces** (not 4, not tabs)
+- Follow existing patterns in `custom/` for new modules
+- Type hints are encouraged but not enforced
+- **Every function must begin with a docstring** describing its purpose, arguments (with shapes/types), and return value. Use the following format:
+```python
+  def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """
+    Forward pass through the attentive head.
+
+    Args:
+      x:    Input feature tensor. Shape: (B, T, D) where B=batch, T=frames, D=embed dim.
+      mask: Optional attention mask. Shape: (B, T). True = ignore token.
+
+    Returns:
+      Prediction logits. Shape: (B, num_classes).
+    """
+```
