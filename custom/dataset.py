@@ -395,25 +395,30 @@ class customDataset(torch.utils.data.Dataset):
       video_path = os.path.join(self.path_dataset, subject_name, f"{sample_name}{self.video_extension}")
 
     # Open video and get properties
+    pid = os.getpid()
+    t_video_open = time.perf_counter()
     container = cv2.VideoCapture(video_path)
     tot_frames = int(container.get(cv2.CAP_PROP_FRAME_COUNT))
     # Set frame dimensions based on preprocessing requirements
     width_frames = int(container.get(cv2.CAP_PROP_FRAME_WIDTH))
     height_frames = int(container.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    helper.time_profile_dict[f'{pid}_video_open_time'] = helper.time_profile_dict.get(f'{pid}_video_open_time', 0) + (time.perf_counter() - t_video_open)
 
     if tot_frames == 0:
       raise ValueError(f"Video {video_path} has no frames. Please check the video file.")
     # Get frame indices based on sampling strategy
+    t_frame_sampling = time.perf_counter()
     try:
       list_indices = self.sample_frame_strategy(tot_frames)
     except ValueError as e:
       print(f"Error in sampling strategy for video {video_path}: {e}")
       raise e
+    helper.time_profile_dict[f'{pid}_video_frame_sampling_time'] = helper.time_profile_dict.get(f'{pid}_video_frame_sampling_time', 0) + (time.perf_counter() - t_frame_sampling)
     # Read and process frames
     time_read_video = time.perf_counter()
     frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames)
     container.release()
-    helper.train_time_logs['read_video'] = helper.train_time_logs.get('read_video',0) + (time.perf_counter() - time_read_video)
+    helper.time_profile_dict[f'{pid}_read_video_time'] = helper.time_profile_dict.get(f'{pid}_read_video_time', 0) + (time.perf_counter() - time_read_video)
 
     # Reshape frames for preprocessing
     nr_clips, nr_frames = frames_list.shape[:2]
@@ -422,16 +427,17 @@ class customDataset(torch.utils.data.Dataset):
     # [nr_clips, nr_frames, H, W, C] -> [nr_clips * nr_frames, H, W, C] -> [B,C,H,W]
     frames_list = frames_list.reshape(-1, *frames_list.shape[2:]).permute(0, 3, 1, 2)
     time_preprocess_video = time.perf_counter()
-    # Apply augmnentation based on training status
+    # Apply augmentation based on training status
     if not is_training:
-      preprocessed_tensors = self.preprocess_images(frames_list, 
+      preprocessed_tensors = self.preprocess_images(frames_list,
                                                     crop_size=(self.image_resize_h, self.image_resize_w),
                                                     color_jitter = self.color_jitter,
                                                     h_flip = self.h_flip,
                                                     rotation = self.rotation,
                                                     spatial_shift=self.spatial_shift) # [B,C,H,W]
     else:
-      # latent based augm. approaches are applied in _get_element function (at the end of file) 
+      # latent based augm. approaches are applied in _get_element function (at the end of file)
+      t_augm_setup = time.perf_counter()
       sample_id = self.video_labels.iloc[idx]['sample_id'] # csv_array.iloc[4]
       augmentation_type = helper.get_augmentation_type(sample_id)
       h_flip = True if augmentation_type == 'h_flip' else False
@@ -439,7 +445,8 @@ class customDataset(torch.utils.data.Dataset):
       rotation = True if augmentation_type == 'rotation' else False
       spatial_shift = True if augmentation_type == 'shift' else False
       zoom = True if augmentation_type == 'zoom' else False
-      preprocessed_tensors = self.preprocess_images(frames_list, 
+      helper.time_profile_dict[f'{pid}_preprocess_augm_setup_time'] = helper.time_profile_dict.get(f'{pid}_preprocess_augm_setup_time', 0) + (time.perf_counter() - t_augm_setup)
+      preprocessed_tensors = self.preprocess_images(frames_list,
                                                     crop_size=(self.image_resize_h, self.image_resize_w),
                                                     color_jitter=color_jitter,
                                                     h_flip=h_flip,zoom=zoom,
@@ -449,7 +456,7 @@ class customDataset(torch.utils.data.Dataset):
     # if nr_clips == 1:
     #   preprocessed_tensors = preprocessed_tensors.unsqueeze(0) # in case of single frame
     preprocessed_tensors = preprocessed_tensors.permute(0,2,1,3,4) # [B=nr_clips, T=nr_frames, C, H, W] -> [B, C, T, H, W]
-    helper.train_time_logs['preprocess_video'] = helper.train_time_logs.get('preprocess_video',0) + (time.perf_counter() - time_preprocess_video)
+    helper.time_profile_dict[f'{pid}_preprocess_video_time'] = helper.time_profile_dict.get(f'{pid}_preprocess_video_time', 0) + (time.perf_counter() - time_preprocess_video)
     
     # Create metadata tensors
     time_metadata = time.perf_counter()
@@ -457,7 +464,7 @@ class customDataset(torch.utils.data.Dataset):
     labels = torch.full((nr_clips,), int(self.video_labels.iloc[idx]['class_id']), dtype=torch.int32)
     subject_id = torch.full((nr_clips,), int(self.video_labels.iloc[idx]['subject_id']), dtype=torch.int32)
     path = np.repeat(video_path, nr_clips)
-    helper.train_time_logs['metadata'] = helper.train_time_logs.get('metadata',0) + (time.perf_counter() - time_metadata)  
+    helper.time_profile_dict[f'{pid}_metadata_time'] = helper.time_profile_dict.get(f'{pid}_metadata_time', 0) + (time.perf_counter() - time_metadata)
     return {
         'preprocess': preprocessed_tensors, # [B,C,T,H,W]
         'labels': labels,
@@ -558,28 +565,41 @@ class customDataset(torch.utils.data.Dataset):
     
     # Read frames from video
     frame_idx = 0
+    # t_decode_total = 0.0
+    # t_cvt_total = 0.0
+    # t_copy_total = 0.0
     while container.isOpened():
+      # t_decode = time.perf_counter()
       ret, frame = container.read()
+      # t_decode_total += time.perf_counter() - t_decode
       if not ret or frame_idx > max_end_frame:
         break
-            
+
       # Convert color format
+      # t_cvt = time.perf_counter()
       frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
+      # t_cvt_total += time.perf_counter() - t_cvt
+
       # Apply preprocessing if needed
       if self.preprocess_align or self.preprocess_frontalize or self.preprocess_crop_detection:
         raise NotImplementedError("Face preprocessing is not implemented yet.")
-        
+
       # Check if this frame should be included in any clip
+      # t_copy = time.perf_counter()
       mask = np.any(np.isin(list_indices, frame_idx),axis=1)
-      # mask =  
       if mask.any():
         frame_rgb = torch.tensor(frame, dtype=torch.uint8)
         extracted_frames[mask, pos[mask].long()] = frame_rgb
         pos[mask] += 1
-            
+      # t_copy_total += time.perf_counter() - t_copy
+
       frame_idx += 1
-    
+
+    pid = os.getpid()
+    # helper.time_profile_dict[f'{pid}_video_frame_decode_time'] = helper.time_profile_dict.get(f'{pid}_video_frame_decode_time', 0) + t_decode_total
+    # helper.time_profile_dict[f'{pid}_video_color_convert_time'] = helper.time_profile_dict.get(f'{pid}_video_color_convert_time', 0) + t_cvt_total
+    # helper.time_profile_dict[f'{pid}_video_frame_select_copy_time'] = helper.time_profile_dict.get(f'{pid}_video_frame_select_copy_time', 0) + t_copy_total
+
     return extracted_frames # [nr_clips, nr_frames, H, W, C]
 
   def _custom_collate_fn_extraction(self, batch):
@@ -626,7 +646,8 @@ class customDataset(torch.utils.data.Dataset):
     elif self.coral_loss:
       labels = levels_from_labelbatch(labels, self.num_classes, dtype=torch.float32)
     
-    helper.train_time_logs['custom_collate'] = helper.train_time_logs.get('custom_collate',0) + (time.perf_counter() - time_custom_collate)
+    pid = os.getpid()
+    helper.time_profile_dict[f'{pid}_custom_collate_time'] = helper.time_profile_dict.get(f'{pid}_custom_collate_time', 0) + (time.perf_counter() - time_custom_collate)
     # [B, C, T, H, W], padding applied in the model forward pass
     return {'x':data, 
            'key_padding_mask': None,

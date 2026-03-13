@@ -45,11 +45,12 @@ stoic_subjects = [27,28,32,33,34,35,36,39,40,41,42,44,51,53,55,56,61,64,74,87]
 saving_rate_training_logs = 3
 dict_data = None
 desired_order_csv = ['subject_id', 'subject_name', 'class_id', 'class_name', 'sample_id', 'sample_name']
-train_time_logs = {}
 
 # Profile workers in dataloader
 time_profile_dict = mp.Manager().dict()
 time_profiling_enabled = True
+
+PROFILING_GPU_SYNC = False
 
 AMP_ENABLED = False
 AMP_DTYPE = None
