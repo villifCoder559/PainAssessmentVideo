@@ -434,7 +434,8 @@ class BaseHead(nn.Module):
       print(f'Using standard precision training without autocast')
     
     return_embeddings = getattr(criterion, 'return_embeddings', False) or \
-                        kwargs['HSIC_lambda'] > 0.0 
+                        kwargs['HSIC_subject_lambda'] > 0.0 or \
+                        kwargs['HSIC_pain_lambda'] > 0.0
                         
     if return_embeddings:
       print('The criterion requires to return the video embeddings from the model during training\n')
@@ -458,8 +459,10 @@ class BaseHead(nn.Module):
     # dict_log_loader = {}
     # dict_view_logger = {}
     # epoch_mean_std_features = {}
-    train_epoch_mean_hsic = []
-    val_epoch_mean_hsic = []
+    train_epoch_mean_hsic_sbj = []
+    train_epoch_mean_hsic_pain = []
+    val_epoch_mean_hsic_sbj = []
+    val_epoch_mean_hsic_pain = []
     for epoch in range(num_epochs):
       start_epoch = time.perf_counter()
       self.train() 
@@ -499,7 +502,8 @@ class BaseHead(nn.Module):
       # dict_batch_loader = {}
       # dict_batch_view_loader = {}
       # batch_mean_std_feats = {}
-      batch_mean_hsic = []
+      batch_mean_hsic_sbj = []
+      batch_mean_hsic_pain = []
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
         end_load_batch = time.perf_counter()
         dict_log_time['load_batch'] = dict_log_time.get('load_batch',0) + end_load_batch - start_load_batch
@@ -614,16 +618,25 @@ class BaseHead(nn.Module):
             # Sum absolute values of all trainable parameters except biases
             l1_norm = sum(param.abs().sum() for name,param in self.named_parameters() if param.requires_grad and 'bias' not in name) 
             loss = loss + regularization_lambda_L1 * l1_norm 
-          if kwargs['HSIC_lambda']>0:
+          if kwargs['HSIC_subject_lambda'] > 0:
             batch_subjects = batch_subjects.to(device)
-            hsic = losses.marginal_hsic_loss(
+            hsic_subject = losses.marginal_hsic_loss(
                     z=dict_out['embeddings'],
                     id_labels=batch_subjects,
                     normalize_features=False,
-                    # y_labels=batch_y
                     )
-            loss = loss + kwargs['HSIC_lambda'] * hsic
-            batch_mean_hsic.append(hsic.item())
+            loss = loss + kwargs['HSIC_subject_lambda'] * hsic_subject
+            batch_mean_hsic_sbj.append(hsic_subject.item())
+          if kwargs['HSIC_pain_lambda'] > 0:
+            hsic_pain = losses.marginal_hsic_loss(
+                    z=dict_out['embeddings'],
+                    id_labels=batch_y,
+                    normalize_features=False,
+                    )
+            # enforce similarity between samples of the same pain class by maximizing hsic_pain, which is equivalent to minimizing -hsic_pain
+            loss = loss - kwargs['HSIC_pain_lambda'] * hsic_pain
+            batch_mean_hsic_pain.append(hsic_pain.item())
+          
         dict_log_time['loss_computation'] = dict_log_time.get('loss_computation',0) + time.perf_counter() - start_loss_computation
         if helper.PROFILING_GPU_SYNC and torch.cuda.is_available():
           torch.cuda.synchronize()
@@ -743,8 +756,10 @@ class BaseHead(nn.Module):
       # End of train loader
       list_lrs.append(list_batch_lr)
       list_wds.append(list_batch_wd)
-      train_epoch_mean_hsic.append(np.mean(batch_mean_hsic) if len(batch_mean_hsic)>0 else 0.0)
-      val_epoch_mean_hsic.append(np.mean(val_epoch_mean_hsic) if len(val_epoch_mean_hsic)>0 else 0.0)
+      train_epoch_mean_hsic_sbj.append(np.mean(batch_mean_hsic_sbj) if len(batch_mean_hsic_sbj)>0 else 0.0)
+      train_epoch_mean_hsic_pain.append(np.mean(batch_mean_hsic_pain) if len(batch_mean_hsic_pain)>0 else 0.0)
+      # val_epoch_mean_hsic_sbj.append(np.mean(val_epoch_mean_hsic_sbj) if len(val_epoch_mean_hsic_sbj)>0 else 0.0)
+      # val_epoch_mean_hsic_pain.append(np.mean(val_epoch_mean_hsic_pain) if len(val_epoch_mean_hsic_pain)>0 else 0.0)
       if adv_criterion is not None:
         list_train_adv_losses.append([batch_adv_loss / len(train_loader), batch_original_loss / len(train_loader)])
         batch_adv_predictions = torch.cat(batch_adv_predictions)
@@ -777,7 +792,8 @@ class BaseHead(nn.Module):
                                           epoch=epoch,
                                           history_val_sample_predictions=None,
                                           **kwargs)
-        
+      val_epoch_mean_hsic_sbj.append(dict_eval['val_hsic_subject'] if dict_eval is not None and 'val_hsic_subject' in dict_eval else 0.0)
+      val_epoch_mean_hsic_pain.append(dict_eval['val_hsic_pain'] if dict_eval is not None and 'val_hsic_pain' in dict_eval else 0.0)
       dict_log_time['eval'] = dict_log_time.get('eval',0) + time.perf_counter()-time_eval
       # print(f'  Evaluation time: {dict_log_time["eval"]:.4f}')
       
@@ -1076,8 +1092,10 @@ class BaseHead(nn.Module):
       'list_min_total_norm_epoch': np.array(total_norm_epoch).min(axis=1),
       'list_lrs': list_lrs,
       'list_wds': list_wds,
-      'train_epoch_mean_hsic': train_epoch_mean_hsic,
-      'val_epoch_mean_hsic': val_epoch_mean_hsic,
+      'train_epoch_mean_hsic_subject': train_epoch_mean_hsic_sbj,
+      'train_epoch_mean_hsic_pain': train_epoch_mean_hsic_pain,
+      'val_epoch_mean_hsic_subject': val_epoch_mean_hsic_sbj,
+      'val_epoch_mean_hsic_pain': val_epoch_mean_hsic_pain,
       'optimizer': optimizer.state_dict()['param_groups'],
       'optimizer_config': optimizer_factory.get_config(),
       # 'wd_scheduler': wd_scheduler.get_config() if wd_scheduler else None,
@@ -1152,7 +1170,8 @@ class BaseHead(nn.Module):
     l2_error = 0.0
     # debug_dict = {}
     val_dict_log_loss_steps = []
-    epoch_mean_hsic = []
+    epoch_mean_hsic_sbj = []
+    epoch_mean_hsic_pain = []
     with torch.no_grad():
       val_loss = 0.0
       loss_per_class = torch.zeros(2,len(val_loader.dataset.get_unique_classes()))
@@ -1173,7 +1192,8 @@ class BaseHead(nn.Module):
       enable_autocast = helper.AMP_ENABLED
       return_embeddings = getattr(criterion, 'return_embeddings', False) or \
                           helper.LOG_VIDEO_EMBEDDINGS['enable'] or \
-                          kwargs['HSIC_lambda']>0
+                          kwargs['HSIC_subject_lambda'] > 0 or \
+                          kwargs['HSIC_pain_lambda'] > 0
 
       
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(val_loader,total=len(val_loader),desc=f'{("Validation" if not is_test else "Test")}'):
@@ -1230,15 +1250,21 @@ class BaseHead(nn.Module):
         else:
           outputs = dict_out['logits']
           loss = criterion(outputs, batch_y)
-        if kwargs['HSIC_lambda']>0:
+        if kwargs['HSIC_subject_lambda'] > 0:
           batch_subjects = batch_subjects.to(device)
-          hsic = losses.marginal_hsic_loss(
+          hsic_subject = losses.marginal_hsic_loss(
                   z=dict_out['embeddings'],
                   id_labels=batch_subjects,
                   normalize_features=True,
-                  # y_labels=batch_y
                   )
-          epoch_mean_hsic.append(hsic.item())
+          epoch_mean_hsic_sbj.append(hsic_subject.item())
+        if kwargs['HSIC_pain_lambda'] > 0:
+          hsic_pain = losses.marginal_hsic_loss(
+                  z=dict_out['embeddings'],
+                  id_labels=batch_y,
+                  normalize_features=True,
+                  )
+          epoch_mean_hsic_pain.append(hsic_pain.item())
         #   adv_logits = dict_out['adv_logits']
         #   adv_loss = kwargs['adv_criterion'](adv_logits, batch_subjects)
         #   loss = loss + adv_loss * kwargs['adversarial_loss_lambda']
@@ -1339,7 +1365,8 @@ class BaseHead(nn.Module):
         'test_pearson_correlation': pearson_corr,
         'test_CCC': CCC,
         'test_ICC': ICC,
-        'test_hsic': np.mean(epoch_mean_hsic) if len(epoch_mean_hsic) > 0 else 0.0,
+        'test_hsic_subject': np.mean(epoch_mean_hsic_sbj) if len(epoch_mean_hsic_sbj) > 0 else 0.0,
+        'test_hsic_pain': np.mean(epoch_mean_hsic_pain) if len(epoch_mean_hsic_pain) > 0 else 0.0,
         'test_prediction_confidence_right_mean': np.mean(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
         'test_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
         'test_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
@@ -1362,7 +1389,8 @@ class BaseHead(nn.Module):
         'val_pearson_correlation': pearson_corr,
         'val_CCC': CCC,
         'val_ICC': ICC,
-        'val_hsic': np.mean(epoch_mean_hsic) if len(epoch_mean_hsic) > 0 else 0.0,
+        'val_hsic_subject': np.mean(epoch_mean_hsic_sbj) if len(epoch_mean_hsic_sbj) > 0 else 0.0,
+        'val_hsic_pain': np.mean(epoch_mean_hsic_pain) if len(epoch_mean_hsic_pain) > 0 else 0.0,
         'val_prediction_confidence_right_mean': np.mean(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
         'val_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
         'val_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,

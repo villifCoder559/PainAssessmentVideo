@@ -426,7 +426,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   rncloss_temp = _suggest(trial, 'rncloss_temp', kwargs['rncloss_temp'], kwargs['optuna_categorical'])
   only_contrastive_temp = _suggest(trial, 'only_contrastive_temp', kwargs['only_contrastive_temp'], kwargs['optuna_categorical'])
   only_contrastive_theta = _suggest(trial, 'only_contrastive_theta', kwargs['only_contrastive_theta'], kwargs['optuna_categorical'])
-  HSIC_lambda = _suggest(trial, 'HSIC_lambda', kwargs['HSIC_lambda'], kwargs['optuna_categorical'])
+  HSIC_subject_lambda = _suggest(trial, 'HSIC_subject_lambda', kwargs['HSIC_subject_lambda'], kwargs['optuna_categorical'])
+  HSIC_pain_lambda = _suggest(trial, 'HSIC_pain_lambda', kwargs['HSIC_pain_lambda'], kwargs['optuna_categorical'])
 
   # --- Suggest Training Strategy Params ---
   perfect_bal_strategy = trial.suggest_categorical('perfect_bal_strategy', kwargs['perfect_bal_strategy'])
@@ -714,7 +715,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'min_subjects_per_level': min_subjects_per_level,
     'debug_grad_flow': debug_grad_flow,
     'debug_grad_flow_batches': debug_grad_flow_batches,
-    'HSIC_lambda': HSIC_lambda,
+    'HSIC_subject_lambda': HSIC_subject_lambda,
+    'HSIC_pain_lambda': HSIC_pain_lambda,
   }
   add_kwargs.update(head_dependent_add_kwargs)
   
@@ -1074,7 +1076,8 @@ if __name__ == '__main__':
   parser.add_argument('--disent_loss_lambda', type=str, nargs='*', default=[None], help="Disentanglement loss lambda. First is for pain, second for subject id. Ex: 1.0,0.1 ")
   parser.add_argument('--disent_split_idx', type=int, nargs='*', default=[None], help="Index to split features for disentanglement.")
   parser.add_argument('--disent_ortho_lambda', type=float, nargs='*', default=[0.0], help="Orthogonality loss lambda for disentanglement. (0 to disable).")
-  parser.add_argument('--HSIC_lambda', type=float, nargs='*', default=[0.0], help="HSIC loss lambda for disentanglement. (0 to disable).")
+  parser.add_argument('--HSIC_subject_lambda', type=float, nargs='*', default=[0.0], help="HSIC loss lambda for subject identity disentanglement. (0 to disable).")
+  parser.add_argument('--HSIC_pain_lambda', type=float, nargs='*', default=[0.0], help="HSIC loss lambda for pain label disentanglement. (0 to disable).")
   parser.add_argument('--add_CCC_loss', type=float, nargs='*', default=[0.0], help='Add CCC loss.')
   parser.add_argument('--cdw_ce_alpha', type=float, nargs='*', default=[2], help='Alpha for CDW loss.')
   parser.add_argument('--cdw_ce_transform', type=str, nargs='*', default=['power'], help='Transform for CDW loss.')
