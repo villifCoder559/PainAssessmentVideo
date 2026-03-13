@@ -34,6 +34,7 @@ from custom.helper import (
 from custom.head import earlyStoppingAccuracy, earlyStoppingLoss
 from custom.tools import plot_masked_attention, get_pth_path_from_project_folder
 from custom.optimizers import OptimizerFactory
+from custom.logger import setup_logger
 
 os.environ["OPTUNA_DISABLE_TELEMETRY"] = "1"
 
@@ -435,6 +436,11 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   stride_inside_window = trial.suggest_categorical('stride_inside_window', kwargs['stride_inside_window'])
   use_sdpa = trial.suggest_categorical('use_sdpa', kwargs['use_sdpa'])
   train_backbone = trial.suggest_categorical('train_backbone', kwargs['train_backbone'])
+  unfreeze_layers = trial.suggest_categorical('unfreeze_layers', kwargs['unfreeze_layers'])
+  if train_backbone == 1 and unfreeze_layers is None:
+    raise ValueError("unfreeze_layers must be explicitly set when train_backbone=1.")
+  if unfreeze_layers is not None and unfreeze_layers > 0 and train_backbone == 0:
+    raise ValueError("unfreeze_layers > 0 requires train_backbone=1 for this trial.")
   debug_grad_flow = trial.suggest_categorical('debug_grad_flow', kwargs['debug_grad_flow'])
   debug_grad_flow_batches = trial.suggest_categorical('debug_grad_flow_batches', kwargs['debug_grad_flow_batches'])
   
@@ -639,6 +645,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     }
 
   head_params['train_backbone'] = train_backbone
+  head_params['unfreeze_layers'] = unfreeze_layers
 
   # Avoid duplicate trials check
   for past in trial.study.trials:
@@ -984,6 +991,15 @@ def validate_arguments(dict_args):
     if train_backbone_flag not in [0, 1]:
       raise ValueError("train_backbone must be 0 or 1.")
 
+  for unfreeze_layers_val in dict_args.get('unfreeze_layers', [None]):
+    if unfreeze_layers_val is not None and unfreeze_layers_val < 0:
+      raise ValueError("unfreeze_layers must be >= 0.")
+  if any(v == 1 for v in dict_args['train_backbone']) and all(v is None for v in dict_args.get('unfreeze_layers', [None])):
+    raise ValueError("--unfreeze_layers must be explicitly set when --train_backbone 1 is used.")
+  non_none_ul = [v for v in dict_args.get('unfreeze_layers', [None]) if v is not None]
+  if non_none_ul and max(non_none_ul) > 0 and all(v == 0 for v in dict_args['train_backbone']):
+    raise ValueError("unfreeze_layers > 0 requires train_backbone=1.")
+
   for debug_grad_flow_flag in dict_args['debug_grad_flow']:
     if debug_grad_flow_flag not in [0, 1]:
       raise ValueError("debug_grad_flow must be 0 or 1.")
@@ -1072,6 +1088,7 @@ if __name__ == '__main__':
   parser.add_argument('--composite_loss_lambda', nargs='*', type=str, default=[None], help='Lambda for composite loss.')
   parser.add_argument('--use_sdpa', type=int, nargs='*', default=[1], help='Use SDPA.')
   parser.add_argument('--train_backbone', type=int, nargs='*', default=[0], help='Train video backbone weights (1) or freeze them (0).')
+  parser.add_argument('--unfreeze_layers', type=int, nargs='*', default=[None], help='Number of last backbone encoder blocks to unfreeze when train_backbone=1. Required when train_backbone=1. 0 = unfreeze all trainable params.')
   parser.add_argument('--debug_grad_flow', type=int, nargs='*', default=[0], help='Log gradient-flow summary during training (1 to enable).')
   parser.add_argument('--debug_grad_flow_batches', type=int, nargs='*', default=[1], help='Number of batches per epoch to log gradient-flow stats for.')
   parser.add_argument('--rncloss_temp', type=str, nargs='*', default=[None], help='Temperature for RnCLoss.')
@@ -1142,6 +1159,7 @@ if __name__ == '__main__':
   parser.add_argument('--log_xattn', action='store_true', help='Log xattn.')
   parser.add_argument('--log_grad_norm', action='store_true', help='Log grad norm.')
   parser.add_argument('--log_workers', action='store_true', help='Log workers.')
+  parser.add_argument('--profile_gpu_sync', action='store_true', help='Enable torch.cuda.synchronize() in profiling timers for accurate GPU timing.')
   parser.add_argument('--save_best_model', action='store_true', help='Save best model.')
   parser.add_argument('--save_last_epoch_model', action='store_true', help='Save last epoch model.')
   parser.add_argument('--adversarial_head', type=int, nargs='*', default=[0], help='Add adversarial head.')
@@ -1216,6 +1234,9 @@ if __name__ == '__main__':
   if dict_args['log_workers']:
     helper.time_profiling_enabled = True
 
+  if dict_args['profile_gpu_sync']:
+    helper.PROFILING_GPU_SYNC = True
+
   if dict_args['save_last_epoch_model']:
     helper.SAVE_LAST_EPOCH_MODEL = True
     helper.SAVE_PTH_MODEL = True
@@ -1265,6 +1286,8 @@ if __name__ == '__main__':
   # Save Config Prompt
   if not os.path.exists(args.global_folder_name):
     os.makedirs(args.global_folder_name)
+
+  setup_logger(args.global_folder_name)
 
   with open(os.path.join(args.global_folder_name, '_config_prompt.txt'), 'w') as f:
     f.write(f'launch_command: {" ".join(sys.argv)}\n')

@@ -1,4 +1,5 @@
 import os
+import time
 import torch
 import sys
 import yaml
@@ -14,6 +15,7 @@ from MAE_DFER import modeling_pretrain as dfer_modeling
 from VideoMAEv2.models.modeling_pretrain import pretrain_videomae_giant_patch14_224, pretrain_videomae_base_patch16_224,pretrain_videomae_small_patch16_224
 from transformers import ViTFeatureExtractor, ViTModel
 from custom.helper import MODEL_TYPE, ModelTypeEntry
+import custom.helper as helper
 import torch.nn as nn
 from functools import partial
 
@@ -51,23 +53,30 @@ class VideoBackbone(BackboneBase):
   """Video feature extraction backbone using VideoMAEv2."""
   
   def __init__(
-    self, 
+    self,
     model_type: ModelTypeEntry,
     remove_head: bool = True,
     adapter_dict: dict = None,
     use_sdpa: bool = False,
     freeze_backbone: bool = True,
     custom_model_path: bool = False,
+    unfreeze_layers: int = 0,
   ):
     """Initialize the video backbone.
-    
+
     Args:
-      model_type: Type of model to use from MODEL_TYPE enum
-      remove_head: Whether to remove classification head
-      download_if_unavailable: Download model if not found locally
-    
+      model_type:        Type of model to use from MODEL_TYPE enum.
+      remove_head:       Whether to remove classification head.
+      adapter_dict:      Optional adapter configuration dict.
+      use_sdpa:          Whether to use scaled dot-product attention.
+      freeze_backbone:   If True, freeze all backbone parameters.
+      custom_model_path: Use a custom model path instead of the default.
+      unfreeze_layers:   Number of last encoder blocks to unfreeze when
+                         freeze_backbone=False. 0 means unfreeze all.
+
     Raises:
-      AssertionError: If model type is invalid or model file not found
+      AssertionError: If model type is invalid or model file not found.
+      ValueError:     If unfreeze_layers exceeds the number of encoder blocks.
     """
     super().__init__()
     
@@ -93,15 +102,9 @@ class VideoBackbone(BackboneBase):
       else:
         self.model = self._load_model_finetune(model_type, remove_head=remove_head, use_sdpa=use_sdpa)
       
-      if freeze_backbone:
-        for param in self.model.parameters():
-          param.requires_grad = False
-        print('VideoBackbone params are frozen (freeze_backbone=True).')
-      else:
-        for param in self.model.parameters():
-          param.requires_grad = True
-        print('VideoBackbone params are trainable (freeze_backbone=False).')
-      
+      self.encoder_blocks = self.model.blocks
+      self._apply_freeze_logic(freeze_backbone, unfreeze_layers)
+
       # Cache important model parameters for efficient access
       self.tubelet_size = self.model.patch_embed.tubelet_size
       self.img_size = self.model.patch_embed.img_size[0]  # [224, 224]
@@ -126,6 +129,8 @@ class VideoBackbone(BackboneBase):
       self.embed_dim = self.model.config.hidden_size
       self.frame_size = self.model.config.frames_per_clip
       self.remove_head = remove_head
+      self.encoder_blocks = None  # VJEPA2: block list not wired; fallback to all-or-nothing
+      self._apply_freeze_logic(freeze_backbone, unfreeze_layers)
       
     elif model_type == MODEL_TYPE.DFER:
       if adapter_dict is not None:
@@ -191,10 +196,59 @@ class VideoBackbone(BackboneBase):
       self.out_spatial_size = self.img_size // self.patch_size  # 160/16 = 10
       self.embed_dim = self.model.embed_dim
       self.frame_size = 16  # Default frame size
+      self.encoder_blocks = self.model.blocks
+      self._apply_freeze_logic(freeze_backbone, unfreeze_layers)
     else:
       raise ValueError(f"Unsupported model type: {model_type}")
     self.adapter_dict = adapter_dict
 
+
+  def _apply_freeze_logic(self, freeze_backbone: bool, unfreeze_layers: int) -> None:
+    """
+    Apply parameter freezing/unfreezing logic to self.model.
+
+    Args:
+      freeze_backbone: If True, freeze all parameters (unfreeze_layers is ignored).
+      unfreeze_layers: Number of last encoder blocks to unfreeze when
+                       freeze_backbone=False. 0 means unfreeze all parameters.
+
+    Raises:
+      ValueError: If unfreeze_layers exceeds the total number of encoder blocks.
+    """
+    if freeze_backbone:
+      for param in self.model.parameters():
+        param.requires_grad = False
+      print('VideoBackbone params are frozen (freeze_backbone=True).')
+      return
+
+    if unfreeze_layers == 0:
+      for param in self.model.parameters():
+        param.requires_grad = True
+      print('VideoBackbone params are fully trainable (unfreeze_layers=0).')
+      return
+
+    # Partial unfreezing: freeze all first, then unfreeze last N blocks
+    if self.encoder_blocks is None:
+      # VJEPA2 fallback: no block list wired, unfreeze all
+      for param in self.model.parameters():
+        param.requires_grad = True
+      print('VideoBackbone (VJEPA2): no block list found, unfreezing all params.')
+      return
+
+    n_blocks = len(self.encoder_blocks)
+    if unfreeze_layers > n_blocks:
+      raise ValueError(
+        f"unfreeze_layers={unfreeze_layers} exceeds total encoder blocks={n_blocks}."
+      )
+
+    for param in self.model.parameters():
+      param.requires_grad = False
+
+    for block in self.encoder_blocks[-unfreeze_layers:]:
+      for param in block.parameters():
+        param.requires_grad = True
+
+    print(f'VideoBackbone: last {unfreeze_layers}/{n_blocks} encoder blocks unfrozen.')
 
   def load_pretrained_weights(self):
     if self.model_type in [MODEL_TYPE.VIDEOMAE_v2_B, MODEL_TYPE.VIDEOMAE_v2_G, MODEL_TYPE.VIDEOMAE_v2_G_unl, MODEL_TYPE.VIDEOMAE_v2_S]:
@@ -308,16 +362,19 @@ class VideoBackbone(BackboneBase):
     # Shape validation
     if x.dim() != 5:
       raise ValueError(f"Expected 5D input tensor [B,C,T,H,W], got {x.shape}")
-    
+
     # Move model and input to device
+    pid = os.getpid()
+    t_setup = time.perf_counter()
     self.model.to(self.device)
     x = x.to(self.device)
     # Extract features
     if not self.model.training:
       self.model.eval()
-    # with torch.no_grad():
+    helper.time_profile_dict[f'{pid}_backbone_setup_time'] = helper.time_profile_dict.get(f'{pid}_backbone_setup_time', 0) + (time.perf_counter() - t_setup)
+
     # Forward pass
-    # print(f'Free GPU memory: {torch.cuda.memory_reserved() / 1e9} GB')
+    t_encoder = time.perf_counter()
     if 'forward_features' in dir(self.model):
       args = {'x':x, 'return_embedding':return_embedding, 'return_attn':return_attn}
       feat,attn = self.model.forward_features(**args)
@@ -326,19 +383,22 @@ class VideoBackbone(BackboneBase):
       if 'last_hidden_state' in dir(feat):
         feat = feat.last_hidden_state
       attn = None
-      # Process and reshape features if needed
-      
-      
+    if helper.PROFILING_GPU_SYNC and torch.cuda.is_available():
+      torch.cuda.synchronize()
+    helper.time_profile_dict[f'{pid}_backbone_encoder_time'] = helper.time_profile_dict.get(f'{pid}_backbone_encoder_time', 0) + (time.perf_counter() - t_encoder)
+
+    # Reshape features
+    t_reshape = time.perf_counter()
     if return_embedding:
       B = feat.shape[0]  # Batch size
-      
+
       # Calculate dimensions
       T = int(feat.shape[1] / (self.out_spatial_size ** 2))  # Temporal dimension
       S = int(self.out_spatial_size)  # Spatial dimension
-      
+
       feat = feat.reshape(B, T, S, S, self.embed_dim)# [B, T, S, S, embed_dim], e.g. [1, 8, 14, 14, 768]
-    # feat = feat.to('cpu')
-    # self.model.to('cpu') # Only for local testing
+    helper.time_profile_dict[f'{pid}_backbone_reshape_time'] = helper.time_profile_dict.get(f'{pid}_backbone_reshape_time', 0) + (time.perf_counter() - t_reshape)
+
     if return_attn:
       attn = attn.to('cpu')
       return feat, attn  # Return both features and attention maps

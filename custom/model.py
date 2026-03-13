@@ -37,11 +37,13 @@ class Model_Advanced: # Scenario_Advanced
     
     if model_type != MODEL_TYPE.ViT_image:
       freeze_backbone = not head_params.get('train_backbone', 0)
+      unfreeze_layers = head_params.get('unfreeze_layers', 0)
       self.backbone = VideoBackbone(
         model_type,
         adapter_dict=adapter_dict,
         use_sdpa=use_sdpa,
         freeze_backbone=freeze_backbone,
+        unfreeze_layers=unfreeze_layers,
       )
     else:
       self.backbone = VitImageBackbone()
