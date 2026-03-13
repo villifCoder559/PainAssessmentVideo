@@ -1099,19 +1099,21 @@ class DisentangledLoss(nn.Module):
     
     total_loss = self.lambda_pain * loss_pain + self.lambda_subj * loss_subj
     
-    
     # 3. Orthogonality Loss
+    ortho_loss_val = torch.tensor(0.0, device=features.device)
     if self.ortho_lambda > 0:
-      # Normalize per sample (L2)
-      feat_pain_norm = F.normalize(feat_pain, p=2, dim=1)
-      feat_subj_norm = F.normalize(feat_subj, p=2, dim=1)
       
       # Center features across batch
-      feat_pain_centered = feat_pain_norm - feat_pain_norm.mean(dim=0, keepdim=True)
-      feat_subj_centered = feat_subj_norm - feat_subj_norm.mean(dim=0, keepdim=True)
+      feat_pain_centered = feat_pain - feat_pain.mean(dim=0, keepdim=True)
+      feat_subj_centered = feat_subj - feat_subj.mean(dim=0, keepdim=True)
+      
+      # # Normalize per sample (L2)
+      # feat_pain_norm = F.normalize(feat_pain_centered, p=2, dim=1)
+      # feat_subj_norm = F.normalize(feat_subj_centered, p=2, dim=1)
+      
       
       # Cross-covariance matrix [D_pain, D_subj]
-      cross_cov = torch.matmul(feat_pain_centered.T, feat_subj_centered) / B
+      cross_cov = torch.matmul(feat_pain_centered.T, feat_subj_centered) / (B-1)
       
       # Frobenius norm squared
       ortho_loss_val = (cross_cov ** 2).sum()
@@ -1124,6 +1126,7 @@ class DisentangledLoss(nn.Module):
       'loss_pain': loss_pain.item(),
       'loss_subj': loss_subj.item(),
       'lambda_pain': self.lambda_pain,
+      'ortho_loss': ortho_loss_val.item() if self.ortho_lambda > 0 else 0.0,
       'lambda_subj': self.lambda_subj,
       'ortho_lambda': self.ortho_lambda,
     }
@@ -1157,12 +1160,110 @@ def hsic_linear(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
 
   return (full_sum - diag_sum) / (n * (n - 3))
 
+def rbf_kernel(x: torch.Tensor, sigma: float = None) -> torch.Tensor:
+  """
+  Compute RBF (Gaussian) kernel matrix for input x.
+
+  Args:
+      x: [B, C] tensor of embeddings
+      sigma: bandwidth of RBF kernel. If None, use median heuristic
+
+  Returns:
+      K: [B, B] RBF kernel matrix
+  """
+  # B = x.size(0)
+
+  # pairwise squared Euclidean distances
+  x_norm = (x ** 2).sum(dim=1).view(-1, 1)  # [B, 1]
+  dist2 = x_norm + x_norm.t() - 2 * (x @ x.t())
+
+  # median heuristic for sigma
+  if sigma is None:
+    sigma = torch.median(dist2[dist2 > 0])
+    sigma = sigma.sqrt()
+    if sigma == 0:
+      sigma = 1.0
+
+  K = torch.exp(-dist2 / (2 * sigma ** 2))
+  return K
+
+def hsic_rbf(x: torch.Tensor, y: torch.Tensor, sigma_x: float = None, sigma_y: float = None) -> torch.Tensor:
+  """
+  Compute HSIC between x and y using RBF kernels.
+
+  Args:
+      x: [B, Cx] embeddings
+      y: [B, Cy] embeddings or one-hot labels
+      sigma_x: bandwidth for x
+      sigma_y: bandwidth for y
+
+  Returns:
+      scalar HSIC value
+  """
+  B = x.size(0)
+  assert B > 1, "Batch size must be > 1"
+
+  # Compute kernel matrices
+  K = rbf_kernel(x, sigma=sigma_x)
+  L = rbf_kernel(y, sigma=sigma_y)
+
+  # Centering matrix
+  H = torch.eye(B, device=x.device) - (1.0 / B) * torch.ones(B, B, device=x.device)
+
+  Kc = H @ K @ H
+  Lc = H @ L @ H
+
+  hsic = torch.trace(Kc @ Lc) / ((B - 1) ** 2)
+  return hsic
+
+def marginal_hsic_loss(
+  z: torch.Tensor,
+  id_labels: torch.Tensor,
+  normalize_features: bool = True,
+  sigma_z: float = None,
+  sigma_id: float = None,
+) -> torch.Tensor:
+  """
+  Marginal HSIC loss:  HSIC(Z, ID)
+
+  Penalises *any* statistical dependence between the learned features Z
+  and the nuisance variable ID, regardless of the class label Y.
+
+  This is a stronger constraint than the conditional version: it forces
+  the entire feature distribution to be identical across identities.
+
+  Args:
+    z:          [B, D]  feature embeddings from the model
+    id_labels:  [B]     integer identity / domain labels
+    normalize_features: whether to L2-normalise z first
+    sigma_z:    RBF bandwidth for z (None → median heuristic)
+    sigma_id:   RBF bandwidth for the ID one-hot (None → median heuristic)
+
+  Returns:
+    Scalar HSIC value (to be minimised)
+  """
+  if normalize_features:
+    z = F.normalize(z, dim=1)
+
+  id_labels = id_labels.long()
+
+  # Remap IDs to consecutive local indices (same trick as conditional version)
+  _, id_local = torch.unique(id_labels, return_inverse=True)
+  n_ids = id_local.max().item() + 1
+
+  # Need at least 2 distinct identities in the batch, otherwise
+  # the one-hot matrix has one column and HSIC is trivially zero.
+  if n_ids < 2:
+    return torch.zeros(1, device=z.device, dtype=z.dtype, requires_grad=True).squeeze()
+
+  id_onehot = F.one_hot(id_local, num_classes=n_ids).float().to(z.device)
+
+  return hsic_rbf(z, id_onehot, sigma_x=sigma_z, sigma_y=sigma_id)
 
 def conditional_hsic_loss(
   z: torch.Tensor,
   id_labels: torch.Tensor,
   y_labels: torch.Tensor,
-  num_ids: int,
   min_group_size: int = 5,
   normalize_features: bool = True,
 ) -> torch.Tensor:
@@ -1198,7 +1299,8 @@ def conditional_hsic_loss(
     n_local = id_y_local.max().item() + 1
     id_onehot = F.one_hot(id_y_local, num_classes=n_local).float()
 
-    hsic_val = hsic_linear(z_y, id_onehot)
+    # hsic_val = hsic_linear(z_y, id_onehot)
+    hsic_val = hsic_rbf(z_y, id_onehot)
     total_hsic = total_hsic + hsic_val * group_size
     total_weight += group_size
 

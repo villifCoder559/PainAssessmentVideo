@@ -13,7 +13,6 @@ from custom.optimizers import OptimizerFactory
 from custom.helper import CUSTOM_DATASET_TYPE
 import torch.nn.init as init
 import custom.helper as helper
-from custom.dataset import balancedBatchSampler
 from torch.nn.utils.rnn import pack_padded_sequence,pack_padded_sequence
 from custom.dataset import get_dataset_and_loader
 import custom.dataset as dataset_utils
@@ -459,11 +458,10 @@ class BaseHead(nn.Module):
     # dict_log_loader = {}
     # dict_view_logger = {}
     # epoch_mean_std_features = {}
-    epoch_rncloss_logs_list = []
-    epoch_mean_features_log_norm = []
-    epoch_std_features_log_norm = []
+    train_epoch_mean_hsic = []
+    val_epoch_mean_hsic = []
     for epoch in range(num_epochs):
-      start_epoch = time.time()
+      start_epoch = time.perf_counter()
       self.train() 
       list_train_epoch_predictions = []
       list_train_ground_truths = []
@@ -485,8 +483,8 @@ class BaseHead(nn.Module):
       batch_train_confidence_prediction_wrong_std = []
       batch_dict_gradient_per_module = {}
       dict_log_time = {}
-      dict_log_time['pre_batch'] = dict_log_time.get('pre_batch',0) + time.time() - start_epoch
-      start_load_batch = time.time()
+      dict_log_time['pre_batch'] = dict_log_time.get('pre_batch',0) + time.perf_counter() - start_epoch
+      start_load_batch = time.perf_counter()
       torch.cuda.reset_peak_memory_stats(device)
       list_batch_lr = []
       total_steps = num_epochs * len(train_loader)
@@ -501,12 +499,11 @@ class BaseHead(nn.Module):
       # dict_batch_loader = {}
       # dict_batch_view_loader = {}
       # batch_mean_std_feats = {}
-      batch_mean_features_log_norm = []
-      batch_std_features_log_norm = []
+      batch_mean_hsic = []
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
-        end_load_batch = time.time()
+        end_load_batch = time.perf_counter()
         dict_log_time['load_batch'] = dict_log_time.get('load_batch',0) + end_load_batch - start_load_batch
-        time_to_count_subjects = time.time()
+        time_to_count_subjects = time.perf_counter()
         # feat_std = features.std(dim=0).mean().item()
         # for sample in sample_id:
         #   aug_type = helper.get_augmentation_type(sample)
@@ -521,8 +518,8 @@ class BaseHead(nn.Module):
         tmp = torch.isin(train_unique_subjects,batch_subjects)
         _,count_sample_per_subject = torch.unique(batch_subjects, return_counts=True)
         sample_per_subject_count[tmp] += count_sample_per_subject
-        dict_log_time['count_subjects'] = dict_log_time.get('count_subjects',0) + time.time() - time_to_count_subjects
-        transfer_to_device = time.time() 
+        dict_log_time['count_subjects'] = dict_log_time.get('count_subjects',0) + time.perf_counter() - time_to_count_subjects
+        transfer_to_device = time.perf_counter()
         # HuberLoss requires float32 inputs
         if batch_y.dtype == torch.int32: # if ce not has label smoothing
           if isinstance(criterion, (torch.nn.HuberLoss, torch.nn.MSELoss, torch.nn.L1Loss)):
@@ -535,7 +532,7 @@ class BaseHead(nn.Module):
           batch_subjects = batch_subjects.to(torch.long).to(device)
         
         dict_batch_X = {key: value.to(device) if value is not None else None for key, value in dict_batch_X.items()}
-        dict_log_time['transfer_to_device'] = dict_log_time.get('transfer_to_device',0) + time.time() - transfer_to_device
+        dict_log_time['transfer_to_device'] = dict_log_time.get('transfer_to_device',0) + time.perf_counter() - transfer_to_device
         optimizer.zero_grad()
         
         helper.LOG_CROSS_ATTENTION['state'] = 'train'
@@ -543,11 +540,16 @@ class BaseHead(nn.Module):
         dict_batch_X['return_video_emb'] = return_embeddings
         if adv_criterion is not None:
           dict_batch_X['adv_alpha'] = adv_alpha.get_adv_alpha(current_step = epoch * train_loader_len + count_batch)
-        start_forward = time.time()
+        start_forward = time.perf_counter()
         with autocast(device_type=device, dtype=amp_dtype, enabled=enable_autocast): # Use autocast for mixed precision training
+          start_model_forward = time.perf_counter()
           dict_out = self(**dict_batch_X) # input [batch, seq_len, emb_dim]
           if dict_out['logits'].shape[1] == 1: # if regression I don't need to keep dim 1
             dict_out['logits'] = dict_out['logits'].squeeze(1)
+          if helper.PROFILING_GPU_SYNC and torch.cuda.is_available():
+            torch.cuda.synchronize()
+          dict_log_time['model_forward'] = dict_log_time.get('model_forward',0) + time.perf_counter() - start_model_forward
+          start_loss_computation = time.perf_counter()
           # std_features = dict_out['logits'].detach().cpu().std(dim=0).mean().item()
           # avg_norm = dict_out['logits'].detach().cpu().norm(p=2, dim = 1).mean().item()
           # batch_mean_features_log_norm.append(avg_norm)
@@ -589,7 +591,7 @@ class BaseHead(nn.Module):
             batch_adv_predictions.append(torch.argmax(adv_logits, dim=1).detach().cpu())
             batch_adv_gt.append(batch_subjects.detach().cpu())
             if helper.LOG_GRADIENT_NORM:
-              start_log_grad = time.time()
+              start_log_grad = time.perf_counter()
               task_norm = torch.autograd.grad(loss,
                                               [p for p in self.parameters() if p.requires_grad], 
                                               allow_unused=True,
@@ -604,7 +606,7 @@ class BaseHead(nn.Module):
               adv_norm = torch.cat([g.flatten() for g in adv_norm]).norm(2).detach().cpu().item()
               batch_task_grad_norm.append(task_norm)
               batch_adv_grad_norm.append(adv_norm*dict_batch_X['adv_alpha'])
-              dict_log_time['log_adv_grad'] = dict_log_time.get('log_adv_grad',0) + time.time() - start_log_grad
+              dict_log_time['log_adv_grad'] = dict_log_time.get('log_adv_grad',0) + time.perf_counter() - start_log_grad
             loss = loss + adv_loss * kwargs['adversarial_loss_lambda']
           
           outputs = dict_out['logits']
@@ -614,21 +616,24 @@ class BaseHead(nn.Module):
             loss = loss + regularization_lambda_L1 * l1_norm 
           if kwargs['HSIC_lambda']>0:
             batch_subjects = batch_subjects.to(device)
-            hsic = losses.conditional_hsic_loss(
+            hsic = losses.marginal_hsic_loss(
                     z=dict_out['embeddings'],
                     id_labels=batch_subjects,
-                    normalize_features=True,
-                    num_ids=total_train_unique_subjects,
-                    y_labels=batch_y)
+                    normalize_features=False,
+                    # y_labels=batch_y
+                    )
             loss = loss + kwargs['HSIC_lambda'] * hsic
-        dict_log_time['forward'] = dict_log_time.get('forward',0) + time.time()-start_forward
-        # dict_log_time['loss'] = dict_log_time.get('loss',0) + time.time()-start_loss
-        # print(f'  Loss time: {dict_log_time['loss']-start_loss:.4f}')
-        start_back = time.time()
+            batch_mean_hsic.append(hsic.item())
+        dict_log_time['loss_computation'] = dict_log_time.get('loss_computation',0) + time.perf_counter() - start_loss_computation
+        if helper.PROFILING_GPU_SYNC and torch.cuda.is_available():
+          torch.cuda.synchronize()
+        dict_log_time['forward'] = dict_log_time.get('forward',0) + time.perf_counter()-start_forward
+        start_back = time.perf_counter()
         scaler.scale(loss).backward() # Use scaler for mixed precision training
-        # loss.backward()     
-        dict_log_time['backward'] = dict_log_time.get('backward',0) + time.time()-start_back
-        log_gradient_start = time.time()
+        if helper.PROFILING_GPU_SYNC and torch.cuda.is_available():
+          torch.cuda.synchronize()
+        dict_log_time['backward'] = dict_log_time.get('backward',0) + time.perf_counter()-start_back
+        log_gradient_start = time.perf_counter()
         scaler.unscale_(optimizer)  # Unscale gradients before clipping
         if clip_grad_norm:
           total_norm=torch.nn.utils.clip_grad_norm_(self.parameters(), clip_grad_norm).detach().cpu() #  torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)
@@ -637,14 +642,16 @@ class BaseHead(nn.Module):
           
         else:
           total_norm = torch.tensor(0.0)
-        dict_log_time['log_gradient'] = dict_log_time.get('log_gradient',0) + time.time() - log_gradient_start
+        dict_log_time['log_gradient'] = dict_log_time.get('log_gradient',0) + time.perf_counter() - log_gradient_start
         total_norm_epoch[epoch].append(total_norm.item())
-        start_optimizer = time.time()
+        start_optimizer = time.perf_counter()
         prev_scale = scaler.get_scale()
         scaler.step(optimizer)  # Use scaler to step the optimizer
         scaler.update()
         optimizer_step_skipped = enable_scaler and (scaler.get_scale() < prev_scale)
-        dict_log_time['optimizer'] = dict_log_time.get('optimizer',0) + time.time()-start_optimizer
+        if helper.PROFILING_GPU_SYNC and torch.cuda.is_available():
+          torch.cuda.synchronize()
+        dict_log_time['optimizer'] = dict_log_time.get('optimizer',0) + time.perf_counter()-start_optimizer
         train_loss += loss.item()
         
         # Log learning rate and weight decay
@@ -657,7 +664,7 @@ class BaseHead(nn.Module):
         if wd_scheduler and not optimizer_step_skipped:
           wd_scheduler.step()
           
-        start_logs = time.time()
+        start_logs = time.perf_counter()
         if not is_resupcon_loss and not is_rnc_loss and (helper.LOG_PER_CLASS or helper.LOG_PER_SUBJECT or helper.LOG_CONFIDENCE_PREDICTION):
           if is_coral_loss:
             outputs = proba_to_label(torch.sigmoid(outputs)) # convert probabilities to labels for coral loss
@@ -729,13 +736,15 @@ class BaseHead(nn.Module):
                                               tensor_predictions=outputs.detach().cpu() if criterion in [torch.nn.L1Loss, torch.nn.MSELoss, torch.nn.HuberLoss] else predictions,
                                               epoch=epoch)
           # list_memory_snap.append(tracemalloc.take_snapshot())
-          dict_log_time['batch_logs'] = dict_log_time.get('batch_logs',0) + time.time()-start_logs 
+          dict_log_time['batch_logs'] = dict_log_time.get('batch_logs',0) + time.perf_counter()-start_logs 
           # dict_log_time['batch'] = dict_log_time.get('batch',0) + time.time()-end_load_batch
-        start_load_batch = time.time()
-        
+        start_load_batch = time.perf_counter()
+
       # End of train loader
       list_lrs.append(list_batch_lr)
       list_wds.append(list_batch_wd)
+      train_epoch_mean_hsic.append(np.mean(batch_mean_hsic) if len(batch_mean_hsic)>0 else 0.0)
+      val_epoch_mean_hsic.append(np.mean(val_epoch_mean_hsic) if len(val_epoch_mean_hsic)>0 else 0.0)
       if adv_criterion is not None:
         list_train_adv_losses.append([batch_adv_loss / len(train_loader), batch_original_loss / len(train_loader)])
         batch_adv_predictions = torch.cat(batch_adv_predictions)
@@ -743,7 +752,7 @@ class BaseHead(nn.Module):
         list_train_adv_accuracies.append(sum((batch_adv_predictions == batch_adv_gt).float()).item() / len(batch_adv_predictions))
         grad_adv_norm_epoch.append(torch.tensor(batch_adv_grad_norm).mean().item() if len(batch_adv_grad_norm)>0 else 0.0)
         grad_task_norm_epoch.append(torch.tensor(batch_task_grad_norm).mean().item() if len(batch_task_grad_norm)>0 else 0.0)
-      time_eval = time.time()
+      time_eval = time.perf_counter()
       dict_eval = None
       if val_csv_path is not None:
         dict_eval = self.evaluate(criterion=criterion,
@@ -769,10 +778,10 @@ class BaseHead(nn.Module):
                                           history_val_sample_predictions=None,
                                           **kwargs)
         
-      dict_log_time['eval'] = dict_log_time.get('eval',0) + time.time()-time_eval
+      dict_log_time['eval'] = dict_log_time.get('eval',0) + time.perf_counter()-time_eval
       # print(f'  Evaluation time: {dict_log_time["eval"]:.4f}')
       
-      epoch_log_time = time.time()
+      epoch_log_time = time.perf_counter()
       
       if epoch == 0 or \
          helper.SAVE_LAST_EPOCH_MODEL or \
@@ -995,18 +1004,14 @@ class BaseHead(nn.Module):
         
         if trial is not None and trial.should_prune():
           raise TrialPruned()
-      dict_log_time['log_epoch'] = dict_log_time.get('log_epoch',0) + time.time()-epoch_log_time
-      dict_log_time['epoch'] = time.time()-start_epoch
+      dict_log_time['log_epoch'] = dict_log_time.get('log_epoch',0) + time.perf_counter()-epoch_log_time
+      dict_log_time['epoch'] = time.perf_counter()-start_epoch
 
       print(f'---------TRAIN LOOP LOGS---------')
       for k,v in dict_log_time.items():
         print(f'  {k} time: {v:.4f} s')
 
-      print(f'---------HEAD TIME LOGS---------')
-      for k,v in helper.train_time_logs.items():
-        print(f'  {k} time: {v:.4f} s')
-
-      print('-----------WORKERS TIME LOGS-----------')
+      print('-----------PROFILING LOGS-----------')
       summary_aggregated = {}
       for key,val in helper.time_profile_dict.items():
         split_key = key.split('_')
@@ -1019,7 +1024,6 @@ class BaseHead(nn.Module):
       print('---------------------------------------')
 
       helper.time_profile_dict.clear() # reset logs for next epoch
-      helper.train_time_logs = {}
       if helper.LOG_GRADIENT_PER_MODULE and np.mean(total_norm_epoch[epoch]) < 1e-2:
         print(f'Gradient norm is small (< 1e-1). Stopping training...')
         break
@@ -1072,6 +1076,8 @@ class BaseHead(nn.Module):
       'list_min_total_norm_epoch': np.array(total_norm_epoch).min(axis=1),
       'list_lrs': list_lrs,
       'list_wds': list_wds,
+      'train_epoch_mean_hsic': train_epoch_mean_hsic,
+      'val_epoch_mean_hsic': val_epoch_mean_hsic,
       'optimizer': optimizer.state_dict()['param_groups'],
       'optimizer_config': optimizer_factory.get_config(),
       # 'wd_scheduler': wd_scheduler.get_config() if wd_scheduler else None,
@@ -1146,6 +1152,7 @@ class BaseHead(nn.Module):
     l2_error = 0.0
     # debug_dict = {}
     val_dict_log_loss_steps = []
+    epoch_mean_hsic = []
     with torch.no_grad():
       val_loss = 0.0
       loss_per_class = torch.zeros(2,len(val_loader.dataset.get_unique_classes()))
@@ -1165,7 +1172,9 @@ class BaseHead(nn.Module):
       amp_dtype = torch.bfloat16 if helper.AMP_DTYPE == 'bfloat16' else torch.float16
       enable_autocast = helper.AMP_ENABLED
       return_embeddings = getattr(criterion, 'return_embeddings', False) or \
-                          helper.LOG_VIDEO_EMBEDDINGS['enable']
+                          helper.LOG_VIDEO_EMBEDDINGS['enable'] or \
+                          kwargs['HSIC_lambda']>0
+
       
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(val_loader,total=len(val_loader),desc=f'{("Validation" if not is_test else "Test")}'):
         list_batch_size.append(len(batch_y))
@@ -1221,8 +1230,15 @@ class BaseHead(nn.Module):
         else:
           outputs = dict_out['logits']
           loss = criterion(outputs, batch_y)
-          
-        # if kwargs.get('adv_criterion') is not None:
+        if kwargs['HSIC_lambda']>0:
+          batch_subjects = batch_subjects.to(device)
+          hsic = losses.marginal_hsic_loss(
+                  z=dict_out['embeddings'],
+                  id_labels=batch_subjects,
+                  normalize_features=True,
+                  # y_labels=batch_y
+                  )
+          epoch_mean_hsic.append(hsic.item())
         #   adv_logits = dict_out['adv_logits']
         #   adv_loss = kwargs['adv_criterion'](adv_logits, batch_subjects)
         #   loss = loss + adv_loss * kwargs['adversarial_loss_lambda']
@@ -1323,6 +1339,7 @@ class BaseHead(nn.Module):
         'test_pearson_correlation': pearson_corr,
         'test_CCC': CCC,
         'test_ICC': ICC,
+        'test_hsic': np.mean(epoch_mean_hsic) if len(epoch_mean_hsic) > 0 else 0.0,
         'test_prediction_confidence_right_mean': np.mean(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
         'test_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
         'test_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
@@ -1345,6 +1362,7 @@ class BaseHead(nn.Module):
         'val_pearson_correlation': pearson_corr,
         'val_CCC': CCC,
         'val_ICC': ICC,
+        'val_hsic': np.mean(epoch_mean_hsic) if len(epoch_mean_hsic) > 0 else 0.0,
         'val_prediction_confidence_right_mean': np.mean(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
         'val_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
         'val_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
@@ -1653,46 +1671,41 @@ class AttentiveHeadJEPA(BaseHead):
     return x, key_padding_mask
   
   def forward(self, x, key_padding_mask=None, return_video_emb=True,**kwargs):
+    pid = os.getpid()
     # Extract features from backbone (if needed)
     if self.backbone is not None:
-      time_backbone_forward = time.time()
+      time_backbone_forward = time.perf_counter()
       x = self.backbone.forward_features(x) # [B * num_chunks, channels, frames=16, height, width] -> [B*chunks, T, S, S, embed_dim]
-      helper.train_time_logs['backbone_forward'] = helper.train_time_logs.get('backbone_forward',0) + (time.time() - time_backbone_forward)
-      
+      helper.time_profile_dict[f'{pid}_backbone_forward_time'] = helper.time_profile_dict.get(f'{pid}_backbone_forward_time',0) + (time.perf_counter() - time_backbone_forward)
+
       # Apply reduction if needed
-      time_reduction = time.time()
+      time_reduction = time.perf_counter()
       if self.embedding_reduction !=  helper.EMBEDDING_REDUCTION.NONE:
         x = torch.mean(x,dim=self.embedding_reduction.value,keepdim=True)
-      helper.train_time_logs['embedding_reduction'] = helper.train_time_logs.get('embedding_reduction',0) + (time.time() - time_reduction)
-      
+      helper.time_profile_dict[f'{pid}_embedding_reduction_time'] = helper.time_profile_dict.get(f'{pid}_embedding_reduction_time',0) + (time.perf_counter() - time_reduction)
+
       # Reshape x  : [B * num_chunks, T, S, S, embed_dim] -> [B, num_chunks*T*S*S, embed_dim]
-      time_reshape = time.time()
+      time_reshape = time.perf_counter()
       if torch.all(kwargs['lengths'] == kwargs['lengths'][0]):
-        # x = x.reshape(x.shape[0]//kwargs['lengths'][0],-1, x.shape[-1]) 
+        # x = x.reshape(x.shape[0]//kwargs['lengths'][0],-1, x.shape[-1])
         x = x.contiguous().view(x.shape[0]//kwargs['lengths'][0], -1, x.shape[-1]) # [B, num_chunks*T*S*S, embed_dim]
         key_padding_mask = None # no need to compute key_padding_mask if all sequences have the same length
       else:
         x, key_padding_mask = self.elaborate_feats_from_backbone_v2(x, **kwargs)
-      helper.train_time_logs['embedding_reshape'] = helper.train_time_logs.get('embedding_reshape',0) + (time.time() - time_reshape)
-    # else:
-    #   # if features are already extracted, use them directly (key_padding_mask already computed in the dataloader)
-    #   time_reduction = time.time()
-    #   if self.embedding_reduction !=  helper.EMBEDDING_REDUCTION.NONE:
-    #     x = torch.mean(x,dim=self.embedding_reduction.value,keepdim=True)
-    #   helper.train_time_logs['embedding_reduction'] = helper.train_time_logs.get('embedding_reduction',0) + (time.time() - time_reduction)
+      helper.time_profile_dict[f'{pid}_embedding_reshape_time'] = helper.time_profile_dict.get(f'{pid}_embedding_reshape_time',0) + (time.perf_counter() - time_reshape)
 
     # Apply positional encoding if enabled
-    time_pos_enc = time.time()
+    time_pos_enc = time.perf_counter()
     if self.pos_enc:
       x = self.apply_pos_enc(x) # add positional encoding if enabled
-    helper.train_time_logs['pos_enc'] = helper.train_time_logs.get('pos_enc',0) + (time.time() - time_pos_enc)
-    
+    helper.time_profile_dict[f'{pid}_pos_enc_time'] = helper.time_profile_dict.get(f'{pid}_pos_enc_time',0) + (time.perf_counter() - time_pos_enc)
+
     # FORWARD PASS
-    time_head = time.time()
-    x,xattn = self.pooler(x,key_padding_mask,helper.LOG_CROSS_ATTENTION['enable']) 
+    time_head = time.perf_counter()
+    x,xattn = self.pooler(x,key_padding_mask,helper.LOG_CROSS_ATTENTION['enable'])
     x = x.squeeze(1) # # [B, num_queries=1, C] -> [B, C]
     x = self.aggregator(x)
-    helper.train_time_logs['head_forward'] = helper.train_time_logs.get('head_forward',0) + (time.time() - time_head)
+    helper.time_profile_dict[f'{pid}_head_forward_time'] = helper.time_profile_dict.get(f'{pid}_head_forward_time',0) + (time.perf_counter() - time_head)
     
     # LOG CROSS ATTENTION if enabled
     if helper.LOG_CROSS_ATTENTION['enable'] and xattn is not None:
