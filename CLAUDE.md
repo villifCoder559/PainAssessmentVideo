@@ -55,7 +55,7 @@ Tests use unittest and are in `tests/`. They test loss functions and utilities (
 ### Data Flow
 ```
 CSV labels + Video files → Feature Extraction (backbone) → .safetensors cache
-→ customDataset (frame sampling + augmentations) → DataLoader
+→ customDatasetWhole (or customDataset) → DataLoader
 → Model_Advanced (backbone features → head → predictions)
 → Loss computation → Optuna objective
 ```
