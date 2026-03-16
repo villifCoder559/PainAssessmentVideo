@@ -1,3 +1,4 @@
+import gc
 import os
 import pickle
 import matplotlib.pyplot as plt
@@ -1211,13 +1212,14 @@ def plot_hsic_per_epoch(data, run_output_folder, test_id, additional_info=''):
       'subject': (train_hsic_sbj_per_epoch, val_hsic_sbj_per_epoch)
     }
     for k,(train_hsic_per_epoch, val_hsic_per_epoch) in list_plots.items():
-      train_check = train_hsic_per_epoch is not None and sum(train_hsic_per_epoch) != 0
-      val_check = val_hsic_per_epoch is not None and sum(val_hsic_per_epoch) != 0
-      nr_plots = train_check + val_check
+      train_check = train_hsic_per_epoch is not None and sum(train_hsic_per_epoch) > 0
+      val_check = val_hsic_per_epoch is not None and sum(val_hsic_per_epoch) > 0
+      nr_plots = int(train_check) + int(val_check)
       if nr_plots == 0:
         continue
       else:
         # create subplots according to nr_plots
+        # print(f'N plots for {key} - {test_id} - {k}: {nr_plots}')
         fig, ax = plt.subplots(nr_plots,1,figsize=(10*nr_plots, 5*nr_plots))
         if train_check:
           tools.plot_with_std(ax=ax[0] if nr_plots > 1 else ax,
@@ -1419,6 +1421,7 @@ def generate_csv_row(data,config,time_, test_id):
   row_dict = {'test_id': test_id,
               **others_conifg,
               **row_dict}
+  row_dict['path_csv_dataset'] = '/'.join(row_dict['path_csv_dataset'])
   return row_dict
 
 def plot_confusion_matrices(data, root_output_folder, test_id, additional_info=''):
@@ -1808,9 +1811,8 @@ def _process_single_run(args):
   Process a single training result entry: generate a CSV row and optional plots.
 
   Args:
-    args: Tuple of (file, data, output_root, only_csv, dict_args, plot_only_loss).
+    args: Tuple of (file, output_root, only_csv, dict_args, plot_only_loss).
           file:          Path to the .pkl result file.
-          data:          Dict with keys 'results', 'config', 'time'.
           output_root:   Root directory for output files.
           only_csv:      If True, skip all plotting.
           dict_args:     Dict with 'loss_plot_type' and 'test_as_validation'.
@@ -1819,8 +1821,9 @@ def _process_single_run(args):
   Returns:
     CSV row dict, or None if the run had no results.
   """
-  file, data, output_root, only_csv, dict_args, plot_only_loss = args
+  file, output_root, only_csv, dict_args, plot_only_loss = args
   plt.switch_backend('agg')  # ensure no display backend in worker process
+  data = load_results(file)  # load here to avoid passing large objects through multiprocessing pipes
 
   test_folder = os.path.basename(os.path.dirname(file))
   test_id = test_folder.split('_')[0]
@@ -1850,15 +1853,17 @@ def _process_single_run(args):
       if data['config'].get('validate', True):
         plot_accuray_per_class_across_epochs(data, output_root, test_id)
     link_attention_logs(os.path.dirname(file), output_root, test_id)
+  plt.close('all')
+  gc.collect()
   return csv_row
 
 
-def plot_run_details(results_data, output_root, only_csv, dict_args, plot_only_loss=False, max_workers=None):
+def plot_run_details(results_data, output_root, only_csv, dict_args, plot_only_loss=False, max_workers=None, split_by_dataset=False):
   list_row_csv = []
   generate_subject_class_loss_csv(results_data, output_root)
   args_list = [
-    (file, data, output_root, only_csv, dict_args, plot_only_loss)
-    for file, data in results_data.items()
+    (file, output_root, only_csv, dict_args, plot_only_loss)
+    for file in results_data
   ]
   with ProcessPoolExecutor(max_workers=max_workers) as executor:
     futures = [executor.submit(_process_single_run, a) for a in args_list]
@@ -1872,6 +1877,12 @@ def plot_run_details(results_data, output_root, only_csv, dict_args, plot_only_l
     os.makedirs(output_root, exist_ok=True)
   df.to_csv(os.path.join(output_root, 'summary.csv'), index=False)
   print(f'Summary CSV saved to {output_root}/summary.csv')
+  if split_by_dataset and 'path_csv_dataset' in df.columns:
+    for dataset_path, group_df in df.groupby('path_csv_dataset'):
+      csv_name = dataset_path.split('/')[-1].replace('.csv', '')
+      out_path = os.path.join(output_root, f'summary_{csv_name}.csv')
+      group_df.to_csv(out_path, index=False)
+      print(f'Per-dataset summary saved to {out_path}')
 
 def link_attention_logs(file_folder, output_root, test_id):
   # folder name is cross_attention_*
@@ -1894,7 +1905,7 @@ def link_attention_logs(file_folder, output_root, test_id):
       if not os.path.exists(dst):
         os.symlink(src, dst)
 
-def plot_filtered_run_details(parent_folder, output_root, filter_dict,only_csv):
+def plot_filtered_run_details(parent_folder, output_root, filter_dict, only_csv, split_by_dataset=False):
   """
   Processes only results whose config matches the filter_dict criteria.
   Filtered plots are saved under 'filtered_plots' along with a 'filters.txt'
@@ -1927,7 +1938,7 @@ def plot_filtered_run_details(parent_folder, output_root, filter_dict,only_csv):
   print(f'Filter details saved in {filters_txt_path}')
   
   # Process filtered data
-  plot_run_details(filtered_data, filtered_output_folder,only_csv)
+  plot_run_details(filtered_data, filtered_output_folder, only_csv, {}, split_by_dataset=split_by_dataset)
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser(description='Plot results from a folder') 
@@ -1948,6 +1959,8 @@ if __name__ == '__main__':
                       help='If set, only plot the loss curves without other plots.')
   parser.add_argument('--num_workers', type=int, default=1,
                       help='Number of parallel worker processes for plot_run_details. Default: os.cpu_count().')
+  parser.add_argument('--split_csv_by_dataset', action='store_true',
+                      help='Also generate one summary_{csv_name}.csv per unique path_csv_dataset value.')
   args = parser.parse_args()
   dict_args = vars(args)
   parent_folder = args.parent_folder
@@ -1977,7 +1990,7 @@ if __name__ == '__main__':
           except ValueError:
             filter_dict_arg[key.strip()] = value.strip() 
       print(f'Applying filter: {filter_dict_arg}')
-      plot_filtered_run_details(parent_folder, output_root, filter_dict_arg,only_csv, dict_args)
+      plot_filtered_run_details(parent_folder, output_root, filter_dict_arg, only_csv, split_by_dataset=args.split_csv_by_dataset)
       
     else:
     # Generate the unfiltered plots
@@ -1992,10 +2005,10 @@ if __name__ == '__main__':
           if test_id in test_ids_list:
             results_data[file] = load_results(file)
         print(f'Loaded {len(results_data)} results files after filtering by test IDs')
-        plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args, plot_only_loss=args.plot_only_loss, max_workers=args.num_workers)
+        plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args, plot_only_loss=args.plot_only_loss, max_workers=args.num_workers, split_by_dataset=args.split_csv_by_dataset)
       else:
         results_files = find_results_files(parent_folder) # get .pkl files
         results_data = {file: load_results(file) for file in results_files} # load .pkl files with path as a key
         # print(f'Loaded {len(results_data)} results files')
-        plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args, plot_only_loss=args.plot_only_loss, max_workers=args.num_workers)
+        plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args, plot_only_loss=args.plot_only_loss, max_workers=args.num_workers, split_by_dataset=args.split_csv_by_dataset)
 
