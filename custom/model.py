@@ -136,6 +136,7 @@ class Model_Advanced: # Scenario_Advanced
         adversarial_out_dim = complete_df['subject_id'].nunique()
       else:
         adversarial_out_dim = None
+      self.head_params = head_params
       self.head = AttentiveHeadJEPA(embed_dim=head_params['input_dim'],
                                           num_classes=head_params['num_classes'],
                                           num_heads=head_params['num_heads'],
@@ -443,7 +444,8 @@ class Model_Advanced: # Scenario_Advanced
                         target_list_string=kwargs['sampler_augmented_only_types'],
                         stratified_training=0)
                          
-      
+    # print feature dimension for debugging
+    
     # Stage 1
     dict_results = self.head.start_train(batch_size=batch_size,
                                           criterion=criterion,
@@ -474,6 +476,8 @@ class Model_Advanced: # Scenario_Advanced
                                           backbone_dict=self.backbone_dict,
                                           enable_optuna_pruning=enable_optuna_pruning,
                                           trial=trial,
+                                          head_embed_dim=self.head_params['input_dim'],
+                                          num_classes=self.head_params['num_classes'],
                                           **kwargs
                                           )
     

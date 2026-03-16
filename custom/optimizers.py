@@ -48,18 +48,25 @@ class OptimizerFactory:
   def get_config(self):
     """Returns the configuration dictionary."""
     return self.config
-  def create(self, model: nn.Module):
+  def create(self, model: nn.Module, extra_param_groups=None):
     """
     Creates and returns the optimizer, lr_scheduler, and wd_scheduler.
+
     Args:
-        model (nn.Module): The model to optimize.
-        optimizer_name (str): The name of the optimizer (e.g., 'adamw', 'sgd').
-        scheduler_name (str): The name of the LR scheduler (e.g., 'cosine', 'step').
-        wd_scheduler_name (str, optional): The name of the WD scheduler (e.g., 'cosine_wd'). Defaults to None.
+      model (nn.Module): The model to optimize.
+      extra_param_groups (list[dict], optional): Additional parameter groups to
+        append to the optimizer BEFORE schedulers are created, so the schedulers
+        track them from the start.  Each entry is a plain dict accepted by
+        ``optimizer.add_param_group()``, e.g.
+        ``[{'params': [...], 'lr': 1e-4, 'weight_decay': 0.0}]``.
+
     Returns:
-        tuple: A tuple containing the optimizer, lr_scheduler, and wd_scheduler.
+      tuple: (optimizer, lr_scheduler, wd_scheduler)
     """
     optimizer = self._get_optimizer(model, self.config['optimizer_name'])
+    if extra_param_groups:
+      for pg in extra_param_groups:
+        optimizer.add_param_group(pg)
     lr_scheduler = self._get_lr_scheduler(optimizer, self.config['scheduler_name'])
     wd_scheduler = self._get_wd_scheduler(optimizer, self.config['wd_scheduler_name'])
     return optimizer, lr_scheduler, wd_scheduler

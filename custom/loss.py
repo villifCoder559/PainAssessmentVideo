@@ -1305,3 +1305,40 @@ def conditional_hsic_loss(
     total_weight += group_size
 
   return total_hsic.squeeze() / total_weight
+
+
+class CenterLoss(nn.Module):
+  """
+  Center Loss (Wen et al., ECCV 2016).
+
+  Penalises the distance between each sample's embedding and its
+  per-class center.  Centers are learnable nn.Parameter tensors updated
+  by gradient descent (not by moving average).
+
+  Args:
+    num_classes: number of discrete classes
+    feat_dim:    dimensionality of the input features
+    norm:        1 → mean L1 norm;  2 → mean squared L2 norm (default)
+  """
+  def __init__(self, num_classes: int, feat_dim: int, norm: int = 2):
+    super().__init__()
+    assert norm in (1, 2), "norm must be 1 or 2"
+    self.num_classes = num_classes
+    self.feat_dim = feat_dim
+    self.norm = norm
+    self.centers = nn.Parameter(torch.randn(num_classes, feat_dim))
+
+  def forward(self, features: Tensor, labels: Tensor) -> Tensor:
+    """
+    Args:
+      features: [B, feat_dim] float tensor (embeddings before the classifier)
+      labels:   [B] long tensor of class indices in [0, num_classes)
+    Returns:
+      Scalar loss value.
+    """
+    centers_batch = self.centers[labels]          # [B, feat_dim]
+    diff = features - centers_batch               # [B, feat_dim]
+    if self.norm == 1:
+      return diff.abs().sum(dim=1).mean()
+    else:
+      return (diff ** 2).sum(dim=1).mean()

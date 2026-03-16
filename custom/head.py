@@ -300,8 +300,30 @@ class BaseHead(nn.Module):
       
     kwargs['scheduler_config_dict']['steps_per_epoch'] = len(train_loader)
     optimizer_factory = OptimizerFactory(kwargs['scheduler_config_dict'])
+
+    # --- Center Loss: resolve feat_dim via a no-grad peek, then build param group ---
+    center_loss_fn = None
+    lambda_center_loss = kwargs.get('lambda_center_loss', 0.0)
+    _center_extra_groups = None
+    if lambda_center_loss > 0:
+      center_loss_fn = losses.CenterLoss(num_classes=kwargs['num_classes'], 
+                                         feat_dim=kwargs['head_embed_dim'],
+                                         norm=1).to(device)
+      _ratio_cl = max(float(kwargs.get('ratio_lr_center_loss', 1.0)), 1e-8)
+      _initial_lr = kwargs['scheduler_config_dict']['lr']
+      _center_extra_groups = [{
+        'params': list(center_loss_fn.parameters()),
+        'lr': _initial_lr / _ratio_cl,
+        'weight_decay': 0.0,
+        'is_center_loss': True,
+      }]
+      print(f"\n[CenterLoss] feat_dim={kwargs['head_embed_dim']}, num_classes={kwargs['num_classes']}, "
+            f"lambda={lambda_center_loss}, center_lr={_initial_lr / _ratio_cl:.2e}")
+      kwargs['center_loss_fn'] = center_loss_fn
+
     optimizer, lr_scheduler, wd_scheduler = optimizer_factory.create(
       model=self,
+      extra_param_groups=_center_extra_groups,
     )
     print("\n-------- Created Optimizer and Schedulers -------")
     print("   Optimizer Configuration:", optimizer)
@@ -435,7 +457,8 @@ class BaseHead(nn.Module):
     
     return_embeddings = getattr(criterion, 'return_embeddings', False) or \
                         kwargs['HSIC_subject_lambda'] > 0.0 or \
-                        kwargs['HSIC_pain_lambda'] > 0.0
+                        kwargs['HSIC_pain_lambda'] > 0.0 or \
+                        kwargs.get('lambda_center_loss', 0.0) > 0.0
                         
     if return_embeddings:
       print('The criterion requires to return the video embeddings from the model during training\n')
@@ -463,6 +486,8 @@ class BaseHead(nn.Module):
     train_epoch_mean_hsic_pain = []
     val_epoch_mean_hsic_sbj = []
     val_epoch_mean_hsic_pain = []
+    train_epoch_mean_center_loss = []
+    val_epoch_mean_center_loss = []
     for epoch in range(num_epochs):
       start_epoch = time.perf_counter()
       self.train() 
@@ -504,6 +529,7 @@ class BaseHead(nn.Module):
       # batch_mean_std_feats = {}
       batch_mean_hsic_sbj = []
       batch_mean_hsic_pain = []
+      batch_mean_center_loss = []
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(train_loader,total=len(train_loader),desc=f'Train {epoch}/{num_epochs}'):
         end_load_batch = time.perf_counter()
         dict_log_time['load_batch'] = dict_log_time.get('load_batch',0) + end_load_batch - start_load_batch
@@ -636,7 +662,11 @@ class BaseHead(nn.Module):
             # enforce similarity between samples of the same pain class by maximizing hsic_pain, which is equivalent to minimizing -hsic_pain
             loss = loss - kwargs['HSIC_pain_lambda'] * hsic_pain
             batch_mean_hsic_pain.append(hsic_pain.item())
-          
+          if center_loss_fn is not None and lambda_center_loss > 0:
+            center_loss_val = center_loss_fn(dict_out['embeddings'], batch_y.long())
+            loss = loss + lambda_center_loss * center_loss_val
+            batch_mean_center_loss.append(center_loss_val.item())
+
         dict_log_time['loss_computation'] = dict_log_time.get('loss_computation',0) + time.perf_counter() - start_loss_computation
         if helper.PROFILING_GPU_SYNC and torch.cuda.is_available():
           torch.cuda.synchronize()
@@ -674,6 +704,10 @@ class BaseHead(nn.Module):
         
         if lr_scheduler and not optimizer_step_skipped:
           lr_scheduler.step()
+          if center_loss_fn is not None:
+            for _pg in optimizer.param_groups:
+              if _pg.get('is_center_loss', False):
+                _pg['lr'] = max(_pg['lr'], 1e-8)
         if wd_scheduler and not optimizer_step_skipped:
           wd_scheduler.step()
           
@@ -759,6 +793,9 @@ class BaseHead(nn.Module):
       train_epoch_mean_hsic_sbj.append(np.mean(batch_mean_hsic_sbj) if len(batch_mean_hsic_sbj)>0 else 0.0)
       train_epoch_mean_hsic_pain.append(np.mean(batch_mean_hsic_pain) if len(batch_mean_hsic_pain)>0 else 0.0)
       print(f'HSIC subject for epoch {epoch}: {train_epoch_mean_hsic_sbj[-1]:.4f} | HSIC pain for epoch {epoch}: {train_epoch_mean_hsic_pain[-1]:.4f}')
+      train_epoch_mean_center_loss.append(np.mean(batch_mean_center_loss) if batch_mean_center_loss else 0.0)
+      if lambda_center_loss > 0:
+        print(f'Center loss for epoch {epoch}: {train_epoch_mean_center_loss[-1]:.4f}')
       # val_epoch_mean_hsic_sbj.append(np.mean(val_epoch_mean_hsic_sbj) if len(val_epoch_mean_hsic_sbj)>0 else 0.0)
       # val_epoch_mean_hsic_pain.append(np.mean(val_epoch_mean_hsic_pain) if len(val_epoch_mean_hsic_pain)>0 else 0.0)
       if adv_criterion is not None:
@@ -795,6 +832,7 @@ class BaseHead(nn.Module):
                                           **kwargs)
       val_epoch_mean_hsic_sbj.append(dict_eval['val_hsic_subject'] if dict_eval is not None and 'val_hsic_subject' in dict_eval else 0.0)
       val_epoch_mean_hsic_pain.append(dict_eval['val_hsic_pain'] if dict_eval is not None and 'val_hsic_pain' in dict_eval else 0.0)
+      val_epoch_mean_center_loss.append(dict_eval.get('val_center_loss', 0.0) if dict_eval is not None else 0.0)
       dict_log_time['eval'] = dict_log_time.get('eval',0) + time.perf_counter()-time_eval
       # print(f'  Evaluation time: {dict_log_time["eval"]:.4f}')
       
@@ -1097,6 +1135,8 @@ class BaseHead(nn.Module):
       'train_epoch_mean_hsic_pain': train_epoch_mean_hsic_pain,
       'val_epoch_mean_hsic_subject': val_epoch_mean_hsic_sbj,
       'val_epoch_mean_hsic_pain': val_epoch_mean_hsic_pain,
+      'train_epoch_mean_center_loss': train_epoch_mean_center_loss,
+      'val_epoch_mean_center_loss': val_epoch_mean_center_loss,
       'optimizer': optimizer.state_dict()['param_groups'],
       'optimizer_config': optimizer_factory.get_config(),
       # 'wd_scheduler': wd_scheduler.get_config() if wd_scheduler else None,
@@ -1173,6 +1213,7 @@ class BaseHead(nn.Module):
     val_dict_log_loss_steps = []
     epoch_mean_hsic_sbj = []
     epoch_mean_hsic_pain = []
+    epoch_center_loss = []
     with torch.no_grad():
       val_loss = 0.0
       loss_per_class = torch.zeros(2,len(val_loader.dataset.get_unique_classes()))
@@ -1193,9 +1234,10 @@ class BaseHead(nn.Module):
       enable_autocast = helper.AMP_ENABLED
       return_embeddings = getattr(criterion, 'return_embeddings', False) or \
                           helper.LOG_VIDEO_EMBEDDINGS['enable'] 
-      hsic_enabled = kwargs['HSIC_subject_lambda'] > 0 or kwargs['HSIC_pain_lambda'] > 0                    
+      hsic_enabled = kwargs['HSIC_subject_lambda'] > 0 or kwargs['HSIC_pain_lambda'] > 0
+      center_loss_enabled = (kwargs.get('center_loss_fn', None) is not None
+                             and kwargs.get('lambda_center_loss', 0.0) > 0)
 
-      
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(val_loader,total=len(val_loader),desc=f'{("Validation" if not is_test else "Test")}'):
         list_batch_size.append(len(batch_y))
         nr_samples += len(batch_y)
@@ -1215,7 +1257,7 @@ class BaseHead(nn.Module):
         helper.LOG_CROSS_ATTENTION['state'] = 'test' if is_test else 'val'
         
         dict_batch_X['list_sample_id'] = sample_id
-        dict_batch_X['return_video_emb'] = return_embeddings or hsic_enabled
+        dict_batch_X['return_video_emb'] = return_embeddings or hsic_enabled or center_loss_enabled
         if kwargs.get('adv_criterion') is not None:
           dict_batch_X['adv_alpha'] = 0
         with autocast(device_type=device, dtype=amp_dtype, enabled=enable_autocast): # Use autocast for mixed precision training
@@ -1257,6 +1299,7 @@ class BaseHead(nn.Module):
                   id_labels=batch_subjects,
                   normalize_features=bool(kwargs['HSIC_feat_normalization']),
                   )
+          # loss = loss + kwargs['HSIC_subject_lambda'] * hsic_subject
           epoch_mean_hsic_sbj.append(hsic_subject.item())
         if kwargs['HSIC_pain_lambda'] > 0:
           hsic_pain = losses.marginal_hsic_loss(
@@ -1264,7 +1307,11 @@ class BaseHead(nn.Module):
                   id_labels=batch_y,
                   normalize_features=bool(kwargs['HSIC_feat_normalization']),
                   )
+          # loss = loss - kwargs['HSIC_pain_lambda'] * hsic_pain
           epoch_mean_hsic_pain.append(hsic_pain.item())
+        if center_loss_enabled:
+          _cl_eval = kwargs['center_loss_fn'](dict_out['embeddings'], batch_y.long())
+          epoch_center_loss.append(_cl_eval.item())
         #   adv_logits = dict_out['adv_logits']
         #   adv_loss = kwargs['adv_criterion'](adv_logits, batch_subjects)
         #   loss = loss + adv_loss * kwargs['adversarial_loss_lambda']
@@ -1367,6 +1414,7 @@ class BaseHead(nn.Module):
         'test_ICC': ICC,
         'test_hsic_subject': np.mean(epoch_mean_hsic_sbj) if len(epoch_mean_hsic_sbj) > 0 else 0.0,
         'test_hsic_pain': np.mean(epoch_mean_hsic_pain) if len(epoch_mean_hsic_pain) > 0 else 0.0,
+        'test_center_loss': np.mean(epoch_center_loss) if epoch_center_loss else 0.0,
         'test_prediction_confidence_right_mean': np.mean(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
         'test_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
         'test_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
@@ -1391,6 +1439,7 @@ class BaseHead(nn.Module):
         'val_ICC': ICC,
         'val_hsic_subject': np.mean(epoch_mean_hsic_sbj) if len(epoch_mean_hsic_sbj) > 0 else 0.0,
         'val_hsic_pain': np.mean(epoch_mean_hsic_pain) if len(epoch_mean_hsic_pain) > 0 else 0.0,
+        'val_center_loss': np.mean(epoch_center_loss) if epoch_center_loss else 0.0,
         'val_prediction_confidence_right_mean': np.mean(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
         'val_prediction_confidence_wrong_mean': np.mean(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
         'val_prediction_confidence_right_std': np.std(batch_confidence_prediction_right_mean) if len(batch_confidence_prediction_right_mean) > 0 else 0,
