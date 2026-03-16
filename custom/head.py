@@ -623,7 +623,7 @@ class BaseHead(nn.Module):
             hsic_subject = losses.marginal_hsic_loss(
                     z=dict_out['embeddings'],
                     id_labels=batch_subjects,
-                    normalize_features=False,
+                    normalize_features=bool(kwargs['HSIC_feat_normalization']),
                     )
             loss = loss + kwargs['HSIC_subject_lambda'] * hsic_subject
             batch_mean_hsic_sbj.append(hsic_subject.item())
@@ -631,7 +631,7 @@ class BaseHead(nn.Module):
             hsic_pain = losses.marginal_hsic_loss(
                     z=dict_out['embeddings'],
                     id_labels=batch_y,
-                    normalize_features=False,
+                    normalize_features=bool(kwargs['HSIC_feat_normalization']),
                     )
             # enforce similarity between samples of the same pain class by maximizing hsic_pain, which is equivalent to minimizing -hsic_pain
             loss = loss - kwargs['HSIC_pain_lambda'] * hsic_pain
@@ -1192,8 +1192,8 @@ class BaseHead(nn.Module):
       enable_autocast = helper.AMP_ENABLED
       return_embeddings = getattr(criterion, 'return_embeddings', False) or \
                           helper.LOG_VIDEO_EMBEDDINGS['enable'] or \
-                          kwargs['HSIC_subject_lambda'] > 0 or \
-                          kwargs['HSIC_pain_lambda'] > 0
+      hsic_enabled = kwargs['HSIC_subject_lambda'] > 0 or \
+                          kwargs['HSIC_pain_lambda'] > 0                    
 
       
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(val_loader,total=len(val_loader),desc=f'{("Validation" if not is_test else "Test")}'):
@@ -1215,7 +1215,7 @@ class BaseHead(nn.Module):
         helper.LOG_CROSS_ATTENTION['state'] = 'test' if is_test else 'val'
         
         dict_batch_X['list_sample_id'] = sample_id
-        dict_batch_X['return_video_emb'] = return_embeddings
+        dict_batch_X['return_video_emb'] = return_embeddings or hsic_enabled
         if kwargs.get('adv_criterion') is not None:
           dict_batch_X['adv_alpha'] = 0
         with autocast(device_type=device, dtype=amp_dtype, enabled=enable_autocast): # Use autocast for mixed precision training
@@ -1255,14 +1255,14 @@ class BaseHead(nn.Module):
           hsic_subject = losses.marginal_hsic_loss(
                   z=dict_out['embeddings'],
                   id_labels=batch_subjects,
-                  normalize_features=True,
+                  normalize_features=bool(kwargs['HSIC_feat_normalization']),
                   )
           epoch_mean_hsic_sbj.append(hsic_subject.item())
         if kwargs['HSIC_pain_lambda'] > 0:
           hsic_pain = losses.marginal_hsic_loss(
                   z=dict_out['embeddings'],
                   id_labels=batch_y,
-                  normalize_features=True,
+                  normalize_features=bool(kwargs['HSIC_feat_normalization']),
                   )
           epoch_mean_hsic_pain.append(hsic_pain.item())
         #   adv_logits = dict_out['adv_logits']
