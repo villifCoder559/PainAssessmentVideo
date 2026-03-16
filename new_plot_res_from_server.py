@@ -1,6 +1,7 @@
 import os
 import pickle
 import matplotlib.pyplot as plt
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 import os
@@ -1793,43 +1794,69 @@ def clean_data(result, config):
         del result[key]
   
   
-def plot_run_details(results_data, output_root,only_csv, dict_args,plot_only_loss=False):
+def _process_single_run(args):
+  """
+  Process a single training result entry: generate a CSV row and optional plots.
+
+  Args:
+    args: Tuple of (file, data, output_root, only_csv, dict_args, plot_only_loss).
+          file:          Path to the .pkl result file.
+          data:          Dict with keys 'results', 'config', 'time'.
+          output_root:   Root directory for output files.
+          only_csv:      If True, skip all plotting.
+          dict_args:     Dict with 'loss_plot_type' and 'test_as_validation'.
+          plot_only_loss: If True, skip non-loss plots.
+
+  Returns:
+    CSV row dict, or None if the run had no results.
+  """
+  file, data, output_root, only_csv, dict_args, plot_only_loss = args
+  plt.switch_backend('agg')  # ensure no display backend in worker process
+
+  test_folder = os.path.basename(os.path.dirname(file))
+  test_id = test_folder.split('_')[0]
+  data['config']['real_k_fold'] = len(data['results'])
+  if data['config']['real_k_fold'] == 0:
+    print(f'No TEST file found in {file}')
+    return None
+  grid_search_folder = Path(file).parts[-3]
+  is_unbc = 'unbc' in "".join(data['config']['path_csv_dataset']).lower()
+  csv_row = generate_csv_row(data['results'], data['config'], data['time'], test_id)
+  if not only_csv:
+    clean_data(data['results'], data['config'])
+    data['config']['model_type'] = data['config']['model_type'].name
+    plot_grouped_k_fold(data, output_root, test_id)
+    plot_losses(data, output_root, test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
+    plot_separated_losses_adversarial(data, output_root, test_id)
+    plot_hsic_per_epoch(data, output_root, test_id)
+    if not plot_only_loss:
+      plot_confusion_matrices(data, output_root, test_id)
+      plot_lr_wd_across_epochs(data, output_root, test_id)
+      if is_unbc:
+        generate_video_from_loss_plots(output_root, test_id)
+      if not is_unbc:
+        plot_gradient_per_module(data, output_root, test_id)
+      plot_CCC_ICC_pearson(data, output_root, test_id)
+      plot_history_model_prediction(data, output_root, test_id, root_csv_path=os.path.dirname(file))
+      if data['config'].get('validate', True):
+        plot_accuray_per_class_across_epochs(data, output_root, test_id)
+    link_attention_logs(os.path.dirname(file), output_root, test_id)
+  return csv_row
+
+
+def plot_run_details(results_data, output_root, only_csv, dict_args, plot_only_loss=False, max_workers=None):
   list_row_csv = []
-  generate_subject_class_loss_csv(results_data,output_root)
-  for file, data in tqdm.tqdm(results_data.items()):
-    test_folder = os.path.basename(os.path.dirname(file))
-    test_id = test_folder.split('_')[0]
-    data['config']['real_k_fold'] = len(data['results'])
-    if data['config']['real_k_fold'] == 0:
-      print(f'No TEST file found in {file}')
-      continue
-    grid_search_folder = Path(file).parts[-3]
-    is_unbc = 'unbc' in "".join(data['config']['path_csv_dataset']).lower()
-    list_row_csv.append(generate_csv_row(data['results'],data['config'],data['time'], test_id))
-    if not only_csv:
-      clean_data(data['results'], data['config'])
-      data['config']['model_type'] = data['config']['model_type'].name
-      
-      plot_grouped_k_fold(data, os.path.join(output_root), test_id)
-      plot_losses(data, os.path.join(output_root), test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
-      plot_separated_losses_adversarial(data, os.path.join(output_root), test_id)
-      plot_hsic_per_epoch(data, os.path.join(output_root), test_id)
-      # if 
-      if not plot_only_loss:
-        plot_confusion_matrices(data, os.path.join(output_root), test_id)
-        plot_lr_wd_across_epochs(data, os.path.join(output_root), test_id)
-        if is_unbc:
-          generate_video_from_loss_plots(os.path.join(output_root), test_id)
-        if not is_unbc:
-          plot_gradient_per_module(data, os.path.join(output_root), test_id)
-          
-        plot_CCC_ICC_pearson(data, os.path.join(output_root), test_id)
-        plot_history_model_prediction(data, os.path.join(output_root), test_id,root_csv_path=os.path.dirname(file))
-        if data['config'].get('validate', True):
-          plot_accuray_per_class_across_epochs(data, os.path.join(output_root), test_id)
-      link_attention_logs(os.path.dirname(file), output_root, test_id)        
-      # except Exception as e:
-      #   print(f'Error in {file} - {e}')
+  generate_subject_class_loss_csv(results_data, output_root)
+  args_list = [
+    (file, data, output_root, only_csv, dict_args, plot_only_loss)
+    for file, data in results_data.items()
+  ]
+  with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    futures = [executor.submit(_process_single_run, a) for a in args_list]
+    for future in tqdm.tqdm(as_completed(futures), total=len(futures)):
+      row = future.result()  # raises immediately on exception (fail fast)
+      if row is not None:
+        list_row_csv.append(row)
   df = pd.DataFrame(list_row_csv)
   df = df.fillna('ND')
   if not os.path.exists(output_root):
@@ -1910,6 +1937,8 @@ if __name__ == '__main__':
                       help='Comma separated list of test IDs to process (e.g., test1,test2). If empty, process all tests.')
   parser.add_argument('--plot_only_loss', action='store_true',
                       help='If set, only plot the loss curves without other plots.')
+  parser.add_argument('--num_workers', type=int, default=1,
+                      help='Number of parallel worker processes for plot_run_details. Default: os.cpu_count().')
   args = parser.parse_args()
   dict_args = vars(args)
   parent_folder = args.parent_folder
@@ -1954,10 +1983,10 @@ if __name__ == '__main__':
           if test_id in test_ids_list:
             results_data[file] = load_results(file)
         print(f'Loaded {len(results_data)} results files after filtering by test IDs')
-        plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args, plot_only_loss=args.plot_only_loss)
+        plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args, plot_only_loss=args.plot_only_loss, max_workers=args.num_workers)
       else:
         results_files = find_results_files(parent_folder) # get .pkl files
         results_data = {file: load_results(file) for file in results_files} # load .pkl files with path as a key
         # print(f'Loaded {len(results_data)} results files')
-        plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args, plot_only_loss=args.plot_only_loss)
+        plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args, plot_only_loss=args.plot_only_loss, max_workers=args.num_workers)
 
