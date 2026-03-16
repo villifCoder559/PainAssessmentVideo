@@ -758,6 +758,7 @@ class BaseHead(nn.Module):
       list_wds.append(list_batch_wd)
       train_epoch_mean_hsic_sbj.append(np.mean(batch_mean_hsic_sbj) if len(batch_mean_hsic_sbj)>0 else 0.0)
       train_epoch_mean_hsic_pain.append(np.mean(batch_mean_hsic_pain) if len(batch_mean_hsic_pain)>0 else 0.0)
+      print(f'HSIC subject for epoch {epoch}: {train_epoch_mean_hsic_sbj[-1]:.4f} | HSIC pain for epoch {epoch}: {train_epoch_mean_hsic_pain[-1]:.4f}')
       # val_epoch_mean_hsic_sbj.append(np.mean(val_epoch_mean_hsic_sbj) if len(val_epoch_mean_hsic_sbj)>0 else 0.0)
       # val_epoch_mean_hsic_pain.append(np.mean(val_epoch_mean_hsic_pain) if len(val_epoch_mean_hsic_pain)>0 else 0.0)
       if adv_criterion is not None:
@@ -1191,9 +1192,8 @@ class BaseHead(nn.Module):
       amp_dtype = torch.bfloat16 if helper.AMP_DTYPE == 'bfloat16' else torch.float16
       enable_autocast = helper.AMP_ENABLED
       return_embeddings = getattr(criterion, 'return_embeddings', False) or \
-                          helper.LOG_VIDEO_EMBEDDINGS['enable'] or \
-      hsic_enabled = kwargs['HSIC_subject_lambda'] > 0 or \
-                          kwargs['HSIC_pain_lambda'] > 0                    
+                          helper.LOG_VIDEO_EMBEDDINGS['enable'] 
+      hsic_enabled = kwargs['HSIC_subject_lambda'] > 0 or kwargs['HSIC_pain_lambda'] > 0                    
 
       
       for dict_batch_X, batch_y, batch_subjects,sample_id in tqdm.tqdm(val_loader,total=len(val_loader),desc=f'{("Validation" if not is_test else "Test")}'):
