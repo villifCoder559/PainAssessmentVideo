@@ -1048,7 +1048,7 @@ if __name__ == '__main__':
   parser.add_argument('--is_subject_independent', type=int, choices=[0, 1], default=1, help='Subject-independent split.')
   parser.add_argument('--skip_test', type=int, default=0, help='Skip test phase.')
   parser.add_argument('--consider_only_lasts_n_chunks', nargs='*', type=int, default=[0], help='Consider only last n chunks.')
-  parser.add_argument('--sampler_loader_type', type=str,nargs='*', default=['balanced'], help='Sampler loader type availables: selective_augm, augmented_only, balanced, standard, subject_batch')
+  parser.add_argument('--sampler_loader_type', type=str,nargs='*', default=['balanced'], help='Sampler loader type availables: selective_augm(set also filtered_augm_n_keep and filtered_augm_strategy), augmented_only, balanced, standard, subject_batch')
   parser.add_argument('--min_subjects_per_level', nargs='*', type=int, default=[0], help='Min unique subjects per pain level per batch (used with subject_batch sampler).')
   parser.add_argument('--filtered_augm_n_keep', nargs='*', type=int, default=[0], help='Samples to keep from each augmentation type.')
   parser.add_argument('--sampler_augmented_only_types', type=str, nargs='*', default=[None], help="Types of augmentations to use when sampler_loader_type is 'augmented_only'. Options can be like: 'hflip', 'jitter', 'rotation,jitter', 'latent_basic', 'latent_masking', 'shift_augm'.")
