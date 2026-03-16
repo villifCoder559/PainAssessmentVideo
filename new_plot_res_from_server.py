@@ -1199,6 +1199,37 @@ def generate_subject_class_loss_csv(results_data, output_root_folder):
     # df_class_style.to_excel(class_excel_path, engine='openpyxl')
     # df_subject_style.to_excel(subject_excel_path, engine='openpyxl')
 
+def plot_hsic_per_epoch(data, run_output_folder, test_id, additional_info=''):
+  for key,dict_data in data['results'].items():
+    train_hsic_per_epoch = dict_data['train_val'].get('train_epoch_mean_hsic', None)
+    val_hsic_per_epoch = dict_data['train_val'].get('val_epoch_mean_hsic', None)
+    train_check = train_hsic_per_epoch is not None and np.sum(train_hsic_per_epoch) > 0
+    val_check = val_hsic_per_epoch is not None and np.sum(val_hsic_per_epoch) > 0
+    nr_plots = sum([train_check, val_check])
+    if nr_plots == 0:
+      continue
+    else:
+      # create subplots according to nr_plots
+      fig, ax = plt.subplots(nr_plots,1,figsize=(10*nr_plots, 5*nr_plots))
+      if train_check:
+        tools.plot_with_std(ax=ax[0] if nr_plots > 1 else ax,
+                              x_label='Epochs',
+                              y_label='HSIC',
+                              x=list(range(len(train_hsic_per_epoch))),
+                              mean=train_hsic_per_epoch,
+                              std=np.zeros(len(train_hsic_per_epoch)),title=f'TRAIN HSIC per epoch - {key} - {test_id}')
+      if val_check:
+        tools.plot_with_std(ax=ax[1] if nr_plots > 1 else ax,
+                              x_label='Epochs',
+                              y_label='HSIC',
+                              x=list(range(len(val_hsic_per_epoch))),
+                              mean=val_hsic_per_epoch,
+                              std=np.zeros(len(val_hsic_per_epoch)),title=f'VAL HSIC per epoch - {key} - {test_id}')
+      fig.tight_layout()
+      test_output_folder = os.path.join(run_output_folder, test_id)
+      fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_hsic_per_epoch_{key}.png'))
+      plt.close(fig)
+      
 
 def generate_csv_row(data,config,time_, test_id): 
 
@@ -1312,7 +1343,6 @@ def generate_csv_row(data,config,time_, test_id):
     train_batch_sampler = ['ND' for _ in train_batch_sampler]
   scheduler_config = flatten_dict({'scheduler_config': config['scheduler_config_dict']}) if 'scheduler_config_dict' in config else {}
   row_dict = {
-    'test_id': test_id,
     'k_fold_(real_k_fold)': f'{config["k_fold"]}_({config["real_k_fold"]})',
     'model': config['model_type'].name,
     'head': head_type,
@@ -1374,6 +1404,11 @@ def generate_csv_row(data,config,time_, test_id):
     'clip_grad_norm': clip_grad_norm,
     'time_min': int(time_//60) if time_ is not None else 'ND',
   }
+  others_conifg = {k:v for k,v in config.items() if k not in row_dict}
+
+  row_dict = {'test_id': test_id,
+              **others_conifg,
+              **row_dict}
   return row_dict
 
 def plot_confusion_matrices(data, root_output_folder, test_id, additional_info=''):
@@ -1778,6 +1813,7 @@ def plot_run_details(results_data, output_root,only_csv, dict_args,plot_only_los
       plot_grouped_k_fold(data, os.path.join(output_root), test_id)
       plot_losses(data, os.path.join(output_root), test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
       plot_separated_losses_adversarial(data, os.path.join(output_root), test_id)
+      plot_hsic_per_epoch(data, os.path.join(output_root), test_id)
       # if 
       if not plot_only_loss:
         plot_confusion_matrices(data, os.path.join(output_root), test_id)
