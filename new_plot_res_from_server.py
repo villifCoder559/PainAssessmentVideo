@@ -1202,35 +1202,44 @@ def generate_subject_class_loss_csv(results_data, output_root_folder):
 
 def plot_hsic_per_epoch(data, run_output_folder, test_id, additional_info=''):
   for key,dict_data in data['results'].items():
-    train_hsic_per_epoch = dict_data['train_val'].get('train_epoch_mean_hsic', None)
-    val_hsic_per_epoch = dict_data['train_val'].get('val_epoch_mean_hsic', None)
-    train_check = train_hsic_per_epoch is not None and np.sum(train_hsic_per_epoch) > 0
-    val_check = val_hsic_per_epoch is not None and np.sum(val_hsic_per_epoch) > 0
-    nr_plots = sum([train_check, val_check])
-    if nr_plots == 0:
-      continue
-    else:
-      # create subplots according to nr_plots
-      fig, ax = plt.subplots(nr_plots,1,figsize=(10*nr_plots, 5*nr_plots))
-      if train_check:
-        tools.plot_with_std(ax=ax[0] if nr_plots > 1 else ax,
-                              x_label='Epochs',
-                              y_label='HSIC',
-                              x=list(range(len(train_hsic_per_epoch))),
-                              mean=train_hsic_per_epoch,
-                              std=np.zeros(len(train_hsic_per_epoch)),title=f'TRAIN HSIC per epoch - {key} - {test_id}')
-      if val_check:
-        tools.plot_with_std(ax=ax[1] if nr_plots > 1 else ax,
-                              x_label='Epochs',
-                              y_label='HSIC',
-                              x=list(range(len(val_hsic_per_epoch))),
-                              mean=val_hsic_per_epoch,
-                              std=np.zeros(len(val_hsic_per_epoch)),title=f'VAL HSIC per epoch - {key} - {test_id}')
-      fig.tight_layout()
-      test_output_folder = os.path.join(run_output_folder, test_id)
-      fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_hsic_per_epoch_{key}.png'))
-      plt.close(fig)
-      
+    train_hsic_pain_per_epoch = dict_data['train_val'].get('train_epoch_mean_hsic_pain', None)
+    val_hsic_pain_per_epoch = dict_data['train_val'].get('val_epoch_mean_hsic_pain', None)
+    train_hsic_sbj_per_epoch = dict_data['train_val'].get('train_epoch_mean_hsic_subject', None)
+    val_hsic_sbj_per_epoch = dict_data['train_val'].get('val_epoch_mean_hsic_subject', None)
+    list_plots = {
+      'pain': (train_hsic_pain_per_epoch, val_hsic_pain_per_epoch),
+      'subject': (train_hsic_sbj_per_epoch, val_hsic_sbj_per_epoch)
+    }
+    for k,(train_hsic_per_epoch, val_hsic_per_epoch) in list_plots.items():
+      train_check = train_hsic_per_epoch is not None and sum(train_hsic_per_epoch) != 0
+      val_check = val_hsic_per_epoch is not None and sum(val_hsic_per_epoch) != 0
+      nr_plots = train_check + val_check
+      if nr_plots == 0:
+        continue
+      else:
+        # create subplots according to nr_plots
+        fig, ax = plt.subplots(nr_plots,1,figsize=(10*nr_plots, 5*nr_plots))
+        if train_check:
+          tools.plot_with_std(ax=ax[0] if nr_plots > 1 else ax,
+                                x_label='Epochs',
+                                y_label='HSIC',
+                                x=list(range(len(train_hsic_per_epoch))),
+                                mean=train_hsic_per_epoch,
+                                std=np.zeros(len(train_hsic_per_epoch)),
+                                title=f'TRAIN HSIC {k} -  per epoch - {key} - {test_id}')
+        if val_check:
+          tools.plot_with_std(ax=ax[1] if nr_plots > 1 else ax,
+                                x_label='Epochs',
+                                y_label='HSIC',
+                                x=list(range(len(val_hsic_per_epoch))),
+                                mean=val_hsic_per_epoch,
+                                std=np.zeros(len(val_hsic_per_epoch)),
+                                title=f'VAL HSIC {k} -  per epoch - {key} - {test_id}')
+        fig.tight_layout()
+        test_output_folder = os.path.join(run_output_folder, test_id)
+        fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_hsic_{k}_per_epoch_{key}.png'))
+        plt.close(fig)
+        
 
 def generate_csv_row(data,config,time_, test_id): 
 
