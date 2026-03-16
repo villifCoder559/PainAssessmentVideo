@@ -429,6 +429,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   HSIC_subject_lambda = _suggest(trial, 'HSIC_subject_lambda', kwargs['HSIC_subject_lambda'], kwargs['optuna_categorical'])
   HSIC_pain_lambda = _suggest(trial, 'HSIC_pain_lambda', kwargs['HSIC_pain_lambda'], kwargs['optuna_categorical'])
   HSIC_feat_normalization = trial.suggest_categorical('HSIC_feat_normalization', kwargs['HSIC_feat_normalization'])
+  lambda_center_loss = _suggest(trial, 'lambda_center_loss', kwargs['lambda_center_loss'], kwargs['optuna_categorical'])
+  ratio_lr_center_loss = _suggest(trial, 'ratio_lr_center_loss', kwargs['ratio_lr_center_loss'], kwargs['optuna_categorical'])
 
   # --- Suggest Training Strategy Params ---
   perfect_bal_strategy = trial.suggest_categorical('perfect_bal_strategy', kwargs['perfect_bal_strategy'])
@@ -719,6 +721,9 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'HSIC_subject_lambda': HSIC_subject_lambda,
     'HSIC_pain_lambda': HSIC_pain_lambda,
     'HSIC_feat_normalization': HSIC_feat_normalization,
+    'lambda_center_loss': lambda_center_loss,
+    'ratio_lr_center_loss': ratio_lr_center_loss,
+    'num_classes_center_loss': num_classes,
   }
   add_kwargs.update(head_dependent_add_kwargs)
   
@@ -1081,6 +1086,8 @@ if __name__ == '__main__':
   parser.add_argument('--HSIC_subject_lambda', type=float, nargs='*', default=[0.0], help="HSIC loss lambda for subject identity disentanglement. (0 to disable).")
   parser.add_argument('--HSIC_pain_lambda', type=float, nargs='*', default=[0.0], help="HSIC loss lambda for pain label disentanglement. (0 to disable).")
   parser.add_argument('--HSIC_feat_normalization', type=int, choices=[0, 1], nargs='*', default=[0], help="L2-normalize features before computing HSIC losses. (0 to disable).")
+  parser.add_argument('--lambda_center_loss', type=float, nargs='*', default=[0.0], help="Weight for center loss auxiliary term (0 = disabled).")
+  parser.add_argument('--ratio_lr_center_loss', type=float, nargs='*', default=[1.0], help="LR ratio for center loss parameters: center_lr = main_lr / ratio.")
   parser.add_argument('--add_CCC_loss', type=float, nargs='*', default=[0.0], help='Add CCC loss.')
   parser.add_argument('--cdw_ce_alpha', type=float, nargs='*', default=[2], help='Alpha for CDW loss.')
   parser.add_argument('--cdw_ce_transform', type=str, nargs='*', default=['power'], help='Transform for CDW loss.')
