@@ -270,9 +270,17 @@ class CrossAttentionBlock(nn.Module):
                                   act_layer=act_layer, 
                                   drop=drop)
         self.residual_drop = StochasticDepth(residual_drop,drop_path_mode) if residual_drop > 0.0 else nn.Identity()
-
+        if isinstance(self.norm1, nn.BatchNorm1d):
+            self.is_batchnorm = True
+            # print("\n\n\n\n\n*******Using BatchNorm1d in CrossAttentionBlock. Will apply BatchNorm across the feature dimension.********")
+        else:
+            self.is_batchnorm = False
     def forward(self, q, x, mask=None, return_xattn=False):
-        y, xattn = self.xattn(q, self.norm1(x), mask=mask, return_xattn=return_xattn)
+        if self.is_batchnorm:
+            x_norm = self.norm1(x.transpose(1, 2)).transpose(1, 2)  # Apply BatchNorm1d across the feature dimension
+        else:
+            x_norm = self.norm1(x)
+        y, xattn = self.xattn(q, x_norm, mask=mask, return_xattn=return_xattn)
         
         # Log L2 norms of q and y after xattn output, before residual drop
         if helper.LOG_NORM_CROSS_ATTN_BLOCK['enable']:
@@ -291,7 +299,11 @@ class CrossAttentionBlock(nn.Module):
             helper.LOG_NORM_CROSS_ATTN_BLOCK['logs'].append(log_entry)
         
         q = q + self.residual_drop(y)
-        q = q + self.residual_drop(self.mlp(self.norm2(q)))
+        if self.is_batchnorm:
+            q_norm = self.norm2(q.transpose(1, 2)).transpose(1, 2)  # Apply BatchNorm1d across the feature dimension
+        else:
+            q_norm = self.norm2(q)
+        q = q + self.residual_drop(self.mlp(q_norm))
         return q, xattn
 
 
