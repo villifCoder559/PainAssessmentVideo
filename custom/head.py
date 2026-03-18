@@ -840,7 +840,7 @@ class BaseHead(nn.Module):
       
       if epoch == 0 or \
          helper.SAVE_LAST_EPOCH_MODEL or \
-         (  epoch >= min(50, num_epochs//2) 
+         (  epoch >= min(1, num_epochs//2) 
             and dict_eval is not None 
             and (dict_eval[key_for_early_stopping] < best_eval_loss 
                   if key_for_early_stopping == 'val_loss' 
