@@ -372,8 +372,8 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         # add test_id in dict_to_string
         dict_to_string += f'\nTest ID: {test_id}'
         dict_to_string += f'\nfold_subfold: {key.split("_")[0]}_{key.split("_")[-1]}'
-        y_lim_loss = 20.0
-        step_lim = 2.0
+        y_lim_loss = 10.0
+        step_lim = 1.0
         if isinstance(data['config']['criterion'],torch.nn.MSELoss):
           y_lim_loss = 15.1
           step_lim = 3
@@ -594,7 +594,8 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
             plt.close(fig_adv)
             
         # Plot prediction confidence if available
-        if 'list_train_confidence_prediction_right_mean' in data['results'][key]['train_val'] and data['results'][key]['train_val']['list_val_confidence_prediction_right_mean']:
+        is_ce_loss = isinstance(data['config']['criterion'],torch.nn.CrossEntropyLoss) 
+        if is_ce_loss and 'list_train_confidence_prediction_right_mean' in data['results'][key]['train_val'] and data['results'][key]['train_val']['list_val_confidence_prediction_right_mean']:
           tools.plot_with_std(ax=axs[2][0],x=list(range(len(train_prediction_confidence_right_mean))),
                               mean=train_prediction_confidence_right_mean,
                               std=train_prediction_confidence_right_std,
