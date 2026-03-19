@@ -168,7 +168,7 @@ def compute_intra_inter_distances(reduced_embeddings, labels):
     })
   return results
 
-def save_distance_csv(results, pkl_file_path, csv_name, group_by, reduction_method):
+def save_distance_csv(results, pkl_file_path, csv_name, group_by, reduction_method, model_name="unknown_model"):
   """
   Save intra/inter-class distance results to a CSV file.
 
@@ -178,6 +178,7 @@ def save_distance_csv(results, pkl_file_path, csv_name, group_by, reduction_meth
     csv_name:         Name of the source CSV file (e.g. train_cleaned.csv).
     group_by:         Label type used ('labels' or 'subjects').
     reduction_method: Reduction method name ('tsne' or 'umap').
+    model_name:       Name of the model (used in the output filename).
   """
   try:
     if not isinstance(pkl_file_path, str):
@@ -227,7 +228,7 @@ def save_distance_csv(results, pkl_file_path, csv_name, group_by, reduction_meth
     df = pd.concat([df, mean_row], ignore_index=True)
 
     # Save
-    output_path = output_dir / f"distances_{group_by}_{reduction_method}.csv"
+    output_path = output_dir / f"{model_name}_{csv_name}_distances_{group_by}_{reduction_method}.csv"
     df.to_csv(output_path, index=False, sep='\t')
     print(f"Distance CSV saved to {output_path}")
 
@@ -446,9 +447,9 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
     # Compute and save distances for both group types
     if compute_distances and not isinstance(pkl_file, dict):
       results_subj = compute_intra_inter_distances(reduced_emb_subj, labels_subj)
-      save_distance_csv(results_subj, pkl_file, csv_name, "subjects", reduction_method)
+      save_distance_csv(results_subj, pkl_file, csv_name, "subjects", reduction_method, model_name=model_name)
       results_lbl = compute_intra_inter_distances(reduced_emb_lbl, labels_lbl)
-      save_distance_csv(results_lbl, pkl_file, csv_name, "labels", reduction_method)
+      save_distance_csv(results_lbl, pkl_file, csv_name, "labels", reduction_method, model_name=model_name)
     return
 
 
@@ -498,7 +499,7 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
   # Compute and save distances for the specified group_by
   if compute_distances and not isinstance(pkl_file, dict):
     results = compute_intra_inter_distances(reduced_emb, labels)
-    save_distance_csv(results, pkl_file, csv_name, group_by, reduction_method)
+    save_distance_csv(results, pkl_file, csv_name, group_by, reduction_method, model_name=model_name)
 
 def main():
   parser = argparse.ArgumentParser(description="Plot t-SNE or UMAP from embeddings in a pickle file from log_cross_attention_from_model.py")
