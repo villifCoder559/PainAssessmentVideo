@@ -1563,7 +1563,7 @@ class AttentiveHeadJEPA(BaseHead):
       backbone: custom_backbone.BackboneBase = None,
       embedding_reduction: helper.EMBEDDING_REDUCTION = None,
       skip_init_weights=False, # used only for model debugging in log_cross_attention_from_model.py script
-      complete_block=True,
+      complete_block=1,
       type_head=0):
     super().__init__(is_classification=True if num_classes > 1 else False)
     self.pooler = jepa_attentive_pooler.AttentivePooler(
