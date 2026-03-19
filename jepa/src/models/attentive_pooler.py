@@ -150,7 +150,7 @@ class AttentivePooler(nn.Module):
     def forward(self, x, mask,return_xattn=False): # x: [B, T, C], mask: [B, T] (use for attention mask)
         if self.complete_block == 2:
             # Generate query tokens for each sample in the batch, and concatenate with input tokens
-            q = self.query_tokens.expand(len(x), 1, 1)
+            q = self.query_tokens.expand(len(x), -1, -1)
             q = self.q_norm(q)
             x = self.q_norm(x)
             z = torch.cat([q, x], dim=1)
