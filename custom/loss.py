@@ -1205,7 +1205,9 @@ def hsic_rbf(x: torch.Tensor, y: torch.Tensor, sigma_x: float = None, sigma_y: f
 
   # Compute kernel matrices
   K = rbf_kernel(x, sigma=sigma_x)
-  L = rbf_kernel(y, sigma=sigma_y)
+  # linear kernel for one-hot labels, which is equivalent to RBF with very small sigma
+  L = y @ y.T
+  # L = rbf_kernel(y, sigma=sigma_y) # one-hot
 
   # Centering matrix
   H = torch.eye(B, device=x.device) - (1.0 / B) * torch.ones(B, B, device=x.device)
