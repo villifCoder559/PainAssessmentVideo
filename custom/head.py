@@ -793,10 +793,9 @@ class BaseHead(nn.Module):
       list_wds.append(list_batch_wd)
       train_epoch_mean_hsic_sbj.append(np.mean(batch_mean_hsic_sbj) if len(batch_mean_hsic_sbj)>0 else 0.0)
       train_epoch_mean_hsic_pain.append(np.mean(batch_mean_hsic_pain) if len(batch_mean_hsic_pain)>0 else 0.0)
-      print(f'HSIC subject for epoch {epoch}: {train_epoch_mean_hsic_sbj[-1]:.4f} | HSIC pain for epoch {epoch}: {train_epoch_mean_hsic_pain[-1]:.4f}')
       train_epoch_mean_center_loss.append(np.mean(batch_mean_center_loss) if batch_mean_center_loss else 0.0)
-      if lambda_center_loss > 0:
-        print(f'Center loss for epoch {epoch}: {train_epoch_mean_center_loss[-1]:.4f}')
+      # if lambda_center_loss > 0:
+      #   print(f'Center loss for epoch {epoch}: {train_epoch_mean_center_loss[-1]:.4f}')
       # val_epoch_mean_hsic_sbj.append(np.mean(val_epoch_mean_hsic_sbj) if len(val_epoch_mean_hsic_sbj)>0 else 0.0)
       # val_epoch_mean_hsic_pain.append(np.mean(val_epoch_mean_hsic_pain) if len(val_epoch_mean_hsic_pain)>0 else 0.0)
       if adv_criterion is not None:
