@@ -506,7 +506,7 @@ def main():
   parser.add_argument("--pkl_file", type=str, required=True, help="Path to the pickle file containing embeddings and labels.")
   parser.add_argument("--group_by", type=str, choices=["labels", "subjects", "all"], default="labels", help="Group visualization by labels or subjects.")
   parser.add_argument("--cmap", type=str, default=None, help="Colormap for the plot.") # jet, tab20, viridis, etc
-  parser.add_argument("--reduction_method", type=str, choices=["tsne", "umap"], default="tsne", help="Dimensionality reduction method to use.")
+  parser.add_argument("--reduction_method", type=str, choices=["tsne", "umap"], default="umap", help="Dimensionality reduction method to use.")
   parser.add_argument("--top_n_subjects", type=int, default=None, help="Number of subjects with the most samples to plot. If not specified, all subjects are plotted.")
   parser.add_argument("--compute_distances", action="store_true", help="Compute and save intra/inter-class distances to CSV.")
   args = parser.parse_args()
