@@ -272,7 +272,7 @@ class CrossAttentionBlock(nn.Module):
         self.residual_drop = StochasticDepth(residual_drop,drop_path_mode) if residual_drop > 0.0 else nn.Identity()
         if isinstance(self.norm1, nn.BatchNorm1d):
             self.is_batchnorm = True
-            # print("\n\n\n\n\n*******Using BatchNorm1d in CrossAttentionBlock. Will apply BatchNorm across the feature dimension.********")
+            print("\n\n\n\n\n*******Using BatchNorm1d in CrossAttentionBlock. Will apply BatchNorm across the feature dimension.********")
         else:
             self.is_batchnorm = False
     def forward(self, q, x, mask=None, return_xattn=False):
@@ -394,7 +394,7 @@ class SelfAttentionBlockWithCLS(nn.Module):
                 act_layer=act_layer,
                 drop=drop)
         self.residual_drop = StochasticDepth(residual_drop, drop_path_mode) if residual_drop > 0.0 else nn.Identity()
-
+        assert (isinstance(self.norm1, nn.LayerNorm)), "Currently only LayerNorm is supported in SelfAttentionBlockWithCLS for stable training. Please set use_batch_norm to 0 in the config if you want to use batch normalization."
     def forward(self, z, mask=None, return_xattn=False):
         y, _ = self.attn(self.norm1(z))
         z = z + self.residual_drop(y)
