@@ -306,7 +306,8 @@ class BaseHead(nn.Module):
     lambda_center_loss = kwargs.get('lambda_center_loss', 0.0)
     _center_extra_groups = None
     if lambda_center_loss > 0:
-      center_loss_fn = losses.CenterLoss(num_classes=kwargs['num_classes'], 
+      _num_cl = kwargs.get('num_classes_center_loss', kwargs['num_classes'])
+      center_loss_fn = losses.CenterLoss(num_classes=_num_cl,
                                          feat_dim=kwargs['head_embed_dim'],
                                          norm=1).to(device)
       _ratio_cl = max(float(kwargs.get('ratio_lr_center_loss', 1.0)), 1e-8)
@@ -317,7 +318,7 @@ class BaseHead(nn.Module):
         'weight_decay': 0.0,
         'is_center_loss': True,
       }]
-      print(f"\n[CenterLoss] feat_dim={kwargs['head_embed_dim']}, num_classes={kwargs['num_classes']}, "
+      print(f"\n[CenterLoss] feat_dim={kwargs['head_embed_dim']}, num_classes={_num_cl}, "
             f"lambda={lambda_center_loss}, center_lr={_initial_lr / _ratio_cl:.2e}")
       kwargs['center_loss_fn'] = center_loss_fn
 

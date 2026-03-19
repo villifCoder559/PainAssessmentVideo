@@ -724,7 +724,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'HSIC_feat_normalization': HSIC_feat_normalization,
     'lambda_center_loss': lambda_center_loss,
     'ratio_lr_center_loss': ratio_lr_center_loss,
-    'num_classes_center_loss': num_classes,
+    'num_classes_center_loss': pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique(),
   }
   add_kwargs.update(head_dependent_add_kwargs)
   
