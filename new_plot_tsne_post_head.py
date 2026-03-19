@@ -8,6 +8,7 @@ from openTSNE import TSNE
 import umap
 import pandas as pd
 from pathlib import Path
+from scipy.spatial.distance import pdist, cdist
 import custom.helper as helper
 from custom.dataset import customDataset
 import time
@@ -136,6 +137,101 @@ def filter_top_n_subjects(embeddings, labels, n_subjects):
   
   return filtered_embeddings, filtered_labels, top_subjects
 
+def compute_intra_inter_distances(reduced_embeddings, labels):
+  """
+  Compute per-label intra-class and inter-class mean pairwise Euclidean distances.
+
+  Args:
+    reduced_embeddings: 2D reduced embeddings. Shape: (N, 2).
+    labels:             Array of labels for each point. Shape: (N,).
+
+  Returns:
+    List of dicts with keys: label, intra_distance, inter_distance, sample_count.
+  """
+  unique_labels = np.unique(labels)
+  results = []
+  for label in unique_labels:
+    mask = labels == label
+    cluster_points = reduced_embeddings[mask]
+    other_points = reduced_embeddings[~mask]
+    # Intra: mean pairwise distance within this label
+    intra = float(np.mean(pdist(cluster_points))) if len(cluster_points) > 1 else 0.0
+    # Inter: mean distance from this label's points to all other points
+    inter = float(np.mean(cdist(cluster_points, other_points))) if len(other_points) > 0 else 0.0
+    results.append({
+      'label': label,
+      'intra_distance': intra,
+      'inter_distance': inter,
+      'sample_count': len(cluster_points)
+    })
+  return results
+
+def save_distance_csv(results, pkl_file_path, csv_name, group_by, reduction_method):
+  """
+  Save intra/inter-class distance results to a CSV file.
+
+  Args:
+    results:          List of dicts from compute_intra_inter_distances.
+    pkl_file_path:    Path to the source pkl file (used to find the output folder).
+    csv_name:         Name of the source CSV file (e.g. train_cleaned.csv).
+    group_by:         Label type used ('labels' or 'subjects').
+    reduction_method: Reduction method name ('tsne' or 'umap').
+  """
+  try:
+    if not isinstance(pkl_file_path, str):
+      return
+
+    abs_pkl_path = os.path.abspath(pkl_file_path)
+    parts = Path(abs_pkl_path).parts
+
+    # Find k{i}_cross_val_sub_{j} ancestor folder
+    gallery_root = None
+    for i, part in enumerate(parts):
+      if re.fullmatch(r'k\d+_cross_val_sub_\d+', part):
+        gallery_root = Path(*parts[:i+1])
+        break
+
+    if gallery_root is None:
+      print("Could not find k*_cross_val_sub_* folder to save distance CSV.")
+      return
+
+    # Extract main folder id from path (numeric prefix like 1773225230603)
+    main_folder_id = ""
+    for part in parts:
+      match = re.match(r'^(\d{10,})_', part)
+      if match:
+        main_folder_id = match.group(1)
+
+    # Create output directory
+    output_dir = gallery_root / "reduction_intra_inter_distance"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Build DataFrame with per-label rows
+    df = pd.DataFrame(results)
+    df['csv_file'] = csv_name
+    df['main_folder_id'] = main_folder_id
+    df['reduction_method'] = reduction_method
+
+    # Append overall mean row
+    mean_row = pd.DataFrame([{
+      'label': 'OVERALL_MEAN',
+      'intra_distance': df['intra_distance'].mean(),
+      'inter_distance': df['inter_distance'].mean(),
+      'sample_count': df['sample_count'].sum(),
+      'csv_file': csv_name,
+      'main_folder_id': main_folder_id,
+      'reduction_method': reduction_method
+    }])
+    df = pd.concat([df, mean_row], ignore_index=True)
+
+    # Save
+    output_path = output_dir / f"distances_{group_by}_{reduction_method}.csv"
+    df.to_csv(output_path, index=False, sep='\t')
+    print(f"Distance CSV saved to {output_path}")
+
+  except Exception as e:
+    print(f"Error saving distance CSV: {e}")
+
 def set_cmap(data, group_by, cmap):
   df = pd.read_csv(data['csv_path'], sep='\t', dtype={'sample_name': str})
   if group_by == "subjects":
@@ -240,9 +336,10 @@ def create_gallery_link(pkl_file_path, plot_path):
   except Exception as e:
     print(f"Error creating gallery link: {e}")
 
-def run_tsne_and_plot(pkl_file, group_by, cmap,  
+def run_tsne_and_plot(pkl_file, group_by, cmap,
                       png_output_name=None,reduced_embeddings=None,save_plot=True,ax=None,
-                      add_title_info="",log_path_folder=None, reduction_method="tsne", top_n_subjects=None):
+                      add_title_info="",log_path_folder=None, reduction_method="tsne", top_n_subjects=None,
+                      compute_distances=False):
   
   # print(f'Log path folder: {log_path_folder}')
   if not isinstance(pkl_file, dict):
@@ -343,6 +440,13 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
       print(f"{reduction_title} plot (all) saved to {final_output_name}")
       if not isinstance(pkl_file, dict):
         create_gallery_link(pkl_file, final_output_name)
+
+    # Compute and save distances for both group types
+    if compute_distances and not isinstance(pkl_file, dict):
+      results_subj = compute_intra_inter_distances(reduced_emb_subj, labels_subj)
+      save_distance_csv(results_subj, pkl_file, csv_name, "subjects", reduction_method)
+      results_lbl = compute_intra_inter_distances(reduced_emb_lbl, labels_lbl)
+      save_distance_csv(results_lbl, pkl_file, csv_name, "labels", reduction_method)
     return
 
 
@@ -389,6 +493,11 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
   if save_plot and not isinstance(pkl_file, dict):
     create_gallery_link(pkl_file, png_output_name)
 
+  # Compute and save distances for the specified group_by
+  if compute_distances and not isinstance(pkl_file, dict):
+    results = compute_intra_inter_distances(reduced_emb, labels)
+    save_distance_csv(results, pkl_file, csv_name, group_by, reduction_method)
+
 def main():
   parser = argparse.ArgumentParser(description="Plot t-SNE or UMAP from embeddings in a pickle file from log_cross_attention_from_model.py")
   parser.add_argument("--pkl_file", type=str, required=True, help="Path to the pickle file containing embeddings and labels.")
@@ -396,6 +505,7 @@ def main():
   parser.add_argument("--cmap", type=str, default=None, help="Colormap for the plot.") # jet, tab20, viridis, etc
   parser.add_argument("--reduction_method", type=str, choices=["tsne", "umap"], default="tsne", help="Dimensionality reduction method to use.")
   parser.add_argument("--top_n_subjects", type=int, default=None, help="Number of subjects with the most samples to plot. If not specified, all subjects are plotted.")
+  parser.add_argument("--compute_distances", action="store_true", help="Compute and save intra/inter-class distances to CSV.")
   args = parser.parse_args()
   list_pkl_files = []
   if os.path.isdir(args.pkl_file):
@@ -409,17 +519,17 @@ def main():
     
     for pkl_path in tqdm.tqdm(list_pkl_files, desc="Processing pkl files..."):
       if args.group_by == "all":
-        run_tsne_and_plot(pkl_path, "all", None, reduction_method=args.reduction_method, top_n_subjects=args.top_n_subjects)
+        run_tsne_and_plot(pkl_path, "all", None, reduction_method=args.reduction_method, top_n_subjects=args.top_n_subjects, compute_distances=args.compute_distances)
       else:
         # Call once if group_by is specific, or twice if previously "all" but handled differently
         # Since "all" is now handled inside run_tsne_and_plot as a single plot:
-        run_tsne_and_plot(pkl_path, args.group_by, args.cmap, reduction_method=args.reduction_method, top_n_subjects=args.top_n_subjects)
+        run_tsne_and_plot(pkl_path, args.group_by, args.cmap, reduction_method=args.reduction_method, top_n_subjects=args.top_n_subjects, compute_distances=args.compute_distances)
 
   else:
     if args.group_by == "all":
-      run_tsne_and_plot(args.pkl_file, "all", args.cmap, reduction_method=args.reduction_method, top_n_subjects=args.top_n_subjects)
+      run_tsne_and_plot(args.pkl_file, "all", args.cmap, reduction_method=args.reduction_method, top_n_subjects=args.top_n_subjects, compute_distances=args.compute_distances)
     else:
-      run_tsne_and_plot(args.pkl_file, args.group_by, args.cmap, reduction_method=args.reduction_method, top_n_subjects=args.top_n_subjects)
+      run_tsne_and_plot(args.pkl_file, args.group_by, args.cmap, reduction_method=args.reduction_method, top_n_subjects=args.top_n_subjects, compute_distances=args.compute_distances)
 
 if __name__ == "__main__":
   main()
