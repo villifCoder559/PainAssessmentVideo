@@ -178,9 +178,9 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
        
     unique_subject_ids_train = list(train_subject_loss.keys())
     unique_subject_ids_val = list(val_subject_loss.keys())
-    y_lim = 10
+    y_lim = 5
     if 'unbc' in "".join(data['config']['path_csv_dataset']).lower():
-      y_lim = 3
+      y_lim = 10
     elif 'agedb' in "".join(data['config']['path_csv_dataset']).lower():
       y_lim = 20
     tools.plot_error_per_subject(loss_per_subject=[train_subject_loss[k] for k in sorted(train_subject_loss.keys())],
@@ -220,7 +220,183 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
     fig.tight_layout()
     fig.savefig(os.path.join(grouped_output_folder, f'{test_id}{additional_info}_grouped_loss_per_class_{k_fold}.png'))
     plt.close(fig)
-    
+
+
+def _accumulate_confusion_matrices(accum, t):
+  """
+  Merge two raw-count confusion matrices that may have different sizes.
+
+  Each matrix is assumed to have the format (N+1)×(N+1) where the last row and
+  column represent an out-of-range (OOR) bin.  When the matrices differ in size,
+  the valid-class block ([:-1, :-1]) and OOR column ([:-1, -1]) of the smaller
+  matrix are zero-padded to match the larger one before summing.  The OOR row is
+  always set to zero in the output (true labels are never OOR).
+
+  Args:
+    accum: Running-sum tensor of dtype long, or None on the first call.
+    t:     New fold's raw-count confusion matrix (long tensor, (N+1)×(N+1)).
+
+  Returns:
+    Merged (max_N+1) × (max_N+1) long tensor.
+  """
+  if accum is None:
+    return t
+  if accum.shape == t.shape:
+    return accum + t
+
+  a_valid, a_oor = accum[:-1, :-1], accum[:-1, -1]
+  t_valid, t_oor = t[:-1, :-1],     t[:-1, -1]
+
+  s_a, s_t = a_valid.shape[0], t_valid.shape[0]
+  max_s = max(s_a, s_t)
+
+  if s_a < max_s:
+    pad = max_s - s_a
+    a_valid = torch.nn.functional.pad(a_valid, (0, pad, 0, pad))
+    a_oor   = torch.nn.functional.pad(a_oor,   (0, pad))
+  if s_t < max_s:
+    pad = max_s - s_t
+    t_valid = torch.nn.functional.pad(t_valid, (0, pad, 0, pad))
+    t_oor   = torch.nn.functional.pad(t_oor,   (0, pad))
+
+  merged_oor = (a_oor + t_oor).unsqueeze(1)
+  top    = torch.cat([a_valid + t_valid, merged_oor], dim=1)
+  bottom = torch.zeros(1, max_s + 1, dtype=accum.dtype)
+  return torch.cat([top, bottom], dim=0)
+
+
+def plot_grouped_confusion_matrix(data, run_output_folder, test_id, additional_info=''):
+  """
+  Aggregates confusion matrices across sub-folds within each k-fold group and
+  produces summary plots. For each k-fold, raw counts are summed across all
+  sub-folds, then displayed as both raw-count and row-normalised-percentage heatmaps.
+  Train, validation (non-final folds), and test splits are shown where available.
+  Skips criterion types that do not produce confusion matrices.
+
+  Args:
+    data:              Experiment data dict with 'results' and 'config' keys.
+    run_output_folder: Root folder where per-test-id subfolders are created.
+    test_id:           Identifier string used in folder names and file names.
+    additional_info:   Optional suffix appended to saved file names.
+  """
+  if isinstance(data['config']['criterion'], (losses.RESupConLoss, losses.RnCLossV2, losses.DisentangledLoss)):
+    return
+
+  grouped_output_folder = os.path.join(run_output_folder, test_id)
+  os.makedirs(grouped_output_folder, exist_ok=True)
+
+  # Build fold grouping (same logic as get_grouped_losses)
+  real_k_fold = set([int(key.split('_')[0][1]) for key in data['results'].keys()])
+  final_keys = [key for key in data['results'].keys() if '_final' in key]
+  dict_grouped_k_fold = {}
+  for k in real_k_fold:
+    keys = [key for key in data['results'].keys() if key.startswith(f'k{k}_') and '_final' not in key]
+    dict_grouped_k_fold[f'k{k}'] = {key: data['results'][key] for key in keys}
+  if final_keys:
+    dict_grouped_k_fold['final'] = {key: data['results'][key] for key in final_keys}
+
+  def _get_confmat_tensor(cm_obj):
+    """
+    Extract the raw integer count tensor from a confusion matrix object or tensor.
+
+    Args:
+      cm_obj: MulticlassConfusionMatrix instance or a raw torch.Tensor.
+
+    Returns:
+      torch.Tensor of dtype long containing raw counts.
+    """
+    return cm_obj.confmat.long() if hasattr(cm_obj, 'confmat') else cm_obj.long()
+
+  def _plot_heatmap(ax, matrix_tensor, title, fmt, cbar_label):
+    """
+    Render a single confusion matrix heatmap on the given axes.
+
+    Args:
+      ax:            matplotlib Axes to draw on.
+      matrix_tensor: 2-D torch.Tensor (counts or percentages).
+      title:         Plot title string.
+      fmt:           Number format string passed to sns.heatmap (e.g. 'd' or '.1f').
+      cbar_label:    Label for the colour bar.
+    """
+    n = matrix_tensor.shape[0]
+    sns.heatmap(
+      matrix_tensor.cpu().numpy(), annot=True, fmt=fmt, cmap='Blues',
+      cbar_kws={'label': cbar_label}, ax=ax,
+      xticklabels=[str(i) for i in range(n)],
+      yticklabels=[str(i) for i in range(n)],
+    )
+    for i in range(n - 1):
+      ax.add_patch(plt.Rectangle((i, i), 1, 1, fill=False, edgecolor='black', lw=2.5, clip_on=False))
+    for idx, text in enumerate(ax.texts):
+      row, col = divmod(idx, n)
+      if row == col and row < n - 1:
+        text.set_fontweight('bold')
+        # text.set_color('crimson')
+    ax.set_title(title)
+    ax.set_xlabel('Predicted Label')
+    ax.set_ylabel('True Label')
+
+  for k_fold, sub_k_dict in dict_grouped_k_fold.items():
+    is_final = 'final' in k_fold
+    sum_train = None
+    sum_val = None
+    sum_test = None
+
+    for sub_k, res in sub_k_dict.items():
+      if 'train_val' not in res:
+        continue
+      best_epoch = res['train_val']['best_model_idx']
+      epoch_str = str(best_epoch)
+
+      train_cms = res['train_val'].get('train_confusion_matricies', {})
+      if epoch_str in train_cms:
+        sum_train = _accumulate_confusion_matrices(sum_train, _get_confmat_tensor(train_cms[epoch_str]))
+
+      if not is_final:
+        val_cms = res['train_val'].get('val_confusion_matricies', {})
+        if epoch_str in val_cms:
+          sum_val = _accumulate_confusion_matrices(sum_val, _get_confmat_tensor(val_cms[epoch_str]))
+
+      if 'test' in res and res['test']:
+        test_cm = res['test'].get('test_confusion_matrix')
+        if test_cm is not None:
+          sum_test = _accumulate_confusion_matrices(sum_test, _get_confmat_tensor(test_cm))
+
+    if sum_train is None:
+      continue
+
+    splits = []
+    if sum_train is not None:
+      splits.append(('TRAIN', sum_train))
+    if sum_val is not None:
+      splits.append(('VAL', sum_val))
+    if sum_test is not None:
+      splits.append(('TEST', sum_test))
+
+    n_splits = len(splits)
+
+    # Raw counts figure
+    fig_counts, axs_counts = plt.subplots(n_splits, 1, figsize=(6, 5 * n_splits))
+    if n_splits == 1:
+      axs_counts = [axs_counts]
+    for ax, (split_name, mat) in zip(axs_counts, splits):
+      _plot_heatmap(ax, mat, f'{split_name} - Grouped Counts - {k_fold} - {test_id}', fmt='d', cbar_label='Count')
+    fig_counts.tight_layout()
+    fig_counts.savefig(os.path.join(grouped_output_folder, f'{test_id}{additional_info}_grouped_confusion_matrix_{k_fold}_counts.png'))
+    plt.close(fig_counts)
+
+    # Row-normalised percentage figure
+    fig_pct, axs_pct = plt.subplots(n_splits, 1, figsize=(6, 5 * n_splits))
+    if n_splits == 1:
+      axs_pct = [axs_pct]
+    for ax, (split_name, mat) in zip(axs_pct, splits):
+      pct_mat = convert_conf_matrix_to_percent(mat)
+      _plot_heatmap(ax, pct_mat, f'{split_name} - Grouped % - {k_fold} - {test_id}', fmt='.1f', cbar_label='Percentage (%)')
+    fig_pct.tight_layout()
+    fig_pct.savefig(os.path.join(grouped_output_folder, f'{test_id}{additional_info}_grouped_confusion_matrix_{k_fold}_percent.png'))
+    plt.close(fig_pct)
+
+
 def plot_CCC_ICC_pearson(data, run_output_folder, test_id, additional_info=''):
   def plot_metric(dict_value_to_plot, metric_name, ax: plt.Axes, best_epoch_idx, title_suffix='', y_lim_bottom = -1, y_lim_top = 1):
     
@@ -1829,6 +2005,7 @@ def _process_single_run(args):
     clean_data(data['results'], data['config'])
     data['config']['model_type'] = data['config']['model_type'].name
     plot_grouped_k_fold(data, output_root, test_id)
+    plot_grouped_confusion_matrix(data, output_root, test_id)
     plot_losses(data, output_root, test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
     plot_separated_losses_adversarial(data, output_root, test_id)
     plot_hsic_per_epoch(data, output_root, test_id)
