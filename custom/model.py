@@ -158,6 +158,7 @@ class Model_Advanced: # Scenario_Advanced
                                           agg_method=head_params['agg_method'],
                                           drop_path_mode=head_params['drop_path_mode'] if 'drop_path_mode' in head_params else 'row',
                                           use_sdpa=use_sdpa,
+                                          norm_layer=torch.nn.BatchNorm1d if head_params.get('use_batch_norm', 0) else torch.nn.LayerNorm,
                                           embedding_reduction=helper.EMBEDDING_REDUCTION.get_embedding_reduction(head_params['embedding_reduction']),
                                           backbone=self.backbone if self.dataset_type == CUSTOM_DATASET_TYPE.BASE else None,
                                           coral_loss=head_params['coral_loss'],
