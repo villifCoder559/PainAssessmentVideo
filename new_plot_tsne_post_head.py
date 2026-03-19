@@ -64,7 +64,9 @@ def plot_reducted_embeddings(reduced_embeddings, labels, output_folder, save_plo
     ax.scatter(reduced_embeddings[idx, 0],
                reduced_embeddings[idx, 1],
                label=str(label), 
-               color=color,
+               edgecolors=color,
+               marker='o',
+               facecolors='none',
                s=30)
   if len(unique_labels) <= 20:  # Only show legend if not too many labels
     ax.legend(title=group_by)
