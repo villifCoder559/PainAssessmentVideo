@@ -587,7 +587,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     apply_xattn_mask = trial.suggest_categorical('apply_xattn_mask', kwargs['apply_xattn_mask'])
     type_head = trial.suggest_categorical('type_head', kwargs['type_head'])
     xattn_mask = None
-    
+    use_batch_norm = trial.suggest_categorical('use_batch_norm', kwargs['use_batch_norm'])
     if apply_xattn_mask > 0:
       grid_size = 16 if kwargs['mt'] == 'G' else 14
       pkl_path = os.path.join(kwargs['path_video_dataset'], f'video_analysis_grid_{grid_size}_{grid_size}.pkl')
@@ -620,6 +620,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'num_queries': num_queries,
       'agg_method': queries_agg_method,
       'type_head': type_head,
+      'use_batch_norm': use_batch_norm,
       'complete_block': trial.suggest_categorical('complete_block', kwargs['complete_block']),
       'embedding_reduction': kwargs['embedding_reduction'],
     }
@@ -1127,6 +1128,8 @@ if __name__ == '__main__':
   parser.add_argument('--drop_path_mode', type=str, nargs='*', default=['row'], help='Drop path mode.')
   parser.add_argument('--mlp_ratio', type=float, nargs='*', default=[2.0], help='MLP ratio.')
   parser.add_argument('--custom_mlp', type=int, nargs='*', default=[0], help='Use custom MLP.')
+  parser.add_argument('--use_batch_norm', type=int, nargs='*', default=[0], help='Use batch normalization (instead of LayerNorm) in AttentiveHeadJEPA.')
+
   parser.add_argument('--type_head', type=int, nargs='*', default=[0], help='Type of head. 0: only finale liner, 1: MLP + linear')
   parser.add_argument('--pos_enc', type=int, nargs='*', default=[0], help='Use positional encoding.')
   parser.add_argument('--nr_blocks', type=int, nargs='*', default=[1], help='Number of blocks.')
