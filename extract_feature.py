@@ -477,7 +477,7 @@ if __name__ == "__main__":
   parser.add_argument('--video_extension', type=str, default='.mp4', help='Video extension to use for dataset')
   parser.add_argument('--sample_frame_strategy', type=str, default='sliding_window', help=f'Strategy to sample frames from video. Can be {list(SAMPLE_FRAME_STRATEGY)}')
   parser.add_argument('--num_clips_per_video', type=int, default=None, help='Number of clips per video. If None, all clips will be used. Can be used only with random sampling strategy')
-  parser.add_argument('--quadrant', type=str, default=None, help="Filter quadrants part (ipper_left,upper_right,bottom_left,bottom_right). If None it will be ignored")
+  parser.add_argument('--quadrant', type=str, default=None, help="Filter quadrants part (upper_left,upper_right,bottom_left,bottom_right,top,down). If None it will be ignored")
   args = parser.parse_args()
   
   if len(args.adaptive_avg_pool3d_out_shape) != 3:
