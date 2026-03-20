@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchsort import soft_rank
 from torch import Tensor
+import numpy as np
 
 class SimLoss(torch.nn.Module):
   def __init__(self, number_of_classes, reduction_factor, device="cpu", epsilon=1e-8):
@@ -123,6 +124,7 @@ class CDW_CELoss(nn.Module):
     else:
       raise NotImplementedError(
         "%s reduction is not implemented" % self.reduction)
+      
 class CompositeLoss(nn.Module):
   def __init__(self, losses):
     """
