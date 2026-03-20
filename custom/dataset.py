@@ -920,7 +920,8 @@ class customDatasetAggregated(torch.utils.data.Dataset):
 
 
 class customDatasetWhole(torch.utils.data.Dataset):
-  def __init__(self,csv_path,root_folder_features,concatenate_temporal,concatenate_quadrants,model,smooth_labels,soft_labels,coral_loss, xattn_mask,latent_coefficient,split_chunks=False, consider_only_lasts_n_chunks=None):
+  def __init__(self,csv_path,root_folder_features,concatenate_temporal,concatenate_quadrants,model,smooth_labels,soft_labels,coral_loss, xattn_mask,latent_coefficient,split_chunks=False, consider_only_lasts_n_chunks=None,
+               feature_merge_type=None,feature_merge_lambda=None,feature_merge_orig=1):
     self.csv_path = csv_path
     helper.set_step_shift(root_folder_features)
     print(f"\n CustomDatasetWhole: Using step shift = {helper.step_shift} for dataset {root_folder_features} \n")
@@ -955,7 +956,10 @@ class customDatasetWhole(torch.utils.data.Dataset):
     else:
       self.soft_labels = None
     self.coral_loss = coral_loss
-    
+    self.feature_merge_type = feature_merge_type
+    self.feature_merge_lambda = feature_merge_lambda
+    self.feature_merge_orig = feature_merge_orig
+
   def __len__(self):
     return len(self.df)
     
@@ -982,12 +986,10 @@ class customDatasetWhole(torch.utils.data.Dataset):
     # load_start = time.perf_counter()
     with profile_workers(f'{pid}_loading_dict_time',helper.time_profiling_enabled,helper.time_profile_dict):
       features = tools.load_dict_data(folder_path)
-    # if features['features'].shape[0] > 4:
-    #   for k,v in features.items():
-    #     features[k] = v[4:] # 3 chunks -> 1.92 secat the begin
 
-    # load_end = time.perf_counter()
-    # print(f"Element {idx} loading time: {load_end - load_start:.2f} seconds")
+    if self.feature_merge_type is not None:
+      features = self._merge_top_down_features(features, csv_row, sample_id)
+
     return _get_element(dict_data=features,
                         df=self.df,idx=idx,
                         dataset_type=CUSTOM_DATASET_TYPE.WHOLE, 
@@ -996,6 +998,45 @@ class customDatasetWhole(torch.utils.data.Dataset):
                         embedding_reduction=self.model.embedding_reduction,
                         latent_coefficient=self.latent_coefficient,
                         xattn_mask=self.xattn_mask)
+
+  def _merge_top_down_features(self, features, csv_row, sample_id):
+    """Merge top/down feature variants with the original features.
+
+    Args:
+      features (dict): Loaded original feature dict with keys 'features', 'list_labels', etc.
+      csv_row (pd.Series): CSV row for the current sample.
+      sample_id (int): Sample ID used to determine augmentation routing.
+
+    Returns:
+      dict: The features dict with 'features' key replaced by the merged tensor.
+    """
+    if sample_id > helper.step_shift and not helper.is_latent_basic_augmentation(sample_id) and not helper.is_latent_masking_augmentation(sample_id):
+      aug_type = helper.get_augmentation_type(sample_id)
+      top_root = f"{self.root_folder_features}_{aug_type}$top"
+      down_root = f"{self.root_folder_features}_{aug_type}$down"
+    else:
+      top_root = f"{self.root_folder_features}$top"
+      down_root = f"{self.root_folder_features}$down"
+
+    top_path = os.path.join(top_root, csv_row['subject_name'], f"{csv_row['sample_name']}.safetensors")
+    down_path = os.path.join(down_root, csv_row['subject_name'], f"{csv_row['sample_name']}.safetensors")
+
+    top_features = tools.load_dict_data(top_path)
+    down_features = tools.load_dict_data(down_path)
+
+    if self.feature_merge_type == 'sum':
+      k = self.feature_merge_lambda
+      if self.feature_merge_orig:
+        features['features'] = features['features'] + k * (top_features['features'] + down_features['features'])
+      else:
+        features['features'] = k * (top_features['features'] + down_features['features'])
+    elif self.feature_merge_type == 'concat':
+      if self.feature_merge_orig:
+        features['features'] = torch.cat([features['features'], top_features['features'], down_features['features']], dim=-1)
+      else:
+        features['features'] = torch.cat([top_features['features'], down_features['features']], dim=-1)
+
+    return features
 
   def __getitem__(self,idx):
     if isinstance(idx,int):
@@ -1773,7 +1814,10 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                   xattn_mask=kwargs.get('xattn_mask',None),
                                   split_chunks=split_chunks,
                                   latent_coefficient=kwargs.get('latent_coefficient',0.0),
-                                  coral_loss=is_coral_loss)
+                                  coral_loss=is_coral_loss,
+                                  feature_merge_type=kwargs.get('feature_merge_type',None),
+                                  feature_merge_lambda=kwargs.get('feature_merge_lambda',None),
+                                  feature_merge_orig=kwargs.get('feature_merge_orig',1))
     if 'caer' in csv_path.lower() or 'combined' in root_folder_features.lower():
       pin_memory = False
     else:

@@ -360,6 +360,10 @@ def get_shift_for_sample_id(folder_feature):
       return step_shift * 17
     if 'slowmotion' in folder_feature:
       return step_shift * 18
+    if 'top' in folder_feature:
+      return step_shift * 20
+    if 'down' in folder_feature:
+      return step_shift * 21
     return 0
   
 class SAMPLE_FRAME_STRATEGY(Enum):

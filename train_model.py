@@ -512,7 +512,10 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     input_dim *= 8  # 8 temporal segments
   elif concatenate_quadrants:
     input_dim *= 4  # 4 quadrants
-  
+
+  if kwargs['feature_merge_type'] == 'concat':
+    input_dim *= 3 if kwargs['feature_merge_orig'] else 2
+
   # --- Determine Num Classes ---
   num_classes = 0
   if composite_loss is not None:
@@ -725,6 +728,9 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'lambda_center_loss': lambda_center_loss,
     'ratio_lr_center_loss': ratio_lr_center_loss,
     'num_classes_center_loss': pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique(),
+    'feature_merge_type': kwargs['feature_merge_type'],
+    'feature_merge_lambda': kwargs['feature_merge_lambda'],
+    'feature_merge_orig': kwargs['feature_merge_orig'],
   }
   add_kwargs.update(head_dependent_add_kwargs)
   
@@ -1018,6 +1024,13 @@ def validate_arguments(dict_args):
     if n_debug_batches < 1:
       raise ValueError("debug_grad_flow_batches must be >= 1.")
 
+  if '$top' in dict_args['ffsp'] or '$down' in dict_args['ffsp']:
+    if dict_args['feature_merge_type'] is None:
+      raise ValueError("feature_merge_type must be set when ffsp contains '$top' or '$down'.")
+
+  if dict_args['feature_merge_type'] == 'sum' and dict_args['feature_merge_lambda'] is None:
+    raise ValueError("feature_merge_lambda is required when feature_merge_type is 'sum'.")
+
 
 if __name__ == '__main__':
   # --- Quick Parse for Config File ---
@@ -1209,7 +1222,12 @@ if __name__ == '__main__':
   parser.add_argument('--n_trials', type=int, default=100, help='Number of trials.')
   parser.add_argument('--timeout', type=float, default=14, help='Timeout in hours.')
 
-  args = parser.parse_args() 
+  # Feature merging (top/down variants)
+  parser.add_argument('--feature_merge_type', type=str, default=None, choices=['concat', 'sum'], help='Merge top/down feature variants: concat along last dim or weighted sum.')
+  parser.add_argument('--feature_merge_lambda', type=float, default=None, help='Scaling factor k for sum mode: orig + k*(top+down).')
+  parser.add_argument('--feature_merge_orig', type=int, default=1, choices=[0, 1], help='Include original features in merge (1) or only top+down (0).')
+
+  args = parser.parse_args()
   args.timeout = int(args.timeout * 3600)  # Convert hours to seconds
   dict_args = vars(args)
 
