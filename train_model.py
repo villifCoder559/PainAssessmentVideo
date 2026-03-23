@@ -411,6 +411,11 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   sampler_loader_type = trial.suggest_categorical('sampler_loader_type', kwargs['sampler_loader_type'])
   min_subjects_per_level = trial.suggest_categorical('min_subjects_per_level', kwargs['min_subjects_per_level'])
 
+  # --- Suggest Feature Merge Params ---
+  feature_merge_type = trial.suggest_categorical('feature_merge_type', kwargs['feature_merge_type'])
+  feature_merge_lambda = _suggest(trial, 'feature_merge_lambda', kwargs['feature_merge_lambda'], kwargs['optuna_categorical'])
+  feature_merge_orig = trial.suggest_categorical('feature_merge_orig', kwargs['feature_merge_orig'])
+
   # --- Suggest Loss Params ---
   cdw_ce_alpha = _suggest(trial, 'cdw_ce_alpha', kwargs['cdw_ce_alpha'], kwargs['optuna_categorical'])
   cdw_ce_power_transform = trial.suggest_categorical('cdw_ce_power_transform', kwargs['cdw_ce_transform'])
@@ -513,8 +518,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   elif concatenate_quadrants:
     input_dim *= 4  # 4 quadrants
 
-  if kwargs['feature_merge_type'] == 'concat':
-    input_dim *= 3 if kwargs['feature_merge_orig'] else 2
+  if feature_merge_type == 'concat':
+    input_dim *= 3 if feature_merge_orig else 2
 
   # --- Determine Num Classes ---
   num_classes = 0
@@ -728,9 +733,9 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'lambda_center_loss': lambda_center_loss,
     'ratio_lr_center_loss': ratio_lr_center_loss,
     'num_classes_center_loss': pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique(),
-    'feature_merge_type': kwargs['feature_merge_type'],
-    'feature_merge_lambda': kwargs['feature_merge_lambda'],
-    'feature_merge_orig': kwargs['feature_merge_orig'],
+    'feature_merge_type': feature_merge_type,
+    'feature_merge_lambda': feature_merge_lambda,
+    'feature_merge_orig': feature_merge_orig,
   }
   add_kwargs.update(head_dependent_add_kwargs)
   
@@ -1025,11 +1030,11 @@ def validate_arguments(dict_args):
       raise ValueError("debug_grad_flow_batches must be >= 1.")
 
   if '$top' in dict_args['ffsp'] or '$down' in dict_args['ffsp']:
-    if dict_args['feature_merge_type'] is None:
+    if all(v is None for v in dict_args['feature_merge_type']):
       raise ValueError("feature_merge_type must be set when ffsp contains '$top' or '$down'.")
 
-  if dict_args['feature_merge_type'] == 'sum' and dict_args['feature_merge_lambda'] is None:
-    raise ValueError("feature_merge_lambda is required when feature_merge_type is 'sum'.")
+  if 'sum' in dict_args['feature_merge_type'] and all(v is None for v in dict_args['feature_merge_lambda']):
+    raise ValueError("feature_merge_lambda is required when feature_merge_type includes 'sum'.")
 
 
 if __name__ == '__main__':
@@ -1223,9 +1228,9 @@ if __name__ == '__main__':
   parser.add_argument('--timeout', type=float, default=14, help='Timeout in hours.')
 
   # Feature merging (top/down variants)
-  parser.add_argument('--feature_merge_type', type=str, default=None, choices=['concat', 'sum'], help='Merge top/down feature variants: concat along last dim or weighted sum.')
-  parser.add_argument('--feature_merge_lambda', type=float, default=None, help='Scaling factor k for sum mode: orig + k*(top+down).')
-  parser.add_argument('--feature_merge_orig', type=int, default=1, choices=[0, 1], help='Include original features in merge (1) or only top+down (0).')
+  parser.add_argument('--feature_merge_type', type=str, nargs='*', default=[None], help='Merge top/down feature variants: concat, sum, or None.')
+  parser.add_argument('--feature_merge_lambda', type=float, nargs='*', default=[None], help='Scaling factor k for sum mode: orig + k*(top+down).')
+  parser.add_argument('--feature_merge_orig', type=int, nargs='*', default=[1], help='Include original features in merge (1) or only top+down (0).')
 
   args = parser.parse_args()
   args.timeout = int(args.timeout * 3600)  # Convert hours to seconds
