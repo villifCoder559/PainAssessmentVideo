@@ -987,8 +987,8 @@ class customDatasetWhole(torch.utils.data.Dataset):
     with profile_workers(f'{pid}_loading_dict_time',helper.time_profiling_enabled,helper.time_profile_dict):
       features = tools.load_dict_data(folder_path)
 
-    if self.feature_merge_type is not None:
-      features = self._merge_top_down_features(features, csv_row, sample_id)
+      if self.feature_merge_type is not None:
+        features = self._merge_top_down_features(features, csv_row, sample_id)
 
     return _get_element(dict_data=features,
                         df=self.df,idx=idx,
@@ -1012,14 +1012,9 @@ class customDatasetWhole(torch.utils.data.Dataset):
     """
     if sample_id > helper.step_shift and not helper.is_latent_basic_augmentation(sample_id) and not helper.is_latent_masking_augmentation(sample_id):
       aug_type = helper.get_augmentation_type(sample_id)
-      top_root = f"{self.root_folder_features}_{aug_type}$top"
-      down_root = f"{self.root_folder_features}_{aug_type}$down"
-    else:
-      top_root = f"{self.root_folder_features}$top"
-      down_root = f"{self.root_folder_features}$down"
 
-    top_path = os.path.join(top_root, csv_row['subject_name'], f"{csv_row['sample_name']}.safetensors")
-    down_path = os.path.join(down_root, csv_row['subject_name'], f"{csv_row['sample_name']}.safetensors")
+    top_path = os.path.join(self.root_folder_features, csv_row['subject_name'], f"{csv_row['sample_name']}$top.safetensors")
+    down_path = os.path.join(self.root_folder_features, csv_row['subject_name'], f"{csv_row['sample_name']}$down.safetensors")
 
     top_features = tools.load_dict_data(top_path)
     down_features = tools.load_dict_data(down_path)
