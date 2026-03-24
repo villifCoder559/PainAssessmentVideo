@@ -18,7 +18,8 @@ class Model_Advanced: # Scenario_Advanced
               path_labels, sample_frame_strategy, head, head_params, adapter_dict,num_clips_per_video, use_sdpa,
               batch_size_training,stride_window,clip_length,dict_augmented,prefetch_factor,soft_labels,
               features_folder_saving_path,concatenate_temporal,label_smooth,n_workers,new_csv_path,
-              load_dataset_in_memory,stratified_training=False):
+              load_dataset_in_memory,stratified_training=False,
+              gaussian_sigma_min=None,gaussian_sigma_max=None,gaussian_kernel_size=None):
     """
     Initialize the custom model. 
     Parameters:
@@ -50,14 +51,17 @@ class Model_Advanced: # Scenario_Advanced
       if head_params.get('adapter_dict', None) is not None:
         raise ValueError("Adapter dictionary is not supported for ViT image model type.")
     
-    self.dataset = customDataset(path_dataset=path_dataset, 
-                                 path_labels=path_labels, 
+    self.dataset = customDataset(path_dataset=path_dataset,
+                                 path_labels=path_labels,
                                  model_type=model_type,
                                  num_clips_per_video=num_clips_per_video,
-                                 sample_frame_strategy=sample_frame_strategy, 
-                                 stride_window=stride_window, 
+                                 sample_frame_strategy=sample_frame_strategy,
+                                 stride_window=stride_window,
                                  stride_inside_window=stride_inside_window,
-                                 clip_length=clip_length)
+                                 clip_length=clip_length,
+                                 gaussian_sigma_min=gaussian_sigma_min,
+                                 gaussian_sigma_max=gaussian_sigma_max,
+                                 gaussian_kernel_size=gaussian_kernel_size)
     self.batch_size_training = batch_size_training
     
     self.n_workers = n_workers

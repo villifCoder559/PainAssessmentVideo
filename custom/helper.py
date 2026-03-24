@@ -185,6 +185,18 @@ def is_timelapse_augmentation(sample_id):
 def is_slowmotion_augmentation(sample_id):
   return sample_id > step_shift * 18 and sample_id <= step_shift * 19
 
+def is_gaussian_smooth_augmentation(sample_id):
+  """
+  Check if the sample_id corresponds to a Gaussian smooth augmentation.
+
+  Args:
+    sample_id (int): The sample identifier to check.
+
+  Returns:
+    bool: True if the sample_id falls in the Gaussian smooth augmentation range.
+  """
+  return sample_id > step_shift * 22 and sample_id <= step_shift * 23
+
 def get_augmentation_type(sample_id): # folder based on cvs_path, so must contain dataset name to
   if sample_id <= step_shift:
     return False
@@ -216,10 +228,12 @@ def get_augmentation_type(sample_id): # folder based on cvs_path, so must contai
     return 'timelapse'
   elif is_slowmotion_augmentation(sample_id):
     return 'slowmotion'
+  elif is_gaussian_smooth_augmentation(sample_id):
+    return 'gaussian'
   else:
     raise ValueError(f"Sample id {sample_id} not recognized for augmentation type")
 
-augmentations_list = ['hflip','jitter','rotation','latent_basic','latent_masking','shift','zoom']
+augmentations_list = ['hflip','jitter','rotation','latent_basic','latent_masking','shift','zoom','gaussian']
 
 def get_augmentation_availables(fold_feature_path):
   folder_name = os.path.basename(fold_feature_path)
@@ -364,6 +378,8 @@ def get_shift_for_sample_id(folder_feature):
       return step_shift * 20
     if 'down' in folder_feature:
       return step_shift * 21
+    if 'gaussian' in folder_feature:
+      return step_shift * 22
     return 0
   
 class SAMPLE_FRAME_STRATEGY(Enum):
@@ -556,6 +572,8 @@ def generate_csv_augmented(original_csv_path, dict_augmentation, out_csv_path,pa
       return 123
     elif type_augm == 'slowmotion':
       return 133
+    elif type_augm == 'gaussian':
+      return 143
     else:
       return 21
   list_df = []

@@ -466,6 +466,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'latent_basic': _suggest(trial, 'latent_basic', kwargs['latent_basic'], kwargs['optuna_categorical']),
     'latent_masking': _suggest(trial, 'latent_masking', kwargs['latent_masking'], kwargs['optuna_categorical']),
     'shift': _suggest(trial, 'shift_augm', kwargs['shift_augm'], kwargs['optuna_categorical']),
+    'gaussian': _suggest(trial, 'gaussian', kwargs['gaussian'], kwargs['optuna_categorical']),
   }
   
   consider_only_lasts_n_chunks = trial.suggest_categorical('consider_only_lasts_n_chunks', kwargs['consider_only_lasts_n_chunks'])
@@ -736,6 +737,9 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'feature_merge_type': feature_merge_type,
     'feature_merge_lambda': feature_merge_lambda,
     'feature_merge_orig': feature_merge_orig,
+    'gaussian_sigma_min': kwargs['gaussian_sigma_min'],
+    'gaussian_sigma_max': kwargs['gaussian_sigma_max'],
+    'gaussian_kernel_size': kwargs['gaussian_kernel_size'],
   }
   add_kwargs.update(head_dependent_add_kwargs)
   
@@ -1182,6 +1186,10 @@ if __name__ == '__main__':
   parser.add_argument('--latent_basic', type=float, nargs='*', default=[0.0], help='Latent basic prob.')
   parser.add_argument('--latent_masking', type=float, nargs='*', default=[0.0], help='Latent masking prob.')
   parser.add_argument('--shift_augm', type=float, nargs='*', default=[0.0], help='Shift prob.')
+  parser.add_argument('--gaussian', type=float, nargs='*', default=[0.0], help='Gaussian smooth prob.')
+  parser.add_argument('--gaussian_sigma_min', type=float, default=0.5, help='Min sigma for Gaussian smooth.')
+  parser.add_argument('--gaussian_sigma_max', type=float, default=2.0, help='Max sigma for Gaussian smooth.')
+  parser.add_argument('--gaussian_kernel_size', type=int, default=5, help='Kernel size for Gaussian smooth (must be odd).')
   parser.add_argument('--latent_coefficient', type=float, nargs='*', default=[0.0], help='Latent coeff.')
   parser.add_argument('--key_early_stopping', type=str, default=None, help='Metric for early stopping.')
   parser.add_argument('--p_early_stop', type=int, default=2000, help='Patience.')

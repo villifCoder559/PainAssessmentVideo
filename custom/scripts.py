@@ -751,6 +751,9 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     "dict_augmented": dict_augmented,
     'stratified_training':kwargs.get('stratified_training', False),
     "new_csv_path": new_csv_path if dict_augmented is not None else None,
+    "gaussian_sigma_min": kwargs.get('gaussian_sigma_min', None),
+    "gaussian_sigma_max": kwargs.get('gaussian_sigma_max', None),
+    "gaussian_kernel_size": kwargs.get('gaussian_kernel_size', None),
 }
 
   model_advanced = Model_Advanced(**model_advanced_params)

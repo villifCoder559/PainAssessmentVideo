@@ -68,6 +68,9 @@ class customDataset(torch.utils.data.Dataset):
       shift_frame_idx = 0,
       quadrant=None,
       consider_only_lasts_n_chunks=None,
+      gaussian_sigma_min=None,
+      gaussian_sigma_max=None,
+      gaussian_kernel_size=None,
       **kwargs
   ):
     """
@@ -127,7 +130,10 @@ class customDataset(torch.utils.data.Dataset):
     self.smooth_labels = smooth_labels
     self.num_clips_per_video = num_clips_per_video
     self.quadrant = quadrant
-    
+    self.gaussian_sigma_min = gaussian_sigma_min
+    self.gaussian_sigma_max = gaussian_sigma_max
+    self.gaussian_kernel_size = gaussian_kernel_size
+
     # if rotation is not None:
     #   warnings.warn('The rotation is not implemented yet')
     # Image dimensions and channels
@@ -232,19 +238,30 @@ class customDataset(torch.utils.data.Dataset):
     return tensors[frame_permutation], frame_permutation
   
   @staticmethod
-  def preprocess_images(tensors,crop_size=None,to_visualize=False,get_params=False,h_flip=False,color_jitter=False,rotation=False,spatial_shift=False,zoom=False,framepermute=False,framepermute_seed=None):
+  def preprocess_images(tensors,crop_size=None,to_visualize=False,get_params=False,h_flip=False,color_jitter=False,rotation=False,spatial_shift=False,zoom=False,gaussian_smooth=False,gaussian_sigma_min=None,gaussian_sigma_max=None,gaussian_kernel_size=None,framepermute=False,framepermute_seed=None):
     """
     Preprocess a batch of image tensors.
-    
+
     Args:
-        tensors (torch.Tensor): A tensor of shape (B, C, H, W)
-                                B = batch size,
-                                C = number of channels,
-                                H = height,
-                                W = width.
-    
+      tensors (torch.Tensor):          Input tensor. Shape: (B, C, H, W) where B=batch, C=channels, H=height, W=width.
+      crop_size (tuple, optional):      Target (H, W) after resize. Defaults to (224, 224) when to_visualize is False.
+      to_visualize (bool):              If True, skip normalization and rescaling.
+      get_params (bool):                If True, return (transformed_tensors, params_dict).
+      h_flip (bool):                    Apply horizontal flip.
+      color_jitter (bool):              Apply color jitter.
+      rotation (bool):                  Apply random rotation.
+      spatial_shift (bool):             Apply random spatial shift.
+      zoom (bool):                      Apply random zoom (resize crop).
+      gaussian_smooth (bool):           Apply 2D Gaussian smoothing. Same sigma for all frames.
+      gaussian_sigma_min (float):       Min sigma for uniform sampling. Required if gaussian_smooth=True.
+      gaussian_sigma_max (float):       Max sigma for uniform sampling. Required if gaussian_smooth=True.
+      gaussian_kernel_size (int):       Fixed kernel size (must be odd). Required if gaussian_smooth=True.
+      framepermute (bool):              Randomly permute frame order.
+      framepermute_seed (int, optional): Seed for frame permutation reproducibility.
+
     Returns:
-        torch.Tensor: Preprocessed tensor of shape (B, C, 224, 224).
+      torch.Tensor: Preprocessed tensor. Shape: (B, C, crop_H, crop_W).
+      dict (optional): Augmentation parameters, returned only when get_params=True.
     """
     if framepermute:
       tensors, frame_permutation = customDataset.apply_frame_permutation(tensors, seed=framepermute_seed)
@@ -309,6 +326,18 @@ class customDataset(torch.utils.data.Dataset):
                                np.random.uniform(neg_degrees[0], neg_degrees[1])])
       transform.append(v2.RandomRotation(degrees=(angle, angle)))
       params['rotation'] = v2.RandomRotation.get_params(degrees=transform[-1].degrees)
+
+    if gaussian_smooth:
+      if gaussian_sigma_min is None or gaussian_sigma_max is None or gaussian_kernel_size is None:
+        raise ValueError("gaussian_sigma_min, gaussian_sigma_max, and gaussian_kernel_size must be provided when gaussian_smooth is True")
+      if gaussian_kernel_size % 2 == 0:
+        raise ValueError("gaussian_kernel_size must be odd")
+      sampled_sigma = float(np.random.uniform(gaussian_sigma_min, gaussian_sigma_max))
+      transform.append(v2.GaussianBlur(kernel_size=gaussian_kernel_size, sigma=sampled_sigma))
+      params['gaussian'] = {
+        'sigma': sampled_sigma,
+        'kernel_size': gaussian_kernel_size
+      }
 
     if framepermute:
       params['framepermute'] = {
@@ -445,13 +474,18 @@ class customDataset(torch.utils.data.Dataset):
       rotation = True if augmentation_type == 'rotation' else False
       spatial_shift = True if augmentation_type == 'shift' else False
       zoom = True if augmentation_type == 'zoom' else False
+      gaussian_smooth = True if augmentation_type == 'gaussian' else False
       helper.time_profile_dict[f'{pid}_preprocess_augm_setup_time'] = helper.time_profile_dict.get(f'{pid}_preprocess_augm_setup_time', 0) + (time.perf_counter() - t_augm_setup)
       preprocessed_tensors = self.preprocess_images(frames_list,
                                                     crop_size=(self.image_resize_h, self.image_resize_w),
                                                     color_jitter=color_jitter,
                                                     h_flip=h_flip,zoom=zoom,
                                                     spatial_shift=spatial_shift,
-                                                    rotation=rotation)
+                                                    rotation=rotation,
+                                                    gaussian_smooth=gaussian_smooth,
+                                                    gaussian_sigma_min=self.gaussian_sigma_min,
+                                                    gaussian_sigma_max=self.gaussian_sigma_max,
+                                                    gaussian_kernel_size=self.gaussian_kernel_size)
     preprocessed_tensors = preprocessed_tensors.reshape(nr_clips, nr_frames, *preprocessed_tensors.shape[1:]) # [nr_clips, nr_frames, C, H, W]
     # if nr_clips == 1:
     #   preprocessed_tensors = preprocessed_tensors.unsqueeze(0) # in case of single frame

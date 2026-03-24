@@ -18,6 +18,10 @@ argument_parser.add_argument('--rotation', action='store_true')
 argument_parser.add_argument('--zoom', action='store_true')
 argument_parser.add_argument('--framepermute', action='store_true')
 argument_parser.add_argument('--framepermute_seed', type=int, default=22)
+argument_parser.add_argument('--gaussian_smooth', action='store_true')
+argument_parser.add_argument('--gaussian_sigma_min', type=float, default=0.5)
+argument_parser.add_argument('--gaussian_sigma_max', type=float, default=2.0)
+argument_parser.add_argument('--gaussian_kernel_size', type=int, default=3)
 args = argument_parser.parse_args()
 
 video_root = args.video_root
@@ -31,7 +35,8 @@ augmentation_dict = {
   'h_flip': args.h_flip,
   'rotation': args.rotation,
   'zoom': args.zoom,
-  'framepermute': args.framepermute
+  'framepermute': args.framepermute,
+  'gaussian': args.gaussian_smooth
 }
 
 if np.all([not v for v in augmentation_dict.values()]):
@@ -81,6 +86,10 @@ for video_path in tqdm.tqdm(list_video_path, desc="Processing videos..."):
                                     rotation=augmentation_dict['rotation'],
                                     zoom=augmentation_dict['zoom'],
                                     spatial_shift=augmentation_dict['shift'],
+                                    gaussian_smooth=augmentation_dict['gaussian'],
+                                    gaussian_sigma_min=args.gaussian_sigma_min,
+                                    gaussian_sigma_max=args.gaussian_sigma_max,
+                                    gaussian_kernel_size=args.gaussian_kernel_size,
                                     framepermute=augmentation_dict['framepermute'],
                                     framepermute_seed=args.framepermute_seed)
   video_id = os.path.splitext(os.path.basename(video_path))[0]
@@ -119,7 +128,10 @@ command = {'launch_command':" ".join(sys.argv),
            'video_root':video_root,
            'video_output_root':video_output_root,
            'augmentation_dict':augmentation_dict,
-           'framepermute_seed': args.framepermute_seed}
+           'framepermute_seed': args.framepermute_seed,
+           'gaussian_sigma_min': args.gaussian_sigma_min,
+           'gaussian_sigma_max': args.gaussian_sigma_max,
+           'gaussian_kernel_size': args.gaussian_kernel_size}
 with open(os.path.join(video_output_root, "augmentation_command.txt"), 'w') as f:
   for key, value in command.items():
     f.write(f"{key}: {value}\n")
