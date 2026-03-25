@@ -548,8 +548,8 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         # add test_id in dict_to_string
         dict_to_string += f'\nTest ID: {test_id}'
         dict_to_string += f'\nfold_subfold: {key.split("_")[0]}_{key.split("_")[-1]}'
-        y_lim_loss = 4.0
-        step_lim = 1.0
+        y_lim_loss = 2.5
+        step_lim = 0.25
         if isinstance(data['config']['criterion'],torch.nn.MSELoss):
           y_lim_loss = 15.1
           step_lim = 3
@@ -1481,10 +1481,10 @@ def generate_csv_row(data,config,time_, test_id):
   
   if 'list_val_l1_error' not in data[f'k0_cross_val_sub_0']['train_val'] or len(data[f'k0_cross_val_sub_0']['train_val']['list_val_l1_error']) == 0:
     val_l1_error = {}
-    val_l2_error = {}
+    val_rmse = {}
   else:
     val_l1_error = {f'mean_val_l1_error_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_l1_error'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
-    val_l2_error = {f'mean_val_l2_error_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_l2_error'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+    val_rmse = {f'mean_val_rmse_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_rmse'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   
   if 'list_val_icc' not in data[f'k0_cross_val_sub_0']['train_val'] or len(data[f'k0_cross_val_sub_0']['train_val']['list_val_ICC']) == 0:
     val_icc_error_mean = {}
@@ -1569,7 +1569,7 @@ def generate_csv_row(data,config,time_, test_id):
     **total_mean_train_losses_last_epoch,
     **total_mean_val_losses_best_epoch,
     **val_l1_error,
-    **val_l2_error,
+    **val_rmse,
     **total_median_test_losses_best_epoch,
     **total_median_val_losses_best_epoch,
     **all_test_l1_error,
