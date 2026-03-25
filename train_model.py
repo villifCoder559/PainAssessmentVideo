@@ -160,6 +160,8 @@ def get_loss(loss_name, dict_args=None):
       temperature=dict_args['only_contrastive_temp'],
       theta=dict_args['only_contrastive_theta']
     )
+  elif loss_lower == 'logcosh':
+    return losses.LogCoshLoss()
   elif loss_lower == 'coral':
     return coral_loss
   elif loss_lower == 'rncloss':
@@ -167,7 +169,7 @@ def get_loss(loss_name, dict_args=None):
     return losses.RnCLossV2(temperature=dict_args['rncloss_temp'])
   else:
     raise ValueError(
-      f'Loss not found: {loss_name}. Valid options: l1, l2, ce, cdw_ce, sim_loss, coral, contrastive_reg, rncloss'
+      f'Loss not found: {loss_name}. Valid options: l1, l2, ce, cdw_ce, sim_loss, coral, contrastive_reg, rncloss, logcosh'
     )
 
 
@@ -208,6 +210,8 @@ def get_composite_loss_module(loss_types, losses_weights, **kwargs):
         'class_weights': class_weights,
         'loss_weight': weight
       })
+    elif loss_type == 'logcosh':
+      list_losses.append({'type': 'logcosh', 'loss_weight': weight})
     elif loss_type == 'contrastive_reg':
       raise ValueError("Contrastive regression loss not supported in composite loss.")
       list_losses.append({
@@ -530,7 +534,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     if 'ce' in [l['type'] for l in composite_loss.config_losses]:
       raise ValueError("Classification loss (ce) not supported in composite loss for regression.")
   elif loss is not None:
-    if loss in ['l1', 'l2', 'huber']:
+    if loss in ['l1', 'l2', 'huber', 'logcosh']:
       num_classes = 1
       print(f"\nRegression task detected. Setting num_classes to 1 for {loss} loss.")
     else:
