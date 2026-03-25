@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from torchsort import soft_rank
 from torch import Tensor
 import numpy as np
+import math
 
 class SimLoss(torch.nn.Module):
   def __init__(self, number_of_classes, reduction_factor, device="cpu", epsilon=1e-8):
@@ -124,7 +125,42 @@ class CDW_CELoss(nn.Module):
     else:
       raise NotImplementedError(
         "%s reduction is not implemented" % self.reduction)
-      
+
+class LogCoshLoss(nn.Module):
+  def __init__(self, reduction='mean'):
+    """
+    Numerically stable Log-Cosh regression loss.
+
+    Behaves like L2 for small errors and L1 for large errors, providing a smooth
+    approximation that is twice differentiable everywhere.
+
+    Args:
+      reduction: Reduction mode ('mean', 'sum', or 'none'). Default: 'mean'.
+    """
+    super().__init__()
+    self.reduction = reduction
+
+  def forward(self, input, target):
+    """
+    Compute log(cosh(input - target)) in a numerically stable way.
+
+    Args:
+      input:  Predictions tensor. Shape: (B, 1) or (B,).
+      target: Ground truth tensor. Shape: same as input.
+
+    Returns:
+      Scalar loss (if reduction='mean' or 'sum') or per-element loss (if 'none').
+    """
+    diff = input - target
+    # Stable form: log(cosh(x)) = |x| + log(1 + exp(-2|x|)) - log(2)
+    # softplus(-2|x|) = log(1 + exp(-2|x|)) is already stable in PyTorch
+    loss = diff.abs() + F.softplus(-2.0 * diff.abs()) - math.log(2)
+    if self.reduction == 'mean':
+      return loss.mean()
+    elif self.reduction == 'sum':
+      return loss.sum()
+    return loss
+
 class CompositeLoss(nn.Module):
   def __init__(self, losses):
     """
@@ -158,6 +194,8 @@ class CompositeLoss(nn.Module):
             raise ValueError("ce_weight requires 'class_weights' in the config dict")
         # move weights to float tensor if needed will be handled in forward device transfer
         self.list_losses.append(nn.CrossEntropyLoss(weight=torch.tensor(class_weights, dtype=torch.float)))
+      elif t == 'logcosh':
+        self.list_losses.append(LogCoshLoss())
       elif t == 'contrastive':
         self.list_losses.append(
             SupConWeightedLoss(
@@ -196,8 +234,8 @@ class CompositeLoss(nn.Module):
     for idx, loss_module in enumerate(self.list_losses):
       weight = float(self.list_loss_weights[idx])
 
-      # MSE/L1/Huber: expect (predictions, targets)
-      if isinstance(loss_module, (nn.L1Loss, nn.MSELoss, nn.HuberLoss, nn.SmoothL1Loss)):
+      # MSE/L1/Huber/LogCosh: expect (predictions, targets)
+      if isinstance(loss_module, (nn.L1Loss, nn.MSELoss, nn.HuberLoss, nn.SmoothL1Loss, LogCoshLoss)):
         if 'logits' not in dict_inputs or 'targets' not in dict_inputs:
           raise KeyError(f"Loss {loss_module.__class__.__name__} requires 'logits' and 'targets' in forward()")
         pred = dict_inputs['logits']
