@@ -98,7 +98,7 @@ for video_path in tqdm.tqdm(list_video_path, desc="Processing videos..."):
   # Save the preprocessed frames as a new video
   output_video = os.path.join(video_output_root, os.path.relpath(video_path, video_root))
   os.makedirs(os.path.dirname(output_video), exist_ok=True)
-  out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*'mp4v'), fps, (prep_frames.shape[3], prep_frames.shape[2]))
+  out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*'avc1'), fps, (prep_frames.shape[3], prep_frames.shape[2]))
   for i in range(prep_frames.shape[0]):
     frame = prep_frames[i].permute(1,2,0).numpy().astype('uint8')
     frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
