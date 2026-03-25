@@ -385,7 +385,7 @@ class BaseHead(nn.Module):
       list_test_confusion_matricies = []
       list_test_performance_metric = []
       l1_error_test_list = []
-      l2_error_test_list = []
+      rmse_test_list = []
       list_test_confidence_prediction_right_mean = []
       list_test_confidence_prediction_wrong_mean = []
       list_test_confidence_prediction_right_std = []
@@ -474,7 +474,7 @@ class BaseHead(nn.Module):
     torch.save(self.state_dict(), os.path.join(saving_path, f'model_epoch_-1.pt'))
     max_train_class = train_unique_classes.max().item() + 1 # start from 0
     l1_error_val_list = []
-    l2_error_val_list = []
+    rmse_val_list = []
     train_loader_len = len(train_loader)
     grad_adv_norm_epoch = []
     grad_task_norm_epoch = []
@@ -919,7 +919,7 @@ class BaseHead(nn.Module):
       if dict_test_as_eval is not None:
         list_test_losses.append(dict_test_as_eval['val_loss'])
         l1_error_test_list.append(dict_test_as_eval['val_l1_error'])
-        l2_error_test_list.append(dict_test_as_eval['val_l2_error'])
+        rmse_test_list.append(dict_test_as_eval['val_rmse'])
       if not is_resupcon_loss and not is_disentangled_loss and not is_rnc_loss:
         np_list_train_epoch_predictions = np.concatenate(list_train_epoch_predictions, axis=0)
         np_list_train_ground_truths = np.concatenate(list_train_ground_truths, axis=0)
@@ -934,7 +934,7 @@ class BaseHead(nn.Module):
           list_val_CCC.append(dict_eval['val_CCC'])
           list_val_pearson_correlation.append(dict_eval['val_pearson_correlation'])
           l1_error_val_list.append(dict_eval['val_l1_error'])
-          l2_error_val_list.append(dict_eval['val_l2_error'])
+          rmse_val_list.append(dict_eval['val_rmse'])
       
       if helper.LOG_CONFIDENCE_PREDICTION and not is_resupcon_loss and not is_disentangled_loss:
         list_train_confidence_prediction_right_mean.append(np.mean(batch_train_confidence_prediction_right_mean) if len(batch_train_confidence_prediction_right_mean) > 0 else 0)
@@ -1162,7 +1162,7 @@ class BaseHead(nn.Module):
       'list_val_ICC': list_val_ICC,
       'list_val_CCC': list_val_CCC,
       'list_val_l1_error': l1_error_val_list,
-      'list_val_l2_error': l2_error_val_list,
+      'list_val_rmse': rmse_val_list,
       'list_val_pearson_correlation': list_val_pearson_correlation,
       'list_train_adv_losses': list_train_adv_losses,
       'list_train_adv_accuracies': list_train_adv_accuracies,
@@ -1179,7 +1179,7 @@ class BaseHead(nn.Module):
       logs['test_as_eval'] = {
         'test_losses': list_test_losses,
         'test_list_l1_error': l1_error_test_list,
-        'test_list_l2_error': l2_error_test_list,
+        'test_list_rmse': rmse_test_list,
         'test_loss_per_class': np.array(list_test_losses_per_class),
         'test_loss_per_subject': np.array(list_test_losses_per_subject),
         'test_unique_subjects_ids': test_unique_subjects.numpy(),
@@ -1208,7 +1208,7 @@ class BaseHead(nn.Module):
     list_val_epoch_predictions = []
     list_val_ground_truths = []
     l1_error = 0.0
-    l2_error = 0.0
+    rmse = 0.0
     # debug_dict = {}
     val_dict_log_loss_steps = []
     epoch_mean_hsic_sbj = []
@@ -1391,7 +1391,7 @@ class BaseHead(nn.Module):
         ICC = tools.intraclass_icc(data=np.column_stack((list_val_ground_truths, list_val_epoch_predictions)),
                                   icc_type='ICC2')
         l1_error = np.mean(np.abs(list_val_epoch_predictions - list_val_ground_truths))
-        l2_error = np.mean((list_val_epoch_predictions - list_val_ground_truths)**2)
+        rmse = np.sqrt(np.mean((list_val_epoch_predictions - list_val_ground_truths)**2))
       else:
         dict_precision_recall = {}
         pearson_corr = 0.0
@@ -1421,7 +1421,7 @@ class BaseHead(nn.Module):
         'test_prediction_confidence_wrong_std': np.std(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0,
         'dict_precision_recall': dict_precision_recall,
         'test_l1_error': l1_error,
-        'test_l2_error': l2_error,
+        'test_rmse': rmse,
         'test_loss_log_epochs': self.get_dict_loss_per_epoch(val_dict_log_loss_steps, len(val_loader)) if is_disentangled_loss else [],
       }
     else:
@@ -1446,7 +1446,7 @@ class BaseHead(nn.Module):
         'val_prediction_confidence_wrong_std': np.std(batch_confidence_prediction_wrong_mean) if len(batch_confidence_prediction_wrong_mean) > 0 else 0, 
         'dict_precision_recall': dict_precision_recall,
         'val_l1_error': l1_error,
-        'val_l2_error': l2_error,
+        'val_rmse': rmse,
         'val_loss_log_epochs': self.get_dict_loss_per_epoch(val_dict_log_loss_steps, len(val_loader)) if is_disentangled_loss else [],
       }      
 
