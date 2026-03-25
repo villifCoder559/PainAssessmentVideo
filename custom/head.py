@@ -733,7 +733,7 @@ class BaseHead(nn.Module):
                                           subject_accuracy=subject_accuracy,
                                           unique_train_val_subjects=train_unique_subjects)
           if helper.LOG_CONFIDENCE_PREDICTION:
-            if not isinstance(criterion,torch.nn.L1Loss) and not isinstance(criterion,torch.nn.MSELoss) and not isinstance(criterion,torch.nn.HuberLoss) and not is_coral_loss:
+            if self.is_classification and not is_coral_loss:
               tools.compute_confidence_predictions_(list_prediction_right_mean=batch_train_confidence_prediction_right_mean,
                                                     list_prediction_right_std=batch_train_confidence_prediction_right_std,
                                                     list_prediction_wrong_mean=batch_train_confidence_prediction_wrong_mean,
@@ -1338,7 +1338,7 @@ class BaseHead(nn.Module):
                                               unique_train_val_subjects=unique_val_subjects,
                                               subject_accuracy=accuracy_per_subject)
           if save_log and helper.LOG_CONFIDENCE_PREDICTION:
-            if not isinstance(criterion,torch.nn.L1Loss) and not isinstance(criterion,torch.nn.MSELoss) and not isinstance(criterion,torch.nn.HuberLoss) and not is_coral_loss:  
+            if self.is_classification and not is_coral_loss:
                 tools.compute_confidence_predictions_(list_prediction_right_mean=batch_confidence_prediction_right_mean,
                                                       list_prediction_wrong_mean=batch_confidence_prediction_wrong_mean,
                                                       list_prediction_right_std=batch_confidence_prediction_right_std,
