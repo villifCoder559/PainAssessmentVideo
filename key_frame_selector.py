@@ -51,6 +51,10 @@ import cv2
 import numpy as np
 from enum import Enum
 from pathlib import Path
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +144,7 @@ def _windowed_pass(
   step: int,
   min_temporal_gap: int,
   prefer_high: bool,
+  window_log: list[dict] | None = None,
 ) -> tuple[set[int], dict[int, float]]:
   """
   One full sliding-window sweep over the video.
@@ -152,6 +157,8 @@ def _windowed_pass(
   min_temporal_gap : minimum frame distance between any two selected frames
   prefer_high      : if True  -> MAX mode (pick most unstable per window)
                      if False -> MIN mode (pick least unstable per window)
+  window_log       : if not None, a mutable list to which a dict is appended
+                     per window: {"indices", "scores", "picked"}.  Default None.
 
   Returns
   -------
@@ -177,7 +184,7 @@ def _windowed_pass(
       all_scores[idx] = max(all_scores.get(idx, 0.0), s)
     return scored
 
-  def _pick(scored: dict[int, float]) -> None:
+  def _pick(scored: dict[int, float], indices: list[int]) -> None:
     """Add the best eligible candidate from a scored window to `selected`."""
     candidates = sorted(
       [
@@ -187,19 +194,27 @@ def _windowed_pass(
       ],
       key=lambda i: (-scored[i] if prefer_high else scored[i]),
     )
-    if candidates:
-      selected.add(candidates[0])
+    picked = candidates[0] if candidates else None
+    if picked is not None:
+      selected.add(picked)
+    if window_log is not None:
+      window_log.append({
+        "indices": list(indices),
+        "scores": dict(scored),
+        "picked": picked,
+      })
 
   pos = 0
   while pos + window_size <= total:
-    _pick(_score_window(list(range(pos, pos + window_size))))
+    indices = list(range(pos, pos + window_size))
+    _pick(_score_window(indices), indices)
     pos += step
 
   # Leftover tail (shorter than a full window)
   if pos < total:
     tail = list(range(pos, total))
     if len(tail) >= 2:
-      _pick(_score_window(tail))
+      _pick(_score_window(tail), tail)
 
   return selected, all_scores
 
@@ -316,6 +331,7 @@ def _hybrid_pass(
   step: int,
   min_temporal_gap: int,
   hybrid_ratio: float,
+  window_log: dict | None = None,
 ) -> list[int] | None:
   """
   Run MIN and MAX windowed passes independently, then merge so that
@@ -326,19 +342,37 @@ def _hybrid_pass(
   is never duplicated in the MAX pool.
 
   After merging, the combined set is forced to the nearest multiple of 16.
+
+  Args:
+    histograms:       Pre-computed per-frame histograms.
+    global_scores:    Global instability scores for all frames.
+    total:            Total number of frames.
+    window_half:      Half the window size.
+    step:             Window advance in frames.
+    min_temporal_gap: Minimum distance between selected frames.
+    hybrid_ratio:     Fraction of final frames from MIN pool.
+    window_log:       If not None, a mutable dict to populate with per-window
+                      data from both passes and final selected sets.
+
+  Returns:
+    Sorted list of selected frame indices, or None if target exceeds total.
   """
   if not 0 < hybrid_ratio < 1:
     raise ValueError(f"hybrid_ratio must be in (0, 1), got {hybrid_ratio!r}")
 
   # --- MIN pass --------------------------------------------------------
+  min_wlog = [] if window_log is not None else None
   min_selected, min_scores = _windowed_pass(
-    histograms, window_half, step, min_temporal_gap, prefer_high=False
+    histograms, window_half, step, min_temporal_gap, prefer_high=False,
+    window_log=min_wlog,
   )
   print(f"[KeyFrameSelector]   MIN pass -> {len(min_selected)} candidates")
 
   # --- MAX pass --------------------------------------------------------
+  max_wlog = [] if window_log is not None else None
   max_selected_raw, max_scores = _windowed_pass(
-    histograms, window_half, step, min_temporal_gap, prefer_high=True
+    histograms, window_half, step, min_temporal_gap, prefer_high=True,
+    window_log=max_wlog,
   )
   overlap      = max_selected_raw & min_selected
   max_selected = max_selected_raw - min_selected
@@ -398,6 +432,15 @@ def _hybrid_pass(
     remaining.discard(best)
 
   combined = min_selected | max_selected
+
+  if window_log is not None:
+    window_log["min_windows"] = min_wlog
+    window_log["max_windows"] = max_wlog
+    window_log["min_selected"] = set(min_selected)
+    window_log["max_selected"] = set(max_selected)
+    window_log["all_scores"] = all_scores
+    window_log["global_scores"] = global_scores
+
   return sorted(combined)
 
 
@@ -412,6 +455,7 @@ def select_key_frames(
   step: int = 4,
   min_temporal_gap: int = 2,
   hybrid_ratio: float = 0.5,
+  window_log: dict | None = None,
 ) -> list[int]:
   """
   Select key frames from a list of BGR frames using chi-square histogram
@@ -432,6 +476,10 @@ def select_key_frames(
   hybrid_ratio : float
       Only used when mode == HYBRID.  Fraction of the final frame count
       drawn from the MIN pool.  Must be in (0, 1).  Default: 0.5.
+  window_log : dict or None
+      If not None, a mutable dict that will be populated with per-window
+      data for diagnostic logging.  Keys: min_windows, max_windows,
+      min_selected, max_selected, all_scores, global_scores.
 
   Returns
   -------
@@ -446,6 +494,15 @@ def select_key_frames(
       f"[KeyFrameSelector] Video has only {total} frames — "
       "fewer than 16.  Returning all available frames."
     )
+    if window_log is not None:
+      histograms = [_frame_histogram(f) for f in frames]
+      global_scores = _global_instability_scores(histograms)
+      window_log["min_windows"] = None
+      window_log["max_windows"] = None
+      window_log["min_selected"] = set()
+      window_log["max_selected"] = set()
+      window_log["all_scores"] = global_scores
+      window_log["global_scores"] = global_scores
     return list(range(total))
 
   print(f"[KeyFrameSelector] Computing histograms for {total} frames ...")
@@ -457,18 +514,36 @@ def select_key_frames(
   result: list[int] | None
 
   if mode == SelectionMode.MIN_INSTABILITY:
+    min_wlog = [] if window_log is not None else None
     selected, window_scores = _windowed_pass(
-      histograms, window_half, step, min_temporal_gap, prefer_high=False
+      histograms, window_half, step, min_temporal_gap, prefer_high=False,
+      window_log=min_wlog,
     )
     scores = {**global_scores, **window_scores}
     result = _enforce_multiple_of_16(selected, scores, total, prefer_high=False)
+    if window_log is not None:
+      window_log["min_windows"] = min_wlog
+      window_log["max_windows"] = None
+      window_log["min_selected"] = set(selected)
+      window_log["max_selected"] = set()
+      window_log["all_scores"] = scores
+      window_log["global_scores"] = global_scores
 
   elif mode == SelectionMode.MAX_INSTABILITY:
+    max_wlog = [] if window_log is not None else None
     selected, window_scores = _windowed_pass(
-      histograms, window_half, step, min_temporal_gap, prefer_high=True
+      histograms, window_half, step, min_temporal_gap, prefer_high=True,
+      window_log=max_wlog,
     )
     scores = {**global_scores, **window_scores}
     result = _enforce_multiple_of_16(selected, scores, total, prefer_high=True)
+    if window_log is not None:
+      window_log["min_windows"] = None
+      window_log["max_windows"] = max_wlog
+      window_log["min_selected"] = set()
+      window_log["max_selected"] = set(selected)
+      window_log["all_scores"] = scores
+      window_log["global_scores"] = global_scores
 
   elif mode == SelectionMode.HYBRID:
     result = _hybrid_pass(
@@ -479,6 +554,7 @@ def select_key_frames(
       step=step,
       min_temporal_gap=min_temporal_gap,
       hybrid_ratio=hybrid_ratio,
+      window_log=window_log,
     )
 
   else:
@@ -562,6 +638,336 @@ def write_video(
 
 
 # ---------------------------------------------------------------------------
+# Diagnostic plot helpers
+# ---------------------------------------------------------------------------
+
+_LOG_DPI = 100
+_COLOR_MIN_SELECTED = "#E53935"
+_COLOR_MAX_SELECTED = "#1E88E5"
+_COLOR_UNSELECTED   = "#D0D0D0"
+_TITLE_H_IN         = 0.6
+_LABEL_H_IN         = 0.35
+_TEXT_H_IN          = 0.30
+_WINDOW_GAP_IN      = 0.25
+_BORDER_WIDTH_PT    = 3.0
+
+
+def _build_plot_windows(
+  window_log: dict,
+  mode: SelectionMode,
+  total_frames: int,
+) -> list[dict]:
+  """
+  Merge per-pass window lists into a single ordered list of window
+  descriptors suitable for plotting.
+
+  Args:
+    window_log:   Populated window log dict from select_key_frames.
+    mode:         Selection mode used.
+    total_frames: Total number of frames in the video.
+
+  Returns:
+    Ordered list of dicts, each with keys: label, indices, scores,
+    selected_min, selected_max.  The last entry may be an "Unassigned"
+    section for frames not covered by any window.
+  """
+  min_windows  = window_log.get("min_windows") or []
+  max_windows  = window_log.get("max_windows") or []
+  min_selected = window_log.get("min_selected", set())
+  max_selected = window_log.get("max_selected", set())
+  global_scores = window_log.get("global_scores", {})
+
+  windows: list[dict] = []
+  covered: set[int] = set()
+
+  if mode == SelectionMode.HYBRID:
+    # MIN and MAX passes sweep the same ranges — pair them up.
+    n = max(len(min_windows), len(max_windows))
+    for i in range(n):
+      mw = min_windows[i] if i < len(min_windows) else None
+      xw = max_windows[i] if i < len(max_windows) else None
+      indices = (mw or xw)["indices"]
+      # merge scores from both passes for this window
+      scores: dict[int, float] = {}
+      if mw:
+        scores.update(mw["scores"])
+      if xw:
+        for k, v in xw["scores"].items():
+          scores[k] = max(scores.get(k, 0.0), v)
+      first, last = indices[0], indices[-1]
+      # Highlight only the frame picked from THIS window that survived to
+      # the final selection — at most one red and one blue per window.
+      min_pick = mw["picked"] if mw else None
+      max_pick = xw["picked"] if xw else None
+      win_sel_min = {min_pick} if min_pick is not None and min_pick in min_selected else set()
+      win_sel_max = {max_pick} if max_pick is not None and max_pick in max_selected else set()
+      windows.append({
+        "label": f"Window {i + 1} [frames {first}-{last}]",
+        "indices": indices,
+        "scores": scores,
+        "selected_min": win_sel_min,
+        "selected_max": win_sel_max,
+      })
+      covered.update(indices)
+  else:
+    src = min_windows if mode == SelectionMode.MIN_INSTABILITY else max_windows
+    for i, w in enumerate(src):
+      first, last = w["indices"][0], w["indices"][-1]
+      pick = w["picked"]
+      if mode == SelectionMode.MIN_INSTABILITY:
+        win_sel_min = {pick} if pick is not None and pick in min_selected else set()
+        win_sel_max: set[int] = set()
+      else:
+        win_sel_min = set()
+        win_sel_max = {pick} if pick is not None and pick in max_selected else set()
+      windows.append({
+        "label": f"Window {i + 1} [frames {first}-{last}]",
+        "indices": w["indices"],
+        "scores": w["scores"],
+        "selected_min": win_sel_min,
+        "selected_max": win_sel_max,
+      })
+      covered.update(w["indices"])
+
+  # Unassigned frames — use global sets intersected with these indices,
+  # so fill/trim frames still show their selection color.
+  unassigned = sorted(set(range(total_frames)) - covered)
+  if unassigned:
+    unassigned_set = set(unassigned)
+    windows.append({
+      "label": "Unassigned frames",
+      "indices": unassigned,
+      "scores": {i: global_scores.get(i, 0.0) for i in unassigned},
+      "selected_min": min_selected & unassigned_set,
+      "selected_max": max_selected & unassigned_set,
+    })
+
+  return windows
+
+
+def _render_window_plot(
+  windows: list[dict],
+  frames: list[np.ndarray],
+  title: str,
+  log_columns: int,
+  log_frame_size: int,
+  mode: SelectionMode,
+) -> plt.Figure:
+  """
+  Render a diagnostic plot showing frame thumbnails in a grid for each
+  window, with scores annotated and selection borders colored.
+
+  Args:
+    windows:        List of window descriptors to include in this plot.
+    frames:         Full list of BGR video frames.
+    title:          Title string for the top of the plot.
+    log_columns:    Number of frame thumbnails per row.
+    log_frame_size: Width in pixels of each thumbnail.
+    mode:           Selection mode (controls border colors).
+
+  Returns:
+    A matplotlib Figure ready to be saved.
+  """
+  # --- compute thumbnail dimensions ---
+  h_orig, w_orig = frames[0].shape[:2]
+  aspect = h_orig / max(w_orig, 1)
+  thumb_w = log_frame_size
+  thumb_h = int(round(thumb_w * aspect))
+  thumb_w_in = thumb_w / _LOG_DPI
+  thumb_h_in = thumb_h / _LOG_DPI
+
+  # --- figure dimensions ---
+  fig_w_in = log_columns * thumb_w_in + 1.2  # left margin for labels
+  total_h_in = _TITLE_H_IN
+  for w in windows:
+    n_rows = math.ceil(len(w["indices"]) / log_columns)
+    total_h_in += _LABEL_H_IN + n_rows * (thumb_h_in + _TEXT_H_IN) + _WINDOW_GAP_IN
+
+  fig = plt.figure(figsize=(fig_w_in, total_h_in), dpi=_LOG_DPI)
+  fig.suptitle(title, fontsize=8, fontweight="bold", y=1 - _TITLE_H_IN / (2 * total_h_in))
+
+  left_margin_in = 1.2
+  cursor_y_in = total_h_in - _TITLE_H_IN  # top, below title
+
+  for w in windows:
+    # window label
+    cursor_y_in -= _LABEL_H_IN
+    fig.text(
+      0.02, cursor_y_in / total_h_in + _LABEL_H_IN / (2 * total_h_in),
+      w["label"], fontsize=7, fontweight="bold", va="center",
+    )
+
+    indices = w["indices"]
+    scores  = w["scores"]
+    sel_min = w["selected_min"]
+    sel_max = w["selected_max"]
+
+    for j, idx in enumerate(indices):
+      col = j % log_columns
+      row = j // log_columns
+      x_in = left_margin_in + col * thumb_w_in
+      y_in = cursor_y_in - (row + 1) * (thumb_h_in + _TEXT_H_IN)
+
+      # axes position in figure fraction
+      ax = fig.add_axes([
+        x_in / fig_w_in,
+        y_in / total_h_in,
+        thumb_w_in / fig_w_in,
+        thumb_h_in / total_h_in,
+      ])
+
+      # thumbnail
+      resized = cv2.resize(frames[idx], (thumb_w, thumb_h))
+      rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+      ax.imshow(rgb, aspect="auto")
+      ax.set_xticks([])
+      ax.set_yticks([])
+
+      # border color
+      if idx in sel_min:
+        color = _COLOR_MIN_SELECTED
+      elif idx in sel_max:
+        color = _COLOR_MAX_SELECTED
+      else:
+        color = _COLOR_UNSELECTED
+
+      for spine in ax.spines.values():
+        spine.set_edgecolor(color)
+        spine.set_linewidth(_BORDER_WIDTH_PT)
+
+      # score text below thumbnail
+      score_val = scores.get(idx, 0.0)
+      fig.text(
+        (x_in + thumb_w_in / 2) / fig_w_in,
+        (y_in - 0.02) / total_h_in,
+        f"F{idx}: {score_val:.4f}",
+        fontsize=5, ha="center", va="top", color="black",
+      )
+
+    n_rows = math.ceil(len(indices) / log_columns)
+    cursor_y_in -= n_rows * (thumb_h_in + _TEXT_H_IN) + _WINDOW_GAP_IN
+
+  return fig
+
+
+def _estimate_window_height(
+  n_frames: int,
+  log_columns: int,
+  thumb_h_in: float,
+) -> float:
+  """
+  Estimate the vertical space (inches) a single window section occupies.
+
+  Args:
+    n_frames:    Number of frames in the window.
+    log_columns: Frames per row.
+    thumb_h_in:  Thumbnail height in inches.
+
+  Returns:
+    Estimated height in inches.
+  """
+  n_rows = math.ceil(n_frames / log_columns)
+  return _LABEL_H_IN + n_rows * (thumb_h_in + _TEXT_H_IN) + _WINDOW_GAP_IN
+
+
+def _generate_log_plots(
+  frames: list[np.ndarray],
+  window_log: dict,
+  video_name: str,
+  mode: SelectionMode,
+  window_half: int,
+  step: int,
+  min_temporal_gap: int,
+  hybrid_ratio: float,
+  log_root_folder: str | Path,
+  log_columns: int = 7,
+  log_max_height: int = 5000,
+  log_frame_size: int = 150,
+) -> None:
+  """
+  Generate diagnostic PNG plots showing per-window frame selection.
+
+  Creates a subfolder under log_root_folder named with the video name
+  and all parameters, then saves sequentially numbered PNGs.
+
+  Args:
+    frames:            Full list of BGR video frames.
+    window_log:        Populated window log dict from select_key_frames.
+    video_name:        Name of the video (without extension).
+    mode:              Selection mode used.
+    window_half:       Half window size used.
+    step:              Step used.
+    min_temporal_gap:  Temporal gap used.
+    hybrid_ratio:      Hybrid ratio used.
+    log_root_folder:   Root directory for log output.
+    log_columns:       Frames per row in the grid.  Default: 7.
+    log_max_height:    Max pixel height per PNG.  Default: 5000.
+    log_frame_size:    Pixel width of each frame thumbnail.  Default: 150.
+  """
+  total = len(frames)
+
+  # --- output folder ---
+  folder_name = (
+    f"{video_name}_mode_{mode.value}_window_half_{window_half}"
+    f"_step_{step}_min_temporal_gap_{min_temporal_gap}"
+    f"_hybrid_ratio_{hybrid_ratio}"
+  )
+  log_folder = Path(log_root_folder) / folder_name
+  log_folder.mkdir(parents=True, exist_ok=True)
+
+  # --- title string ---
+  title = (
+    f"{video_name}  |  mode={mode.value}  window_half={window_half}  "
+    f"step={step}  min_temporal_gap={min_temporal_gap}  "
+    f"hybrid_ratio={hybrid_ratio}"
+  )
+
+  # --- build window list ---
+  all_windows = _build_plot_windows(window_log, mode, total)
+
+  # --- compute thumbnail aspect ---
+  h_orig, w_orig = frames[0].shape[:2]
+  aspect = h_orig / max(w_orig, 1)
+  thumb_h_in = int(round(log_frame_size * aspect)) / _LOG_DPI
+
+  max_h_in = log_max_height / _LOG_DPI
+
+  # --- pack windows into PNGs ---
+  batch: list[dict] = []
+  batch_h = _TITLE_H_IN
+  seq = 1
+
+  def _flush() -> None:
+    """
+    Render and save the current batch of windows as a single PNG.
+    """
+    nonlocal seq, batch, batch_h
+    if not batch:
+      return
+    first_frame = batch[0]["indices"][0]
+    last_frame  = batch[-1]["indices"][-1]
+    fig = _render_window_plot(batch, frames, title, log_columns, log_frame_size, mode)
+    fname = f"{seq:03d}_start_{first_frame}_end_{last_frame}.png"
+    fig.savefig(str(log_folder / fname), dpi=_LOG_DPI, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[KeyFrameSelector]   Saved {fname}")
+    seq += 1
+    batch = []
+    batch_h = _TITLE_H_IN
+
+  for w in all_windows:
+    wh = _estimate_window_height(len(w["indices"]), log_columns, thumb_h_in)
+    if batch and (batch_h + wh) > max_h_in:
+      _flush()
+    batch.append(w)
+    batch_h += wh
+
+  _flush()
+
+  print(f"[KeyFrameSelector] Log plots saved to {log_folder}  ({seq - 1} file(s))")
+
+
+# ---------------------------------------------------------------------------
 # Public pipeline entry-point
 # ---------------------------------------------------------------------------
 
@@ -574,6 +980,11 @@ def process_video(
   min_temporal_gap: int = 2,
   hybrid_ratio: float = 0.5,
   output_fps: float | None = None,
+  log_frames: bool = False,
+  log_root_folder: str | Path = "logs",
+  log_columns: int = 7,
+  log_max_height: int = 5000,
+  log_frame_size: int = 150,
 ) -> list[int]:
   """
   Full pipeline: load -> select key frames -> write output video.
@@ -588,6 +999,11 @@ def process_video(
   min_temporal_gap : minimum distance between two selected frames (default 2)
   hybrid_ratio     : MIN fraction for HYBRID mode, in (0, 1) (default 0.5)
   output_fps       : FPS of the output video; if None, inherits from input
+  log_frames       : if True, generate diagnostic PNG plots.  Default: False.
+  log_root_folder  : root directory for diagnostic output.  Default: "logs".
+  log_columns      : frames per row in diagnostic grid.  Default: 7.
+  log_max_height   : max pixel height per diagnostic PNG.  Default: 5000.
+  log_frame_size   : thumbnail width in pixels.  Default: 150.
 
   Returns
   -------
@@ -601,6 +1017,8 @@ def process_video(
   frames, src_fps = load_video_frames(video_path)
   print(f"  Total frames : {len(frames)}  |  Source FPS : {src_fps:.2f}")
 
+  wlog = {} if log_frames else None
+
   key_indices = select_key_frames(
     frames,
     mode=mode,
@@ -608,6 +1026,7 @@ def process_video(
     step=step,
     min_temporal_gap=min_temporal_gap,
     hybrid_ratio=hybrid_ratio,
+    window_log=wlog,
   )
 
   write_video(
@@ -616,6 +1035,22 @@ def process_video(
     output_path=output_path,
     fps=output_fps if output_fps is not None else src_fps,
   )
+
+  if log_frames and wlog:
+    _generate_log_plots(
+      frames=frames,
+      window_log=wlog,
+      video_name=video_path.stem,
+      mode=mode,
+      window_half=window_half,
+      step=step,
+      min_temporal_gap=min_temporal_gap,
+      hybrid_ratio=hybrid_ratio,
+      log_root_folder=log_root_folder,
+      log_columns=log_columns,
+      log_max_height=log_max_height,
+      log_frame_size=log_frame_size,
+    )
 
   return key_indices
 
@@ -702,6 +1137,27 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     "--output_fps", type=float, default=None,
     help="FPS of the output video. Default: inherit from source.",
   )
+  # -- logging / debugging ------------------------------------------------
+  parser.add_argument(
+    "--log_frames", action="store_true", default=False,
+    help="Generate diagnostic plots showing per-window frame selection.",
+  )
+  parser.add_argument(
+    "--log_root_folder", type=str, default="logs",
+    help="Root directory for log output. Default: 'logs'.",
+  )
+  parser.add_argument(
+    "--log_columns", type=int, default=7,
+    help="Number of frame thumbnails per row in the diagnostic grid. Default: 7.",
+  )
+  parser.add_argument(
+    "--log_max_height", type=int, default=5000,
+    help="Maximum pixel height of each diagnostic PNG. Default: 5000.",
+  )
+  parser.add_argument(
+    "--log_frame_size", type=int, default=150,
+    help="Width in pixels of each frame thumbnail. Default: 150.",
+  )
 
 
 def parse_args() -> argparse.Namespace:
@@ -768,6 +1224,11 @@ if __name__ == "__main__":
     min_temporal_gap=args.min_temporal_gap,
     hybrid_ratio=args.hybrid_ratio,
     output_fps=args.output_fps,
+    log_frames=args.log_frames,
+    log_root_folder=args.log_root_folder,
+    log_columns=args.log_columns,
+    log_max_height=args.log_max_height,
+    log_frame_size=args.log_frame_size,
   )
 
   if args.command == "single":
@@ -784,5 +1245,4 @@ if __name__ == "__main__":
       input_dir=args.input_dir,
       output_dir=args.output_dir,
       pattern=args.pattern,
-      **common_kwargs,
-    )
+      **common_kwargs)
