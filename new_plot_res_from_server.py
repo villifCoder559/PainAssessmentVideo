@@ -1481,9 +1481,12 @@ def generate_csv_row(data,config,time_, test_id):
   
   if 'list_val_l1_error' not in data[f'k0_cross_val_sub_0']['train_val'] or len(data[f'k0_cross_val_sub_0']['train_val']['list_val_l1_error']) == 0:
     val_l1_error = {}
-    val_rmse = {}
+    
   else:
     val_l1_error = {f'mean_val_l1_error_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_l1_error'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
+  if 'list_val_rmse' not in data[f'k0_cross_val_sub_0']['train_val'] or len(data[f'k0_cross_val_sub_0']['train_val']['list_val_rmse']) == 0:
+    val_rmse = {}
+  else:
     val_rmse = {f'mean_val_rmse_best_epochs_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['list_val_rmse'][data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx']] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   
   if 'list_val_icc' not in data[f'k0_cross_val_sub_0']['train_val'] or len(data[f'k0_cross_val_sub_0']['train_val']['list_val_ICC']) == 0:
