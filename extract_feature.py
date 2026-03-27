@@ -1,4 +1,3 @@
-from pandas.core.indexes import multi
 from custom.dataset import customDataset
 from custom.backbone import VideoBackbone,VitImageBackbone
 from custom.helper import CLIPS_REDUCTION,EMBEDDING_REDUCTION,MODEL_TYPE,SAMPLE_FRAME_STRATEGY, HEAD, GLOBAL_PATH
@@ -6,21 +5,16 @@ import custom.helper as helper
 import torch
 from torch.utils.data import DataLoader
 import os
-# from transformers import AutoImageProcessor
 import custom.tools as tools
 import time
 import pickle
 import gc
 import argparse
 import pandas as pd
-# import torch.multiprocessing
 from pathlib import Path
 import numpy as np
 import tqdm
-import pandas as pd
 import sys
-import time
-# import torch.nn as nn
 
 
 def masked_spatial_mean(features, excluded_positions_s14=None):
@@ -143,6 +137,34 @@ def masked_spatial_mean(features, excluded_positions_s14=None):
     return result
 
 
+def _apply_pooling(feature, backbone, pooling_embedding_reduction, adaptive_avg_pool3d_out_shape, float_16):
+  """
+  Apply embedding reduction and optional float16 conversion to extracted features.
+
+  Args:
+    feature:                       Raw feature tensor from backbone. Shape: [B, T, S, S, C].
+    backbone:                      The backbone model instance.
+    pooling_embedding_reduction:   EMBEDDING_REDUCTION enum value.
+    adaptive_avg_pool3d_out_shape: Output shape for 3D adaptive pooling, or None.
+    float_16:                      If True, convert output to float16.
+
+  Returns:
+    Reduced (and optionally half-precision) feature tensor.
+  """
+  if isinstance(backbone, VideoBackbone) and pooling_embedding_reduction != EMBEDDING_REDUCTION.NONE:
+    if pooling_embedding_reduction == EMBEDDING_REDUCTION.ADAPTIVE_POOLING_3D:
+      feature = feature.permute(0, 4, 1, 2, 3)
+      feature = torch.nn.functional.adaptive_avg_pool3d(feature, output_size=adaptive_avg_pool3d_out_shape)
+      feature = feature.permute(0, 2, 3, 4, 1)
+    elif pooling_embedding_reduction == EMBEDDING_REDUCTION.SPATIAL_MASKED:
+      feature = masked_spatial_mean(feature)
+    else:
+      feature = torch.mean(feature, dim=pooling_embedding_reduction.value, keepdim=True)
+  if float_16:
+    feature = feature.half()
+  return feature
+
+
 def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,enable_batch_extraction,batch_size_feat_extraction,n_workers,saving_chunk_size=100,  preprocess_align = False,
          preprocess_crop_detection = False,preprocess_frontalize = True,path_dataset=None,path_labels=None,stride_window=16,clip_length=16,
          log_file_path=None,root_saving_folder_path=None,backbone_type='video',from_=None,to_=None,save_big_feature=False,h_flip=False,num_clips_per_video=None,
@@ -170,18 +192,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
       batch_data = batch_data.to(device)
       with torch.no_grad():
         feature = backbone.forward_features(x=batch_data) # [1,8,14,14,768]
-      if isinstance(backbone,VideoBackbone) and pooling_embedding_reduction != EMBEDDING_REDUCTION.NONE:
-        if adaptive_avg_pool3d_out_shape is not None and pooling_embedding_reduction == EMBEDDING_REDUCTION.ADAPTIVE_POOLING_3D:
-          feature = feature.permute(0,4,1,2,3) # [1,768,8,14,14]
-          feature = torch.nn.functional.adaptive_avg_pool3d(feature,output_size=adaptive_avg_pool3d_out_shape) # [1,768,2,2,2]
-          feature = feature.permute(0,2,3,4,1) # [1,2,2,2,768]
-        elif pooling_embedding_reduction == EMBEDDING_REDUCTION.SPATIAL_MASKED:
-          # Apply masked spatial mean: [1,T,S,S,C] -> [1,T,1,1,C]
-          feature = masked_spatial_mean(feature)
-        else:
-          feature = torch.mean(feature,dim=pooling_embedding_reduction.value,keepdim=True)
-      if float_16:
-        feature = feature.half()
+      feature = _apply_pooling(feature, backbone, pooling_embedding_reduction, adaptive_avg_pool3d_out_shape, float_16)
       list_batch_data.append(feature.detach().cpu())
     feature = torch.cat(list_batch_data,dim=0)
     return feature
@@ -199,7 +210,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
     dataloader = DataLoader(dataset, 
                 batch_size=batch_size_feat_extraction,
                 shuffle=False,
-                num_workers=0,
+                num_workers=n_workers,
                 persistent_workers=True if n_workers > 0 else False,
                 collate_fn=dataset._custom_collate_fn_extraction)
     
@@ -212,23 +223,10 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
       if enable_batch_extraction:
         feature = batch_extraction(data=data,device=device,backbone=backbone)
       else:
-        print(f'extracting features from {path[0]}')
         data = data.to(device)
         with torch.no_grad():
           feature = backbone.forward_features(x=data) # [1,T,S,S,C]
-        if isinstance(backbone,VideoBackbone) and pooling_embedding_reduction != EMBEDDING_REDUCTION.NONE:
-          if adaptive_avg_pool3d_out_shape is not None and pooling_embedding_reduction == EMBEDDING_REDUCTION.ADAPTIVE_POOLING_3D:
-            feature = feature.permute(0,4,1,2,3) # [1,768,8,14,14]
-            feature = torch.nn.functional.adaptive_avg_pool3d(feature,output_size=adaptive_avg_pool3d_out_shape) # [1,768,2,2,2]
-            feature = feature.permute(0,2,3,4,1) # [1,2,2,2,768]
-          elif pooling_embedding_reduction == EMBEDDING_REDUCTION.SPATIAL_MASKED:
-            # Apply masked spatial mean: [1,T,S,S,C] -> [1,T,1,1,C]
-            feature = masked_spatial_mean(feature)
-          else:
-            feature = torch.mean(feature,dim=pooling_embedding_reduction.value,keepdim=True)
-        if float_16:
-          feature = feature.half()
-      print(f'batch feature shape {feature.shape}')
+        feature = _apply_pooling(feature, backbone, pooling_embedding_reduction, adaptive_avg_pool3d_out_shape, float_16)
       list_frames.append(list_sampled_frames)
       list_features.append(feature.detach().cpu())
       list_labels.append(labels)
@@ -243,46 +241,29 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
       
       # update sample_id based on augmentation
       list_sample_id.append(sample_id + (helper.get_shift_for_sample_id(str_augmentation) if str_augmentation != '' else 0))
-      # if dict_augmentation['h_flip']:
-      #   list_sample_id.append(sample_id+helper.get_shift_for_sample_id('hflip')) # if h_flip, add 8700 to sample_id
-      # elif dict_augmentation['color_jitter']:
-      #   list_sample_id.append(sample_id+helper.get_shift_for_sample_id('jitter'))
-      # elif dict_augmentation['rotation']:
-      #   list_sample_id.append(sample_id+helper.get_shift_for_sample_id('rotation'))
-      # elif dict_augmentation['spatial_shift']:
-      #   list_sample_id.append(sample_id+helper.get_shift_for_sample_id('shift'))
-      # else:
-      #   list_sample_id.append(sample_id)
-      print(f'sample_id: {list_sample_id[-1]}')
-      print(f'list_frames: {list_sampled_frames[-1] if list_sampled_frames.ndim > 1 else list_sampled_frames}')
       list_subject_id.append(subject_id)
       list_path.append(path)
       
-      # add list for random cropped part
       count += 1
-      print(f'Batch {count}/{len(dataloader)}')
-      print(f'GPU:\n Free : {torch.cuda.mem_get_info()[0]/1024/1024/1024:.2f} GB \n total: {torch.cuda.mem_get_info()[1]/1024/1024/1024:.2f} GB')
-      torch.cuda.empty_cache()
       end = time.time()
-      print(f'Elapsed time : {((end - start)//60//60):.0f} h {(((end - start)//60%60)):.0f} m {(((end - start)%60)):.0f} s')
-      expected_end = (end - start) * (len(dataloader) / count)
-      if count % 20 == 0:
-        print(f'Dict size in GB: {feature.element_size()*feature.nelement()/1024/1024/1024:.2f} GB')
-      print(f'Expected time: {expected_end//60//60:.0f} h {expected_end//60%60:.0f} m {expected_end%60:.0f} s\n')
-      # if count % 10 == 0:
-      #   _write_log_file(f'Batch {count}/{len(dataloader)}')
-      # save_big_feature = True 
+      elapsed = end - start
+      expected_end = elapsed * (len(dataloader) / count)
+      print(f'Batch {count}/{len(dataloader)} | feature {feature.shape} dtype {feature.dtype} | sample_id {list_sample_id[-1]}')
+      print(f'Elapsed: {elapsed//3600:.0f}h {elapsed//60%60:.0f}m {elapsed%60:.0f}s | ETA: {expected_end//3600:.0f}h {expected_end//60%60:.0f}m {expected_end%60:.0f}s')
+      if count % 10 == 0:
+        free_gb, total_gb = (v / 1024**3 for v in torch.cuda.mem_get_info())
+        print(f'GPU: {free_gb:.2f}/{total_gb:.2f} GB free | feat size: {feature.element_size()*feature.nelement()/1024**3:.3f} GB')
+        torch.cuda.empty_cache()
       if count % saving_chunk_size == 0:
         if not save_big_feature:
           dict_data = {
-            'features': torch.cat(list_features,dim=0).half() if float_16 else torch.cat(list_features,dim=0),
+            'features': torch.cat(list_features,dim=0),
             'list_labels': torch.cat(list_labels,dim=0).to(torch.int32),
             'list_subject_id': torch.cat(list_subject_id).squeeze().to(torch.int32),
             'list_sample_id': torch.cat(list_sample_id).to(torch.int32),
             'list_path': np.concatenate(list_path), # not saved in .safetensors
             'list_frames': torch.cat(list_frames,dim=0).to(torch.int32)
           }
-          # dict_data_size = dict_data["features"].element_size()*dict_data["features"].nelement()/1024/1024
           tools.save_dict_data(dict_data=dict_data,
                                save_as_safetensors=save_as_safetensors,
                                saving_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)))
@@ -290,14 +271,13 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
         else:
           
           dict_data = {
-            'features': torch.cat(list_features,dim=0).half() if float_16 else torch.cat(list_features,dim=0),
+            'features': torch.cat(list_features,dim=0),
             'list_labels': torch.cat(list_labels,dim=0).to(torch.int32),
             'list_subject_id': torch.cat(list_subject_id).squeeze().to(torch.int32),
             'list_sample_id': torch.cat(list_sample_id).to(torch.int32),
             'list_path': np.concatenate(list_path),
             'list_frames': torch.cat(list_frames,dim=0).to(torch.int32)
           }
-          # dict_data_size = dict_data["features"].element_size()*dict_data["features"].nelement()/1024/1024
           path = Path(list_path[0][0])
           person_id = path.parts[-2] if 'caer' not in str(path).lower() else os.path.join(*path.parts[-3:-1])
           sample_id = path.parts[-1][:-4]
@@ -312,11 +292,9 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
         list_path = []
         list_frames = []
         del dict_data
-    # backbone.model.to('cpu')
-    # save last batch
-    if len(list_features)>0:
+    if len(list_features) > 0:
       dict_data = {
-            'features': torch.cat(list_features,dim=0).half() if float_16 else torch.cat(list_features,dim=0),
+            'features': torch.cat(list_features,dim=0),
             'list_labels': torch.cat(list_labels,dim=0).to(torch.int32),
             'list_subject_id': torch.cat(list_subject_id).squeeze().to(torch.int32),
             'list_sample_id': torch.cat(list_sample_id).to(torch.int32),
@@ -325,17 +303,10 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
           }
       tools.save_dict_data(dict_data=dict_data,
                            save_as_safetensors=save_as_safetensors,
-                           saving_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)) if not save_as_safetensors else root_saving_folder_path)
+                           saving_folder_path=os.path.join(root_saving_folder_path,'batch_'+str(count-saving_chunk_size)+'_'+str(count)) if not save_big_feature else root_saving_folder_path)
       _write_log_file(f'Batch {count-saving_chunk_size}_{count} saved in {os.path.join(root_saving_folder_path,"batch_"+str(count-saving_chunk_size)+"_"+str(count))} \n')
-  
-  
-  
-  
-  
-  
-  
-  
-  
+
+
   print(f'Model type: {model_type.name}, {model_type.value}')
   if backbone_type == 'video':
     backbone_model = VideoBackbone(model_type=model_type,
