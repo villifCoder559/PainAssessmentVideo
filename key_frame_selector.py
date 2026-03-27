@@ -55,7 +55,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-
+import json
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm import tqdm
 
 # ---------------------------------------------------------------------------
 # Selection mode
@@ -230,6 +233,7 @@ def _fill_to_target(
   total_frames: int,
   prefer_high: bool,
   exclude: set[int] | None = None,
+  quiet: bool = False,
 ) -> set[int]:
   """
   Add frames from the unselected pool until `len(selected) == target`.
@@ -259,10 +263,11 @@ def _fill_to_target(
     selected.add(idx)
     added += 1
 
-  print(
-    f"[KeyFrameSelector]   + added {added} supplementary frames "
-    f"({'max' if prefer_high else 'min'} instability fill) -> {len(selected)} total."
-  )
+  if not quiet:
+    print(
+      f"[KeyFrameSelector]   + added {added} supplementary frames "
+      f"({'max' if prefer_high else 'min'} instability fill) -> {len(selected)} total."
+    )
   return selected
 
 
@@ -271,6 +276,7 @@ def _trim_to_target(
   target: int,
   all_scores: dict[int, float],
   prefer_high: bool,
+  quiet: bool = False,
 ) -> set[int]:
   """
   Remove frames from `selected` until `len(selected) == target`.
@@ -287,9 +293,10 @@ def _trim_to_target(
   to_remove = ordered[-excess:] if not prefer_high else ordered[:excess]
   selected -= set(to_remove)
 
-  print(
-    f"[KeyFrameSelector]   - removed {excess} excess frames -> {len(selected)} total."
-  )
+  if not quiet:
+    print(
+      f"[KeyFrameSelector]   - removed {excess} excess frames -> {len(selected)} total."
+    )
   return selected
 
 
@@ -298,6 +305,7 @@ def _enforce_multiple_of_16(
   all_scores: dict[int, float],
   total_frames: int,
   prefer_high: bool,
+  quiet: bool = False,
 ) -> list[int] | None:
   """
   Adjust `selected` to the nearest multiple of 16.
@@ -312,9 +320,9 @@ def _enforce_multiple_of_16(
     return None
 
   if n < target:
-    selected = _fill_to_target(selected, target, all_scores, total_frames, prefer_high)
+    selected = _fill_to_target(selected, target, all_scores, total_frames, prefer_high, quiet=quiet)
   elif n > target:
-    selected = _trim_to_target(selected, target, all_scores, prefer_high)
+    selected = _trim_to_target(selected, target, all_scores, prefer_high, quiet=quiet)
 
   return sorted(selected)
 
@@ -332,6 +340,7 @@ def _hybrid_pass(
   min_temporal_gap: int,
   hybrid_ratio: float,
   window_log: dict | None = None,
+  quiet: bool = False,
 ) -> list[int] | None:
   """
   Run MIN and MAX windowed passes independently, then merge so that
@@ -366,7 +375,8 @@ def _hybrid_pass(
     histograms, window_half, step, min_temporal_gap, prefer_high=False,
     window_log=min_wlog,
   )
-  print(f"[KeyFrameSelector]   MIN pass -> {len(min_selected)} candidates")
+  if not quiet:
+    print(f"[KeyFrameSelector]   MIN pass -> {len(min_selected)} candidates")
 
   # --- MAX pass --------------------------------------------------------
   max_wlog = [] if window_log is not None else None
@@ -376,10 +386,11 @@ def _hybrid_pass(
   )
   overlap      = max_selected_raw & min_selected
   max_selected = max_selected_raw - min_selected
-  print(
-    f"[KeyFrameSelector]   MAX pass -> {len(max_selected_raw)} candidates "
-    f"({len(overlap)} overlap removed -> {len(max_selected)} unique MAX frames)"
-  )
+  if not quiet:
+    print(
+      f"[KeyFrameSelector]   MAX pass -> {len(max_selected_raw)} candidates "
+      f"({len(overlap)} overlap removed -> {len(max_selected)} unique MAX frames)"
+    )
 
   all_scores = {**global_scores, **min_scores, **max_scores}
 
@@ -394,31 +405,32 @@ def _hybrid_pass(
   n_min_target = max(1, min(n_min_target, target - 1))
   n_max_target = target - n_min_target
 
-  print(
-    f"[KeyFrameSelector]   Hybrid target: {target} frames  "
-    f"({n_min_target} MIN  +  {n_max_target} MAX)"
-  )
+  if not quiet:
+    print(
+      f"[KeyFrameSelector]   Hybrid target: {target} frames  "
+      f"({n_min_target} MIN  +  {n_max_target} MAX)"
+    )
 
   # --- Adjust MIN pool -------------------------------------------------
   if len(min_selected) < n_min_target:
     min_selected = _fill_to_target(
       min_selected, n_min_target, all_scores, total,
-      prefer_high=False, exclude=max_selected,
+      prefer_high=False, exclude=max_selected, quiet=quiet,
     )
   elif len(min_selected) > n_min_target:
     min_selected = _trim_to_target(
-      min_selected, n_min_target, all_scores, prefer_high=False
+      min_selected, n_min_target, all_scores, prefer_high=False, quiet=quiet,
     )
 
   # --- Adjust MAX pool -------------------------------------------------
   if len(max_selected) < n_max_target:
     max_selected = _fill_to_target(
       max_selected, n_max_target, all_scores, total,
-      prefer_high=True, exclude=min_selected,
+      prefer_high=True, exclude=min_selected, quiet=quiet,
     )
   elif len(max_selected) > n_max_target:
     max_selected = _trim_to_target(
-      max_selected, n_max_target, all_scores, prefer_high=True
+      max_selected, n_max_target, all_scores, prefer_high=True, quiet=quiet,
     )
 
   # Final safety: remove any accidental overlap (edge-case in fill)
@@ -456,6 +468,7 @@ def select_key_frames(
   min_temporal_gap: int = 2,
   hybrid_ratio: float = 0.5,
   window_log: dict | None = None,
+  quiet: bool = False,
 ) -> list[int]:
   """
   Select key frames from a list of BGR frames using chi-square histogram
@@ -490,10 +503,11 @@ def select_key_frames(
   total = len(frames)
 
   if total < 16:
-    print(
-      f"[KeyFrameSelector] Video has only {total} frames — "
-      "fewer than 16.  Returning all available frames."
-    )
+    if not quiet:
+      print(
+        f"[KeyFrameSelector] Video has only {total} frames — "
+        "fewer than 16.  Returning all available frames."
+      )
     if window_log is not None:
       histograms = [_frame_histogram(f) for f in frames]
       global_scores = _global_instability_scores(histograms)
@@ -505,11 +519,13 @@ def select_key_frames(
       window_log["global_scores"] = global_scores
     return list(range(total))
 
-  print(f"[KeyFrameSelector] Computing histograms for {total} frames ...")
+  if not quiet:
+    print(f"[KeyFrameSelector] Computing histograms for {total} frames ...")
   histograms    = [_frame_histogram(f) for f in frames]
   global_scores = _global_instability_scores(histograms)
 
-  print(f"[KeyFrameSelector] Mode: {mode.value.upper()}")
+  if not quiet:
+    print(f"[KeyFrameSelector] Mode: {mode.value.upper()}")
 
   result: list[int] | None
 
@@ -520,7 +536,7 @@ def select_key_frames(
       window_log=min_wlog,
     )
     scores = {**global_scores, **window_scores}
-    result = _enforce_multiple_of_16(selected, scores, total, prefer_high=False)
+    result = _enforce_multiple_of_16(selected, scores, total, prefer_high=False, quiet=quiet)
     if window_log is not None:
       window_log["min_windows"] = min_wlog
       window_log["max_windows"] = None
@@ -536,7 +552,7 @@ def select_key_frames(
       window_log=max_wlog,
     )
     scores = {**global_scores, **window_scores}
-    result = _enforce_multiple_of_16(selected, scores, total, prefer_high=True)
+    result = _enforce_multiple_of_16(selected, scores, total, prefer_high=True, quiet=quiet)
     if window_log is not None:
       window_log["min_windows"] = None
       window_log["max_windows"] = max_wlog
@@ -555,20 +571,23 @@ def select_key_frames(
       min_temporal_gap=min_temporal_gap,
       hybrid_ratio=hybrid_ratio,
       window_log=window_log,
+      quiet=quiet,
     )
 
   else:
     raise ValueError(f"Unknown SelectionMode: {mode!r}")
 
   if result is None:
-    print(
-      f"[KeyFrameSelector] Cannot reach a multiple of 16 unique frames "
-      f"(video has only {total} frames).  Returning all frames."
-    )
+    if not quiet:
+      print(
+        f"[KeyFrameSelector] Cannot reach a multiple of 16 unique frames "
+        f"(video has only {total} frames).  Returning all frames."
+      )
     return list(range(total))
 
   assert len(result) % 16 == 0, f"Unexpected frame count: {len(result)}"
-  print(f"[KeyFrameSelector] Done — {len(result)} key frames selected (multiple of 16).")
+  if not quiet:
+    print(f"[KeyFrameSelector] Done — {len(result)} key frames selected (multiple of 16).")
   return result
 
 
@@ -883,6 +902,7 @@ def _generate_log_plots(
   log_columns: int = 7,
   log_max_height: int = 5000,
   log_frame_size: int = 150,
+  quiet: bool = False,
 ) -> None:
   """
   Generate diagnostic PNG plots showing per-window frame selection.
@@ -950,7 +970,8 @@ def _generate_log_plots(
     fname = f"{seq:03d}_start_{first_frame}_end_{last_frame}.png"
     fig.savefig(str(log_folder / fname), dpi=_LOG_DPI, bbox_inches="tight")
     plt.close(fig)
-    print(f"[KeyFrameSelector]   Saved {fname}")
+    if not quiet:
+      print(f"[KeyFrameSelector]   Saved {fname}")
     seq += 1
     batch = []
     batch_h = _TITLE_H_IN
@@ -964,7 +985,8 @@ def _generate_log_plots(
 
   _flush()
 
-  print(f"[KeyFrameSelector] Log plots saved to {log_folder}  ({seq - 1} file(s))")
+  if not quiet:
+    print(f"[KeyFrameSelector] Log plots saved to {log_folder}  ({seq - 1} file(s))")
 
 
 # ---------------------------------------------------------------------------
@@ -985,6 +1007,7 @@ def process_video(
   log_columns: int = 7,
   log_max_height: int = 5000,
   log_frame_size: int = 150,
+  quiet: bool = False,
 ) -> list[int]:
   """
   Full pipeline: load -> select key frames -> write output video.
@@ -1010,12 +1033,14 @@ def process_video(
   list of int : selected frame indices (sorted, multiple of 16)
   """
   video_path = Path(video_path)
-  print(f"\n{'='*60}")
-  print(f"Processing : {video_path.name}")
-  print(f"{'='*60}")
+  if not quiet:
+    print(f"\n{'='*60}")
+    print(f"Processing : {video_path.name}")
+    print(f"{'='*60}")
 
   frames, src_fps = load_video_frames(video_path)
-  print(f"  Total frames : {len(frames)}  |  Source FPS : {src_fps:.2f}")
+  if not quiet:
+    print(f"  Total frames : {len(frames)}  |  Source FPS : {src_fps:.2f}")
 
   wlog = {} if log_frames else None
 
@@ -1027,6 +1052,7 @@ def process_video(
     min_temporal_gap=min_temporal_gap,
     hybrid_ratio=hybrid_ratio,
     window_log=wlog,
+    quiet=quiet,
   )
 
   write_video(
@@ -1050,6 +1076,7 @@ def process_video(
       log_columns=log_columns,
       log_max_height=log_max_height,
       log_frame_size=log_frame_size,
+      quiet=quiet,
     )
 
   return key_indices
@@ -1059,10 +1086,26 @@ def process_video(
 # Batch processing helper
 # ---------------------------------------------------------------------------
 
+def _process_one_video(vp: Path, out_path: Path, kwargs: dict) -> list[int]:
+  """
+  Worker function for parallel batch processing.
+
+  Args:
+    vp:       Path to the input video file.
+    out_path: Path for the output key-frame video.
+    kwargs:   Keyword arguments forwarded verbatim to process_video().
+
+  Returns:
+    Sorted list of selected frame indices.
+  """
+  return process_video(vp, out_path, **kwargs)
+
+
 def process_dataset(
   input_dir: str | Path,
   output_dir: str | Path,
   pattern: str = "**/*.mp4",
+  workers: int | None = None,
   **kwargs,
 ) -> dict[str, list[int]]:
   """
@@ -1074,6 +1117,7 @@ def process_dataset(
   input_dir  : root folder of the BioVid dataset
   output_dir : root folder for outputs
   pattern    : glob pattern to find videos  (default: "**/*.mp4")
+  workers    : number of parallel worker processes; None = all CPUs, 1 = sequential
   **kwargs   : forwarded verbatim to process_video()
 
   Returns
@@ -1082,21 +1126,41 @@ def process_dataset(
   """
   input_dir  = Path(input_dir)
   output_dir = Path(output_dir)
+  quiet      = kwargs.get("quiet", False)
+  n_workers  = workers if workers is not None else (os.cpu_count() or 1)
   results: dict[str, list[int]] = {}
 
-  video_paths = sorted(input_dir.glob(pattern))
-  print(f"Found {len(video_paths)} video(s) under {input_dir}")
+  video_paths = sorted(vp for vp in input_dir.glob(pattern) if "$" not in vp.name)
+  if not quiet:
+    print(f"Found {len(video_paths)} video(s) under {input_dir}")
 
-  for vp in video_paths:
-    relative = vp.relative_to(input_dir)
-    out_path = output_dir / relative
-    try:
-      indices = process_video(vp, out_path, **kwargs)
-      results[str(vp)] = indices
-    except Exception as exc:
-      print(f"[ERROR] {vp.name}: {exc}")
+  if n_workers == 1:
+    pbar = tqdm(video_paths, unit="video")
+    for vp in pbar:
+      pbar.set_description(vp.name)
+      out_path = output_dir / vp.relative_to(input_dir)
+      try:
+        results[str(vp)] = process_video(vp, out_path, **kwargs)
+      except Exception as exc:
+        print(f"[ERROR] {vp.name}: {exc}")
+  else:
+    job_list = [(vp, output_dir / vp.relative_to(input_dir)) for vp in video_paths]
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+      future_to_vp = {
+        executor.submit(_process_one_video, vp, out_path, kwargs): vp
+        for vp, out_path in job_list
+      }
+      pbar = tqdm(as_completed(future_to_vp), total=len(future_to_vp), unit="video")
+      for future in pbar:
+        vp = future_to_vp[future]
+        pbar.set_description(vp.name)
+        try:
+          results[str(vp)] = future.result()
+        except Exception as exc:
+          print(f"[ERROR] {vp.name}: {exc}")
 
-  print(f"\nDone.  Processed {len(results)}/{len(video_paths)} video(s).")
+  if not quiet:
+    print(f"\nDone.  Processed {len(results)}/{len(video_paths)} video(s).")
   return results
 
 
@@ -1157,6 +1221,14 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
   parser.add_argument(
     "--log_frame_size", type=int, default=150,
     help="Width in pixels of each frame thumbnail. Default: 150.",
+  )
+  parser.add_argument(
+    "--quiet", action="store_true", default=False,
+    help="Suppress all non-error output. The tqdm progress bar is always shown.",
+  )
+  parser.add_argument(
+    "--workers", type=int, default=None,
+    help="Number of parallel worker processes for batch. Default: all CPUs. Use 1 for sequential.",
   )
 
 
@@ -1229,6 +1301,8 @@ if __name__ == "__main__":
     log_columns=args.log_columns,
     log_max_height=args.log_max_height,
     log_frame_size=args.log_frame_size,
+    quiet=args.quiet,
+    workers=args.workers,
   )
 
   if args.command == "single":
@@ -1246,3 +1320,18 @@ if __name__ == "__main__":
       output_dir=args.output_dir,
       pattern=args.pattern,
       **common_kwargs)
+    config_dict = {
+      'mode': args.mode,
+      'window_half': args.window_half,
+      'step': args.step,
+      'min_temporal_gap': args.min_temporal_gap,
+      'hybrid_ratio': args.hybrid_ratio,
+      'output_fps': args.output_fps,
+      'input_dir': args.input_dir,
+      'output_dir': args.output_dir,
+      'pattern': args.pattern,
+    }
+    with open(Path(args.output_dir) / "selection_config.json", "w") as f:
+      json.dump(config_dict, f, indent=2)
+    print(f"\nSelection config saved to {Path(args.output_dir) / 'selection_config.json'}")
+    
