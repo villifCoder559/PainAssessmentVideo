@@ -40,7 +40,6 @@ os.environ["OPTUNA_DISABLE_TELEMETRY"] = "1"
 
 LOG_SCALE_OPTUNA_HYPERS = ['lr', 'regulariz_lambda_L1', 'regulariz_lambda_L2']
 
-
 def get_optimizer(opt):
   """Get optimizer class from string name.
 
@@ -596,6 +595,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     cross_block_after_transformers = trial.suggest_categorical('cross_block_after_transformers', kwargs['cross_block_after_transformers'])
     q_k_v_dim = trial.suggest_categorical('q_k_v_dim', kwargs['q_k_v_dim'])
     custom_mlp = trial.suggest_categorical('custom_mlp', kwargs['custom_mlp'])
+    mlp_num_hidden_layers = _suggest(trial, 'mlp_num_hidden_layers', kwargs['mlp_num_hidden_layers'], kwargs['optuna_categorical'])
     drop_path_mode = trial.suggest_categorical('drop_path_mode', kwargs['drop_path_mode'])
     apply_xattn_mask = trial.suggest_categorical('apply_xattn_mask', kwargs['apply_xattn_mask'])
     type_head = trial.suggest_categorical('type_head', kwargs['type_head'])
@@ -625,6 +625,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'drop_path_mode': drop_path_mode,
       'mlp_ratio': mlp_ratio,
       'custom_mlp': custom_mlp,
+      'mlp_num_hidden_layers': mlp_num_hidden_layers,
       'pos_enc': pos_enc,
       'coral_loss': True if loss == 'coral' else False,
       'depth': nr_blocks,
@@ -1154,6 +1155,7 @@ if __name__ == '__main__':
   parser.add_argument('--drop_path_mode', type=str, nargs='*', default=['row'], help='Drop path mode.')
   parser.add_argument('--mlp_ratio', type=float, nargs='*', default=[2.0], help='MLP ratio.')
   parser.add_argument('--custom_mlp', type=int, nargs='*', default=[0], help='Use custom MLP.')
+  parser.add_argument('--mlp_num_hidden_layers', type=int, nargs='*', default=[2], help='Number of hidden layers in MLP_custom (used when custom_mlp=1).')
   parser.add_argument('--use_batch_norm', type=int, nargs='*', default=[0], help='Use batch normalization (instead of LayerNorm) in AttentiveHeadJEPA.')
 
   parser.add_argument('--type_head', type=int, nargs='*', default=[0], help='Type of head. 0: only finale liner, 1: MLP + linear')

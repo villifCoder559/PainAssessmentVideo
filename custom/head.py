@@ -1564,7 +1564,8 @@ class AttentiveHeadJEPA(BaseHead):
       embedding_reduction: helper.EMBEDDING_REDUCTION = None,
       skip_init_weights=False, # used only for model debugging in log_cross_attention_from_model.py script
       complete_block=1,
-      type_head=0):
+      type_head=0,
+      mlp_num_hidden_layers=2):
     super().__init__(is_classification=True if num_classes > 1 else False)
     self.pooler = jepa_attentive_pooler.AttentivePooler(
             num_queries=num_queries,
@@ -1581,6 +1582,7 @@ class AttentiveHeadJEPA(BaseHead):
             init_std=init_std,
             qkv_bias=qkv_bias,
             custom_mlp=custom_mlp,
+            mlp_num_hidden_layers=mlp_num_hidden_layers,
             complete_block=complete_block,
             drop_path_mode=drop_path_mode,
             use_sdpa=use_sdpa,
@@ -1621,10 +1623,7 @@ class AttentiveHeadJEPA(BaseHead):
       if coral_loss:
         self.linear = CoralLayer(embed_dim, num_classes)
       else:
-        if self.custom_mlp:
-          self.linear = nn.Linear(int(embed_dim * (mlp_ratio**2)), num_classes, bias=True) 
-        else:
-          self.linear = nn.Linear(embed_dim, num_classes, bias=True)
+        self.linear = nn.Linear(embed_dim, num_classes, bias=True)
     else: 
       raise NotImplementedError(f'Unknown type_head {type_head}')
     # Aggregator setup if num_queries > 1  

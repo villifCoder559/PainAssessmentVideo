@@ -46,6 +46,7 @@ class AttentivePooler(nn.Module):
         use_sdpa=False,
         cross_block_after_transformers=False,
         custom_mlp=False,
+        mlp_num_hidden_layers=2,
         drop_path_mode='row',
         # grid_size_pos=None # [T, S, S] -> S depends on the model (Base,Giant,etc), while T is input dependent
     ):
@@ -68,6 +69,7 @@ class AttentivePooler(nn.Module):
                 residual_drop=residual_dropout,
                 use_sdpa=use_sdpa,
                 custom_mlp=custom_mlp,
+                mlp_num_hidden_layers=mlp_num_hidden_layers,
                 drop_path_mode=drop_path_mode,
                 norm_layer=norm_layer)
             self.q_norm = norm_layer(embed_dim)
@@ -83,6 +85,7 @@ class AttentivePooler(nn.Module):
                 residual_drop=residual_dropout,
                 use_sdpa=use_sdpa,
                 custom_mlp=custom_mlp,
+                mlp_num_hidden_layers=mlp_num_hidden_layers,
                 drop_path_mode=drop_path_mode,
                 norm_layer=norm_layer)
         else:
@@ -123,10 +126,12 @@ class AttentivePooler(nn.Module):
 
         if self.complete_block == 2:
             rescale(self.cross_attention_block.attn.proj.weight.data, 1)
-            rescale(self.cross_attention_block.mlp.fc2.weight.data, 1)
+            mlp = self.cross_attention_block.mlp
+            rescale((mlp.layers[-1] if hasattr(mlp, 'layers') else mlp.fc2).weight.data, 1)
         elif self.complete_block == 1 or self.complete_block is True:
             rescale(self.cross_attention_block.xattn.proj.weight.data, 1)
-            rescale(self.cross_attention_block.mlp.fc2.weight.data, 1)
+            mlp = self.cross_attention_block.mlp
+            rescale((mlp.layers[-1] if hasattr(mlp, 'layers') else mlp.fc2).weight.data, 1)
         else:
             rescale(self.cross_attention_block.proj.weight.data, 1)
         if self.blocks is not None:

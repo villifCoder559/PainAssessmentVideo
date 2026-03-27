@@ -49,27 +49,51 @@ class MLP_custom(nn.Module):
     def __init__(
         self,
         in_features,
-        # hidden_features=None,
-        # out_features=None,
         reduction_ratio,
+        num_hidden_layers=2,
         act_layer=nn.GELU,
         drop=0.,
-        
     ):
+        """
+        Bottleneck MLP with configurable number of hidden layers.
+
+        Architecture: in_features → [hidden_dim] × num_hidden_layers → in_features,
+        where hidden_dim = int(in_features * reduction_ratio). The output dimension
+        always equals in_features, making it compatible with residual connections.
+
+        Args:
+            in_features:        Input (and output) feature dimension.
+            reduction_ratio:    Hidden layer width multiplier. hidden_dim = int(in_features * reduction_ratio).
+            num_hidden_layers:  Number of hidden layers (minimum 1). Total linear layers = num_hidden_layers + 1.
+            act_layer:          Activation class (default: nn.GELU).
+            drop:               Dropout probability applied after every linear layer.
+        """
         super().__init__()
-        # self.in_features = in_features
-        # self.reduction_ratio = reduction_ratio
-        self.fc1 = nn.Linear(in_features, int(in_features * reduction_ratio))
+        assert num_hidden_layers >= 1, "num_hidden_layers must be at least 1"
+        hidden_dim = int(in_features * reduction_ratio)
+        layers = [nn.Linear(in_features, hidden_dim)]
+        for _ in range(num_hidden_layers - 1):
+            layers.append(nn.Linear(hidden_dim, hidden_dim))
+        layers.append(nn.Linear(hidden_dim, in_features))
+        self.layers = nn.ModuleList(layers)
         self.act = act_layer()
-        self.fc2 = nn.Linear(int(in_features * reduction_ratio), int(in_features * (reduction_ratio**2)))
         self.drop = nn.Dropout(drop)
 
     def forward(self, x):
-        x = self.fc1(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.fc2(x)
-        x = self.drop(x)
+        """
+        Forward pass through the bottleneck MLP.
+
+        Args:
+            x: Input tensor. Shape: (..., in_features).
+
+        Returns:
+            Output tensor. Shape: (..., in_features).
+        """
+        for i, layer in enumerate(self.layers):
+            x = layer(x)
+            if i < len(self.layers) - 1:
+                x = self.act(x)
+            x = self.drop(x)
         return x
 
 
@@ -247,6 +271,7 @@ class CrossAttentionBlock(nn.Module):
         norm_layer=nn.LayerNorm,
         drop_path_mode='row',
         custom_mlp=False,
+        mlp_num_hidden_layers=2,
         use_sdpa=False
     ):
         super().__init__()
@@ -261,13 +286,14 @@ class CrossAttentionBlock(nn.Module):
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         if not custom_mlp:
-            self.mlp = MLP(in_features=dim, 
-                           hidden_features=mlp_hidden_dim, 
+            self.mlp = MLP(in_features=dim,
+                           hidden_features=mlp_hidden_dim,
                            act_layer=act_layer, drop=drop)
         else:
-            self.mlp = MLP_custom(in_features=dim, 
-                                  reduction_ratio=mlp_ratio, 
-                                  act_layer=act_layer, 
+            self.mlp = MLP_custom(in_features=dim,
+                                  reduction_ratio=mlp_ratio,
+                                  num_hidden_layers=mlp_num_hidden_layers,
+                                  act_layer=act_layer,
                                   drop=drop)
         self.residual_drop = StochasticDepth(residual_drop,drop_path_mode) if residual_drop > 0.0 else nn.Identity()
         if isinstance(self.norm1, nn.BatchNorm1d):
@@ -367,6 +393,7 @@ class SelfAttentionBlockWithCLS(nn.Module):
         norm_layer=nn.LayerNorm,
         drop_path_mode='row',
         custom_mlp=False,
+        mlp_num_hidden_layers=2,
         use_sdpa=True
     ):
         super().__init__()
@@ -391,6 +418,7 @@ class SelfAttentionBlockWithCLS(nn.Module):
             self.mlp = MLP_custom(
                 in_features=dim,
                 reduction_ratio=mlp_ratio,
+                num_hidden_layers=mlp_num_hidden_layers,
                 act_layer=act_layer,
                 drop=drop)
         self.residual_drop = StochasticDepth(residual_drop, drop_path_mode) if residual_drop > 0.0 else nn.Identity()
