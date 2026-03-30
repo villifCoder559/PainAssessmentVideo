@@ -42,7 +42,6 @@ class MLP(nn.Module):
         x = self.act(x)
         x = self.drop(x)
         x = self.fc2(x)
-        x = self.drop(x)
         return x
     
 class MLP_custom(nn.Module):
@@ -57,16 +56,16 @@ class MLP_custom(nn.Module):
         """
         Bottleneck MLP with configurable number of hidden layers.
 
-        Architecture: in_features → [hidden_dim] × num_hidden_layers → in_features,
+        Architecture: in_features → hidden_dim -> [hidden_dim] × num_hidden_layers → in_features,
         where hidden_dim = int(in_features * reduction_ratio). The output dimension
         always equals in_features, making it compatible with residual connections.
 
         Args:
             in_features:        Input (and output) feature dimension.
             reduction_ratio:    Hidden layer width multiplier. hidden_dim = int(in_features * reduction_ratio).
-            num_hidden_layers:  Number of hidden layers (minimum 1). Total linear layers = num_hidden_layers + 1.
+            num_hidden_layers:  Number of intermediate hidden layers (minimum 1). Total linear layers = num_hidden_layers + 2.
             act_layer:          Activation class (default: nn.GELU).
-            drop:               Dropout probability applied after every linear layer.
+            drop:               Dropout probability applied to the output of each hidden layer (default: 0.0).
         """
         super().__init__()
         assert num_hidden_layers >= 1, "num_hidden_layers must be at least 1"
@@ -93,7 +92,7 @@ class MLP_custom(nn.Module):
             x = layer(x)
             if i < len(self.layers) - 1:
                 x = self.act(x)
-            x = self.drop(x)
+                x = self.drop(x)
         return x
 
 
