@@ -72,7 +72,7 @@ class MLP_custom(nn.Module):
         assert num_hidden_layers >= 1, "num_hidden_layers must be at least 1"
         hidden_dim = int(in_features * reduction_ratio)
         layers = [nn.Linear(in_features, hidden_dim)]
-        for _ in range(num_hidden_layers - 1):
+        for _ in range(num_hidden_layers):
             layers.append(nn.Linear(hidden_dim, hidden_dim))
         layers.append(nn.Linear(hidden_dim, in_features))
         self.layers = nn.ModuleList(layers)
