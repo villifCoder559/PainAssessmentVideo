@@ -44,6 +44,7 @@ def convert_unbc_count_to_id(unique_subject_ids):
 stoic_subjects = [27,28,32,33,34,35,36,39,40,41,42,44,51,53,55,56,61,64,74,87]
 saving_rate_training_logs = 3
 dict_data = None
+dict_data_in_memory = False
 desired_order_csv = ['subject_id', 'subject_name', 'class_id', 'class_name', 'sample_id', 'sample_name']
 
 # Profile workers in dataloader
@@ -239,6 +240,8 @@ def get_augmentation_availables(fold_feature_path):
   folder_name = os.path.basename(fold_feature_path)
   list_folder = os.listdir(os.path.dirname(fold_feature_path))
   augment_available = [f.replace(folder_name+'_',"") for f in list_folder if ((folder_name in f) and (f != folder_name))]
+  # validate that the augmentations found are in the augmentations list
+  augment_available = [aug for aug in augment_available if aug in augmentations_list]
   return augment_available
 
 

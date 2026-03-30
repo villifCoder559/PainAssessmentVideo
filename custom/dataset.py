@@ -1019,7 +1019,12 @@ class customDatasetWhole(torch.utils.data.Dataset):
         folder_path = os.path.join(self.root_folder_features,csv_row['subject_name'],f"{csv_row['sample_name']}.safetensors")
     # load_start = time.perf_counter()
     with profile_workers(f'{pid}_loading_dict_time',helper.time_profiling_enabled,helper.time_profile_dict):
-      features = tools.load_dict_data(folder_path)
+      if helper.dict_data_in_memory:
+        # abs_path = os.path.abspath(folder_path)
+        # key = os.path.splitext(os.path.basename(folder_path))[0] # get the filename without extension
+        features = helper.dict_data[folder_path]
+      else:
+        features = tools.load_dict_data(folder_path)
 
       if self.feature_merge_type is not None:
         features = self._merge_top_down_features(features, csv_row, sample_id)

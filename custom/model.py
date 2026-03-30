@@ -88,12 +88,13 @@ class Model_Advanced: # Scenario_Advanced
     self.clips_reduction = clips_reduction
     
     # Get dataset type
-    if self.dataset_type == CUSTOM_DATASET_TYPE.WHOLE and self.load_dataset_in_memory:
-      if helper.dict_data is None:
-        self.load_whole_dict_data_in_memory(complete_df=complete_df)
-        self._set_real_label_from_csv_(complete_df=complete_df)
+    # if self.dataset_type == CUSTOM_DATASET_TYPE.WHOLE and self.load_dataset_in_memory:
+    #   if not helper.dict_data_in_memory:
+    #     if stratified_training:
+          
+    #     self.load_whole_dict_data_in_memory(complete_df=complete_df)
     
-    elif self.dataset_type == CUSTOM_DATASET_TYPE.AGGREGATED and helper.dict_data is None:
+    if self.dataset_type == CUSTOM_DATASET_TYPE.AGGREGATED and helper.dict_data is None:
       self.set_global_dict_data_from_hdd_(complete_df=complete_df)
       # Set label according to the csv (ex: binary classification instead of multiclass)
       self._set_real_label_from_csv_(complete_df=complete_df)
@@ -169,7 +170,8 @@ class Model_Advanced: # Scenario_Advanced
                                           complete_block=head_params['complete_block'],
                                           cross_block_after_transformers=head_params['cross_block_after_transformers'],
                                           skip_init_weights=head_params.get('skip_init_weights', False),
-                                          type_head=head_params.get('type_head', 0)
+                                          type_head=head_params.get('type_head', 0),
+                                          mlp_num_hidden_layers=head_params.get('mlp_num_hidden_layers', 1)
                                           )
     elif head == 'POOL_MLP':
       self.head = PooledHeadMLP(**head_params)
@@ -189,38 +191,44 @@ class Model_Advanced: # Scenario_Advanced
       self.backbone_dict = None
   
   def load_whole_dict_data_in_memory(self,complete_df):
-    list_path_features = []
-    list_sample_name = complete_df['sample_name'].tolist()
-    
-    # Get all the paths to the features
-    for root,dir,files in os.walk(self.path_to_extracted_features):
-      for file in files:
-        sample_name = os.path.splitext(file)[0]
-        if '.safetensors' in file and sample_name in list_sample_name:
-          list_path_features.append(os.path.join(root, file))
-    
-    # Load all the data in RAM memory      
-    dict_data_original = {}
-    for path in tqdm.tqdm(list_path_features,desc="Loading features in memory"):
-      dict_data = tools.load_dict_data(saving_folder_path=path)
-      for k,v in dict_data.items():
-        if k not in dict_data_original:
-          dict_data_original[k] = []
-        dict_data_original[k].append(v)
-    
-    # Concatenate all the data
-    for k,v in dict_data_original.items():
-      # if isinstance(v[0], np.ndarray):
-      #   dict_data_original[k] = np.concatenate(v, axis=0)
-      if isinstance(v[0], torch.Tensor):
-        dict_data_original[k] = torch.concat(v, dim=0)
+    # list_sample_name = set(complete_df['sample_name'].tolist())
 
+    # Collect folders to scan: base + augmentation variant folders
+    folders_to_scan = [self.path_to_extracted_features]
     for type_augm, p in self.dict_augmented.items():
-      if p > 0 and p<= 1 and not 'latent' in type_augm:
-        raise NotImplementedError("Loading augmented data in memory is not implemented yet.")
-      
-    # Set the global dict_data
-    helper.dict_data = dict_data_original
+      if p > 0 and p <= 1 and 'latent' not in type_augm:
+        aug_folder = f"{self.path_to_extracted_features}_{type_augm}"
+        if os.path.isdir(aug_folder):
+          folders_to_scan.append(aug_folder)
+    formatted_folders = "\n- ".join(folders_to_scan)
+    print(f'Folders to LOAD in memory:\n {formatted_folders}')
+    
+    # Find all matching safetensors files
+    all_paths = []
+    for folder in folders_to_scan:
+      for root, dirs, files in os.walk(folder):
+        for file in files:
+          if file.endswith('.safetensors') and '$' not in file:
+            # sample_name = os.path.splitext(file)[0]
+            # if sample_name in list_sample_name:
+            # Load all samples in memory
+            all_paths.append(os.path.join(root, file))
+
+    # Estimate memory
+    total_bytes = sum(os.path.getsize(p) for p in all_paths)
+    print(f"\nEstimated memory needed: {total_bytes / (1024**3):.2f} GB for {len(all_paths)} files")
+
+    # Load all files and move tensors to shared memory
+    cache = {}
+    for path in tqdm.tqdm(all_paths, desc="Loading WHOLE features into memory"):
+      # abs_path = os.path.abspath(path)
+      dict_data = tools.load_dict_data(saving_folder_path=path)
+      # key = os.path.splitext(os.path.basename(path))[0]
+      cache[path] = dict_data
+
+    helper.dict_data = cache
+    helper.dict_data_in_memory = True
+    print(f"Loaded {len(cache)} safetensors files into shared memory.")
     
     
   def set_global_dict_data_from_hdd_(self,complete_df):
@@ -393,13 +401,14 @@ class Model_Advanced: # Scenario_Advanced
         list_augmentations_available.append('latent_basic')
         list_augmentations_available.append('latent_masking')
       
-    dict_augmented = {augm: 1 for augm in list_augmentations_available}
+    self.dict_augmented = {augm: 1 for augm in list_augmentations_available}
     print(f'\nAugmenting BIOVID CSV with the following augmentations: {list_augmentations_available}')
-    helper.generate_csv_augmented(original_csv_path=train_csv_path,
-                                  dict_augmentation=dict_augmented,
+    augm_df = helper.generate_csv_augmented(original_csv_path=train_csv_path,
+                                  dict_augmentation=self.dict_augmented,
                                   out_csv_path=train_csv_path,
                                   stratified_training=stratified_training)
     print(f'\n\nStratified training BIOVID CSV generated at {train_csv_path}.') 
+    return augm_df
       
   def train(self, train_csv_path, val_csv_path, num_epochs, criterion,
             lr,saving_path,round_output_loss,
@@ -416,6 +425,7 @@ class Model_Advanced: # Scenario_Advanced
       is_coral_loss = False
       print('No coral loss. Using standard loss function.')
     batch_size = self.batch_size_training
+    final_df = pd.read_csv(train_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
     # Stratified training for UNBC dataset
     if 'unbc' in self.path_to_extracted_features.lower() and kwargs.get('stratified_training', False):
       df_original = pd.read_csv(train_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
@@ -437,20 +447,23 @@ class Model_Advanced: # Scenario_Advanced
       df_final.to_csv(train_csv_path, index=False, sep='\t')
       print(f"Original class distribution:\n{df_original['class_id'].value_counts().sort_index()}")
       print(f"Stratification completed. New class distribution:\n{df_final['class_id'].value_counts().sort_index()}")
-      
+      final_df = df_final
     # Stratified training for BIOVID dataset
     if 'parta' in self.path_to_extracted_features.lower():
       if kwargs.get('stratified_training', False):
-        self.augment_csv(train_csv_path=train_csv_path,
+        final_df = self.augment_csv(train_csv_path=train_csv_path,
                           target_list_string=kwargs['only_augments'],
                           stratified_training=kwargs['stratified_training'])
+        
     if kwargs.get('sampler_augmented_only_types', False) and not kwargs.get('stratified_training', False):
-      self.augment_csv(train_csv_path=train_csv_path,
+      final_df = self.augment_csv(train_csv_path=train_csv_path,
                         target_list_string=kwargs['sampler_augmented_only_types'],
                         stratified_training=0)
                          
     # print feature dimension for debugging
-    
+    if self.dataset_type == CUSTOM_DATASET_TYPE.WHOLE and self.load_dataset_in_memory:
+      if not helper.dict_data_in_memory:
+        self.load_whole_dict_data_in_memory(complete_df=final_df)
     # Stage 1
     dict_results = self.head.start_train(batch_size=batch_size,
                                           criterion=criterion,
