@@ -141,6 +141,10 @@ class Model_Advanced: # Scenario_Advanced
         adversarial_out_dim = complete_df['subject_id'].nunique()
       else:
         adversarial_out_dim = None
+      if head_params.get('multitask_head', False):
+        multitask_num_classes = head_params['multitask_num_classes']
+      else:
+        multitask_num_classes = None
       self.head_params = head_params
       self.head = AttentiveHeadJEPA(embed_dim=head_params['input_dim'],
                                           num_classes=head_params['num_classes'],
@@ -158,6 +162,8 @@ class Model_Advanced: # Scenario_Advanced
                                           depth=head_params['depth'],
                                           adversarial_head=head_params['adversarial_head'],
                                           adversarial_out_dim=adversarial_out_dim,
+                                          multitask_head=head_params.get('multitask_head', False),
+                                          multitask_num_classes=multitask_num_classes,
                                           head_init_path=head_params['head_init_path'],
                                           num_queries=head_params['num_queries'],
                                           agg_method=head_params['agg_method'],

@@ -361,6 +361,7 @@ class BaseHead(nn.Module):
       history_val_sample_predictions = None
     list_train_losses = []
     list_train_adv_losses = []
+    list_train_mt_losses = []
     list_train_adv_accuracies = []
     list_train_losses_per_class = []
     list_train_accuracy_per_class = []
@@ -446,7 +447,16 @@ class BaseHead(nn.Module):
       assert kwargs.get('adversarial_loss_lambda',0.0) > 0.0, "adversarial_loss_lambda must be greater than 0.0 when using adversarial head"
     else:
       adv_criterion = None
-      adv_alpha = None  
+      adv_alpha = None
+    # check if multitask_head exists and is not None
+    if hasattr(self, 'multitask_head') and self.multitask_head is not None:
+      print(f'\n\nMultitask head detected with output dimension {self.multitask_head.out_features}')
+      mt_criterion = torch.nn.CrossEntropyLoss()
+      lambda_multitask = kwargs['lambda_multitask']
+      assert lambda_multitask > 0.0, "lambda_multitask must be > 0.0 when using multitask head"
+    else:
+      mt_criterion = None
+      lambda_multitask = 0.0
     if enable_scaler:
       print(f'Using GradScaler for mixed precision training. Dtype {amp_dtype}')
     else:
@@ -519,6 +529,7 @@ class BaseHead(nn.Module):
       total_steps = num_epochs * len(train_loader)
       list_batch_wd = []
       batch_adv_loss = 0.0
+      batch_mt_loss = 0.0
       batch_adv_predictions = []
       batch_adv_gt = []
       batch_original_loss = 0.0
@@ -614,7 +625,13 @@ class BaseHead(nn.Module):
               batch_adv_grad_norm.append(adv_norm*dict_batch_X['adv_alpha'])
               dict_log_time['log_adv_grad'] = dict_log_time.get('log_adv_grad',0) + time.perf_counter() - start_log_grad
             loss = loss + adv_loss * kwargs['adversarial_loss_lambda']
-          
+
+          if mt_criterion is not None:
+            mt_logits = dict_out['mt_logits']
+            mt_loss = mt_criterion(mt_logits, batch_y.long())
+            batch_mt_loss += mt_loss.item()
+            loss = loss + mt_loss * lambda_multitask
+
           outputs = dict_out['logits']
           if regularization_lambda_L1 > 0:
             # Sum absolute values of all trainable parameters except biases
@@ -780,6 +797,8 @@ class BaseHead(nn.Module):
         list_train_adv_accuracies.append(sum((batch_adv_predictions == batch_adv_gt).float()).item() / len(batch_adv_predictions))
         grad_adv_norm_epoch.append(torch.tensor(batch_adv_grad_norm).mean().item() if len(batch_adv_grad_norm)>0 else 0.0)
         grad_task_norm_epoch.append(torch.tensor(batch_task_grad_norm).mean().item() if len(batch_task_grad_norm)>0 else 0.0)
+      if mt_criterion is not None:
+        list_train_mt_losses.append(batch_mt_loss / len(train_loader))
       time_eval = time.perf_counter()
       dict_eval = None
       if val_csv_path is not None:
@@ -833,7 +852,9 @@ class BaseHead(nn.Module):
       if adv_criterion is not None:
         list_train_adv_losses.append([batch_adv_loss / len(train_loader), batch_original_loss / len(train_loader)])
         list_train_adv_accuracies.append(sum((batch_adv_predictions == batch_adv_gt).float()).item() / len(batch_adv_predictions))
-      
+      if mt_criterion is not None:
+        list_train_mt_losses.append(batch_mt_loss / len(train_loader))
+
       # Save model at certain epochs
       if helper.SAVE_MODEL_EVERY_N_EPOCHS > 0 and epoch % helper.SAVE_MODEL_EVERY_N_EPOCHS == 0:
         model_path_epoch = os.path.join(saving_path, f'model_epoch_{epoch}.pt')
@@ -1140,6 +1161,7 @@ class BaseHead(nn.Module):
       'list_val_rmse': rmse_val_list,
       'list_val_pearson_correlation': list_val_pearson_correlation,
       'list_train_adv_losses': list_train_adv_losses,
+      'list_train_mt_losses': list_train_mt_losses,
       'list_train_adv_accuracies': list_train_adv_accuracies,
       'grad_adv_norm_epoch': grad_adv_norm_epoch,
       'grad_task_norm_epoch': grad_task_norm_epoch,
@@ -1535,6 +1557,8 @@ class AttentiveHeadJEPA(BaseHead):
       head_init_path=None,
       adversarial_head=False,
       adversarial_out_dim=None,
+      multitask_head=False,
+      multitask_num_classes=None,
       backbone: custom_backbone.BackboneBase = None,
       embedding_reduction: helper.EMBEDDING_REDUCTION = None,
       skip_init_weights=False, # used only for model debugging in log_cross_attention_from_model.py script
@@ -1618,6 +1642,11 @@ class AttentiveHeadJEPA(BaseHead):
       self.adversarial_head = nn.Linear(embed_dim, adversarial_out_dim)
     else:
       self.adversarial_head = None
+    if multitask_head:
+      assert multitask_num_classes is not None, 'multitask_num_classes must be specified when multitask_head is enabled'
+      self.multitask_head = nn.Linear(embed_dim, multitask_num_classes)
+    else:
+      self.multitask_head = None
     # Init weights
     if not skip_init_weights:
       self._initialize_weights()
@@ -1763,17 +1792,23 @@ class AttentiveHeadJEPA(BaseHead):
       self.log_xattn(xattn, **kwargs) 
     
     logits = self.linear(x)
-    
-    # not used in evaluation, only for adversarial training
+
+    # Build return dict
+    result = {'logits': logits}
+    result['embeddings'] = x if return_video_emb else None
+
+    # Adversarial head: only during training, uses gradient reversal
     if self.adversarial_head is not None and self.training:
       reversed_feats = grad_reverse(x, kwargs['adv_alpha'])
-      adv_logits = self.adversarial_head(reversed_feats)
-      return {'logits': logits, 'embeddings': x, 'adv_logits': adv_logits}
-    
-    if return_video_emb:
-      return {'logits': logits, 'embeddings': x}
-    else:
-      return {'logits': logits,'embeddings': None}
+      result['adv_logits'] = self.adversarial_head(reversed_feats)
+      result['embeddings'] = x
+
+    # Multitask head: only during training, standard gradient flow (no reversal)
+    if self.multitask_head is not None and self.training:
+      result['mt_logits'] = self.multitask_head(x)
+      result['embeddings'] = x
+
+    return result
   
   def set_init_path(self, head_init_path):
     self.head_init_path = head_init_path
@@ -1830,6 +1865,9 @@ class AttentiveHeadJEPA(BaseHead):
       if self.adversarial_head is not None:
         torch.nn.init.xavier_uniform_(self.adversarial_head.weight,gain=0.1)
         torch.nn.init.zeros_(self.adversarial_head.bias)
+      if self.multitask_head is not None:
+        torch.nn.init.xavier_uniform_(self.multitask_head.weight, gain=0.1)
+        torch.nn.init.zeros_(self.multitask_head.bias)
       print(f'All trainable params sum: {sum(p.numel() for p in self.parameters() if p.requires_grad)}')
       # print(f'======== FROZEN Head weights loaded from {self.head_init_path}========\n')
     else:

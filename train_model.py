@@ -575,13 +575,25 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     }
     head_enum = HEAD.GRU
     num_classes = GRU_output_size  # Override for GRU
-    head_dependent_add_kwargs = {'is_round_output_loss': GRU_round_output_loss}
+    head_dependent_add_kwargs = {'is_round_output_loss': GRU_round_output_loss, 'lambda_multitask': 0.0}
 
   elif head_name.upper() == 'ATTENTIVE_JEPA':
     adversarial_head = trial.suggest_categorical('adversarial_head', kwargs['adversarial_head'])
     adv_alpha_strategy = trial.suggest_categorical('adv_alpha_strategy', kwargs['adv_alpha_strategy'])
     adv_alpha_gamma = _suggest(trial, 'adv_alpha_gamma', kwargs['adv_alpha_gamma'], kwargs['optuna_categorical'])
     adversarial_loss_lambda = _suggest(trial, 'adversarial_loss_lambda', kwargs['adversarial_loss_lambda'], kwargs['optuna_categorical'])
+    multitask_training = trial.suggest_categorical('multitask_training', kwargs['multitask_training'])
+    lambda_multitask = _suggest(trial, 'lambda_multitask', kwargs['lambda_multitask'], kwargs['optuna_categorical'])
+    if multitask_training:
+      if loss not in ['l1', 'l2', 'huber', 'logcosh']:
+        raise ValueError("multitask_training requires a pure regression loss (l1, l2, huber, logcosh).")
+      if composite_loss is not None:
+        raise ValueError("multitask_training cannot be used with composite_loss.")
+      if lambda_multitask <= 0.0:
+        raise ValueError("lambda_multitask must be > 0.0 when multitask_training is enabled.")
+      multitask_num_classes = pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique()
+    else:
+      multitask_num_classes = None
     nr_blocks = _suggest(trial, 'nr_blocks', kwargs['nr_blocks'], kwargs['optuna_categorical'])
     num_heads = trial.suggest_categorical('num_heads', kwargs['num_heads'])
     num_cross_head = trial.suggest_categorical('num_cross_head', kwargs['num_cross_head'])
@@ -619,6 +631,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'num_heads': num_heads or num_cross_head,
       'dropout': model_dropout,
       'adversarial_head': adversarial_head,
+      'multitask_head': multitask_training,
+      'multitask_num_classes': multitask_num_classes,
       'attn_dropout': drop_attn,
       'head_init_path': kwargs['head_init_path'],
       'residual_dropout': drop_residual,
@@ -644,6 +658,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'adv_alpha_strategy': adv_alpha_strategy,
       'adv_alpha_gamma': adv_alpha_gamma,
       'adversarial_loss_lambda': adversarial_loss_lambda,
+      'lambda_multitask': lambda_multitask,
     }
 
   elif head_name.upper() == 'POOL_MLP':
@@ -661,6 +676,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'adv_alpha_strategy': None,
       'adv_alpha_gamma': None,
       'adversarial_loss_lambda': None,
+      'lambda_multitask': 0.0,
     }
 
   head_params['train_backbone'] = train_backbone
@@ -1045,6 +1061,17 @@ def validate_arguments(dict_args):
   if 'sum' in dict_args['feature_merge_type'] and all(v is None for v in dict_args['feature_merge_lambda']):
     raise ValueError("feature_merge_lambda is required when feature_merge_type includes 'sum'.")
 
+  # Multitask training validation
+  if any(v == 1 for v in dict_args.get('multitask_training', [0])):
+    if dict_args['head'].upper() != 'ATTENTIVE_JEPA':
+      raise ValueError("--multitask_training can only be used with ATTENTIVE_JEPA head.")
+    if dict_args['loss'] is None or dict_args['loss'][0] not in ['l1', 'l2', 'huber', 'logcosh']:
+      raise ValueError("--multitask_training requires a pure regression loss (l1, l2, huber, logcosh).")
+    if dict_args['composite_loss'][0] is not None:
+      raise ValueError("--multitask_training cannot be used with composite_loss.")
+    if all(v <= 0.0 for v in dict_args.get('lambda_multitask', [0.0])):
+      raise ValueError("--lambda_multitask must be > 0.0 when --multitask_training is enabled.")
+
 
 if __name__ == '__main__':
   # --- Quick Parse for Config File ---
@@ -1214,6 +1241,8 @@ if __name__ == '__main__':
   parser.add_argument('--adv_alpha_strategy', type=str, nargs='*', default=[None], help='Adv alpha strategy.')
   parser.add_argument('--adv_alpha_gamma', type=float, nargs='*', default=[0.0], help='Gamma for adv.')
   parser.add_argument('--adversarial_loss_lambda', type=float, nargs='*', default=[0.0], help='Adv loss lambda.')
+  parser.add_argument('--multitask_training', type=int, nargs='*', default=[0], help='Enable multitask classification head as regularizer (1=on). Only ATTENTIVE_JEPA + pure regression loss.')
+  parser.add_argument('--lambda_multitask', type=float, nargs='*', default=[0.0], help='Fixed weight for auxiliary multitask CE loss.')
   parser.add_argument('--load_idxs_splits', type=int, default=0, help='Load idxs splits.')
   parser.add_argument('--scheduler_name', type=str, nargs='*', default=['cosine'], help='Scheduler name.')
   parser.add_argument('--wd_scheduler_name', type=str, nargs='*', default=[None], help='WD scheduler.')
