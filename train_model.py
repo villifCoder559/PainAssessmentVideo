@@ -1217,7 +1217,7 @@ if __name__ == '__main__':
   parser.add_argument('--load_idxs_splits', type=int, default=0, help='Load idxs splits.')
   parser.add_argument('--scheduler_name', type=str, nargs='*', default=['cosine'], help='Scheduler name.')
   parser.add_argument('--wd_scheduler_name', type=str, nargs='*', default=[None], help='WD scheduler.')
-  parser.add_argument('--exclude_bias_wd', type=int, choices=[0, 1], nargs='*', default=[1], help='Exclude bias wd.')
+  parser.add_argument('--exclude_bias_wd', type=int, choices=[0, 1], nargs='*', default=[1], help='Exclude bias wd. Default 1 (True)S')
   parser.add_argument('--min_lr', type=float, nargs='*', default=[1e-7], help='Min lr.')
   parser.add_argument('--warm_up_epochs', type=float, nargs='*', default=[None], help='Warm up epochs.')
   parser.add_argument('--warm_up_scheduler', type=str, nargs='*', default=[None], help='Warm up scheduler.')
