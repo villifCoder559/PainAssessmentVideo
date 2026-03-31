@@ -83,7 +83,7 @@ class OptimizerFactory:
       for name, param in model.named_parameters():
         if not param.requires_grad:
           continue
-        if 'bias' in name or len(param.shape) == 1:
+        if 'bias' in name or len(param.shape) == 1 or 'norm' in name:
           list_no_wd_params.append(param)
         else:
           list_wd_params.append(param)

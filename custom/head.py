@@ -535,17 +535,6 @@ class BaseHead(nn.Module):
         end_load_batch = time.perf_counter()
         dict_log_time['load_batch'] = dict_log_time.get('load_batch',0) + end_load_batch - start_load_batch
         time_to_count_subjects = time.perf_counter()
-        # feat_std = features.std(dim=0).mean().item()
-        # for sample in sample_id:
-        #   aug_type = helper.get_augmentation_type(sample)
-        #   original_sample_id = sample - helper.get_shift_for_sample_id(aug_type)
-        #   original_sample_id = original_sample_id.item()
-        #   if original_sample_id not in dict_batch_view_loader:
-        #     dict_batch_view_loader[original_sample_id] = 0
-        #   dict_batch_view_loader[original_sample_id] += 1
-        #   if aug_type not in dict_batch_loader:
-        #     dict_batch_loader[aug_type] = 0
-        #   dict_batch_loader[aug_type] += 1
         tmp = torch.isin(train_unique_subjects,batch_subjects)
         _,count_sample_per_subject = torch.unique(batch_subjects, return_counts=True)
         sample_per_subject_count[tmp] += count_sample_per_subject
@@ -581,20 +570,6 @@ class BaseHead(nn.Module):
             torch.cuda.synchronize()
           dict_log_time['model_forward'] = dict_log_time.get('model_forward',0) + time.perf_counter() - start_model_forward
           start_loss_computation = time.perf_counter()
-          # std_features = dict_out['logits'].detach().cpu().std(dim=0).mean().item()
-          # avg_norm = dict_out['logits'].detach().cpu().norm(p=2, dim = 1).mean().item()
-          # batch_mean_features_log_norm.append(avg_norm)
-          # batch_std_features_log_norm.append(std_features)
-          # print(f'  Std of features for batch {count_batch}: {avg_norm:.4f} | {std_features:.4f}')
-          # batch_feats = dict_out['logits'].detach().cpu()
-          # batch_mean = batch_feats.mean().item()
-          # batch_std = batch_feats.std().item()
-          # batch_mean_std_feats[count_batch] = (batch_mean, batch_std)
-          
-          # if kwargs['CCC_loss']:
-          #   loss = criterion(outputs, batch_y) + (kwargs['add_CCC_loss'] * kwargs['CCC_loss'](outputs, batch_y))
-          # elif kwargs['contrastive_loss']:
-          # else:
           dict_out['targets'] = batch_y
           if is_composite_loss:
             loss = criterion(**dict_out)
