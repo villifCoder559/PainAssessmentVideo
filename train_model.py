@@ -475,6 +475,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   consider_only_lasts_n_chunks = trial.suggest_categorical('consider_only_lasts_n_chunks', kwargs['consider_only_lasts_n_chunks'])
   filtered_augm_n_keep = trial.suggest_categorical('filtered_augm_n_keep', kwargs['filtered_augm_n_keep'])
   filtered_augm_strategy = trial.suggest_categorical('filtered_augm_strategy', kwargs['filtered_augm_strategy'])
+  keep_original = trial.suggest_categorical('keep_original', kwargs['keep_original'])
 
   # --- Scheduler Config ---
   # Construct config manually here to ensure we use the sampled 'lr' and 'regulariz_lambda_L2'
@@ -743,6 +744,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'latent_coefficient': latent_coefficient,
     'filtered_augm_n_keep': filtered_augm_n_keep,
     'filtered_augm_strategy': filtered_augm_strategy,
+    'keep_original': keep_original,
     'only_augments': only_augments,
     'sampler_loader_type': sampler_loader_type,
     'sampler_augmented_only_types': sampler_augmented_only_types,
@@ -940,6 +942,11 @@ def validate_arguments(dict_args):
           raise ValueError(f"Augmentation '{a}' not available in features folder '{dict_args['ffsp']}'. Available: {list_augmentations_available}")
   
   for el in dict_args['sampler_loader_type']:
+    if el in ('augmented_only', 'selective_augm'):
+      if dict_args['stratified_training'][0] == 0:
+        raise ValueError(
+          f"sampler_loader_type='{el}' requires stratified_training to be != 0."
+        )
     if el == 'subject_batch':
       if dict_args['min_subjects_per_level'] is None or dict_args['min_subjects_per_level'][0] < 1:
         raise ValueError("min_subjects_per_level must be >= 1 when using 'subject_batch' sampler.")
@@ -1118,6 +1125,10 @@ if __name__ == '__main__':
                       " 1: Randomly keep n samples from what augmentation is available (all h_flip, all jitter, etc.)"+
                       " 2: Randomly choose n types from GLOBAL available types where"+
                       " n is --filtered_augm_n_keep")
+  parser.add_argument('--keep_original', type=float, nargs='*', default=[1.0],
+                      help='Fraction of original samples to keep per epoch (0-1). When < 1, selected originals'
+                      ' exclude their augmentations; non-selected originals are excluded but their augmentations'
+                      ' remain available via the augmentation strategy.')
   parser.add_argument('--save_model_every_n_epochs', type=int, default=0, help='Save model every n epochs.')
   parser.add_argument('--balance_batches', type=int, nargs='*', default=[0], help='Try to balance batches.')
   parser.add_argument('--type_group', type=int, nargs='*', default=[0], help='Type of group for stratified sampling.')

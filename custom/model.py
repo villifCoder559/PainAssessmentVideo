@@ -1,4 +1,5 @@
 from sklearn.utils import resample
+import re
 import torch
 from custom.backbone import VideoBackbone, VitImageBackbone
 from custom.dataset import customDataset
@@ -199,13 +200,27 @@ class Model_Advanced: # Scenario_Advanced
   def load_whole_dict_data_in_memory(self,complete_df):
     # list_sample_name = set(complete_df['sample_name'].tolist())
 
-    # Collect folders to scan: base + augmentation variant folders
+    # Collect folders to scan: base + augmentation variant folders (including $N variants)
     folders_to_scan = [self.path_to_extracted_features]
+    base_name = os.path.basename(self.path_to_extracted_features)
+    parent_dir = os.path.dirname(self.path_to_extracted_features)
+    active_aug_types = set()
     for type_augm, p in self.dict_augmented.items():
       if p > 0 and p <= 1 and 'latent' not in type_augm:
+        active_aug_types.add(type_augm)
         aug_folder = f"{self.path_to_extracted_features}_{type_augm}"
         if os.path.isdir(aug_folder):
           folders_to_scan.append(aug_folder)
+    if active_aug_types and os.path.isdir(parent_dir):
+      variant_pattern = re.compile(
+        r'^' + re.escape(base_name) + r'_([^$]+?)\$(\d+)$'
+      )
+      for entry in os.listdir(parent_dir):
+        m = variant_pattern.match(entry)
+        if m and m.group(1) in active_aug_types:
+          full_path = os.path.join(parent_dir, entry)
+          if os.path.isdir(full_path):
+            folders_to_scan.append(full_path)
     formatted_folders = "\n- ".join(folders_to_scan)
     print(f'Folders to LOAD in memory:\n {formatted_folders}')
     

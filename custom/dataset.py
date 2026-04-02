@@ -1,4 +1,5 @@
 import warnings
+import re
 import torch
 import pandas as pd
 import os
@@ -71,6 +72,9 @@ class customDataset(torch.utils.data.Dataset):
       gaussian_sigma_min=None,
       gaussian_sigma_max=None,
       gaussian_kernel_size=None,
+      zoom=False,
+      gaussian_smooth=False,
+      framepermute=False,
       **kwargs
   ):
     """
@@ -133,6 +137,9 @@ class customDataset(torch.utils.data.Dataset):
     self.gaussian_sigma_min = gaussian_sigma_min
     self.gaussian_sigma_max = gaussian_sigma_max
     self.gaussian_kernel_size = gaussian_kernel_size
+    self.zoom = zoom
+    self.gaussian_smooth = gaussian_smooth
+    self.framepermute = framepermute
 
     # if rotation is not None:
     #   warnings.warn('The rotation is not implemented yet')
@@ -284,7 +291,7 @@ class customDataset(torch.utils.data.Dataset):
       params['h_flip'] = True
     
     if spatial_shift:
-      transform.append(v2.RandomAffine(degrees=0, translate=(0.01, 0.01))) # 0.01 = 1% shift (256x256 -> +2.56 pixels)
+      transform.append(v2.RandomAffine(degrees=0, translate=(0.03, 0.03))) # 0.03 = 3% shift (256x256 -> 7.68 pixels)
       angle, translation,_,_ = v2.RandomAffine.get_params(degrees=transform[-1].degrees, 
                                                       translate=transform[-1].translate,
                                                       scale_ranges=None,
@@ -460,10 +467,16 @@ class customDataset(torch.utils.data.Dataset):
     if not is_training:
       preprocessed_tensors = self.preprocess_images(frames_list,
                                                     crop_size=(self.image_resize_h, self.image_resize_w),
-                                                    color_jitter = self.color_jitter,
-                                                    h_flip = self.h_flip,
-                                                    rotation = self.rotation,
-                                                    spatial_shift=self.spatial_shift) # [B,C,H,W]
+                                                    color_jitter=self.color_jitter,
+                                                    h_flip=self.h_flip,
+                                                    rotation=self.rotation,
+                                                    spatial_shift=self.spatial_shift,
+                                                    zoom=self.zoom,
+                                                    gaussian_smooth=self.gaussian_smooth,
+                                                    gaussian_sigma_min=self.gaussian_sigma_min,
+                                                    gaussian_sigma_max=self.gaussian_sigma_max,
+                                                    gaussian_kernel_size=self.gaussian_kernel_size,
+                                                    framepermute=self.framepermute) # [B,C,H,W]
     else:
       # latent based augm. approaches are applied in _get_element function (at the end of file)
       t_augm_setup = time.perf_counter()
@@ -993,6 +1006,41 @@ class customDatasetWhole(torch.utils.data.Dataset):
     self.feature_merge_type = feature_merge_type
     self.feature_merge_lambda = feature_merge_lambda
     self.feature_merge_orig = feature_merge_orig
+    self._discover_variant_folders()
+
+  def _discover_variant_folders(self):
+    """
+    Scan the filesystem to discover multi-variant augmentation folders.
+
+    For each augmentation type that has a base folder ({root_folder_features}_{aug_type}),
+    discovers additional variant folders with naming convention
+    {root_folder_features}_{aug_type}$N where N is a non-negative integer.
+
+    Populates self.aug_variant_folders: dict mapping aug_type (str) to a list of
+    absolute folder paths. The base folder (without $N) is included when present.
+
+    Returns:
+      None. Sets self.aug_variant_folders as a side effect.
+    """
+    self.aug_variant_folders = {}
+    parent_dir = os.path.dirname(self.root_folder_features)
+    base_name = os.path.basename(self.root_folder_features)
+    if not parent_dir or not os.path.isdir(parent_dir):
+      return
+    pattern = re.compile(r'^' + re.escape(base_name) + r'_([^$]+?)(?:\$(\d+))?$')
+    for entry in os.listdir(parent_dir):
+      m = pattern.match(entry)
+      if not m:
+        continue
+      full_path = os.path.join(parent_dir, entry)
+      if not os.path.isdir(full_path):
+        continue
+      aug_type = m.group(1)
+      if aug_type not in self.aug_variant_folders:
+        self.aug_variant_folders[aug_type] = []
+      self.aug_variant_folders[aug_type].append(full_path)
+    for aug_type in self.aug_variant_folders:
+      self.aug_variant_folders[aug_type].sort()
 
   def __len__(self):
     return len(self.df)
@@ -1005,7 +1053,12 @@ class customDatasetWhole(torch.utils.data.Dataset):
     sample_id = csv_row['sample_id']
     if sample_id > helper.step_shift and not helper.is_latent_basic_augmentation(sample_id) and not helper.is_latent_masking_augmentation(sample_id):
       aug_type = helper.get_augmentation_type(sample_id)
-      folder_path = os.path.join(f"{self.root_folder_features}_{aug_type}", csv_row['subject_name'], f"{csv_row['sample_name']}.safetensors")
+      if aug_type in self.aug_variant_folders:
+        variants = self.aug_variant_folders[aug_type]
+        aug_base_folder = variants[np.random.randint(len(variants))]
+      else:
+        aug_base_folder = f"{self.root_folder_features}_{aug_type}"
+      folder_path = os.path.join(aug_base_folder, csv_row['subject_name'], f"{csv_row['sample_name']}.safetensors")
     else:
       if 'bottom_left' in self.root_folder_features:
         folder_path = os.path.join(self.root_folder_features,csv_row['subject_name'],f"{csv_row['sample_name']}$bottom_left.safetensors")
@@ -1349,7 +1402,48 @@ class balancedBatchSampler(BatchSampler):
     return self.n_batches
 
 class SelectiveAugmentationBatchSampler(BatchSampler):
-  def __init__(self, df, batch_size, shuffle, n_keep_augmentations, augmentation_strategy, root_folder_features=None, drop_last=False):
+  """
+  A batch sampler that controls how many and which augmented samples are included per training batch.
+
+  Each original sample in the dataset may have multiple pre-computed augmented variants
+  (e.g., hflip, rotation, jitter). This sampler groups samples by their base ID and, for
+  each group, always includes the original sample plus a controlled subset of its augmentations.
+
+  Two strategies are supported:
+    - Strategy 1 (random samples): For each group, randomly pick `n_keep_augmentations`
+      augmented variants from those available for that specific sample.
+    - Strategy 2 (random types): Randomly pick `n_keep_augmentations` augmentation *types*
+      from the globally available set and include only those types for each group (if present).
+
+  This avoids inflating the dataset with all augmentations at once while still providing
+  augmentation diversity across epochs (since the selection is re-randomized each epoch via `__iter__`).
+
+  Args:
+    df:                      DataFrame with at least 'sample_id' column; index used as dataset indices.
+    batch_size:              Number of samples per batch.
+    shuffle:                 Whether to shuffle the selected indices before batching.
+    n_keep_augmentations:    Maximum number of augmented variants to keep per original sample.
+    augmentation_strategy:   1 = pick random augmented samples; 2 = pick random augmentation types globally.
+    root_folder_features:    Optional path to feature folder, used to discover available augmentation types.
+    drop_last:               Whether to drop the last incomplete batch.
+  """
+  def __init__(self, df, batch_size, shuffle, n_keep_augmentations, augmentation_strategy, root_folder_features=None, drop_last=False, keep_original=1.0):
+    """
+    Args:
+      df:                      DataFrame with at least 'sample_id' column; index used as dataset indices.
+      batch_size:              Number of samples per batch.
+      shuffle:                 Whether to shuffle the selected indices before batching.
+      n_keep_augmentations:    Maximum number of augmented variants to keep per original sample.
+      augmentation_strategy:   1 = pick random augmented samples; 2 = pick random augmentation types globally.
+      root_folder_features:    Optional path to feature folder, used to discover available augmentation types.
+      drop_last:               Whether to drop the last incomplete batch.
+      keep_original:           Fraction of original samples to keep per epoch (0-1). When < 1, a random subset
+                               of originals is selected each epoch; their augmentations are excluded. Non-selected
+                               originals are excluded but their augmentations remain available via the strategy.
+    """
+    if not 0 <= keep_original <= 1:
+      raise ValueError(f"keep_original must be between 0 and 1, got {keep_original}")
+    self.keep_original = keep_original
     self.batch_size = batch_size
     self.shuffle = shuffle
     self.n_keep_augmentations = n_keep_augmentations
@@ -1393,14 +1487,33 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
     self._calculate_length()
 
   def _calculate_length(self):
+    """
+    Estimates the total number of samples per epoch to compute the number of batches.
+
+    When keep_original < 1, only a fraction of groups contribute their original (no augmentations),
+    and the remaining groups contribute only augmentations (no original).
+
+    Returns:
+      None. Sets self.n_batches as a side effect.
+    """
     total_samples = 0
-    for group in self.base_id_groups.values():
-      if group['original'] is not None:
-        total_samples += 1
-      
-      n_available = len(group['augmented'])
-      # Approximation for length
-      total_samples += min(self.n_keep_augmentations, n_available)
+    n_groups_with_original = sum(1 for g in self.base_id_groups.values() if g['original'] is not None)
+
+    if self.keep_original >= 1.0:
+      for group in self.base_id_groups.values():
+        if group['original'] is not None:
+          total_samples += 1
+        n_available = len(group['augmented'])
+        total_samples += min(self.n_keep_augmentations, n_available)
+    else:
+      n_original_kept = int(self.keep_original * n_groups_with_original)
+      # Original-only groups contribute 1 sample each (no augmentations)
+      total_samples += n_original_kept
+      # Augmentation-only groups contribute augmentations only
+      n_augment_groups = n_groups_with_original - n_original_kept
+      avg_aug = np.mean([min(self.n_keep_augmentations, len(g['augmented']))
+                         for g in self.base_id_groups.values() if g['augmented']]) if n_augment_groups > 0 else 0
+      total_samples += int(n_augment_groups * avg_aug)
 
     if self.drop_last:
       self.n_batches = total_samples // self.batch_size
@@ -1410,44 +1523,87 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
   def __len__(self):
     return self.n_batches
 
+  def _select_augmentations_for_group(self, group):
+    """
+    Selects augmented indices for a group according to the current augmentation strategy.
+
+    Args:
+      group: Dict with 'original' (int or None) and 'augmented' (dict of aug_type -> idx).
+
+    Returns:
+      List of selected augmented dataset indices.
+    """
+    augmented_indices_to_keep = []
+    if self.augmentation_strategy == 1:
+      available_indices = list(group['augmented'].values())
+      if available_indices:
+        n_to_pick = min(self.n_keep_augmentations, len(available_indices))
+        augmented_indices_to_keep = np.random.choice(available_indices, size=n_to_pick, replace=False).tolist()
+    elif self.augmentation_strategy == 2:
+      if self.available_augmentation_types:
+        n_types_to_pick = min(self.n_keep_augmentations, len(self.available_augmentation_types))
+        picked_types = np.random.choice(self.available_augmentation_types, size=n_types_to_pick, replace=False)
+        augmented_indices_to_keep = [group['augmented'][t] for t in picked_types if t in group['augmented']]
+    else:
+      raise ValueError(f"Unknown augmentation strategy: {self.augmentation_strategy}")
+    return augmented_indices_to_keep
+
   def __iter__(self):
+    """
+    Yields batches of dataset indices for one epoch.
+
+    When keep_original < 1, a random subset of base_ids is selected as "original-only" (their
+    augmentations are excluded). The remaining base_ids become "augmentation-only" (their originals
+    are excluded, augmentations selected via the configured strategy). The subset changes each epoch.
+
+    Returns:
+      Iterator of lists of dataset indices (batches).
+    """
     selected_indices = []
-    
-    for group in self.base_id_groups.values():
-      if group['original'] is not None:
+    all_base_ids = list(self.base_id_groups.keys())
+
+    if self.keep_original < 1.0:
+      n_groups_with_original = sum(1 for g in self.base_id_groups.values() if g['original'] is not None)
+      n_to_keep = int(self.keep_original * n_groups_with_original)
+      base_ids_with_original = [bid for bid in all_base_ids if self.base_id_groups[bid]['original'] is not None]
+      kept_base_ids = set(np.random.choice(base_ids_with_original, size=n_to_keep, replace=False)) if n_to_keep > 0 else set()
+    else:
+      kept_base_ids = None  # sentinel: keep all originals
+
+    for base_id in all_base_ids:
+      group = self.base_id_groups[base_id]
+
+      if kept_base_ids is None:
+        # keep_original == 1.0: original behavior — include original + augmentations
+        if group['original'] is not None:
+          selected_indices.append(group['original'])
+        else:
+          raise ValueError("Original sample missing for a group, which should not happen.")
+        augmented_indices_to_keep = self._select_augmentations_for_group(group)
+
+      elif base_id in kept_base_ids:
+        # Original-only group: include original, skip augmentations
         selected_indices.append(group['original'])
+        augmented_indices_to_keep = []
+
       else:
-        raise ValueError("Original sample missing for a group, which should not happen.")
-      
-      augmented_indices_to_keep = []
-      if self.augmentation_strategy == 1:
-        # Strategy 1: Randomly keep n samples from what is available
-        available_indices = list(group['augmented'].values())
-        if available_indices:
-          n_to_pick = min(self.n_keep_augmentations, len(available_indices))
-          augmented_indices_to_keep = np.random.choice(available_indices, size=n_to_pick, replace=False).tolist()
-          
-      elif self.augmentation_strategy == 2:
-        # Strategy 2: Randomly choose n types from GLOBAL available types
-        if self.available_augmentation_types:
-          n_types_to_pick = min(self.n_keep_augmentations, len(self.available_augmentation_types))
-          picked_types = np.random.choice(self.available_augmentation_types, size=n_types_to_pick, replace=False)
-          augmented_indices_to_keep = [group['augmented'][t] for t in picked_types if t in group['augmented']]
-      else:
-        raise ValueError(f"Unknown augmentation strategy: {self.augmentation_strategy}")
+        # Augmentation-only group: skip original, select augmentations via strategy
+        augmented_indices_to_keep = self._select_augmentations_for_group(group)
+
       selected_indices.extend(augmented_indices_to_keep)
       for idx in augmented_indices_to_keep:
         self.log_augmented_usage[idx] += 1
+
     if self.shuffle:
       np.random.shuffle(selected_indices)
-      
+
     batch = []
     for idx in selected_indices:
       batch.append(idx)
       if len(batch) == self.batch_size:
         yield batch
         batch = []
-    
+
     if len(batch) > 0 and not self.drop_last:
       yield batch
 
@@ -1911,7 +2067,8 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                                   n_keep_augmentations=kwargs['filtered_augm_n_keep'],
                                                   augmentation_strategy=kwargs['filtered_augm_strategy'],
                                                   root_folder_features=root_folder_features,
-                                                  drop_last=False)
+                                                  drop_last=False,
+                                                  keep_original=kwargs.get('keep_original', 1.0))
       print(f'Use FilteredAugmentationBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
     elif kwargs['sampler_loader_type'] == 'augmented_only':
       sampler = AugmentedOnlyBatchSampler(df=dataset_.df,
