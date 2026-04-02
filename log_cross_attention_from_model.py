@@ -44,6 +44,9 @@ def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None
   # Model instantiation
   model_advanced_params = config_model['model_advanced_params']
   model_advanced_params['head_params']['skip_init_weights'] = True  # Skip head weight initialization to avoid loading issues
+  if 'UNBC' in csv_path:
+    model_advanced_params['features_folder_saving_path'] = 'UNBC/video/features/DFER/spatial_pooled_features_UNBC_B_last143_stride16_interpol'
+    print(f'***For csv_path {csv_path}, set features_folder_saving_path to {model_advanced_params["features_folder_saving_path"]}***')
   model = Model_Advanced(**model_advanced_params)
 
   # Decide test CSV
