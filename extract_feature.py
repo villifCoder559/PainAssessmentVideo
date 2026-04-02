@@ -165,11 +165,31 @@ def _apply_pooling(feature, backbone, pooling_embedding_reduction, adaptive_avg_
   return feature
 
 
+def _get_available_folder(path):
+  """
+  Return path unchanged if it doesn't exist, otherwise append $0, $1, … until a free slot is found.
+
+  Args:
+    path (str): Desired saving folder path.
+
+  Returns:
+    str: A folder path that does not yet exist on disk.
+  """
+  if not os.path.exists(path):
+    return path
+  i = 0
+  while os.path.exists(f"{path}${i}"):
+    i += 1
+  return f"{path}${i}"
+
+
 def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,enable_batch_extraction,batch_size_feat_extraction,n_workers,saving_chunk_size=100,  preprocess_align = False,
          preprocess_crop_detection = False,preprocess_frontalize = True,path_dataset=None,path_labels=None,stride_window=16,clip_length=16,
          log_file_path=None,root_saving_folder_path=None,backbone_type='video',from_=None,to_=None,save_big_feature=False,h_flip=False,num_clips_per_video=None,
          stride_inside_window=1,float_16=False,color_jitter=False,rotation=False,save_as_safetensors=True,video_extension='.mp4',sample_frame_strategy=SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW,
-          backbone_model_path=None,dict_augmentation=None,quadrant=None,shift_frame_idx=0,**kwargs
+          backbone_model_path=None,dict_augmentation=None,quadrant=None,shift_frame_idx=0,
+         zoom=False,spatial_shift=False,gaussian_smooth=False,gaussian_sigma_min=None,gaussian_sigma_max=None,gaussian_kernel_size=None,framepermute=False,
+         **kwargs
          ):
   if backbone_model_path is not None:
     MODEL_TYPE.set_custom_model_type(type=model_type,custom_model_path=backbone_model_path)
@@ -336,13 +356,16 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
                 clip_length=clip_length,
                 model_type=model_type,
                 video_labels=video_labels,
-                # NO AUGMENTATION during feature extraction#############################
-                h_flip=False, 
-                color_jitter=False,
-                rotation=False,
-                spatial_shift=False,
-                zoom=False,
-                ########################################################################
+                h_flip=h_flip,
+                color_jitter=color_jitter,
+                rotation=rotation,
+                spatial_shift=spatial_shift,
+                zoom=zoom,
+                gaussian_smooth=gaussian_smooth,
+                gaussian_sigma_min=gaussian_sigma_min,
+                gaussian_sigma_max=gaussian_sigma_max,
+                gaussian_kernel_size=gaussian_kernel_size,
+                framepermute=framepermute,
                 shift_frame_idx=shift_frame_idx,
                 video_extension=video_extension,
                 preprocess_align=preprocess_align,
@@ -421,7 +444,7 @@ if __name__ == "__main__":
   parser.add_argument('--to_', type=int, default=None, help='STOP idx (excluded) extracting features from (--path_labels) row')
   parser.add_argument('--path_dataset', type=str, default=os.path.join('partA','video','video'), help='Path to dataset')
   parser.add_argument('--path_labels', type=str, default=os.path.join('partA','starting_point','samples.csv'), help='Path to csv file')
-  parser.add_argument('--saving_folder_path', type=str, default=os.path.join('partA','video','features',f'samples_16_{timestamp}'), help='Path to saving folder')
+  parser.add_argument('--saving_folder_path',required=True, type=str, default=None, help='Path to saving folder')
   parser.add_argument('--log_file_path', type=str, default=None, help='Path to log file')
   parser.add_argument('--backbone_type', type=str, default='video', help='Type of backbone. Can be video or image')
   parser.add_argument('--batch_size_feat_extraction', type=int, default=1, help='Batch size for feature extraction')
@@ -432,14 +455,16 @@ if __name__ == "__main__":
   parser.add_argument('--clip_length', type=int, default=16, help='Clip length')
   parser.add_argument('--shift_frame_idx', type=int, default=0, help='Shift frame index to change the last frame sampled')
   
-  #################### DON'T USE AUGMENTATION FLAGS, EXTRACT VIDEO AUGMENTED FIRST USING generate_video_augmented.py     #############################
-  #################### and then EXTRACT FEATURES with this script. Put in the dataset_path the keywords for augmentation #############################
   parser.add_argument('--h_flip', action='store_true', help='Apply Horizontal flip')
   parser.add_argument('--color_jitter', action='store_true', help='Apply color jitter')
   parser.add_argument('--spatial_shift', action='store_true', help='Apply spatial shift to video')
   parser.add_argument('--rotation', action='store_true', help='Apply rotation')
   parser.add_argument('--zoom', action='store_true', help='Apply zoom')
-  #################################################################################################################################
+  parser.add_argument('--gaussian_smooth', action='store_true', help='Apply Gaussian smoothing')
+  parser.add_argument('--gaussian_sigma_min', type=float, default=None, help='Min sigma for Gaussian smoothing')
+  parser.add_argument('--gaussian_sigma_max', type=float, default=None, help='Max sigma for Gaussian smoothing')
+  parser.add_argument('--gaussian_kernel_size', type=int, default=None, help='Kernel size for Gaussian smoothing (must be odd)')
+  parser.add_argument('--framepermute', action='store_true', help='Randomly permute frame order within each clip')
   
   parser.add_argument('--float_16', action='store_true', help='Use float 16')
   parser.add_argument('--save_as_safetensors', action='store_true', help='Save as safetensors')
@@ -480,18 +505,30 @@ if __name__ == "__main__":
     'reverse':False,
     'timelapse':False,
     'slowmotion':False,
+    'gaussian': False,
+    'framepermute': False,
   }
   for k,v in dict_augmentation.items():
     if k in args.path_dataset:
       dict_augmentation[k] = True
+  # Also set from CLI flags
+  dict_augmentation['hflip'] = dict_augmentation['hflip'] or args.h_flip
+  dict_augmentation['jitter'] = dict_augmentation['jitter'] or args.color_jitter
+  dict_augmentation['rotation'] = dict_augmentation['rotation'] or args.rotation
+  dict_augmentation['shift'] = dict_augmentation['shift'] or args.spatial_shift
+  dict_augmentation['zoom'] = dict_augmentation['zoom'] or args.zoom
+  dict_augmentation['gaussian'] = dict_augmentation['gaussian'] or args.gaussian_smooth
+  dict_augmentation['framepermute'] = dict_augmentation['framepermute'] or args.framepermute
   print(f'\nData augmentation used for feature extraction:\n')
   for k,v in dict_augmentation.items():
     print(f'  {k}: {v}')
+  args.saving_folder_path = _get_available_folder(args.saving_folder_path)
+  print(f'Saving folder path (resolved): {args.saving_folder_path}')
   # sleep 15 seconds to let user see the args
   time.sleep(15)
   if args.log_file_path is None:
     args.log_file_path = os.path.join(args.saving_folder_path,'log_file.txt')
-  dict_args = vars(args)  
+  dict_args = vars(args)
   main(model_type=args.model_type,
        saving_chunk_size=args.saving_after,
        sample_frame_strategy=helper.get_sampling_frame_startegy(args.sample_frame_strategy),
@@ -522,6 +559,16 @@ if __name__ == "__main__":
        backbone_model_path=args.backbone_model_path,
        quadrant=args.quadrant,
        shift_frame_idx=args.shift_frame_idx,
+       h_flip=args.h_flip,
+       color_jitter=args.color_jitter,
+       rotation=args.rotation,
+       spatial_shift=args.spatial_shift,
+       zoom=args.zoom,
+       gaussian_smooth=args.gaussian_smooth,
+       gaussian_sigma_min=args.gaussian_sigma_min,
+       gaussian_sigma_max=args.gaussian_sigma_max,
+       gaussian_kernel_size=args.gaussian_kernel_size,
+       framepermute=args.framepermute,
       #  image_resize=args.image_resize,
       #  **dict_args
        )
