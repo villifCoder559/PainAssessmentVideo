@@ -401,7 +401,7 @@ def parse_args():
     description="Statistical analysis of a hyperparameter grid search CSV.",
     formatter_class=argparse.RawTextHelpFormatter,
   )
-  p.add_argument("--csv",    default=DEFAULT_CSV,    help="Path to summary CSV")
+  p.add_argument("--csv",    required=True,    help="Path to summary CSV")
   p.add_argument("--metric", default=DEFAULT_METRIC, help="Target metric column name")
 
   # Factor selection
@@ -419,7 +419,7 @@ def parse_args():
   p.add_argument(
     "--exclude-cols",
     nargs="+",
-    default=[],
+    default=["reg_lambda_L2", "early_stopping"],
     metavar="COL",
     help="Columns to exclude from auto-detection (ignored if --factors is set).",
   )
