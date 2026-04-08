@@ -419,7 +419,7 @@ def parse_args():
   p.add_argument(
     "--exclude-cols",
     nargs="+",
-    default=["reg_lambda_L2", "early_stopping","lr","regularization_lambda_L2"],
+    default=["reg_lambda_L2", "early_stopping","lr","learning_rate","regularization_lambda_L2"],
     metavar="COL",
     help="Columns to exclude from auto-detection (ignored if --factors is set).",
   )
