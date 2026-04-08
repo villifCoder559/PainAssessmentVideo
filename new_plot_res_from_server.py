@@ -1417,10 +1417,14 @@ def generate_csv_row(data,config,time_, test_id):
   list_final_test = [int(k.split('_')[0][1:]) for k in data.keys() if 'final' in k]
   real_k_fold = max(list_fold) + 1
   real_sub_fold = max(list_sub_fold) + 1
-  
-  # test_key = 'test_accuracy' if 'test_accuracy' in data[f'k{list_fold[0]}_cross_val_sub_{list_sub_fold[0]}']['test'] else 'test_macro_precision'
+  for i in range(real_k_fold):
+    for j in range(real_sub_fold):
+      if data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'] != []:
+        best_epoch_idx = np.argmin(data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'])
+        data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx'] = best_epoch_idx
   metric = data['k0_cross_val_sub_0']['train_val']['metric_for_stopping']
   key_metric_val = 'list_val_performance_metric'
+  
   
   mean_train_losses_last_epoch = {f'mean_train_loss_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['train_losses'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
   mean_val_losses_last_epoch = {f'mean_val_loss_last_ep_k{i}': np.mean([data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'][-1] for j in range(real_sub_fold)]) for i in range(real_k_fold)}
