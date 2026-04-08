@@ -810,6 +810,7 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                                           summary_res=summary_res,
                                           run_folder_path=run_folder_path,
                                           validate=validate,
+                                          dict_augmented=dict_augmented,
                                           **kwargs
                                           )
   if helper.LOG_CROSS_ATTENTION['enable']:

@@ -2049,7 +2049,8 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                               backbone_dict=backbone_dict,
                               coral_loss=is_coral_loss,
                               soft_labels=soft_labels,
-                              smooth_labels=label_smooth)
+                              smooth_labels=label_smooth,
+                              **kwargs['dict_augmented'])
       pin_memory = False
       persistent_workers = True
       prefetch_factor = 5 if prefetch_factor is None else prefetch_factor

@@ -241,7 +241,7 @@ def get_augmentation_availables(fold_feature_path):
   list_folder = os.listdir(os.path.dirname(fold_feature_path))
   augment_available = [f.replace(folder_name+'_',"") for f in list_folder if ((folder_name in f) and (f != folder_name))]
   # validate that the augmentations found are in the augmentations list
-  augment_available = [aug for aug in augment_available if aug in augmentations_list]
+  # augment_available = [aug for aug in augment_available if aug in augmentations_list]
   return augment_available
 
 
