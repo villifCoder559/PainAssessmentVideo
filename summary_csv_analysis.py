@@ -284,7 +284,7 @@ def anova_type2(
     ms_factor  = ss_factor / df_factor
     F          = ms_factor / ms_resid
     p          = 1 - stats.f.cdf(F, df_factor, df_resid)
-    sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
+    sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns" # ns = not significant
     print(fmt.format(fname[:30], f"{ss_factor:.6f}", df_factor,
              f"{ms_factor:.6f}", f"{F:.3f}", f"{p:.4f}", sig))
 
@@ -419,7 +419,7 @@ def parse_args():
   p.add_argument(
     "--exclude-cols",
     nargs="+",
-    default=["reg_lambda_L2", "early_stopping"],
+    default=["reg_lambda_L2", "early_stopping","lr","regularization_lambda_L2"],
     metavar="COL",
     help="Columns to exclude from auto-detection (ignored if --factors is set).",
   )
