@@ -249,6 +249,7 @@ def plot_error_per_class(
       centers_mae, mae_per_class, width=bar_width,
       edgecolor='black', label=f'{criterion} per Class'
     )
+    ax.bar_label(h_mae, fmt='%.2f', fontsize=9, color='black', padding=2)
     plotted_handles.append(h_mae)
     plotted_labels.append(f'{criterion} per Class')
     ax.tick_params(axis='y', labelcolor='blue')
@@ -263,6 +264,7 @@ def plot_error_per_class(
         centers_acc, accuracy_per_class, width=bar_width,
         edgecolor='black', label='Accuracy per Class'
       )
+      ax.bar_label(h_acc, fmt='%.2f', fontsize=9, color='black', padding=2)
       plotted_handles.append(h_acc)
       plotted_labels.append('Accuracy per Class')
       ax.set_ylabel('Accuracy')
@@ -277,6 +279,7 @@ def plot_error_per_class(
         centers_acc, accuracy_per_class, width=bar_width,
         edgecolor='black', label='Accuracy per Class'
       )
+      ax2.bar_label(h_acc, fmt='%.2f', fontsize=9, color='black', padding=2)
       plotted_handles.append(h_acc)
       plotted_labels.append('Accuracy per Class')
       ax2.set_ylabel('Accuracy')
@@ -312,7 +315,7 @@ def plot_error_per_class(
       else:
         x_pos, height = indices[i], 0.0
       if count is not None:
-        ax.text(x_pos, height, str(count), ha='center', va='bottom', fontsize=9)
+        ax.text(x_pos, height, str(count), ha='center', va='top', fontsize=9)
 
   # Combine legends
   handles, labels = ax.get_legend_handles_labels()
