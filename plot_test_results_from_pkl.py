@@ -189,6 +189,23 @@ def get_gt_map(data: dict) -> dict:
   return {}
 
 
+def _get_csv_class_range(data: dict) -> tuple:
+  """
+  Return the (min, max) class_id values from the test CSV as floats.
+
+  Args:
+    data: Full pkl dictionary.
+
+  Returns:
+    Tuple (min_class_id, max_class_id) as floats. Returns (None, None)
+    if the CSV is unavailable or lacks a class_id column.
+  """
+  df = _read_csv_safe(data)
+  if not df.empty and 'class_id' in df.columns:
+    return float(df['class_id'].min()), float(df['class_id'].max())
+  return None, None
+
+
 def get_confusion_matrix(results: dict) -> np.ndarray:
   """
   Compute the confusion matrix as a numpy array sliced to n_classes × n_classes.
@@ -782,6 +799,82 @@ def plot_prediction_scatter(
   return fig
 
 
+def plot_prediction_histogram(
+  data: dict,
+  results: dict,
+  out_dir: str,
+  ax: plt.Axes = None,
+  title_suffix: str = '',
+  filename_suffix: str = '',
+  preds_arr: np.ndarray = None,
+) -> plt.Figure:
+  """
+  Histogram of model prediction values with a KDE overlay.
+
+  Bins are built with step 0.1 over the range [min_class_id, max_class_id]
+  read from the test CSV. Falls back to [preds.min(), preds.max()] when
+  the CSV is unavailable.
+
+  Args:
+    data:            Full pkl dictionary (used to locate the CSV for range).
+    results:         Results dictionary from the pkl.
+    out_dir:         Directory for saving the individual PNG (used when ax=None).
+    ax:              Optional axes to draw into (dashboard mode).
+    title_suffix:    String appended to the title.
+    filename_suffix: String appended before .png (e.g. '_scaled').
+    preds_arr:       Optional pre-computed predictions. Shape: (N,).
+                     If None, extracted from history_test_sample_predictions.
+
+  Returns:
+    The matplotlib Figure containing the plot.
+  """
+  if preds_arr is not None:
+    preds = np.array(preds_arr, dtype=float)
+  else:
+    hist = results['history_test_sample_predictions']
+    preds = []
+    for sid in sorted(hist.keys()):
+      pred = hist[sid][0]
+      if isinstance(pred, torch.Tensor):
+        pred = pred.item()
+      preds.append(float(pred))
+    preds = np.array(preds)
+
+  lo, hi = _get_csv_class_range(data)
+  if lo is None:
+    lo, hi = float(preds.min()), float(preds.max())
+
+  step = 0.1
+  bins = np.arange(lo, hi + step, step)
+
+  standalone = ax is None
+  if standalone:
+    fig, ax = plt.subplots(figsize=(10, 4))
+  else:
+    fig = ax.figure
+
+  ax.hist(preds, bins=bins, density=False, color='#4C72B0',
+          edgecolor='white', linewidth=0.6, alpha=0.75, label='Predictions')
+
+  if len(preds) > 1:
+    kde = stats.gaussian_kde(preds)
+    x_fine = np.linspace(lo, hi, 500)
+    kde_counts = kde(x_fine) * len(preds) * step
+    ax.plot(x_fine, kde_counts, color='#C44E52', linewidth=1.8, label='KDE')
+
+  ax.set_title('Prediction Distribution' + title_suffix, fontsize=11, fontweight='bold')
+  ax.set_xlabel('Predicted Value', fontsize=9)
+  ax.set_ylabel('Count', fontsize=9)
+  ax.set_xlim(lo, hi)
+  ax.legend(fontsize=8)
+  ax.grid(axis='y', alpha=0.3)
+
+  if standalone:
+    fig.tight_layout()
+    _save_fig(fig, os.path.join(out_dir, f'prediction_histogram{filename_suffix}.png'))
+  return fig
+
+
 def plot_metrics_summary(
   results: dict,
   out_dir: str,
@@ -882,12 +975,13 @@ def plot_dashboard(
   trues_arr: np.ndarray = None,
 ) -> None:
   """
-  Generate a 3×3 dashboard combining all key plots and save it.
+  Generate a 4×3 dashboard combining all key plots and save it.
 
   Layout:
     Row 0: confusion_raw | confusion_norm | metrics_summary
     Row 1: loss_per_class | loss_per_subject | prediction_scatter
     Row 2: accuracy_per_class | accuracy_per_subject | precision_recall
+    Row 3: prediction_histogram (full width, spanning all 3 columns)
 
   Args:
     data:              Full pkl dictionary.
@@ -906,8 +1000,8 @@ def plot_dashboard(
     preds_arr:         Optional scaled predictions for the scatter plot.
     trues_arr:         Optional ground-truth values for the scatter plot.
   """
-  fig = plt.figure(figsize=(26, 20))
-  gs  = gridspec.GridSpec(3, 3, figure=fig, hspace=0.5, wspace=0.38)
+  fig = plt.figure(figsize=(26, 26))
+  gs  = gridspec.GridSpec(4, 3, figure=fig, hspace=0.5, wspace=0.38)
   ax  = [[fig.add_subplot(gs[r, c]) for c in range(3)] for r in range(3)]
 
   # Row 0: confusion matrices + metrics table
@@ -947,6 +1041,13 @@ def plot_dashboard(
   )
   plot_precision_recall_per_class(
     results, class_labels, out_dir, ax=ax[2][2], title_suffix=title_suffix,
+  )
+
+  # Row 3: prediction histogram (full width)
+  ax_hist = fig.add_subplot(gs[3, :])
+  plot_prediction_histogram(
+    data, results, out_dir, ax=ax_hist,
+    title_suffix=title_suffix, preds_arr=preds_arr,
   )
 
   fig.suptitle(dashboard_title, fontsize=16, fontweight='bold', y=0.995)
@@ -999,11 +1100,11 @@ def _run_all_plots(
 
   plot_confusion_matrix(cm, class_labels, out_dir, normalized=False,
                         title_suffix=title_suffix, filename_suffix=filename_suffix)
-  print(f'  [1/9] confusion_matrix_raw{filename_suffix}.png')
+  print(f'  [1/10] confusion_matrix_raw{filename_suffix}.png')
 
   plot_confusion_matrix(cm, class_labels, out_dir, normalized=True,
                         title_suffix=title_suffix, filename_suffix=filename_suffix)
-  print(f'  [2/9] confusion_matrix_normalized{filename_suffix}.png')
+  print(f'  [2/10] confusion_matrix_normalized{filename_suffix}.png')
 
   plot_bar(
     loss_per_class, class_labels,
@@ -1011,7 +1112,7 @@ def _run_all_plots(
     out_path=os.path.join(out_dir, f'loss_per_class{filename_suffix}.png'),
     color='#4C72B0', title_suffix=title_suffix,
   )
-  print(f'  [3/9] loss_per_class{filename_suffix}.png')
+  print(f'  [3/10] loss_per_class{filename_suffix}.png')
 
   plot_bar(
     loss_per_subject, subject_labels,
@@ -1019,7 +1120,7 @@ def _run_all_plots(
     out_path=os.path.join(out_dir, f'loss_per_subject{filename_suffix}.png'),
     sort_by_value=True, color='#C44E52', title_suffix=title_suffix,
   )
-  print(f'  [4/9] loss_per_subject{filename_suffix}.png')
+  print(f'  [4/10] loss_per_subject{filename_suffix}.png')
 
   plot_bar(
     acc_per_class, class_labels,
@@ -1027,7 +1128,7 @@ def _run_all_plots(
     out_path=os.path.join(out_dir, f'accuracy_per_class{filename_suffix}.png'),
     color='#55A868', ylim=(0, 1), title_suffix=title_suffix,
   )
-  print(f'  [5/9] accuracy_per_class{filename_suffix}.png')
+  print(f'  [5/10] accuracy_per_class{filename_suffix}.png')
 
   plot_bar(
     acc_per_subject, subject_labels,
@@ -1035,24 +1136,31 @@ def _run_all_plots(
     out_path=os.path.join(out_dir, f'accuracy_per_subject{filename_suffix}.png'),
     sort_by_value=True, color='#8172B2', ylim=(0, 1), title_suffix=title_suffix,
   )
-  print(f'  [6/9] accuracy_per_subject{filename_suffix}.png')
+  print(f'  [6/10] accuracy_per_subject{filename_suffix}.png')
 
   plot_precision_recall_per_class(
     plot_results, class_labels, out_dir,
     title_suffix=title_suffix, filename_suffix=filename_suffix,
   )
-  print(f'  [7/9] precision_recall_per_class{filename_suffix}.png')
+  print(f'  [7/10] precision_recall_per_class{filename_suffix}.png')
 
   plot_prediction_scatter(
     data, plot_results, out_dir,
     title_suffix=title_suffix, filename_suffix=filename_suffix,
     preds_arr=preds_arr, trues_arr=trues_arr,
   )
-  print(f'  [8/9] prediction_scatter{filename_suffix}.png')
+  print(f'  [8/10] prediction_scatter{filename_suffix}.png')
 
   plot_metrics_summary(plot_results, out_dir,
                        title_suffix=title_suffix, filename_suffix=filename_suffix)
-  print(f'  [9/9] metrics_summary{filename_suffix}.png')
+  print(f'  [9/10] metrics_summary{filename_suffix}.png')
+
+  plot_prediction_histogram(
+    data, plot_results, out_dir,
+    title_suffix=title_suffix, filename_suffix=filename_suffix,
+    preds_arr=preds_arr,
+  )
+  print(f'  [10/10] prediction_histogram{filename_suffix}.png')
 
   dashboard_title = f'Test Results Dashboard{title_suffix}'
   plot_dashboard(
