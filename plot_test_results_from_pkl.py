@@ -811,9 +811,11 @@ def plot_prediction_histogram(
   """
   Histogram of model prediction values with a KDE overlay.
 
-  Bins are built with step 0.1 over the range [min_class_id, max_class_id]
-  read from the test CSV. Falls back to [preds.min(), preds.max()] when
-  the CSV is unavailable.
+  Bins use step 0.1 over the union of [csv_lo, csv_hi] and
+  [preds.min(), preds.max()], so out-of-range predictions are always
+  visible. Bars inside the CSV class_id range are blue; bars outside
+  are orange. Two dotted vertical lines mark csv_lo and csv_hi when
+  the CSV is available.
 
   Args:
     data:            Full pkl dictionary (used to locate the CSV for range).
@@ -831,41 +833,83 @@ def plot_prediction_histogram(
   if preds_arr is not None:
     preds = np.array(preds_arr, dtype=float)
   else:
-    hist = results['history_test_sample_predictions']
+    hist_data = results['history_test_sample_predictions']
     preds = []
-    for sid in sorted(hist.keys()):
-      pred = hist[sid][0]
+    for sid in sorted(hist_data.keys()):
+      pred = hist_data[sid][0]
       if isinstance(pred, torch.Tensor):
         pred = pred.item()
       preds.append(float(pred))
     preds = np.array(preds)
 
-  lo, hi = _get_csv_class_range(data)
-  if lo is None:
-    lo, hi = float(preds.min()), float(preds.max())
+  csv_lo, csv_hi = _get_csv_class_range(data)
+  has_csv_range  = csv_lo is not None
+
+  pred_lo = float(preds.min())
+  pred_hi = float(preds.max())
+
+  if has_csv_range:
+    lo = min(csv_lo, pred_lo)
+    hi = max(csv_hi, pred_hi)
+  else:
+    lo, hi = pred_lo, pred_hi
 
   step = 0.1
-  bins = np.arange(lo, hi + step, step)
+  bins    = np.arange(lo, hi + step, step)
+  counts, edges = np.histogram(preds, bins=bins)
+  centers = (edges[:-1] + edges[1:]) / 2.0
+
+  # Per-bar colors: orange outside CSV range, blue inside
+  if has_csv_range:
+    bar_colors = [
+      '#DD8452' if (c < csv_lo or c > csv_hi) else '#4C72B0'
+      for c in centers
+    ]
+  else:
+    bar_colors = ['#4C72B0'] * len(centers)
 
   standalone = ax is None
   if standalone:
-    fig, ax = plt.subplots(figsize=(10, 4))
+    fig, ax = plt.subplots(figsize=(12, 4))
   else:
     fig = ax.figure
 
-  ax.hist(preds, bins=bins, density=False, color='#4C72B0',
-          edgecolor='white', linewidth=0.6, alpha=0.75, label='Predictions')
+  # Blue (in-range) bars — single legend handle
+  in_mask  = np.array([c == '#4C72B0' for c in bar_colors])
+  oob_mask = ~in_mask
 
+  ax.bar(centers[in_mask], counts[in_mask], width=step,
+         color='#4C72B0', edgecolor='white', linewidth=0.6,
+         alpha=0.75, label='In range')
+
+  if oob_mask.any():
+    ax.bar(centers[oob_mask], counts[oob_mask], width=step,
+           color='#DD8452', edgecolor='white', linewidth=0.6,
+           alpha=0.75, label='Out of range')
+
+  # KDE overlay
   if len(preds) > 1:
-    kde = stats.gaussian_kde(preds)
+    kde    = stats.gaussian_kde(preds)
     x_fine = np.linspace(lo, hi, 500)
-    kde_counts = kde(x_fine) * len(preds) * step
-    ax.plot(x_fine, kde_counts, color='#C44E52', linewidth=1.8, label='KDE')
+    ax.plot(x_fine, kde(x_fine) * len(preds) * step,
+            color='#C44E52', linewidth=1.8, label='KDE')
+
+  # CSV range vertical dotted lines + value annotations
+  if has_csv_range:
+    for val, side in [(csv_lo, 'left'), (csv_hi, 'right')]:
+      ax.axvline(val, linestyle=':', color='#555555', linewidth=1.5)
+      ha = 'left' if side == 'left' else 'right'
+      offset = step * 0.3 if side == 'left' else -step * 0.3
+      ax.text(
+        val + offset, 0.97, f'{val:g}',
+        transform=ax.get_xaxis_transform(),
+        ha=ha, va='top', fontsize=8, color='#555555',
+      )
 
   ax.set_title('Prediction Distribution' + title_suffix, fontsize=11, fontweight='bold')
   ax.set_xlabel('Predicted Value', fontsize=9)
   ax.set_ylabel('Count', fontsize=9)
-  ax.set_xlim(lo, hi)
+  ax.set_xlim(lo - step, hi + step)
   ax.legend(fontsize=8)
   ax.grid(axis='y', alpha=0.3)
 
