@@ -910,6 +910,9 @@ def plot_prediction_histogram(
   ax.set_xlabel('Predicted Value', fontsize=9)
   ax.set_ylabel('Count', fontsize=9)
   ax.set_xlim(lo - step, hi + step)
+  tick_start = np.floor((lo - step) / 0.5) * 0.5
+  ax.set_xticks(np.arange(tick_start, hi + step + 0.5, 0.5))
+  ax.tick_params(axis='x', labelsize=7)
   ax.legend(fontsize=8)
   ax.grid(axis='y', alpha=0.3)
 
