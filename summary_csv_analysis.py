@@ -164,6 +164,34 @@ def load_data(
 
 
 # ---------------------------------------------------------------------------
+# Top-K filter
+# ---------------------------------------------------------------------------
+
+def filter_top_k(df: pd.DataFrame, metric: str, k: int) -> pd.DataFrame:
+  """
+  Filter the dataframe to the top-K rows ranked by metric.
+
+  Args:
+    df:     Input dataframe.
+    metric: Column name of the target metric.
+    k:      Number of top rows to keep.
+
+  Returns:
+    Filtered dataframe with at most k rows, sorted by metric.
+    If k >= len(df), returns df unchanged (with a warning).
+  """
+  n_total = len(df)
+  if k >= n_total:
+    print(f"  ⚠  --consider-only-top={k} >= total rows ({n_total}). Keeping all rows.\n")
+    return df
+  ascending = "accuracy" not in metric.lower()
+  df_filtered = df.sort_values(by=metric, ascending=ascending).head(k).reset_index(drop=True)
+  direction = "lowest" if ascending else "highest"
+  print(f"  Filtered to top {k} rows ({direction} {metric}) out of {n_total} total.\n")
+  return df_filtered
+
+
+# ---------------------------------------------------------------------------
 # 1. Factor-level summary
 # ---------------------------------------------------------------------------
 
@@ -435,6 +463,17 @@ def parse_args():
     default=2,
     help="Min unique values for a column to qualify as a factor (default: 2).",
   )
+  p.add_argument(
+    "--consider-only-top",
+    type=int,
+    default=None,
+    metavar="K",
+    help=(
+      "If set, keep only the top-K rows before analysis.\n"
+      "For metrics containing 'accuracy': top = highest values.\n"
+      "For all other metrics: top = lowest values."
+    ),
+  )
 
   # Post-hoc
   p.add_argument(
@@ -492,6 +531,9 @@ def main():
 
   # --- Load and validate ---
   df = load_data(args.csv, args.metric, factors)
+
+  if args.consider_only_top is not None:
+    df = filter_top_k(df, args.metric, args.consider_only_top)
 
   # --- Analysis pipeline ---
   factor_summary(df, args.metric, factors)
