@@ -1207,23 +1207,23 @@ def plot_history_model_prediction(data, run_output_folder, test_id, root_csv_pat
   df = pd.read_csv(os.path.join(root_csv_path,csv_file),sep='\t')
   top_k = 20
   for key in data['results'].keys():
-    if (not 'train_val' in data['results'][key]) or data['results'][key]['train_val']['history_train_sample_predictions'] is None:
+    if (not 'train_val' in data['results'][key]) or data['results'][key]['train_val']['history_val_sample_predictions'] is None:
       continue
     best_epoch = data['results'][key]['train_val']['best_model_idx']
     num_epochs = len(data['results'][key]['train_val']['train_losses'])
-    train_history_pred = data['results'][key]['train_val']['history_train_sample_predictions']
+    # train_history_pred = data['results'][key]['train_val']['history_train_sample_predictions']
     val_history_pred = data['results'][key]['train_val']['history_val_sample_predictions']
-    miss_predictions_train_label,miss_predictions_train_sbj = tools.count_mispredictions(train_history_pred,df,top_k=top_k,return_miss_per_subject=True)
+    # miss_predictions_train_label,miss_predictions_train_sbj = tools.count_mispredictions(train_history_pred,df,top_k=top_k,return_miss_per_subject=True)
     miss_predictions_val_label,miss_predictions_val_sbj = tools.count_mispredictions(val_history_pred,df,top_k=top_k,return_miss_per_subject=True)
     
     # TOP-K TRAIN and VAL missprediction over epochs
     fig, ax = plt.subplots(2,1,figsize=(10, 10))
-    tools.plot_bar(data=miss_predictions_train_label,
-                   ax_=ax[0],
-                   title=f'TRAIN Sample misclassification over {num_epochs} epochs {"TOP-"+str(top_k) if top_k else ""} - {key} - {test_id} ',
-                   x_label='Sample ID',
-                   y_label='Number of mispredictions over epochs',
-                   color='red')
+    # tools.plot_bar(data=miss_predictions_train_label,
+    #                ax_=ax[0],
+    #                title=f'TRAIN Sample misclassification over {num_epochs} epochs {"TOP-"+str(top_k) if top_k else ""} - {key} - {test_id} ',
+    #                x_label='Sample ID',
+    #                y_label='Number of mispredictions over epochs',
+    #                color='red')
     tools.plot_bar(data=miss_predictions_val_label,
                    ax_=ax[1],
                    title=f'VAL Sample misclassification over {num_epochs} epochs {"TOP-"+str(top_k) if top_k else ""} - {key} - {test_id} ',
@@ -1235,13 +1235,13 @@ def plot_history_model_prediction(data, run_output_folder, test_id, root_csv_pat
     
     # TOP-K SUBJECTS MISSPREDICTIONS over epochs TRAIN and VAL
     fig, ax = plt.subplots(2,1,figsize=(10, 10))
-    tools.plot_bar(data=miss_predictions_train_sbj,
-                   ax_=ax[0],
-                   title=f'TRAIN Subject misclassification over {num_epochs} epochs {"TOP-"+str(top_k) if top_k else ""} - {key} - {test_id} ',
-                   x_label='Subject ID',
-                   y_label='Number of mispredictions over epochs',
-                   list_stoic_subject=helper.stoic_subjects,
-                   color='orange')
+    # tools.plot_bar(data=miss_predictions_train_sbj,
+    #                ax_=ax[0],
+    #                title=f'TRAIN Subject misclassification over {num_epochs} epochs {"TOP-"+str(top_k) if top_k else ""} - {key} - {test_id} ',
+    #                x_label='Subject ID',
+    #                y_label='Number of mispredictions over epochs',
+    #                list_stoic_subject=helper.stoic_subjects,
+    #                color='orange')
     tools.plot_bar(data=miss_predictions_val_sbj,
                     ax_=ax[1],
                     title=f'VAL Subject misclassification over {num_epochs} epochs - {"TOP-"+str(top_k) if top_k else ""} - {key} - {test_id} ',
@@ -1253,20 +1253,20 @@ def plot_history_model_prediction(data, run_output_folder, test_id, root_csv_pat
     plt.close(fig)
     
     # TOP-K TRAIN, VAL and TEST subject missprediction over epochs
-    miss_predictions_train_sbj_best_epoch = {k:v[best_epoch] for k,v in train_history_pred.items()}
+    # miss_predictions_train_sbj_best_epoch = {k:v[best_epoch] for k,v in train_history_pred.items()}
     miss_predictions_val_sbj_best_epoch = {k:v[best_epoch] for k,v in val_history_pred.items()}
     test_history_pred = data['results'][key]['test']['history_test_sample_predictions']
-    _,miss_predictions_train_sbj = tools.count_mispredictions(miss_predictions_train_sbj_best_epoch,df,top_k=top_k,return_miss_per_subject=True)
+    # _,miss_predictions_train_sbj = tools.count_mispredictions(miss_predictions_train_sbj_best_epoch,df,top_k=top_k,return_miss_per_subject=True)
     _,miss_predictions_val_sbj = tools.count_mispredictions(miss_predictions_val_sbj_best_epoch,df,top_k=top_k,return_miss_per_subject=True)
     _,miss_predictions_test_sbj = tools.count_mispredictions(test_history_pred,df,top_k=top_k,return_miss_per_subject=True)
     fig, ax = plt.subplots(3,1,figsize=(15, 10))
-    tools.plot_bar(data=miss_predictions_train_sbj,
-                   ax_=ax[0],
-                   title=f'TRAIN Subject misclassification BEST epochs {best_epoch} {"TOP-"+str(top_k) if top_k else ""} - {key} - {test_id} ',
-                   x_label='Subject ID',
-                   y_label='Number of mispredictions',
-                   list_stoic_subject=helper.stoic_subjects,
-                   color='gray')
+    # tools.plot_bar(data=miss_predictions_train_sbj,
+    #                ax_=ax[0],
+    #                title=f'TRAIN Subject misclassification BEST epochs {best_epoch} {"TOP-"+str(top_k) if top_k else ""} - {key} - {test_id} ',
+    #                x_label='Subject ID',
+    #                y_label='Number of mispredictions',
+    #                list_stoic_subject=helper.stoic_subjects,
+    #               color='gray')
     tools.plot_bar(data=miss_predictions_val_sbj,
                    ax_=ax[1],
                    title=f'VAL Subject misclassification BEST epochs {best_epoch} {"TOP-"+str(top_k) if top_k else ""} - {key} - {test_id} ',
