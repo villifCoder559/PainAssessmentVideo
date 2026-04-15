@@ -1258,7 +1258,7 @@ def plot_history_model_prediction(data, run_output_folder, test_id, root_csv_pat
     test_history_pred = data['results'][key]['test'].get('history_test_sample_predictions', None)
     # _,miss_predictions_train_sbj = tools.count_mispredictions(miss_predictions_train_sbj_best_epoch,df,top_k=top_k,return_miss_per_subject=True)
     _,miss_predictions_val_sbj = tools.count_mispredictions(miss_predictions_val_sbj_best_epoch,df,top_k=top_k,return_miss_per_subject=True)
-    _,miss_predictions_test_sbj = tools.count_mispredictions(test_history_pred,df,top_k=top_k,return_miss_per_subject=True)
+    _,miss_predictions_test_sbj = tools.count_mispredictions(test_history_pred,df,top_k=top_k,return_miss_per_subject=True) if test_history_pred is not None else (None, None)
     fig, ax = plt.subplots(2,1,figsize=(15, 10)) if test_history_pred is not None else plt.subplots(1,1,figsize=(15,10))
     ax = ax.flatten() if test_history_pred is not None else [ax]
     # tools.plot_bar(data=miss_predictions_train_sbj,
