@@ -77,6 +77,13 @@ def parse_args() -> argparse.Namespace:
     '--video_ext', default='.mp4',
     help='Video file extension (default: .mp4).'
   )
+  parser.add_argument(
+    '--gt_labels', type=int, nargs='+', metavar='LABEL',
+    help=(
+      'Keep only samples whose CSV class_id is in this list. '
+      'Applies to all analyses. Example: --gt_labels 0 1 2'
+    ),
+  )
   return parser.parse_args()
 
 
@@ -158,6 +165,28 @@ def _save_fig(fig: plt.Figure, out_path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# GT label filtering
+# ---------------------------------------------------------------------------
+
+def filter_by_gt_labels(history: dict, gt: dict, gt_labels: list) -> tuple:
+  """
+  Restrict history and GT to samples whose class_id is in gt_labels.
+
+  Args:
+    history   (dict[int, torch.Tensor]): sample_id → Tensor(num_epochs,).
+    gt        (dict[int, dict]):          sample_id → metadata.
+    gt_labels (list[int]):                Allowed class_id values.
+
+  Returns:
+    tuple[dict, dict]: Filtered (history, gt) containing only matching samples.
+  """
+  allowed     = set(gt_labels)
+  filtered_gt = {sid: meta for sid, meta in gt.items() if meta['class_id'] in allowed}
+  filtered_h  = {sid: t for sid, t in history.items() if sid in filtered_gt}
+  return filtered_h, filtered_gt
+
+
+# ---------------------------------------------------------------------------
 # Epoch filtering
 # ---------------------------------------------------------------------------
 
@@ -206,7 +235,9 @@ def compute_mae(history: dict, gt: dict) -> dict:
 # Feature 2: Best / worst bar chart
 # ---------------------------------------------------------------------------
 
-def plot_bar_best_worst(mae_dict: dict, gt: dict, top_k: int, fold_out_dir: str) -> None:
+def plot_bar_best_worst(
+  mae_dict: dict, gt: dict, top_k: int, fold_out_dir: str, title_suffix: str = ''
+) -> None:
   """
   Horizontal bar chart with top-K best (lowest MAE) and worst (highest MAE) samples.
 
@@ -215,6 +246,7 @@ def plot_bar_best_worst(mae_dict: dict, gt: dict, top_k: int, fold_out_dir: str)
     gt           (dict[int, dict]):  sample_id → metadata.
     top_k        (int):              Number of samples per group.
     fold_out_dir (str):              Output directory.
+    title_suffix (str):              Optional suffix appended to each subplot title.
   """
   sorted_sids = sorted(mae_dict, key=mae_dict.get)
   best_sids   = sorted_sids[:top_k]
@@ -234,8 +266,8 @@ def plot_bar_best_worst(mae_dict: dict, gt: dict, top_k: int, fold_out_dir: str)
   )
 
   for ax, labels, values, color, title in [
-    (ax_best,  best_labels,  best_vals,  '#4C72B0', f'Top-{top_k} Best Predicted Samples (lowest MAE)'),
-    (ax_worst, worst_labels, worst_vals, '#DD8452', f'Top-{top_k} Worst Predicted Samples (highest MAE)'),
+    (ax_best,  best_labels,  best_vals,  '#4C72B0', f'Top-{top_k} Best Predicted Samples (lowest MAE){title_suffix}'),
+    (ax_worst, worst_labels, worst_vals, '#DD8452', f'Top-{top_k} Worst Predicted Samples (highest MAE){title_suffix}'),
   ]:
     ax.barh(range(len(labels)), values, color=color, edgecolor='white', alpha=0.85)
     ax.set_yticks(range(len(labels)))
@@ -246,7 +278,7 @@ def plot_bar_best_worst(mae_dict: dict, gt: dict, top_k: int, fold_out_dir: str)
     ax.grid(axis='x', alpha=0.3)
 
   fig.tight_layout(pad=2.0)
-  _save_fig(fig, os.path.join(fold_out_dir, 'bar_best_worst.png'))
+  _save_fig(fig, os.path.join(fold_out_dir, f'bar_best_worst_{top_k}.png'))
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +291,7 @@ def plot_sample_trajectory(
   gt:           dict,
   epoch_offset: int,
   fold_out_dir: str,
+  title_suffix: str = '',
 ) -> None:
   """
   Two plots for a single sample: prediction trajectory and signed error trajectory.
@@ -273,6 +306,7 @@ def plot_sample_trajectory(
     epoch_offset (int):                        First epoch in the (filtered) history
                                                (used as x-axis starting point).
     fold_out_dir (str):                        Output directory.
+    title_suffix (str):                        Optional suffix appended to each plot title.
   """
   if sample_id not in history:
     print(f'  Warning: sample_id {sample_id} not in history — skipping trajectory.')
@@ -293,7 +327,7 @@ def plot_sample_trajectory(
   ax.axhline(gt_val, linestyle='--', color='#C44E52', linewidth=1.5, label=f'GT = {gt_val}')
   ax.set_xlabel('Epoch')
   ax.set_ylabel('Predicted Value')
-  ax.set_title(f'Sample {nm} — Prediction Trajectory', fontweight='bold')
+  ax.set_title(f'Sample {nm} — Prediction Trajectory{title_suffix}', fontweight='bold')
   ax.legend(fontsize=9)
   ax.grid(alpha=0.3)
   fig.tight_layout()
@@ -307,7 +341,7 @@ def plot_sample_trajectory(
   ax.axhline(0, linestyle='--', color='#555555', linewidth=1.2)
   ax.set_xlabel('Epoch')
   ax.set_ylabel('Error (pred − gt)')
-  ax.set_title(f'Sample {nm} — Error Trajectory', fontweight='bold')
+  ax.set_title(f'Sample {nm} — Error Trajectory{title_suffix}', fontweight='bold')
   ax.legend(fontsize=9)
   ax.grid(alpha=0.3)
   fig.tight_layout()
@@ -318,7 +352,9 @@ def plot_sample_trajectory(
 # Feature 6: Error heatmap
 # ---------------------------------------------------------------------------
 
-def plot_error_heatmap(history: dict, gt: dict, fold_out_dir: str) -> None:
+def plot_error_heatmap(
+  history: dict, gt: dict, fold_out_dir: str, title_suffix: str = ''
+) -> None:
   """
   Heatmap of |pred − gt| with rows sorted by mean MAE (best at top).
 
@@ -330,6 +366,7 @@ def plot_error_heatmap(history: dict, gt: dict, fold_out_dir: str) -> None:
     history      (dict[int, torch.Tensor]): sample_id → Tensor(num_epochs,).
     gt           (dict[int, dict]):          sample_id → metadata.
     fold_out_dir (str):                      Output directory.
+    title_suffix (str):                      Optional suffix appended to the plot title.
   """
   common_sids = [sid for sid in history if sid in gt]
   if not common_sids:
@@ -385,7 +422,7 @@ def plot_error_heatmap(history: dict, gt: dict, fold_out_dir: str) -> None:
 
   ax.set_xlabel('Epoch')
   ax.set_ylabel('Sample  (sorted by mean MAE ↑ best at top)')
-  ax.set_title('Error Heatmap  |pred − gt|', fontweight='bold')
+  ax.set_title(f'Error Heatmap  |pred − gt|{title_suffix}', fontweight='bold')
   fig.tight_layout()
   _save_fig(fig, os.path.join(fold_out_dir, 'error_heatmap.png'))
 
@@ -399,6 +436,7 @@ def plot_epoch_histogram(
   history:      dict,
   csv_path:     str,
   fold_out_dir: str,
+  title_suffix: str = '',
 ) -> None:
   """
   Prediction distribution histogram for one epoch, reusing plot_prediction_histogram.
@@ -429,7 +467,7 @@ def plot_epoch_histogram(
     results={},
     out_dir=fold_out_dir,
     preds_arr=preds_arr,
-    title_suffix=f' — Epoch {epoch_idx}',
+    title_suffix=f' — Epoch {epoch_idx}{title_suffix}',
     filename_suffix=f'_epoch_{epoch_idx}',
   )
   print(f'  Saved: {os.path.join(fold_out_dir, f"prediction_histogram_epoch_{epoch_idx}.png")}')
@@ -609,25 +647,41 @@ def main() -> None:
       print('  Skipping: GT labels unavailable.')
       continue
 
-    mae_dict = compute_mae(history, gt)
+    # GT label filter
+    if args.gt_labels:
+      history, gt_fold = filter_by_gt_labels(history, gt, args.gt_labels)
+      print(f'  GT label filter: {args.gt_labels}  → {len(history)} samples kept.')
+    else:
+      gt_fold = gt
+
+    mae_dict = compute_mae(history, gt_fold)
     if not mae_dict:
       print('  Skipping: no overlapping sample IDs between history and GT.')
       continue
     print(f'  {len(mae_dict)} samples with MAE computed.')
 
+    label_suffix = f'  [GT labels: {",".join(str(l) for l in sorted(args.gt_labels))}]' if args.gt_labels else ''
+
     # Feature 2
-    plot_bar_best_worst(mae_dict, gt, args.top_k, fold_out_dir)
+    plot_bar_best_worst(mae_dict, gt_fold, args.top_k, fold_out_dir, title_suffix=label_suffix)
 
     # Feature 6
-    plot_error_heatmap(history, gt, fold_out_dir)
+    # plot_error_heatmap(history, gt_fold, fold_out_dir, title_suffix=label_suffix)
 
     # Feature 5 (optional)
     if args.sample_id is not None:
-      plot_sample_trajectory(args.sample_id, history, gt, epoch_offset, fold_out_dir)
+      if args.gt_labels and args.sample_id in gt and gt[args.sample_id]['class_id'] not in set(args.gt_labels):
+        print(
+          f'  Warning: sample_id {args.sample_id} has GT label '
+          f"{gt[args.sample_id]['class_id']} which is not in --gt_labels {args.gt_labels} "
+          f'— skipping trajectory plot.'
+        )
+      else:
+        plot_sample_trajectory(args.sample_id, history, gt_fold, epoch_offset, fold_out_dir, title_suffix=label_suffix)
 
     # Feature 7 (optional)
     if args.epoch is not None:
-      plot_epoch_histogram(args.epoch, history, csv_path, fold_out_dir)
+      plot_epoch_histogram(args.epoch, history, csv_path, fold_out_dir, title_suffix=label_suffix)
 
     # Feature 3 (optional)
     if args.generate_video:
@@ -639,19 +693,19 @@ def main() -> None:
       generate_annotated_video(
         sample_ids=top_k_ids,
         history=history,
-        gt=gt,
+        gt=gt_fold,
         video_dataset_path=video_path,
         video_ext=args.video_ext,
-        output_path=os.path.join(fold_out_dir, 'top_k_video.mp4'),
+        output_path=os.path.join(fold_out_dir, f'top_{args.top_k}_video.mp4'),
       )
       print(f'  Generating worst-{args.top_k} video …')
       generate_annotated_video(
         sample_ids=worst_k_ids,
         history=history,
-        gt=gt,
+        gt=gt_fold,
         video_dataset_path=video_path,
         video_ext=args.video_ext,
-        output_path=os.path.join(fold_out_dir, 'worst_k_video.mp4'),
+        output_path=os.path.join(fold_out_dir, f'worst_{args.top_k}_video.mp4'),
       )
 
   print('\nDone.')
