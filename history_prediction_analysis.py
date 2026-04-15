@@ -348,6 +348,89 @@ def plot_sample_trajectory(
   _save_fig(fig, os.path.join(fold_out_dir, f'sample_{sample_id}_error_traj.png'))
 
 
+def plot_grouped_trajectories(
+  sample_ids:    list,
+  history:       dict,
+  gt:            dict,
+  epoch_offset:  int,
+  fold_out_dir:  str,
+  group_label:   str,
+  top_k:         int,
+  max_per_group: int = 10,
+  title_suffix:  str = '',
+) -> None:
+  """
+  Plot grouped prediction trajectories for multiple samples.
+
+  Samples are split into groups of at most max_per_group items. For each group,
+  one figure is generated with one subplot per sample (prediction trajectory + GT line).
+
+  Args:
+    sample_ids    (list[int]):              Ordered sample IDs to plot.
+    history       (dict[int, torch.Tensor]): sample_id → Tensor(num_epochs,).
+    gt            (dict[int, dict]):         sample_id → metadata.
+    epoch_offset  (int):                    First epoch index represented in history.
+    fold_out_dir  (str):                    Output directory.
+    group_label   (str):                    Group name used in titles/files (e.g., 'top', 'worst').
+    top_k         (int):                    Effective top_k used for ranking/selection.
+    max_per_group (int):                    Maximum number of trajectories per figure.
+    title_suffix  (str):                    Optional suffix appended to figure title.
+  """
+  if not sample_ids:
+    print(f'  Warning: empty sample list for grouped trajectory ({group_label}) — skipping.')
+    return
+
+  valid_ids = [sid for sid in sample_ids if sid in history and sid in gt]
+  skipped   = len(sample_ids) - len(valid_ids)
+  if skipped > 0:
+    print(
+      f'  Warning: skipped {skipped} sample(s) missing in history/GT '
+      f'for grouped trajectory ({group_label}).'
+    )
+  if not valid_ids:
+    print(f'  Warning: no valid samples for grouped trajectory ({group_label}) — skipping.')
+    return
+
+  for group_idx, start in enumerate(range(0, len(valid_ids), max_per_group), start=1):
+    group_ids = valid_ids[start : start + max_per_group]
+    fig_h     = max(4.0, 2.2 * len(group_ids))
+    fig, axes = plt.subplots(len(group_ids), 1, figsize=(12, fig_h), sharex=True)
+    if len(group_ids) == 1:
+      axes = [axes]
+
+    for ax, sid in zip(axes, group_ids):
+      t      = history[sid]
+      preds  = t.numpy().astype(float) if isinstance(t, torch.Tensor) else np.array(t, dtype=float)
+      gt_val = float(gt[sid]['class_id'])
+      mae    = float(np.mean(np.abs(preds - gt_val)))
+      epochs = np.arange(epoch_offset, epoch_offset + len(preds))
+
+      ax.plot(epochs, preds, linewidth=1.1, color='#4C72B0', label='Prediction')
+      ax.axhline(gt_val, linestyle='--', color='#C44E52', linewidth=1.2, label=f'GT={gt_val:g}')
+      ax.set_ylabel('Pred')
+      ax.set_title(
+        f"[{sid}] {gt[sid]['sample_name']}  |  MAE={mae:.3f}  |  GT={gt_val:g}",
+        fontsize=9,
+      )
+      ax.grid(alpha=0.3)
+      ax.legend(fontsize=8, loc='best')
+
+    axes[-1].set_xlabel('Epoch')
+    fig.suptitle(
+      f'{group_label.capitalize()}-{top_k} Prediction Trajectories — Group {group_idx}{title_suffix}',
+      fontweight='bold',
+      fontsize=11,
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+
+    out_name = f'trajectory_{group_label}_topk_{top_k}_group_{group_idx}.png'
+    _save_fig(fig, os.path.join(fold_out_dir, out_name))
+    print(
+      f'  Grouped trajectory saved: {group_label}, top_k={top_k}, '
+      f'group={group_idx}, samples={len(group_ids)}'
+    )
+
+
 # ---------------------------------------------------------------------------
 # Feature 6: Error heatmap
 # ---------------------------------------------------------------------------
@@ -505,7 +588,7 @@ def _read_video_frames(video_path: str) -> tuple:
 
 def _annotate_frame(frame: np.ndarray, text: str, bar_height: int = 50) -> np.ndarray:
   """
-  Append a black bar at the bottom of a frame and write white annotation text.
+  Prepend a black bar at the top of a frame and write white annotation text.
 
   Args:
     frame      (np.ndarray): RGB frame. Shape: (H, W, 3).
@@ -515,10 +598,10 @@ def _annotate_frame(frame: np.ndarray, text: str, bar_height: int = 50) -> np.nd
   Returns:
     np.ndarray: RGB frame with annotation bar. Shape: (H + bar_height, W, 3).
   """
-  annotated  = cv2.copyMakeBorder(frame, 0, bar_height, 0, 0, cv2.BORDER_CONSTANT, value=(0, 0, 0))
+  annotated  = cv2.copyMakeBorder(frame, bar_height, 0, 0, 0, cv2.BORDER_CONSTANT, value=(0, 0, 0))
   bgr        = cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
   font_scale = max(0.4, frame.shape[1] / 1200.0)
-  y_text     = frame.shape[0] + bar_height - 12
+  y_text     = bar_height - 12
   cv2.putText(
     bgr, text, (8, y_text),
     cv2.FONT_HERSHEY_SIMPLEX, font_scale,
@@ -539,7 +622,7 @@ def generate_annotated_video(
   Build a concatenated annotated video for the given samples.
 
   For each sample, all source frames are extracted and a black bar with
-  the sample name, mean prediction, and GT is appended at the bottom.
+  the sample name, mean prediction, and GT is prepended at the top.
   The annotated clips are written sequentially into a single output video.
 
   Args:
@@ -660,10 +743,45 @@ def main() -> None:
       continue
     print(f'  {len(mae_dict)} samples with MAE computed.')
 
+    sorted_sids      = sorted(mae_dict, key=mae_dict.get)
+    effective_top_k  = min(args.top_k, len(sorted_sids))
+    top_k_ids        = sorted_sids[:effective_top_k]
+    worst_k_ids      = sorted_sids[-effective_top_k:][::-1]
+    if effective_top_k < args.top_k:
+      print(
+        f'  Requested top_k={args.top_k}, but only {len(sorted_sids)} samples are available. '
+        f'Using top_k={effective_top_k}.'
+      )
+
     label_suffix = f'  [GT labels: {",".join(str(l) for l in sorted(args.gt_labels))}]' if args.gt_labels else ''
 
     # Feature 2
-    plot_bar_best_worst(mae_dict, gt_fold, args.top_k, fold_out_dir, title_suffix=label_suffix)
+    plot_bar_best_worst(mae_dict, gt_fold, effective_top_k, fold_out_dir, title_suffix=label_suffix)
+
+    # Feature 5 (grouped top/worst trajectories when --sample_id is not provided)
+    if args.sample_id is None:
+      plot_grouped_trajectories(
+        sample_ids=top_k_ids,
+        history=history,
+        gt=gt_fold,
+        epoch_offset=epoch_offset,
+        fold_out_dir=fold_out_dir,
+        group_label='top',
+        top_k=effective_top_k,
+        max_per_group=10,
+        title_suffix=label_suffix,
+      )
+      plot_grouped_trajectories(
+        sample_ids=worst_k_ids,
+        history=history,
+        gt=gt_fold,
+        epoch_offset=epoch_offset,
+        fold_out_dir=fold_out_dir,
+        group_label='worst',
+        top_k=effective_top_k,
+        max_per_group=10,
+        title_suffix=label_suffix,
+      )
 
     # Feature 6
     # plot_error_heatmap(history, gt_fold, fold_out_dir, title_suffix=label_suffix)
@@ -685,27 +803,23 @@ def main() -> None:
 
     # Feature 3 (optional)
     if args.generate_video:
-      sorted_sids = sorted(mae_dict, key=mae_dict.get)
-      top_k_ids   = sorted_sids[:args.top_k]
-      worst_k_ids = sorted_sids[-args.top_k:][::-1]
-
-      print(f'  Generating top-{args.top_k} video …')
+      print(f'  Generating top-{effective_top_k} video …')
       generate_annotated_video(
         sample_ids=top_k_ids,
         history=history,
         gt=gt_fold,
         video_dataset_path=video_path,
         video_ext=args.video_ext,
-        output_path=os.path.join(fold_out_dir, f'top_{args.top_k}_video.mp4'),
+        output_path=os.path.join(fold_out_dir, f'top_{effective_top_k}_video.mp4'),
       )
-      print(f'  Generating worst-{args.top_k} video …')
+      print(f'  Generating worst-{effective_top_k} video …')
       generate_annotated_video(
         sample_ids=worst_k_ids,
         history=history,
         gt=gt_fold,
         video_dataset_path=video_path,
         video_ext=args.video_ext,
-        output_path=os.path.join(fold_out_dir, f'worst_{args.top_k}_video.mp4'),
+        output_path=os.path.join(fold_out_dir, f'worst_{effective_top_k}_video.mp4'),
       )
 
   print('\nDone.')
