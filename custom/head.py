@@ -346,10 +346,10 @@ class BaseHead(nn.Module):
     
     if helper.LOG_HISTORY_SAMPLE and torch.min(train_unique_classes)>=0 and torch.max(train_unique_classes)<=255 and torch.min(val_unique_classes)>=0 and torch.max(val_unique_classes)<=255:
       list_train_sample = train_dataset.get_all_sample_ids()
-      history_train_sample_predictions = {id: torch.zeros(num_epochs, dtype=torch.uint8) for id in list_train_sample}
+      history_train_sample_predictions = {id: torch.zeros(num_epochs, dtype=torch.float32) for id in list_train_sample}
       # if val_csv_path is not None:
       list_val_sample = val_dataset.get_all_sample_ids() if val_csv_path is not None else None
-      history_val_sample_predictions = {id: torch.zeros(num_epochs, dtype=torch.uint8) for id in list_val_sample} if val_csv_path is not None else None
+      history_val_sample_predictions = {id: torch.zeros(num_epochs, dtype=torch.float32) for id in list_val_sample} if val_csv_path is not None else None
       print('Size history_train_sample_predictions:')
       tools.print_dict_size(history_train_sample_predictions)
     else:
@@ -770,11 +770,11 @@ class BaseHead(nn.Module):
             print(f"  predictions: {predictions}")
             print(f"  batch_y: {batch_y}")
             print(f' train_confusion_matrix shape: {train_confusion_matrix.confusion_matrix.shape}')
-          if history_train_sample_predictions is not None: 
-            tools.log_predictions_per_sample_(dict_log_sample=history_train_sample_predictions,
-                                              tensor_sample_id=sample_id,
-                                              tensor_predictions=outputs.detach().cpu() if criterion in [torch.nn.L1Loss, torch.nn.MSELoss, torch.nn.HuberLoss] else predictions,
-                                              epoch=epoch)
+          # if history_train_sample_predictions is not None: 
+          #   tools.log_predictions_per_sample_(dict_log_sample=history_train_sample_predictions,
+          #                                     tensor_sample_id=sample_id,
+          #                                     tensor_predictions=outputs.detach().cpu() if criterion in [torch.nn.L1Loss, torch.nn.MSELoss, torch.nn.HuberLoss] else predictions,
+          #                                     epoch=epoch)
           # list_memory_snap.append(tracemalloc.take_snapshot())
           dict_log_time['batch_logs'] = dict_log_time.get('batch_logs',0) + time.perf_counter()-start_logs 
           # dict_log_time['batch'] = dict_log_time.get('batch',0) + time.time()-end_load_batch

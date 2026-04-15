@@ -1894,16 +1894,16 @@ def log_predictions_per_sample_(dict_log_sample,tensor_predictions,tensor_sample
     if sid not in dict_log_sample:
       dict_log_sample[sid] = {}
 
-    if epoch not in dict_log_sample[sid]:
+    # if epoch not in dict_log_sample[sid]:
       # First value, store directly
-      dict_log_sample[sid][epoch] = pred
-    else:
-      # Already have a value, switch to list if needed
-      existing = dict_log_sample[sid][epoch]
-      if isinstance(existing, list):
-        existing.append(pred)
-      else:
-        dict_log_sample[sid][epoch] = [existing, pred]
+    dict_log_sample[sid][epoch] = pred
+    # else:
+    #   # Already have a value, switch to list if needed
+    #   existing = dict_log_sample[sid][epoch]
+    #   if isinstance(existing, list):
+    #     existing.append(pred)
+    #   else:
+    #     dict_log_sample[sid][epoch] = [existing, pred]
 
 
 import torch
