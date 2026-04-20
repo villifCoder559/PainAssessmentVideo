@@ -522,6 +522,138 @@ def plot_aggregated_cm(fold_results, best_epochs, out_dir):
 
 
 # ---------------------------------------------------------------------------
+# CSV summary
+# ---------------------------------------------------------------------------
+
+def extract_metrics_at_epoch(fold_data, epoch_idx):
+  """
+  Read test metrics for a specific epoch index from one fold.
+
+  Args:
+    fold_data:  Dict with key 'train_val' containing training/test logs.
+    epoch_idx:  Integer epoch index to read.
+
+  Returns:
+    Dict with keys L1, acc, RMSE, Pearson_r (float, nan when unavailable).
+  """
+  te = safe_get(fold_data, 'train_val', 'test_as_eval', default={})
+  test_l1          = to_numpy(safe_get(te, 'test_list_l1_error'))
+  test_acc         = to_numpy(safe_get(te, 'list_test_accuracy'))
+  test_rmse        = to_numpy(safe_get(te, 'test_list_rmse'))
+  test_pearson_raw = safe_get(te, 'list_test_pearson_correlation')
+
+  def _at(arr, i):
+    if arr is None or len(arr) <= i:
+      return float('nan')
+    return float(arr[i])
+
+  pearson_r = float('nan')
+  if test_pearson_raw is not None and len(test_pearson_raw) > epoch_idx:
+    pearson_r = extract_pearson_r(test_pearson_raw[epoch_idx])
+
+  return {
+    'L1':       _at(test_l1,   epoch_idx),
+    'acc':      _at(test_acc,  epoch_idx),
+    'RMSE':     _at(test_rmse, epoch_idx),
+    'Pearson_r': pearson_r,
+  }
+
+
+def generate_summary_csv(fold_results, fold_keys, summaries, agg, out_dir):
+  """
+  Write plot_loss/summary.csv with per-fold metric rows and global summary rows.
+
+  For each fold two rows are written:
+    fold_best  — metrics at that fold's own best epoch (argmin of its test L1).
+    agg_best   — metrics at the global aggregate best epoch (argmin of mean test L1
+                 curve across all folds).
+
+  Two global summary rows are appended at the bottom:
+    mean_at_fold_best — mean ± std across folds, each read at its own best epoch.
+    mean_at_agg_best  — mean ± std across folds, all read at the aggregate best epoch.
+
+  Args:
+    fold_results: Dict mapping fold_key → fold_data.
+    fold_keys:    Sorted list of fold keys.
+    summaries:    Dict mapping fold_key → summary dict from plot_fold().
+    agg:          Dict returned by build_aggregated().
+    out_dir:      Directory where summary.csv is written.
+  """
+  import csv
+
+  agg_best_ep = None
+  if agg['test_l1'] is not None and agg['min_ep'] > 0:
+    agg_best_ep = int(np.argmin(agg['test_l1'].mean(0)))
+
+  fieldnames = ['fold', 'epoch_type', 'epoch', 'L1', 'acc', 'RMSE', 'Pearson_r']
+  rows = []
+  fold_best_vals = []   # [[L1, acc, RMSE, r], …] at each fold's own best epoch
+  agg_best_vals  = []   # [[L1, acc, RMSE, r], …] at aggregate best epoch
+
+  for fk in fold_keys:
+    s = summaries[fk]
+    rows.append({
+      'fold':       fk,
+      'epoch_type': 'fold_best',
+      'epoch':      s['best_epoch'],
+      'L1':         f"{s['test_l1']:.4f}",
+      'acc':        f"{s['test_acc']:.4f}",
+      'RMSE':       f"{s['rmse']:.4f}",
+      'Pearson_r':  f"{s['pearson_r']:.4f}",
+    })
+    fold_best_vals.append([s['test_l1'], s['test_acc'], s['rmse'], s['pearson_r']])
+
+    if agg_best_ep is not None:
+      m = extract_metrics_at_epoch(fold_results[fk], agg_best_ep)
+      rows.append({
+        'fold':       fk,
+        'epoch_type': 'agg_best',
+        'epoch':      agg_best_ep,
+        'L1':         f"{m['L1']:.4f}",
+        'acc':        f"{m['acc']:.4f}",
+        'RMSE':       f"{m['RMSE']:.4f}",
+        'Pearson_r':  f"{m['Pearson_r']:.4f}",
+      })
+      agg_best_vals.append([m['L1'], m['acc'], m['RMSE'], m['Pearson_r']])
+
+  def _ms(vals, col):
+    col_data = [v[col] for v in vals if not np.isnan(v[col])]
+    if not col_data:
+      return 'nan'
+    return f"{np.mean(col_data):.4f} ± {np.std(col_data):.4f}"
+
+  if fold_best_vals:
+    rows.append({
+      'fold':       'GLOBAL',
+      'epoch_type': 'mean_at_fold_best',
+      'epoch':      '-',
+      'L1':         _ms(fold_best_vals, 0),
+      'acc':        _ms(fold_best_vals, 1),
+      'RMSE':       _ms(fold_best_vals, 2),
+      'Pearson_r':  _ms(fold_best_vals, 3),
+    })
+
+  if agg_best_ep is not None and agg_best_vals:
+    rows.append({
+      'fold':       'GLOBAL',
+      'epoch_type': 'mean_at_agg_best',
+      'epoch':      agg_best_ep,
+      'L1':         _ms(agg_best_vals, 0),
+      'acc':        _ms(agg_best_vals, 1),
+      'RMSE':       _ms(agg_best_vals, 2),
+      'Pearson_r':  _ms(agg_best_vals, 3),
+    })
+
+  os.makedirs(out_dir, exist_ok=True)
+  csv_path = os.path.join(out_dir, 'summary.csv')
+  with open(csv_path, 'w', newline='') as f:
+    writer = csv.DictWriter(f, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+  print(f"Saved: {csv_path}")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -558,9 +690,11 @@ def main():
     fold_out = out_root / fk
     summaries[fk] = plot_fold(fk, results[fk], str(fold_out))
 
-  agg = build_aggregated({fk: results[fk] for fk in fold_keys})
+  fold_results_subset = {fk: results[fk] for fk in fold_keys}
+  agg = build_aggregated(fold_results_subset)
   plot_aggregated(agg, str(out_root))
-  plot_aggregated_cm({fk: results[fk] for fk in fold_keys}, agg['best_epochs'], str(out_root))
+  plot_aggregated_cm(fold_results_subset, agg['best_epochs'], str(out_root))
+  generate_summary_csv(fold_results_subset, fold_keys, summaries, agg, str(out_root))
 
   print("\n=== Per-Fold Summary ===")
   for fk, s in summaries.items():
