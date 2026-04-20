@@ -1,4 +1,5 @@
 from collections import defaultdict
+from dataclasses import dataclass, field
 import time
 import numpy as np
 import torch
@@ -38,6 +39,28 @@ import custom.backbone as custom_backbone
 import multiprocessing as mp
 import torch.nn.functional as F
 import custom.loss as losses
+
+
+@dataclass
+class _SplitTracker:
+  """Holds per-epoch metric lists for one evaluation split (val or test)."""
+  losses: list = field(default_factory=list)
+  losses_per_class: list = field(default_factory=list)
+  accuracy_per_class: list = field(default_factory=list)
+  losses_per_subject: list = field(default_factory=list)
+  accuracy_per_subject: list = field(default_factory=list)
+  confusion_matrices: list = field(default_factory=list)
+  accuracy: list = field(default_factory=list)
+  performance_metric: list = field(default_factory=list)
+  icc: list = field(default_factory=list)
+  ccc: list = field(default_factory=list)
+  pearson: list = field(default_factory=list)
+  l1_error: list = field(default_factory=list)
+  rmse: list = field(default_factory=list)
+  confidence_right_mean: list = field(default_factory=list)
+  confidence_wrong_mean: list = field(default_factory=list)
+  confidence_right_std: list = field(default_factory=list)
+  confidence_wrong_std: list = field(default_factory=list)
 
 
 class GradientReversalFunction(torch.autograd.Function):
@@ -210,6 +233,55 @@ class BaseHead(nn.Module):
       'backbone_has_grads': categories['backbone']['with_grad'] > 0,
     }
 
+  def _append_eval_epoch(
+    self,
+    tracker: _SplitTracker,
+    eval_dict: dict,
+    perf_key: str,
+    log_per_class: bool,
+    log_per_subject: bool,
+    log_confidence: bool,
+    log_correlation: bool,
+    save_this_epoch: bool,
+  ) -> None:
+    """
+    Appends all metrics from one epoch's evaluate() result into a _SplitTracker.
+
+    Args:
+      tracker:          The _SplitTracker instance to update (val or test split).
+      eval_dict:        Dict returned by evaluate(); keys are always val_-prefixed.
+      perf_key:         key_for_early_stopping (e.g. 'val_accuracy').
+      log_per_class:    Whether to log per-class metrics (helper.LOG_PER_CLASS).
+      log_per_subject:  Whether to log per-subject metrics (helper.LOG_PER_SUBJECT).
+      log_confidence:   Whether to log confidence metrics (helper.LOG_CONFIDENCE_PREDICTION and not special loss).
+      log_correlation:  Whether ICC/CCC/Pearson/confusion are available (False for resupcon/disentangled/rnc).
+      save_this_epoch:  Whether this epoch is a checkpoint epoch (saving_rate or best_epoch).
+    """
+    tracker.losses.append(eval_dict['val_loss'])
+    if log_correlation:
+      tracker.icc.append(eval_dict['val_ICC'])
+      tracker.ccc.append(eval_dict['val_CCC'])
+      tracker.pearson.append(eval_dict['val_pearson_correlation'])
+      tracker.l1_error.append(eval_dict['val_l1_error'])
+      tracker.rmse.append(eval_dict['val_rmse'])
+      tracker.accuracy.append(eval_dict['val_accuracy'])
+      tracker.performance_metric.append(eval_dict[perf_key])
+      tracker.confusion_matrices.append(eval_dict['val_confusion_matrix'])
+    else:
+      tracker.performance_metric.append(eval_dict['val_loss'])
+      tracker.accuracy.append(eval_dict.get('val_accuracy', 0.0))
+    if log_confidence:
+      tracker.confidence_right_mean.append(eval_dict['val_prediction_confidence_right_mean'])
+      tracker.confidence_wrong_mean.append(eval_dict['val_prediction_confidence_wrong_mean'])
+      tracker.confidence_right_std.append(eval_dict['val_prediction_confidence_right_std'])
+      tracker.confidence_wrong_std.append(eval_dict['val_prediction_confidence_wrong_std'])
+    if log_per_class and save_this_epoch:
+      tracker.losses_per_class.append(eval_dict['val_loss_per_class'])
+      tracker.accuracy_per_class.append(eval_dict['val_accuracy_per_class'])
+    if log_per_subject and save_this_epoch:
+      tracker.losses_per_subject.append(eval_dict['val_loss_per_subject'])
+      tracker.accuracy_per_subject.append(eval_dict['val_accuracy_per_subject'])
+
   def _print_gradient_flow_stats(self, grad_flow_stats):
     bb = grad_flow_stats['categories']['backbone']
     print(
@@ -369,51 +441,19 @@ class BaseHead(nn.Module):
     list_train_losses_per_subject = []
     list_train_confusion_matricies = []
     list_train_accuracy = []
-    list_val_accuracy = []
-    list_val_losses = []
-    list_val_losses_per_class = []
-    list_val_accuracy_per_class = []
-    list_val_losses_per_subject = []
-    list_val_accuracy_per_subject = []
-    list_val_confusion_matricies = []
-    if kwargs.get('use_test_as_val', False):
-      list_test_accuracy = []
-      list_test_losses = []
-      list_test_losses_per_class = []
-      list_test_accuracy_per_class = []
-      list_test_losses_per_subject = []
-      list_test_accuracy_per_subject = []
-      list_test_confusion_matricies = []
-      list_test_performance_metric = []
-      l1_error_test_list = []
-      rmse_test_list = []
-      list_test_confidence_prediction_right_mean = []
-      list_test_confidence_prediction_wrong_mean = []
-      list_test_confidence_prediction_right_std = []
-      list_test_confidence_prediction_wrong_std = []
-      
     list_train_performance_metric = []
-    list_val_performance_metric = []
+    list_train_confidence_prediction_right_mean = []
+    list_train_confidence_prediction_wrong_mean = []
+    list_train_confidence_prediction_right_std = []
+    list_train_confidence_prediction_wrong_std = []
+    list_train_ICC = []
+    list_train_CCC = []
+    list_train_pearson_correlation = []
+    val_t = _SplitTracker()
+    test_t = _SplitTracker() if kwargs.get('use_test_as_val', False) else None
     total_norm_epoch = []
     list_lrs = []
     list_wds = []
-    # list_list_samples = []
-    # list_list_y = []
-    # best_epoch = False
-    list_train_confidence_prediction_right_mean = []
-    list_train_confidence_prediction_wrong_mean = []
-    list_val_confidence_prediction_right_mean = []
-    list_val_confidence_prediction_wrong_mean = []
-    list_train_confidence_prediction_right_std = []
-    list_train_confidence_prediction_wrong_std = []
-    list_val_confidence_prediction_right_std = []
-    list_val_confidence_prediction_wrong_std = []
-    list_train_ICC = []
-    list_val_ICC = []
-    list_train_CCC = []
-    list_val_CCC = []
-    list_train_pearson_correlation = []
-    list_val_pearson_correlation = []
     epochs_gradient_per_module = {}
     grad_flow_debug_logs = []
     early_stopping.reset()
@@ -483,8 +523,6 @@ class BaseHead(nn.Module):
     # save .pth model before the traingn for the future logs of the untrained model
     torch.save(self.state_dict(), os.path.join(saving_path, f'model_epoch_-1.pt'))
     max_train_class = train_unique_classes.max().item() + 1 # start from 0
-    l1_error_val_list = []
-    rmse_val_list = []
     train_loader_len = len(train_loader)
     grad_adv_norm_epoch = []
     grad_task_norm_epoch = []
@@ -846,7 +884,22 @@ class BaseHead(nn.Module):
         best_epoch = True
       
       list_train_losses.append(train_loss / len(train_loader))
-      list_val_losses.append(dict_eval['val_loss'] if dict_eval is not None else 0.0)
+      _eval_flags = dict(
+        perf_key=key_for_early_stopping,
+        log_per_class=helper.LOG_PER_CLASS,
+        log_per_subject=helper.LOG_PER_SUBJECT,
+        log_confidence=helper.LOG_CONFIDENCE_PREDICTION and not is_resupcon_loss and not is_disentangled_loss,
+        log_correlation=not is_resupcon_loss and not is_disentangled_loss and not is_rnc_loss,
+        save_this_epoch=epoch % helper.saving_rate_training_logs == 0 or best_epoch,
+      )
+      if dict_eval is not None:
+        self._append_eval_epoch(val_t, dict_eval, **_eval_flags)
+      else:
+        val_t.losses.append(0.0)
+        val_t.performance_metric.append(0.0)
+        val_t.accuracy.append(0.0)
+      if dict_test_as_eval is not None:
+        self._append_eval_epoch(test_t, dict_test_as_eval, **_eval_flags)
       if dict_eval is not None and 'val_dict_log_loss_steps' in dict_eval:
         val_dict_log_loss_steps.append(dict_eval['val_dict_log_loss_steps'])
       if adv_criterion is not None:
@@ -863,7 +916,7 @@ class BaseHead(nn.Module):
         ax = ax.flatten()
         input_dict_loss_acc= {
           'list_1':list_train_losses,
-          'list_2':list_val_losses,
+          'list_2':val_t.losses,
           'output_path':None,
           'title':f'Train loss, validation loss',
           'point':None,
@@ -912,32 +965,27 @@ class BaseHead(nn.Module):
         plt.close(fig)
         print(f'Checkpoint saved at epoch {epoch} to {model_path_epoch} and plotted the loss.')
       
-      if dict_test_as_eval is not None:
-        list_test_losses.append(dict_test_as_eval['val_loss'])
-        l1_error_test_list.append(dict_test_as_eval['val_l1_error'])
-        rmse_test_list.append(dict_test_as_eval['val_rmse'])
       if not is_resupcon_loss and not is_disentangled_loss and not is_rnc_loss:
         np_list_train_epoch_predictions = np.concatenate(list_train_epoch_predictions, axis=0)
         np_list_train_ground_truths = np.concatenate(list_train_ground_truths, axis=0)
-        train_ICC = tools.intraclass_icc(np.column_stack((np_list_train_ground_truths, np_list_train_epoch_predictions)))
-        train_CCC = tools.concordance_ccc(y_true=np_list_train_ground_truths, y_pred=np_list_train_epoch_predictions)
-        train_pearson_correlation = tools.pearson_r(y_true=np_list_train_ground_truths, y_pred=np_list_train_epoch_predictions)
-        list_train_ICC.append(train_ICC)
-        list_train_CCC.append(train_CCC)
-        list_train_pearson_correlation.append(train_pearson_correlation)
-        if dict_eval is not None:
-          list_val_ICC.append(dict_eval['val_ICC'])
-          list_val_CCC.append(dict_eval['val_CCC'])
-          list_val_pearson_correlation.append(dict_eval['val_pearson_correlation'])
-          l1_error_val_list.append(dict_eval['val_l1_error'])
-          rmse_val_list.append(dict_eval['val_rmse'])
-      
+        list_train_ICC.append(tools.intraclass_icc(np.column_stack((np_list_train_ground_truths, np_list_train_epoch_predictions))))
+        list_train_CCC.append(tools.concordance_ccc(y_true=np_list_train_ground_truths, y_pred=np_list_train_epoch_predictions))
+        list_train_pearson_correlation.append(tools.pearson_r(y_true=np_list_train_ground_truths, y_pred=np_list_train_epoch_predictions))
+        train_confusion_matrix.compute()
+        train_dict_precision_recall = tools.evaluate_classification_from_confusion_matrix(confusion_matrix=train_confusion_matrix, list_real_classes=train_unique_classes)
+        train_dict_precision_recall['loss'] = list_train_losses[-1]
+        list_train_accuracy.append(train_dict_precision_recall['accuracy'])
+        list_train_performance_metric.append(train_dict_precision_recall[metric_for_stopping])
+      else:
+        train_dict_precision_recall = {}
+        list_train_performance_metric.append(list_train_losses[-1])
+
       if helper.LOG_CONFIDENCE_PREDICTION and not is_resupcon_loss and not is_disentangled_loss:
         list_train_confidence_prediction_right_mean.append(np.mean(batch_train_confidence_prediction_right_mean) if len(batch_train_confidence_prediction_right_mean) > 0 else 0)
         list_train_confidence_prediction_wrong_mean.append(np.mean(batch_train_confidence_prediction_wrong_mean) if len(batch_train_confidence_prediction_wrong_mean) > 0 else 0)
         list_train_confidence_prediction_right_std.append(np.std(batch_train_confidence_prediction_right_mean) if len(batch_train_confidence_prediction_right_mean) > 0 else 0)
         list_train_confidence_prediction_wrong_std.append(np.std(batch_train_confidence_prediction_wrong_mean) if len(batch_train_confidence_prediction_wrong_mean) > 0 else 0)
-      
+
       if helper.LOG_GRADIENT_PER_MODULE:
         print('Logging gradients...')
         for k,v in batch_dict_gradient_per_module.items():
@@ -945,57 +993,15 @@ class BaseHead(nn.Module):
             epochs_gradient_per_module[k] = []
           epochs_gradient_per_module[k].append({'mean':np.mean(v),
                                                 'std':np.std(v),})
-      
+
       if epoch % helper.saving_rate_training_logs == 0 or best_epoch:
         list_train_confusion_matricies.append(train_confusion_matrix)
         if helper.LOG_PER_CLASS:
-          list_train_losses_per_class.append(class_loss[0] / class_loss[1]) # class_loss[0] is loss per class, class_loss[1] is total number of samples
-          list_train_accuracy_per_class.append(class_accuracy[0] / class_accuracy[1]) # class_accuracy[0] is correct predictions, class_accuracy[1] is total)
-          list_val_losses_per_class.append(dict_eval['val_loss_per_class'] if dict_eval is not None else None)
-          list_val_accuracy_per_class.append(dict_eval['val_accuracy_per_class'] if dict_eval is not None else None)
-          if dict_test_as_eval is not None:
-            list_test_losses_per_class.append(dict_test_as_eval['val_loss_per_class'])
-            list_test_accuracy_per_class.append(dict_test_as_eval['val_accuracy_per_class'])
+          list_train_losses_per_class.append(class_loss[0] / class_loss[1])
+          list_train_accuracy_per_class.append(class_accuracy[0] / class_accuracy[1])
         if helper.LOG_PER_SUBJECT:
-          list_train_losses_per_subject.append((subject_loss / sample_per_subject_count))
+          list_train_losses_per_subject.append(subject_loss / sample_per_subject_count)
           list_train_accuracy_per_subject.append(subject_accuracy / sample_per_subject_count)
-          list_val_losses_per_subject.append(dict_eval['val_loss_per_subject'] if dict_eval is not None else None)
-          list_val_accuracy_per_subject.append(dict_eval['val_accuracy_per_subject'] if dict_eval is not None else None)
-          if dict_test_as_eval is not None:
-            list_test_losses_per_subject.append(dict_test_as_eval['val_loss_per_subject'])
-            list_test_accuracy_per_subject.append(dict_test_as_eval['val_accuracy_per_subject'])
-
-      if helper.LOG_CONFIDENCE_PREDICTION and not is_resupcon_loss and not is_disentangled_loss:
-        list_val_confidence_prediction_right_mean.append(dict_eval['val_prediction_confidence_right_mean'] if dict_eval is not None else 0.0)
-        list_val_confidence_prediction_wrong_mean.append(dict_eval['val_prediction_confidence_wrong_mean'] if dict_eval is not None else 0.0)
-        list_val_confidence_prediction_right_std.append(dict_eval['val_prediction_confidence_right_std'] if dict_eval is not None else 0.0)
-        list_val_confidence_prediction_wrong_std.append(dict_eval['val_prediction_confidence_wrong_std'] if dict_eval is not None else 0.0)
-        if dict_test_as_eval is not None:
-          list_test_confidence_prediction_right_mean.append(dict_test_as_eval['val_prediction_confidence_right_mean'])
-          list_test_confidence_prediction_wrong_mean.append(dict_test_as_eval['val_prediction_confidence_wrong_mean'])
-          list_test_confidence_prediction_right_std.append(dict_test_as_eval['val_prediction_confidence_right_std'])
-          list_test_confidence_prediction_wrong_std.append(dict_test_as_eval['val_prediction_confidence_wrong_std'])
-
-      if not is_resupcon_loss and not is_disentangled_loss and not is_rnc_loss:
-        list_val_confusion_matricies.append(dict_eval['val_confusion_matrix'] if dict_eval is not None else None)
-        train_confusion_matrix.compute()
-        train_dict_precision_recall = tools.evaluate_classification_from_confusion_matrix(confusion_matrix=train_confusion_matrix,list_real_classes=train_unique_classes)
-        train_dict_precision_recall['loss'] = list_train_losses[-1]
-        list_train_accuracy.append(train_dict_precision_recall['accuracy'])
-        list_train_performance_metric.append(train_dict_precision_recall[metric_for_stopping])
-        list_val_performance_metric.append(dict_eval[key_for_early_stopping] if dict_eval is not None else 0.0)
-        list_val_accuracy.append(dict_eval['val_accuracy'] if dict_eval is not None else 0.0)
-        if dict_test_as_eval is not None:
-          list_test_performance_metric.append(dict_test_as_eval[key_for_early_stopping])
-          list_test_accuracy.append(dict_test_as_eval['val_accuracy'])
-          
-      else:
-        train_dict_precision_recall = {}
-        list_train_performance_metric.append(list_train_losses[-1])
-        list_val_performance_metric.append(dict_eval['val_loss'] if dict_eval is not None else 0.0)
-        if dict_test_as_eval is not None:
-          list_test_performance_metric.append(dict_test_as_eval['val_loss'])
-          list_test_accuracy.append(dict_test_as_eval['val_accuracy'])
       
       # log performance
       self.log_performance(stage='Train',
@@ -1140,26 +1146,26 @@ class BaseHead(nn.Module):
       'list_train_ICC': list_train_ICC,
       'list_train_CCC': list_train_CCC,
       'list_train_pearson_correlation': list_train_pearson_correlation,
-      'val_losses': list_val_losses,
-      'val_loss_per_class': np.array(list_val_losses_per_class),
-      'val_loss_per_subject': np.array(list_val_losses_per_subject),
+      'val_losses': val_t.losses,
+      'val_loss_per_class': np.array(val_t.losses_per_class),
+      'val_loss_per_subject': np.array(val_t.losses_per_subject),
       'val_unique_subject_ids': val_unique_subjects.numpy(),
       'val_count_subject_ids': val_dataset.get_count_subjects() if val_csv_path is not None else None,
       'val_unique_y': val_unique_classes,
-      'list_val_accuracy_per_subject': list_val_accuracy_per_subject,
-      'list_val_accuracy_per_class': list_val_accuracy_per_class,
-      'list_val_confidence_prediction_right_mean': list_val_confidence_prediction_right_mean,
-      'list_val_confidence_prediction_wrong_mean': list_val_confidence_prediction_wrong_mean,
-      'list_val_confidence_prediction_right_std': list_val_confidence_prediction_right_std,
-      'list_val_confidence_prediction_wrong_std': list_val_confidence_prediction_wrong_std,
-      'list_val_accuracy': list_val_accuracy,
-      'val_confusion_matricies': list_val_confusion_matricies,
-      'list_val_performance_metric': list_val_performance_metric,
-      'list_val_ICC': list_val_ICC,
-      'list_val_CCC': list_val_CCC,
-      'list_val_l1_error': l1_error_val_list,
-      'list_val_rmse': rmse_val_list,
-      'list_val_pearson_correlation': list_val_pearson_correlation,
+      'list_val_accuracy_per_subject': val_t.accuracy_per_subject,
+      'list_val_accuracy_per_class': val_t.accuracy_per_class,
+      'list_val_confidence_prediction_right_mean': val_t.confidence_right_mean,
+      'list_val_confidence_prediction_wrong_mean': val_t.confidence_wrong_mean,
+      'list_val_confidence_prediction_right_std': val_t.confidence_right_std,
+      'list_val_confidence_prediction_wrong_std': val_t.confidence_wrong_std,
+      'list_val_accuracy': val_t.accuracy,
+      'val_confusion_matricies': val_t.confusion_matrices,
+      'list_val_performance_metric': val_t.performance_metric,
+      'list_val_ICC': val_t.icc,
+      'list_val_CCC': val_t.ccc,
+      'list_val_l1_error': val_t.l1_error,
+      'list_val_rmse': val_t.rmse,
+      'list_val_pearson_correlation': val_t.pearson,
       'list_train_adv_losses': list_train_adv_losses,
       'list_train_mt_losses': list_train_mt_losses,
       'list_train_adv_accuracies': list_train_adv_accuracies,
@@ -1174,21 +1180,27 @@ class BaseHead(nn.Module):
     }
     if kwargs.get('use_test_as_val', False):
       logs['test_as_eval'] = {
-        'test_losses': list_test_losses,
-        'test_list_l1_error': l1_error_test_list,
-        'test_list_rmse': rmse_test_list,
-        'test_loss_per_class': np.array(list_test_losses_per_class),
-        'test_loss_per_subject': np.array(list_test_losses_per_subject),
-        'test_unique_subjects_ids': test_unique_subjects.numpy(),
-        'test_count_subjects_ids': test_dataset.get_count_subjects() if kwargs['test_csv_path_as_eval'] is not None else None,
-        'test_unique_y': test_unique_classes,
-        'list_test_confidence_prediction_right_mean': list_test_confidence_prediction_right_mean,
-        'list_test_confidence_prediction_wrong_mean': list_test_confidence_prediction_wrong_mean,
-        'list_test_confidence_prediction_right_std': list_test_confidence_prediction_right_std,
-        'list_test_confidence_prediction_wrong_std': list_test_confidence_prediction_wrong_std,
-        'list_test_accuracy_per_subject': list_test_accuracy_per_subject,
-        'list_test_accuracy_per_class': list_test_accuracy_per_class,
-        'test_unique_classes_ids': test_unique_classes.numpy(),
+        'test_losses':                         test_t.losses,
+        'test_list_l1_error':                  test_t.l1_error,
+        'test_list_rmse':                      test_t.rmse,
+        'test_loss_per_class':                 np.array(test_t.losses_per_class),
+        'test_loss_per_subject':               np.array(test_t.losses_per_subject),
+        'test_unique_subjects_ids':            test_unique_subjects.numpy(),
+        'test_count_subjects_ids':             test_dataset.get_count_subjects() if kwargs['test_csv_path_as_eval'] is not None else None,
+        'test_unique_y':                       test_unique_classes,
+        'test_unique_classes_ids':             test_unique_classes.numpy(),
+        'list_test_accuracy_per_subject':      test_t.accuracy_per_subject,
+        'list_test_accuracy_per_class':        test_t.accuracy_per_class,
+        'list_test_confidence_right_mean':     test_t.confidence_right_mean,
+        'list_test_confidence_wrong_mean':     test_t.confidence_wrong_mean,
+        'list_test_confidence_right_std':      test_t.confidence_right_std,
+        'list_test_confidence_wrong_std':      test_t.confidence_wrong_std,
+        'test_confusion_matricies':            test_t.confusion_matrices,
+        'list_test_accuracy':                  test_t.accuracy,
+        'list_test_performance_metric':        test_t.performance_metric,
+        'list_test_ICC':                       test_t.icc,
+        'list_test_CCC':                       test_t.ccc,
+        'list_test_pearson_correlation':       test_t.pearson,
       }
     return logs
 
