@@ -530,7 +530,7 @@ def main():
   CLI entry point: load pkl, generate per-fold figures and aggregated plots.
   """
   parser = argparse.ArgumentParser(description='Analyze k-fold cross-validation log pkl.')
-  parser.add_argument('pkl_path', type=str, help='Path to k_fold_results.pkl')
+  parser.add_argument('--pkl_path', type=str, help='Path to k_fold_results.pkl')
   args = parser.parse_args()
 
   pkl_path = Path(args.pkl_path).resolve()
