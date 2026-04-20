@@ -553,7 +553,7 @@ def plot_confusion_matrix(
 
   standalone = ax is None
   if standalone:
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(5, 4))
   else:
     fig = ax.figure
 
