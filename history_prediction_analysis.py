@@ -84,6 +84,13 @@ def parse_args() -> argparse.Namespace:
       'Applies to all analyses. Example: --gt_labels 0 1 2'
     ),
   )
+  parser.add_argument(
+    '--group_plot_size', type=int, default=10,
+    help=(
+      'Number of trajectories per grouped prediction figure '
+      '(default: 10). Use 1 to save one trajectory per PNG.'
+    ),
+  )
   return parser.parse_args()
 
 
@@ -162,6 +169,21 @@ def _save_fig(fig: plt.Figure, out_path: str) -> None:
   fig.savefig(out_path, bbox_inches='tight', dpi=150)
   plt.close(fig)
   print(f'  Saved: {out_path}')
+
+
+def _sanitize_filename_component(text: str) -> str:
+  """
+  Convert text to a filesystem-safe filename component.
+
+  Args:
+    text (str): Input text.
+
+  Returns:
+    str: Sanitized ASCII-like token using only alphanumeric characters and '_'.
+  """
+  cleaned = ''.join(ch if ch.isalnum() else '_' for ch in str(text).strip())
+  cleaned = '_'.join(part for part in cleaned.split('_') if part)
+  return (cleaned[:80] if cleaned else 'unknown')
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +445,15 @@ def plot_grouped_trajectories(
     )
     fig.tight_layout(rect=[0, 0, 1, 0.96])
 
-    out_name = f'trajectory_{group_label}_topk_{top_k}_group_{group_idx}.png'
+    if max_per_group == 1 and len(group_ids) == 1:
+      sid           = group_ids[0]
+      safe_name     = _sanitize_filename_component(gt[sid]['sample_name'])
+      out_name      = (
+        f'trajectory_{group_label}_topk_{top_k}_group_{group_idx}'
+        f'_sid_{sid}_name_{safe_name}.png'
+      )
+    else:
+      out_name = f'trajectory_{group_label}_topk_{top_k}_group_{group_idx}.png'
     _save_fig(fig, os.path.join(fold_out_dir, out_name))
     print(
       f'  Grouped trajectory saved: {group_label}, top_k={top_k}, '
@@ -687,6 +717,8 @@ def main() -> None:
   Entry point: parse arguments, iterate over folds, produce outputs.
   """
   args     = parse_args()
+  if args.group_plot_size < 1:
+    raise ValueError(f'--group_plot_size must be >= 1, got {args.group_plot_size}.')
   data     = load_data(args.pkl)
   pkl_dir  = os.path.dirname(os.path.abspath(args.pkl))
   base_out = os.path.join(pkl_dir, 'prediction_analysis')
@@ -724,7 +756,10 @@ def main() -> None:
       epoch_offset = 0
 
     fold_out_dir = os.path.join(base_out, fold_key)
+    fold_traj_dir = os.path.join(fold_out_dir, 'prediction_trajectories')
     os.makedirs(fold_out_dir, exist_ok=True)
+    os.makedirs(fold_traj_dir, exist_ok=True)
+    print(f'  Trajectory output dir: {fold_traj_dir}')
 
     if not gt:
       print('  Skipping: GT labels unavailable.')
@@ -765,10 +800,10 @@ def main() -> None:
         history=history,
         gt=gt_fold,
         epoch_offset=epoch_offset,
-        fold_out_dir=fold_out_dir,
+        fold_out_dir=fold_traj_dir,
         group_label='top',
         top_k=effective_top_k,
-        max_per_group=10,
+        max_per_group=args.group_plot_size,
         title_suffix=label_suffix,
       )
       plot_grouped_trajectories(
@@ -776,10 +811,10 @@ def main() -> None:
         history=history,
         gt=gt_fold,
         epoch_offset=epoch_offset,
-        fold_out_dir=fold_out_dir,
+        fold_out_dir=fold_traj_dir,
         group_label='worst',
         top_k=effective_top_k,
-        max_per_group=10,
+        max_per_group=args.group_plot_size,
         title_suffix=label_suffix,
       )
 
@@ -795,7 +830,7 @@ def main() -> None:
           f'— skipping trajectory plot.'
         )
       else:
-        plot_sample_trajectory(args.sample_id, history, gt_fold, epoch_offset, fold_out_dir, title_suffix=label_suffix)
+        plot_sample_trajectory(args.sample_id, history, gt_fold, epoch_offset, fold_traj_dir, title_suffix=label_suffix)
 
     # Feature 7 (optional)
     if args.epoch is not None:
