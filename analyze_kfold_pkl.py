@@ -396,12 +396,13 @@ def plot_aggregated(agg, out_dir):
 
   # [0,0] mean test L1 error
   ax = axes[0, 0]
+  y_axis_plot_range = [0, 2]  # Adjust as needed based on expected L1 error range
   try:
     if agg['test_l1'] is not None and min_ep > 0:
       mean = agg['test_l1'].mean(0)
       std  = agg['test_l1'].std(0)
       plot_with_std(ax, epochs_x, mean, std, 'Epoch', 'Test L1 Error',
-                    'Mean Test L1 Error ± std', color='tab:blue')
+                    'Mean Test L1 Error ± std', color='tab:blue',y_lim=y_axis_plot_range)
       if mean_best is not None and mean_best < min_ep:
         best_val = mean[mean_best]
         ax.axvline(mean_best, color='red', linestyle='--', alpha=0.7)
@@ -424,7 +425,7 @@ def plot_aggregated(agg, out_dir):
       mean = agg['train_loss'].mean(0)
       std  = agg['train_loss'].std(0)
       plot_with_std(ax, epochs_x, mean, std, 'Epoch', 'Train Loss',
-                    'Mean Train Loss ± std', color='tab:red')
+                    'Mean Train Loss ± std', color='tab:red', y_lim=y_axis_plot_range)
       if mean_best is not None and mean_best < min_ep:
         ax.axvline(mean_best, color='black', linestyle='--', alpha=0.5,
                    label=f'Mean best ep {mean_best}')
