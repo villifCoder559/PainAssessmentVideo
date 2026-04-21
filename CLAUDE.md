@@ -66,7 +66,7 @@ Features are pre-extracted and cached as safetensors files. Training loads from 
 
 - **model.py** — `Model_Advanced`: orchestrates backbone + head, training loop, evaluation
 - **backbone.py** — `VideoBackbone`: loads VideoMAEv2/VJEPA2/DFER, extracts features, supports adapters and freezing
-- **head.py** — Prediction heads: `AttentiveHeadJEPA` (cross-attention with learnable queries), `GRUHead`, `PooledHeadMLP`, `LinearHead`. Also contains early stopping classes
+- **head.py** — Prediction heads: `AttentiveHeadJEPA` (cross-attention with learnable queries), `GRUHead`. Also contains early stopping classes
 - **dataset.py** — `customDataset`: handles frame sampling strategies (uniform, sliding_window, central, random), augmentations, CSV label management. `balancedBatchSampler` for stratified sampling
 - **loss.py** — CDW_CE, PHuberCrossEntropy, SimLoss, RESupConLoss, RnCLossV2, DisentangledLoss
 - **composite_loss.py** — `CompositeLoss` combines multiple losses; `CCCLoss`, `SupConWeightedLoss`
