@@ -516,11 +516,9 @@ class EMBEDDING_REDUCTION(Enum):
       raise ValueError(f'Pooling embedding reduction not recognized: {pooling_embedding_reduction}. Can be spatial, temporal, all, adaptive_pooling_3d, spatial_masked or none')
 
 class INSTANCE_MODEL_NAME(Enum): # model.__class__.__name__
-  LINEARPROBE = 'LinearProbe'
   GRUPROBE = 'GRUProbe'
-  ATTENTIVEPROBE = 'AttentiveProbe'
+  GRUHead = 'GRUHead'
   AttentiveClassifier = 'AttentiveHeadJEPA' # JEPA implementation
-  Pool_MLP = 'PooledHeadMLP'
   
 class CLIPS_REDUCTION(Enum): 
   # [B,t,p,p,emb] -> [1,t,p,p,emb] ex: [3,8,14,14,768] -> [1,8,14,14,768]
@@ -532,7 +530,7 @@ class HEAD(Enum):
   ATTENTIVE = 'ATTENTIVE'
   ATTENTIVE_JEPA = 'ATTENTIVE_JEPA'
   LINEAR = 'LINEAR'
-  POOL_MLP = 'POOL_MLP'
+
 
 class GLOBAL_PATH:
   NAS_PATH = os.path.join('/equilibrium','fvilli','PainAssessmentVideo')

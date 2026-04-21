@@ -1319,46 +1319,37 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_cla
   # if pid not in helper.time_profile_dict:
   #   helper.time_profile_dict[pid] = 
   
-  if instance_model_name != helper.INSTANCE_MODEL_NAME.Pool_MLP:
-    with profile_workers(f'{pid}_collate_preprocess_time',helper.time_profiling_enabled,helper.time_profile_dict):
-      dict_res = highly_optimized_custom_collate(batch=batch,
-                                                pid=pid,
-                                                is_training = model.training,
-                                                concatenate_temporal=concatenate_temporal,
-                                                smooth_labels=smooth_labels,
-                                                soft_labels_mat=soft_labels_mat,
-                                                coral_loss=coral_loss,
-                                                split_chunks=split_chunks,
-                                                concatenate_quadrants=concatenate_quadrants,
-                                                xattn_mask=xattn_mask,
-                                                num_classes=num_classes)
-        
-    if instance_model_name == helper.INSTANCE_MODEL_NAME.AttentiveClassifier or instance_model_name == helper.INSTANCE_MODEL_NAME.ATTENTIVEPROBE:
-
-      return {'x':dict_res['features'], 'key_padding_mask': dict_res['key_padding_mask']},\
-              dict_res['labels'],\
-              dict_res['subject_id'],\
-              dict_res['sample_id']
-    elif instance_model_name == helper.INSTANCE_MODEL_NAME.GRUPROBE:
-      raise NotImplementedError("GRUPROBE not implemented in collate function.")
-      packed_input = torch.nn.utils.rnn.pack_padded_sequence(features,lengths_tensor,batch_first=True,enforce_sorted=False)
-      if model.output_size == 1:
-        labels = labels.float()
-      return {'x':packed_input},\
-              labels,\
-              subject_id,\
-              sample_id
-    else:
-      raise NotImplementedError(f"Instance model {instance_model_name} not implemented for collate function.")
+  with profile_workers(f'{pid}_collate_preprocess_time',helper.time_profiling_enabled,helper.time_profile_dict):
+    dict_res = highly_optimized_custom_collate(batch=batch,
+                                              pid=pid,
+                                              is_training = model.training,
+                                              concatenate_temporal=concatenate_temporal,
+                                              smooth_labels=smooth_labels,
+                                              soft_labels_mat=soft_labels_mat,
+                                              coral_loss=coral_loss,
+                                              split_chunks=split_chunks,
+                                              concatenate_quadrants=concatenate_quadrants,
+                                              xattn_mask=xattn_mask,
+                                              num_classes=num_classes)
       
+  if instance_model_name == helper.INSTANCE_MODEL_NAME.AttentiveClassifier or instance_model_name == helper.INSTANCE_MODEL_NAME.GRUHead:
+
+    return {'x':dict_res['features'], 'key_padding_mask': dict_res['key_padding_mask']},\
+            dict_res['labels'],\
+            dict_res['subject_id'],\
+            dict_res['sample_id']
+  elif instance_model_name == helper.INSTANCE_MODEL_NAME.GRUPROBE:
+    raise NotImplementedError("GRUPROBE not implemented in collate function.")
+    packed_input = torch.nn.utils.rnn.pack_padded_sequence(features,lengths_tensor,batch_first=True,enforce_sorted=False)
+    if model.output_size == 1:
+      labels = labels.float()
+    return {'x':packed_input},\
+            labels,\
+            subject_id,\
+            sample_id
   else:
-    features = torch.cat([torch.mean(sample['features'],dim=(0,1,2,3),keepdim=True,dtype=torch.float32) for sample in batch],dim=0) # mean over the sequence
-    features = features.squeeze(1).squeeze(1).squeeze(1) # [B, Emb]
-    labels = torch.tensor([sample['labels'][0] for sample in batch],dtype=torch.int32)
-    subject_id = torch.tensor([sample['subject_id'][0] for sample in batch], dtype=torch.int32)
-    sample_id = torch.tensor([sample['sample_id'] for sample in batch], dtype=torch.int32)
-    return {'x':features},labels,subject_id,sample_id
- 
+    raise NotImplementedError(f"Instance model {instance_model_name} not implemented for collate function.")
+
 
 class balancedBatchSampler(BatchSampler):
   def __init__(self, batch_size, shuffle,path_cvs_dataset=None, random_state=42,df=None):

@@ -7,7 +7,7 @@ import numpy as np
 import os
 import custom.tools as tools
 from custom.dataset import get_dataset_and_loader
-from custom.head import LinearHead, GRUHead, AttentiveHeadJEPA, PooledHeadMLP
+from custom.head import GRUHead, AttentiveHeadJEPA
 from custom.helper import CUSTOM_DATASET_TYPE, MODEL_TYPE, get_shift_for_sample_id
 import pandas as pd
 import custom.helper as helper
@@ -180,11 +180,8 @@ class Model_Advanced: # Scenario_Advanced
                                           type_head=head_params.get('type_head', 0),
                                           mlp_num_hidden_layers=head_params.get('mlp_num_hidden_layers', 1)
                                           )
-    elif head == 'POOL_MLP':
-      self.head = PooledHeadMLP(**head_params)
-    elif head == 'LINEAR':
-      self.head = LinearHead(**head_params)
-
+    else:
+      raise NotImplementedError(f'{head} not implemented')
     # If features are not precomputed, instntiate the backbone model
     if self.dataset_type == CUSTOM_DATASET_TYPE.BASE:
       self.backbone_dict = {
@@ -515,8 +512,8 @@ class Model_Advanced: # Scenario_Advanced
                                           backbone_dict=self.backbone_dict,
                                           enable_optuna_pruning=enable_optuna_pruning,
                                           trial=trial,
-                                          head_embed_dim=self.head_params['input_dim'],
-                                          num_classes=self.head_params['num_classes'],
+                                          # head_embed_dim=self.head_params['input_dim'],
+                                          # num_classes=self.head_params['num_classes'],
                                           **kwargs
                                           )
     

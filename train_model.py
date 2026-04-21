@@ -312,7 +312,16 @@ def get_sampler_module(sampler_name, kwargs=None):
   elif sampler_lower == 'grid':
     search_space = {k: v for k, v in kwargs.items() if isinstance(v, list) and k != 'stop'}
     sampler_module = optuna.samplers.GridSampler(search_space=search_space)
+    # check if there is a 0 in the search space lists, which would cause an error in GridSampler
+    for k, v in search_space.items():
+      if isinstance(v, list) and len(v) == 0:
+        raise ValueError(f"GridSampler does not support empty lists in search space. Found empty list in {k}.")
+    print(f'{sampler_module._all_grids}')
     print(f'\n Grid search trials: {len(sampler_module._all_grids)}\n')
+    # print all grid combinations    
+    # print(f'Grid combinations:')
+    # for i, grid in enumerate(sampler_module._all_grids):
+    #   print(f'  Trial {i + 1}: {grid}')
     return sampler_module
   else:
     raise ValueError(
@@ -561,7 +570,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   if head_name.upper() == 'GRU':
     GRU_hidden_size = _suggest(trial, 'GRU_hidden_size', kwargs['GRU_hidden_size'], kwargs['optuna_categorical'])
     GRU_num_layers = _suggest(trial, 'GRU_num_layers', kwargs['GRU_num_layers'], kwargs['optuna_categorical'])
-    GRU_output_size = kwargs['GRU_output_size']
+    # GRU_output_size = num_classes
     layer_norm = trial.suggest_categorical('layer_norm', kwargs['layer_norm'])
     GRU_dropout = _suggest(trial, 'GRU_dropout', kwargs['GRU_dropout'], kwargs['optuna_categorical'])
     GRU_round_output_loss = trial.suggest_categorical('GRU_round_output_loss', kwargs['GRU_round_output_loss'])
@@ -570,13 +579,13 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'input_dim': input_dim,
       'hidden_size': GRU_hidden_size,
       'num_layers': GRU_num_layers,
-      'output_size': GRU_output_size,
+      'output_size': num_classes,
       'layer_norm': layer_norm,
       'dropout': GRU_dropout,
     }
     head_enum = HEAD.GRU
-    num_classes = GRU_output_size  # Override for GRU
-    head_dependent_add_kwargs = {'is_round_output_loss': GRU_round_output_loss, 'lambda_multitask': 0.0}
+    # num_classes = GRU_output_size  # Override for GRU
+    # head_dependent_add_kwargs = {'is_round_output_loss': GRU_round_output_loss, 'lambda_multitask': 0.0}
 
   elif head_name.upper() == 'ATTENTIVE_JEPA':
     adversarial_head = trial.suggest_categorical('adversarial_head', kwargs['adversarial_head'])
@@ -662,23 +671,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
       'lambda_multitask': lambda_multitask,
     }
 
-  elif head_name.upper() == 'POOL_MLP':
-    mlp_ratio = trial.suggest_categorical('mlp_ratio', kwargs['mlp_ratio'])
-    model_dropout = _suggest(trial, 'model_dropout', kwargs['model_dropout'], kwargs['optuna_categorical'])
-    head_params = {
-      'input_dim': input_dim,
-      'num_classes': num_classes,
-      'dropout': model_dropout,
-      'mlp_ratio': mlp_ratio,
-    }
-    head_enum = HEAD.POOL_MLP
-    head_dependent_add_kwargs = {
-      'xattn_mask': None,
-      'adv_alpha_strategy': None,
-      'adv_alpha_gamma': None,
-      'adversarial_loss_lambda': None,
-      'lambda_multitask': 0.0,
-    }
+
 
   head_params['train_backbone'] = train_backbone
   head_params['unfreeze_layers'] = unfreeze_layers
@@ -796,7 +789,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     lr=lr,
     seed_random_state=kwargs['seed_random_state'],
     is_plot_dataset_distribution=False,
-    is_round_output_loss=head_dependent_add_kwargs.get('is_round_output_loss', 0),
+    is_round_output_loss=0,
     is_shuffle_video_chunks=False,
     is_shuffle_training_batch=True,
     init_network=init_network,
@@ -1214,7 +1207,7 @@ if __name__ == '__main__':
   parser.add_argument('--GRU_hidden_size', type=int, nargs='*', default=[1024], help='GRU hidden size.')
   parser.add_argument('--GRU_num_layers', type=int, nargs='*', default=[2], help='GRU number of layers.')
   parser.add_argument('--GRU_dropout', type=float, nargs='*', default=[0.0], help='GRU dropout.')
-  parser.add_argument('--GRU_output_size', type=int, default=1, help='Output size of GRU.')
+  # parser.add_argument('--GRU_output_size', type=int, default=1, help='Output size of GRU.')
   parser.add_argument('--layer_norm', type=int, nargs='*', default=[0], help='Add Layer norm.')
   parser.add_argument('--GRU_round_output_loss', type=int, default=[0], nargs='*', help='Round output loss.')
   parser.add_argument('--init_network', type=str, nargs='*', default=['default'], help='Network initialization.')
@@ -1356,8 +1349,8 @@ if __name__ == '__main__':
     args.path_video_dataset = helper.GLOBAL_PATH.get_global_path(args.path_video_dataset)
     args.global_folder_name = helper.GLOBAL_PATH.get_global_path(args.global_folder_name)
 
-  print('\n\nTraining configuration:')
-  print(args)
+  # print('\n\nTraining configuration:')
+  # print(args)
 
   dict_args['target_metric_best_model'] = args.key_early_stopping
 

@@ -1516,31 +1516,6 @@ class BaseHead(nn.Module):
       train_dict_log_loss_epochs[k] = tensor_per_epoch.numpy()
     return train_dict_log_loss_epochs
   
-  
-  
-class LinearHead(BaseHead):
-  def __init__(self, input_dim, num_classes, dim_reduction):
-    super().__init__(is_classification=True if num_classes > 1 else False)
-    self._model = LinearProbe(input_dim=input_dim, num_classes=num_classes,dim_reduction=dim_reduction)
-    self.num_classes = num_classes
-
-  def forward(self, x, **kwargs):
-    logits = self._model(x)
-    return {'logits': logits, 'embeddings': None}
-
-class PooledHeadMLP(BaseHead):
-  def __init__(self, input_dim, num_classes, mlp_ratio=4.0, dropout=0.0):
-    super().__init__(is_classification=True if num_classes > 1 else False)
-    self.mlp = modules.MLP_custom(in_features=input_dim,
-                        hidden_features=int(input_dim * mlp_ratio),
-                        act_layer=nn.GELU,
-                        out_features=input_dim,
-                        drop=dropout)
-    self.num_classes = num_classes
-    self.linear = nn.Linear(input_dim, num_classes)
-    self.embedding_reduction = helper.EMBEDDING_REDUCTION.NONE
-    self._initialize_weights()
-    
 class AttentiveHeadJEPA(BaseHead):
   def __init__(self,
       embed_dim=768,
@@ -1905,160 +1880,162 @@ class AttentiveHeadJEPA(BaseHead):
       self.linear = nn.Linear(self.pooler.embed_dim, num_classes, bias=True)
     print(f'Added linear head with {num_classes} classes to AttentiveHeadJEPA')
 
+
 class GRUHead(BaseHead):
-  def __init__(self, input_dim, hidden_size, num_layers, dropout, output_size,layer_norm):
-    super().__init__(self,True if output_size > 1 else False)
-    self._model = GRUProbe(input_size=input_dim, hidden_size=hidden_size, num_layers=num_layers, dropout=dropout, output_size=output_size,layer_norm=layer_norm)
-    self._is_classification = True if output_size > 1 else False
-  
-  def forward(self, x, **kwargs): # x is already packed
-    return self._model(x)
-  
-  def _initialize_weights(self,init_type):
-    self._model._initialize_weights(init_type=init_type)
-    
-class GRUProbe(nn.Module):
-  def __init__(self, input_size, hidden_size, num_layers, dropout, output_size,layer_norm,pred_only_last_time_step=True):
-    super(GRUProbe, self).__init__()
-    self.input_size = input_size
+  def __init__(self,
+               input_dim,
+               hidden_size,
+               num_layers,
+               output_size=1,
+               dropout=0.0,
+               layer_norm=False,
+               bidirectional=False,
+               embedding_reduction=None,
+               head_init_path=None,
+               backbone: custom_backbone.BackboneBase = None,
+               train_backbone=False,
+               unfreeze_layers=0,
+               skip_init_weights=False,
+               num_classes=None,
+               **kwargs):
+    """
+    GRU-based prediction head. Mirrors the public interface of AttentiveHeadJEPA
+    so that BaseHead.start_train / BaseHead.evaluate work unchanged.
+
+    Args:
+      input_dim:           Embedding dimension D of per-frame features.
+      hidden_size:         GRU hidden size.
+      num_layers:          Number of stacked GRU layers.
+      output_size:         Output dim. 1 = regression, >1 = classification logits.
+      dropout:             Inter-layer dropout inside the GRU (ignored if num_layers==1).
+      layer_norm:          If True, apply LayerNorm on the pooled GRU output.
+      bidirectional:       If True, use a bidirectional GRU (output doubles).
+      embedding_reduction: helper.EMBEDDING_REDUCTION enum; reduces spatial/temporal
+                           axes of backbone features before the GRU.
+      head_init_path:      Optional path to a .pth state_dict to warm-start from.
+      backbone:            Backbone module (only when dataset_type == BASE).
+      num_classes:         Alias of output_size forwarded by the pipeline; takes
+                           precedence over output_size when explicitly > 1.
+    """
+    if num_classes is not None and num_classes > 1:
+      output_size = num_classes
+    super().__init__(is_classification=(output_size > 1))
+
+    self.input_dim = input_dim
     self.hidden_size = hidden_size
     self.num_layers = num_layers
-    self.dropout = dropout
-    self.num_classes = 5
     self.output_size = output_size
-    self.batchNorm = nn.BatchNorm1d(input_size)
-    self.gru = nn.GRU(input_size, hidden_size, num_layers, dropout=dropout, batch_first=True)
-    self.norm = nn.LayerNorm(hidden_size) if layer_norm else nn.Identity()
-    self.fc = nn.Linear(hidden_size, output_size)
-    self.pred_only_last_time_step=pred_only_last_time_step
-    
-  def get_configuration(self):
-    dict_config = {
-      'input_size': self.input_size,
-      'hidden_size': self.hidden_size,
-      'num_layers': self.num_layers,
-      'dropout': self.dropout,
-      'output_size': self.output_size
-    }
-    return dict_config
+    self.bidirectional = bidirectional
+    self.embedding_reduction = embedding_reduction if embedding_reduction is not None else helper.EMBEDDING_REDUCTION.NONE
+    self.head_init_path = head_init_path
+    self.backbone = backbone
 
-  def forward(self, x):
-    # assert len(x.shape) == 3, f"Input shape should be (batch_size, sequence_length, input_size), got {x.shape}"
-    packed_out, _ = self.gru(x)
-    if torch.is_tensor(x):
-      out_padded = packed_out
-      list_length = torch.tensor([x.shape[1]]*x.shape[0])
+    self.gru = nn.GRU(
+      input_size=input_dim,
+      hidden_size=hidden_size,
+      num_layers=num_layers,
+      dropout=dropout if num_layers > 1 else 0.0,
+      batch_first=True,
+      bidirectional=bidirectional,
+    )
+
+    self.input_norm = nn.LayerNorm(input_dim) if layer_norm else nn.Identity()
+
+    out_dim = hidden_size * (2 if bidirectional else 1)
+    self.norm = nn.LayerNorm(out_dim) if layer_norm else nn.Identity()
+    self.linear = nn.Linear(out_dim, output_size, bias=True)
+
+    if not skip_init_weights:
+      self._initialize_weights(init_type='default')
+
+  def _reduce_to_sequence(self, x):
+    """
+    Collapse (B, T, S, S, D) -> (B, T, D) by honoring self.embedding_reduction
+    for spatial/temporal axes and mean-pooling any leftover non-temporal dims.
+    If x is already (B, T, D), return unchanged.
+
+    Args:
+      x: Tensor of shape (B, T, D) or (B, T, S, S, D).
+
+    Returns:
+      Tensor of shape (B, T, D).
+    """
+    if x.dim() == 3:
+      return x
+    if self.embedding_reduction != helper.EMBEDDING_REDUCTION.NONE:
+      x = torch.mean(x, dim=self.embedding_reduction.value, keepdim=True)
+    while x.dim() > 3:
+      x = torch.mean(x, dim=2)
+    return x
+
+  def forward(self, x, key_padding_mask=None, return_video_emb=True, **kwargs):
+    """
+    Args:
+      x:                Pre-extracted features (B, T, D) or (B, T, S, S, D),
+                        or raw video clips when self.backbone is not None.
+      key_padding_mask: Optional bool mask (B, T). True = valid token.
+      return_video_emb: If True, include the pooled embedding in the output dict.
+
+    Returns:
+      dict with 'logits' (B, output_size) and optionally 'embeddings' (B, out_dim).
+    """
+    if self.backbone is not None:
+      x = self.backbone.forward_features(x)
+
+    x = self._reduce_to_sequence(x)
+    x = self.input_norm(x)
+
+    if (key_padding_mask is not None and key_padding_mask.dim() == 2
+        and key_padding_mask.shape[0] == x.shape[0]
+        and key_padding_mask.shape[1] == x.shape[1]):
+      lengths = key_padding_mask.sum(dim=1).clamp(min=1).cpu()
+      packed = torch.nn.utils.rnn.pack_padded_sequence(
+        x, lengths, batch_first=True, enforce_sorted=False)
+      _, h_n = self.gru(packed)
     else:
-      out_padded,list_length = torch.nn.utils.rnn.pad_packed_sequence(packed_out, batch_first=True)
+      _, h_n = self.gru(x)
 
-    last_hidden_layer = out_padded[torch.arange(out_padded.shape[0]), list_length-1] # [1, hidden_size]
-    if self.pred_only_last_time_step:
-      last_hidden_layer = self.norm(last_hidden_layer)
-      out = self.fc(last_hidden_layer) # [batch, output_size=1]
-      out = out.squeeze(dim=1) 
+    if self.bidirectional:
+      pooled = torch.cat([h_n[-2], h_n[-1]], dim=-1)
     else:
-      out_padded = self.norm(out_padded)
-      out = self.fc(out_padded).squeeze(dim=2) # [batch, seq_len, output_size=1]
-    return out
+      pooled = h_n[-1]
 
-  def _initialize_weights(self,init_type='default'):
-    # Initialize GRU weights
-    print(f'  GRU Network initialized: {init_type}')
-    if init_type == 'xavier':
-      for name, param in self.gru.named_parameters():
-        if 'weight_ih' in name:
-            torch.nn.init.xavier_uniform_(param.data)
-        elif 'weight_hh' in name:
-            torch.nn.init.orthogonal_(param.data)
-        elif 'bias' in name:
-            param.data.fill_(0)
-      # Initialize Linear weights
-      init.xavier_uniform_(self.fc.weight)  # Xavier uniform initialization
-      if self.fc.bias is not None:
-          init.zeros_(self.fc.bias)
-    elif init_type == 'uniform':
-      for name, param in self.gru.named_parameters():
-        if 'weight_ih' in name:
-            torch.nn.init.uniform_(param.data, a=-math.sqrt(1/self.hidden_size), b=math.sqrt(1/self.hidden_size))
-        elif 'weight_hh' in name:
-            torch.nn.init.uniform_(param.data, a=-math.sqrt(1/self.hidden_size), b=math.sqrt(1/self.hidden_size))
-        elif 'bias' in name:
-            torch.nn.init.uniform_(param.data, a=-math.sqrt(1/self.hidden_size), b=math.sqrt(1/self.hidden_size))
-      # Initialize Linear weights
-      init.uniform_(self.fc.weight, a=-0.1, b=0.1)
-      if self.fc.bias is not None:
-          init.uniform_(self.fc.bias, a=-0.1, b=0.1)
-    elif init_type == 'default':
-      self.gru.reset_parameters()
-      self.fc.reset_parameters()
-    else:
-      raise ValueError(f"Unknown initialization type: {init_type}")
-    print('  GRU Network initialized')
-
-
-class AttentiveProbe(nn.Module):
-  def __init__(self,input_dim,num_classes,num_heads,dropout,pos_enc=False):
-    super().__init__()
-    self.query = nn.Parameter(torch.ones(1, input_dim)) # [1, emb_dim]
-    self.input_dim = input_dim
-    self.num_classes = num_classes
-    self.num_heads = num_heads
-    self.pos_enc = pos_enc
-    self.attn = nn.MultiheadAttention(embed_dim=input_dim,
-                                      num_heads=num_heads,
-                                      dropout=dropout,
-                                      batch_first=True # [batch_size, seq_len, emb_dim]
-                                      )
-    self.linear = nn.Linear(input_dim, num_classes)
-    self.pos_enc_tensor = None
-    self._initialize_weights()
-    
-  def forward(self, x, key_padding_mask=None):
-    # x: [batch_size, seq_len, emb_dim]
-    # key_padding_mask: [batch_size, seq_len]
-    q = self.query.unsqueeze(0).expand(x.shape[0], -1, -1) # [batch_size, 1, emb_dim]
-    # sum_key_padding = torch.sum(key_padding_mask, dim=1) # [batch_size]
-    if self.pos_enc:
-      if self.pos_enc_tensor is None or self.pos_enc_tensor.shape[0] != x.size(1):
-        self.pos_enc_tensor = pos_embs.get_1d_sincos_pos_embed(grid_size=x.size(1), embed_dim=x.size(2), device=x.device.type)
-      x = x + self.pos_enc_tensor
-    attn_output,_ = self.attn(q, x, x, key_padding_mask=key_padding_mask) # [batch_size, 1, emb_dim]
-    pooled = attn_output.squeeze(1) # [batch_size, emb_dim]
+    pooled = self.norm(pooled)
     logits = self.linear(pooled)
-    return logits
-  
-  def _initialize_weights(self,init_type='default'):
-    if init_type == 'default':
-      nn.init.trunc_normal_(self.linear.weight, std=0.02)
-      self.linear.reset_parameters()
-      self.attn._reset_parameters() # Xavier uniform initialization
-    else:
-      raise NotImplementedError(f"Unknown initialization type: {init_type}. Can be 'default'")
-    
-class LinearProbe(nn.Module):
-  def __init__(self,dim_reduction,input_dim, num_classes):
-    super().__init__()
-    self.linear = nn.Linear(input_dim, num_classes)
-    # self.dropout = nn.Dropout(dropout)
-    self.dim_reduction = dim_reduction
-    self.num_classes = num_classes
-    
-  def forward(self, x):
-    # The mean over the sequence is applied in dataset class
-    x = x.data # [batch,T,S,S,emb_dim]
-    if self.dim_reduction is not None:
-      x = x.mean(dim=self.dim_reduction)
-    x=x.reshape(x.shape[0], -1)
-    logits = self.linear(x)
-    return logits
-  
-  def _initialize_weights(self,init_type='default'):
-    if init_type == 'default':
-      self.linear.reset_parameters()
-    else:
-      raise ValueError(f"Unknown initialization type: {init_type}. Can be 'default'")
 
-  
+    result = {'logits': logits}
+    result['embeddings'] = pooled if return_video_emb else None
+    return result
+
+  def set_init_path(self, head_init_path):
+    """Record a pretrained-weights path to load during _initialize_weights."""
+    self.head_init_path = head_init_path
+
+  def _initialize_weights(self, init_type='default'):
+    """Orthogonal init for GRU recurrent weights, xavier for the final linear."""
+    if init_type == 'default':
+      for name, param in self.gru.named_parameters():
+        if 'weight_ih' in name:
+          nn.init.xavier_uniform_(param)
+        elif 'weight_hh' in name:
+          nn.init.orthogonal_(param)
+        elif 'bias' in name:
+          nn.init.zeros_(param)
+      nn.init.xavier_uniform_(self.linear.weight, gain=0.1)
+      if self.linear.bias is not None:
+        nn.init.zeros_(self.linear.bias)
+
+      if self.head_init_path is not None and os.path.isfile(self.head_init_path):
+        state_dict = torch.load(self.head_init_path, weights_only=True)
+        state_dict = {k: v for k, v in state_dict.items() if not k.startswith('linear.')}
+        missing, unexpected = self.load_state_dict(state_dict, strict=False)
+        print(f'LOADED GRUHead weights from {self.head_init_path}')
+        print(f'  missing: {missing}\n  unexpected: {unexpected}')
+      print(f'All trainable params sum: {sum(p.numel() for p in self.parameters() if p.requires_grad)}')
+    else:
+      raise NotImplementedError(f'Initialization method {init_type} not implemented')
+
+
 class EarlyStopping:
   def __init__(self, best, patience=5, min_delta=0,threshold_mode='rel'):
     """
