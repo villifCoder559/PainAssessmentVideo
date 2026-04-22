@@ -534,8 +534,8 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
       # set global title
       fig.suptitle(f'Losses for {key} - id: {test_id}', fontsize=24,y=0.93,fontstyle='italic',fontweight='bold',color='darkred')
       if train_losses and val_loss:
-        xattn_mask = data['config'].get('xattn_mask', [False])
-        if xattn_mask is not None and any([xattn_mask]):
+        xattn_mask = data['config'].get('xattn_mask', None)
+        if xattn_mask is not None and len(xattn_mask) >0 and any([xattn_mask]):
           data['config']['xattn_mask'] = torch.any(xattn_mask) # compact view
         else:
           data['config']['xattn_mask'] = False
@@ -1955,7 +1955,7 @@ def generate_video_from_loss_plots(run_output_folder, test_id):
 def plot_separated_losses_adversarial(data, run_output_folder, test_id):
   test_output_folder = os.path.join(run_output_folder, test_id)
   os.makedirs(test_output_folder, exist_ok=True)
-  if not data['config']['head_params']['adversarial_head']:
+  if not data['config']['head_params'].get('adversarial_head', False):
     return  # No adversarial loss to plot 
   for key,dict_sub_fold in data['results'].items():
     adv_loss = [v[0] for v in dict_sub_fold['train_val']['list_train_adv_losses']]
