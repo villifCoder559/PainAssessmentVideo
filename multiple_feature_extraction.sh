@@ -1,98 +1,117 @@
 #!/bin/bash
-# Example usage: ./multiple_feature_extraction.sh 0 5 shift
+# Example usage:
+#   ./multiple_feature_extraction.sh 0 5 shift
+#   ./multiple_feature_extraction.sh 0 5 shift jitter zoom
+#   ./multiple_feature_extraction.sh 0 5 all
 
+# same saving_folder_path is managed in extract_feature.py to avoid overwriting features
+# when multiple augmentations are applied together (adds $int_id to the path)
 GPU_ID=$1
 N_RUNS=$2
-CONFIG=$3
+shift 2
+CONFIGS=("$@")
 
-for ((i=1; i<=N_RUNS; i++))
-do
-    echo "Run $i / $N_RUNS | GPU $GPU_ID | CONFIG $CONFIG"
+ALL_CONFIGS=(shift jitter gaussian zoom jitter_shift rotation_zoom shift_hflip)
 
-    case $CONFIG in
+if [ "${#CONFIGS[@]}" -eq 1 ] && [ "${CONFIGS[0]}" = "all" ]; then
+    CONFIGS=("${ALL_CONFIGS[@]}")
+fi
 
-    shift)
-        CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
-        --model_type DFER --emb_red spatial \
-        --path_dataset partA/video/video_frontalized_interpolated_resolution_original \
-        --path_labels partA/starting_point/samples.csv \
-        --saving_folder_path partA/video/features/DFER/spatial_pooled_features_Biovid_B_last143_stride16_interpol_shift \
-        --backbone_type video --gp --save_as_safetensors \
-        --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature \
-        --spatial_shift
-        ;;
+run_config() {
+    local CONFIG=$1
+    for ((i=1; i<=N_RUNS; i++))
+    do
+        echo "Run $i / $N_RUNS | GPU $GPU_ID | CONFIG $CONFIG"
 
-    jitter)
-        CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
-        --model_type DFER --emb_red spatial \
-        --path_dataset partA/video/video_frontalized_interpolated_resolution_original \
-        --path_labels partA/starting_point/samples.csv \
-        --saving_folder_path partA/video/features/DFER/spatial_pooled_features_Biovid_B_last143_stride16_interpol_jitter \
-        --backbone_type video --gp --save_as_safetensors \
-        --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature \
-        --color_jitter
-        ;;
+        case $CONFIG in
 
-    gaussian)
-        CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
-        --model_type DFER --emb_red spatial \
-        --path_dataset partA/video/video_frontalized_interpolated_resolution_original \
-        --path_labels partA/starting_point/samples.csv \
-        --saving_folder_path partA/video/features/DFER/spatial_pooled_features_Biovid_B_last143_stride16_interpol_gaussian \
-        --backbone_type video --gp --save_as_safetensors \
-        --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature \
-        --gaussian_smooth --gaussian_sigma_min 0.4 --gaussian_sigma_max 0.9 --gaussian_kernel_size 3
-        ;;
+        shift)
+            CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
+            --model_type S --emb_red spatial \
+            --path_dataset partA/video/video_frontalized_interpolated_resolution_original \
+            --path_labels partA/starting_point/samples.csv \
+            --saving_folder_path partA/video/features/VideoMaev2_S/spatial_pooled_features_Biovid_B_last143_stride16_interpol_shift \
+            --backbone_type video --gp --save_as_safetensors \
+            --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature \
+            --spatial_shift
+            ;;
 
-    zoom)
-        CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
-        --model_type DFER --emb_red spatial \
-        --path_dataset partA/video/video_frontalized_interpolated_resolution_original \
-        --path_labels partA/starting_point/samples.csv \
-        --saving_folder_path partA/video/features/DFER/spatial_pooled_features_Biovid_B_last143_stride16_interpol_zoom \
-        --backbone_type video --gp --save_as_safetensors \
-        --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature \
-        --zoom
-        ;;
+        jitter)
+            CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
+            --model_type S --emb_red spatial \
+            --path_dataset partA/video/video_frontalized_interpolated_resolution_original \
+            --path_labels partA/starting_point/samples.csv \
+            --saving_folder_path partA/video/features/VideoMaev2_S/spatial_pooled_features_Biovid_B_last143_stride16_interpol_jitter \
+            --backbone_type video --gp --save_as_safetensors \
+            --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature \
+            --color_jitter
+            ;;
 
-    jitter_shift)
-        CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
-        --model_type DFER --emb_red spatial \
-        --path_dataset partA/video/video_frontalized_interpolated_resolution_original \
-        --path_labels partA/starting_point/samples.csv \
-        --saving_folder_path partA/video/features/DFER/spatial_pooled_features_Biovid_B_last143_stride16_interpol_jitter_shift \
-        --backbone_type video --gp --save_as_safetensors \
-        --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature \
-        --color_jitter --spatial_shift
-        ;;
+        gaussian)
+            CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
+            --model_type S --emb_red spatial \
+            --path_dataset partA/video/video_frontalized_interpolated_resolution_original \
+            --path_labels partA/starting_point/samples.csv \
+            --saving_folder_path partA/video/features/VideoMaev2_S/spatial_pooled_features_Biovid_B_last143_stride16_interpol_gaussian \
+            --backbone_type video --gp --save_as_safetensors \
+            --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature \
+            --gaussian_smooth --gaussian_sigma_min 0.4 --gaussian_sigma_max 0.9 --gaussian_kernel_size 3
+            ;;
 
-    rotation_zoom)
-        CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
-        --model_type DFER --emb_red spatial \
-        --path_dataset partA/video/video_frontalized_interpolated_resolution_original \
-        --path_labels partA/starting_point/samples.csv \
-        --saving_folder_path partA/video/features/DFER/spatial_pooled_features_Biovid_B_last143_stride16_interpol_rotation_zoom \
-        --backbone_type video --gp --save_as_safetensors \
-        --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature \
-        --zoom --rotation
-        ;;
+        zoom)
+            CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
+            --model_type S --emb_red spatial \
+            --path_dataset partA/video/video_frontalized_interpolated_resolution_original \
+            --path_labels partA/starting_point/samples.csv \
+            --saving_folder_path partA/video/features/VideoMaev2_S/spatial_pooled_features_Biovid_B_last143_stride16_interpol_zoom \
+            --backbone_type video --gp --save_as_safetensors \
+            --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature \
+            --zoom
+            ;;
 
-    shift_hflip)
-        CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
-        --model_type DFER --emb_red spatial \
-        --path_dataset partA/video/video_frontalized_interpolated_resolution_original \
-        --path_labels partA/starting_point/samples.csv \
-        --saving_folder_path partA/video/features/DFER/spatial_pooled_features_Biovid_B_last143_stride16_interpol_shift_hflip \
-        --backbone_type video --gp --save_as_safetensors \
-        --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature \
-        --spatial_shift --h_flip
-        ;;
+        jitter_shift)
+            CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
+            --model_type S --emb_red spatial \
+            --path_dataset partA/video/video_frontalized_interpolated_resolution_original \
+            --path_labels partA/starting_point/samples.csv \
+            --saving_folder_path partA/video/features/VideoMaev2_S/spatial_pooled_features_Biovid_B_last143_stride16_interpol_jitter_shift \
+            --backbone_type video --gp --save_as_safetensors \
+            --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature \
+            --color_jitter --spatial_shift
+            ;;
 
-    *)
-        echo "Invalid config"
-        exit 1
-        ;;
+        rotation_zoom)
+            CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
+            --model_type S --emb_red spatial \
+            --path_dataset partA/video/video_frontalized_interpolated_resolution_original \
+            --path_labels partA/starting_point/samples.csv \
+            --saving_folder_path partA/video/features/VideoMaev2_S/spatial_pooled_features_Biovid_B_last143_stride16_interpol_rotation_zoom \
+            --backbone_type video --gp --save_as_safetensors \
+            --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature \
+            --zoom --rotation
+            ;;
 
-    esac
+        shift_hflip)
+            CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
+            --model_type S --emb_red spatial \
+            --path_dataset partA/video/video_frontalized_interpolated_resolution_original \
+            --path_labels partA/starting_point/samples.csv \
+            --saving_folder_path partA/video/features/VideoMaev2_S/spatial_pooled_features_Biovid_B_last143_stride16_interpol_shift_hflip \
+            --backbone_type video --gp --save_as_safetensors \
+            --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature \
+            --spatial_shift --h_flip
+            ;;
 
+        *)
+            echo "Invalid config: $CONFIG"
+            exit 1
+            ;;
+
+        esac
+
+    done
+}
+
+for CONFIG in "${CONFIGS[@]}"; do
+    run_config "$CONFIG"
 done
