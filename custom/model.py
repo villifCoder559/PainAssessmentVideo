@@ -375,7 +375,7 @@ class Model_Advanced: # Scenario_Advanced
       'is_coral_loss': is_coral_loss,
       'epoch': 0, # to get the right position for history_test_sample_predictions
       'history_val_sample_predictions': history_test_sample_predictions,
-      'adversarial_loss_lambda': kwargs['adversarial_loss_lambda']
+      'adversarial_loss_lambda': kwargs.get('adversarial_loss_lambda', 0)
     }
     wargs = {k:v for k,v in kwargs.items() if k not in evaluate_args.keys()}
     dict_test = self.head.evaluate(val_loader=test_loader, 

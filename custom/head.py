@@ -520,7 +520,7 @@ class BaseHead(nn.Module):
     debug_grad_flow = bool(kwargs.get('debug_grad_flow', 0))
     debug_grad_flow_batches = int(kwargs.get('debug_grad_flow_batches', 1))
     
-    # save .pth model before the traingn for the future logs of the untrained model
+    # save .pt model before the traingn for the future logs of the untrained model
     torch.save(self.state_dict(), os.path.join(saving_path, f'model_epoch_-1.pt'))
     max_train_class = train_unique_classes.max().item() + 1 # start from 0
     train_loader_len = len(train_loader)
@@ -1091,8 +1091,8 @@ class BaseHead(nn.Module):
       
     if saving_path and helper.SAVE_PTH_MODEL:
       print('Load and save best model for next steps...')
-      torch.save(best_model_state, os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth'))
-      print(f"Best model weights saved to {os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pth')}")
+      torch.save(best_model_state, os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pt'))
+      print(f"Best model weights saved to {os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pt')}")
     
     train_dict_log_loss_epochs = {}
     if train_dict_log_loss_steps != []:
@@ -1635,10 +1635,10 @@ class AttentiveHeadJEPA(BaseHead):
     else:
       self.multitask_head = None
     # Init weights
-    if not skip_init_weights:
-      self._initialize_weights()
-    else:
-      print('===== Skipped head weights initialization =====\n')  
+    # if not skip_init_weights:
+    #   self._initialize_weights()
+    # else:
+    #   print('===== Skipped head weights initialization =====\n')  
     
   def apply_pos_enc(self, x):
     if self.pos_enc_tensor is None or self.pos_enc_tensor.shape[0] != x.size(1):
@@ -1912,7 +1912,7 @@ class GRUHead(BaseHead):
       bidirectional:       If True, use a bidirectional GRU (output doubles).
       embedding_reduction: helper.EMBEDDING_REDUCTION enum; reduces spatial/temporal
                            axes of backbone features before the GRU.
-      head_init_path:      Optional path to a .pth state_dict to warm-start from.
+      head_init_path:      Optional path to a .pt state_dict to warm-start from.
       backbone:            Backbone module (only when dataset_type == BASE).
       num_classes:         Alias of output_size forwarded by the pipeline; takes
                            precedence over output_size when explicitly > 1.
@@ -1945,8 +1945,10 @@ class GRUHead(BaseHead):
     self.norm = nn.LayerNorm(out_dim) if layer_norm else nn.Identity()
     self.linear = nn.Linear(out_dim, output_size, bias=True)
 
-    if not skip_init_weights:
-      self._initialize_weights(init_type='default')
+    # if not skip_init_weights:
+    #   print('\nInitializing GRUHead weights...\n')
+    #   self._initialize_weights(init_type='default')
+    #   print('GRUHead weights initialization complete.\n')
 
   def _reduce_to_sequence(self, x):
     """
