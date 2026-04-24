@@ -11,6 +11,21 @@ import custom.helper as helper
 from custom.model import Model_Advanced
 
 
+def _head_supports_cross_attention(config_model):
+  """
+  Return True if the model head produces cross-attention weights (AttentiveHeadJEPA),
+  False for heads that do not (e.g. GRU).
+
+  Args:
+    config_model: dict loaded from k_fold_results.pkl.
+
+  Returns:
+    bool — True when cross-attention logging is meaningful.
+  """
+  head = str(config_model.get('model_advanced_params', {}).get('head', '')).upper()
+  return 'GRU' not in head
+
+
 def clean_csv_from_augmentations(csv_path):
   df = pd.read_csv(csv_path, sep='\t', dtype={'sample_name': str})
   print(f'Remove augmentations with threshold step shift: {helper.step_shift}')
@@ -30,6 +45,11 @@ def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None
   config_model_path = os.path.join(*Path(model_pth_path).parts[:-4], 'k_fold_results.pkl')
   with open(config_model_path, 'rb') as f:
     config_model = pickle.load(f)
+
+  # Auto-disable cross-attention for heads that don't produce it (e.g. GRU)
+  if not _head_supports_cross_attention(config_model):
+    print(f'[auto-detect] Head "{config_model["model_advanced_params"].get("head")}" does not produce cross-attention — disabling cross-attention logging.')
+    disable_cross_attention = True
 
   uid = int(time.time())
 
