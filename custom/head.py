@@ -2137,6 +2137,33 @@ class earlyStoppingLoss(EarlyStopping):
   
   
 
+class earlyStoppingDummy(EarlyStopping):
+  """
+  No-op early stopping that never halts training.
+
+  Satisfies the EarlyStopping interface so key_early_stopping
+  still drives best-model selection without imposing any stop.
+
+  Args:
+    None
+
+  Returns:
+    Always False from __call__.
+  """
+  def __init__(self):
+    pass
+
+  def __call__(self, metric):
+    return False
+
+  def reset(self):
+    pass
+
+  def __str__(self):
+    return f'{self.__class__.__name__}: disabled (never stops)'
+
+
+
 class MeanMaxAggregator(nn.Module):
   """
   Aggregator that either mean-pools or max-pools over Q CLS tokens.
