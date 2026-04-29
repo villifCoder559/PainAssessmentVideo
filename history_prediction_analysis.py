@@ -91,6 +91,13 @@ def parse_args() -> argparse.Namespace:
       '(default: 10). Use 1 to save one trajectory per PNG.'
     ),
   )
+  parser.add_argument(
+    '--split', choices=['val', 'test'], default='val',
+    help=(
+      'Which split to analyse: val (default, processes sub-folds) '
+      'or test (processes final folds with single test predictions).'
+    ),
+  )
   return parser.parse_args()
 
 
@@ -184,6 +191,30 @@ def _sanitize_filename_component(text: str) -> str:
   cleaned = ''.join(ch if ch.isalnum() else '_' for ch in str(text).strip())
   cleaned = '_'.join(part for part in cleaned.split('_') if part)
   return (cleaned[:80] if cleaned else 'unknown')
+
+
+# ---------------------------------------------------------------------------
+# Test history normalisation
+# ---------------------------------------------------------------------------
+
+def normalize_test_history(raw_history: dict) -> dict:
+  """
+  Normalise the test-split history from its stored format to match the val format.
+
+  The test history is stored as {sample_id: {0: float}} (a single prediction
+  per sample keyed by 0). This function converts it to {sample_id: Tensor([float])}
+  so all downstream functions (MAE, bar chart, histogram, video) work unchanged.
+
+  Args:
+    raw_history (dict[int, dict]): As loaded from history_test_sample_predictions.
+
+  Returns:
+    dict[int, torch.Tensor]: sample_id → Tensor of shape (1,).
+  """
+  return {
+    sid: torch.tensor([v[0]], dtype=torch.float32)
+    for sid, v in raw_history.items()
+  }
 
 
 # ---------------------------------------------------------------------------
@@ -616,27 +647,52 @@ def _read_video_frames(video_path: str) -> tuple:
   return frames, fps
 
 
-def _annotate_frame(frame: np.ndarray, text: str, bar_height: int = 50) -> np.ndarray:
+def _annotate_frame(
+  frame:       np.ndarray,
+  sample_name: str,
+  pred_mean:   float,
+  gt_val:      float,
+  line_height: int = 30,
+) -> np.ndarray:
   """
-  Prepend a black bar at the top of a frame and write white annotation text.
+  Prepend a black bar at the top of a frame with two lines of annotation text.
+
+  Line 1: sample_name
+  Line 2: pred: <pred_mean>   GT: <gt_val>
+
+  The bar height auto-expands to fit all lines. Font scale is reduced if the
+  longest line would overflow the frame width.
 
   Args:
-    frame      (np.ndarray): RGB frame. Shape: (H, W, 3).
-    text       (str):        Annotation string.
-    bar_height (int):        Height of the appended black bar in pixels.
+    frame       (np.ndarray): RGB frame. Shape: (H, W, 3).
+    sample_name (str):        Sample name displayed on the first line.
+    pred_mean   (float):      Mean prediction value displayed on the second line.
+    gt_val      (float):      Ground-truth label displayed on the second line.
+    line_height (int):        Pixel height allocated per text line (default: 30).
 
   Returns:
     np.ndarray: RGB frame with annotation bar. Shape: (H + bar_height, W, 3).
   """
+  lines      = [sample_name, f'pred: {pred_mean:.2f}   GT: {gt_val:g}']
+  font       = cv2.FONT_HERSHEY_SIMPLEX
+  font_scale = max(0.4, frame.shape[1] / 1200.0)
+  margin     = 16  # 8 px each side
+
+  max_text_w = max(
+    cv2.getTextSize(line, font, font_scale, 1)[0][0] for line in lines
+  )
+  avail_w = frame.shape[1] - margin
+  if max_text_w > avail_w:
+    font_scale = font_scale * avail_w / max_text_w
+
+  bar_height = len(lines) * line_height
   annotated  = cv2.copyMakeBorder(frame, bar_height, 0, 0, 0, cv2.BORDER_CONSTANT, value=(0, 0, 0))
   bgr        = cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
-  font_scale = max(0.4, frame.shape[1] / 1200.0)
-  y_text     = bar_height - 12
-  cv2.putText(
-    bgr, text, (8, y_text),
-    cv2.FONT_HERSHEY_SIMPLEX, font_scale,
-    (255, 255, 255), 1, cv2.LINE_AA,
-  )
+
+  for i, line in enumerate(lines):
+    y = (i + 1) * line_height - 6
+    cv2.putText(bgr, line, (8, y), font, font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+
   return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
@@ -685,16 +741,15 @@ def generate_annotated_video(
     else:
       pred_mean = float('nan')
 
-    annotation = (
-      f"{meta['sample_name']}   "
-      f"pred: {pred_mean:.2f}   "
-      f"GT: {meta['class_id']}"
-    )
-
     frames, fps = _read_video_frames(video_path)
     src_fps     = fps
     for frame in frames:
-      all_frames.append(_annotate_frame(frame, annotation))
+      all_frames.append(_annotate_frame(
+        frame,
+        sample_name=meta['sample_name'],
+        pred_mean=pred_mean,
+        gt_val=float(meta['class_id']),
+      ))
 
   if not all_frames:
     print(f'  Warning: no frames collected — skipping {output_path}')
@@ -721,7 +776,7 @@ def main() -> None:
     raise ValueError(f'--group_plot_size must be >= 1, got {args.group_plot_size}.')
   data     = load_data(args.pkl)
   pkl_dir  = os.path.dirname(os.path.abspath(args.pkl))
-  base_out = os.path.join(pkl_dir, 'prediction_analysis')
+  base_out = os.path.join(pkl_dir, 'prediction_analysis', args.split)
 
   csv_path   = resolve_path(data['config']['path_csv_dataset'])
   video_path = data['config']['path_video_dataset']
@@ -734,32 +789,64 @@ def main() -> None:
     print(f'Loaded {len(gt)} GT samples from {csv_path}')
 
   for fold_key, fold_data in data['results'].items():
+    is_final = 'final' in fold_key
+
+    # Silent skip: only process folds that match the requested split
+    if args.split == 'test' and not is_final:
+      continue
+    if args.split == 'val' and is_final:
+      continue
+
     print(f'\n=== Fold: {fold_key} ===')
 
-    tv = fold_data.get('train_val')
-    if tv is None:
-      print('  Skipping: no train_val data.')
-      continue
-    raw_history = tv.get('history_val_sample_predictions')
-    if raw_history is None:
-      print('  Skipping: history_val_sample_predictions is None.')
-      continue
+    # --- Load history and epoch metadata ---
+    if args.split == 'val':
+      tv = fold_data.get('train_val')
+      if tv is None:
+        print('  Skipping: no train_val data.')
+        continue
+      raw_history = tv.get('history_val_sample_predictions')
+      if raw_history is None:
+        print('  Skipping: history_val_sample_predictions is None.')
+        continue
 
-    # Epoch filter
-    if args.from_to:
-      from_ep, to_ep = args.from_to
-      history        = apply_epoch_filter(raw_history, from_ep, to_ep)
-      epoch_offset   = from_ep
-      print(f'  Epoch filter: [{from_ep}, {to_ep}]  ({to_ep - from_ep + 1} epochs)')
-    else:
-      history      = raw_history
-      epoch_offset = 0
+      if args.from_to:
+        from_ep, to_ep = args.from_to
+        history        = apply_epoch_filter(raw_history, from_ep, to_ep)
+        epoch_offset   = from_ep
+        print(f'  Epoch filter: [{from_ep}, {to_ep}]  ({to_ep - from_ep + 1} epochs)')
+      else:
+        history      = raw_history
+        epoch_offset = 0
 
+      best_model_idx = None
+
+    else:  # test
+      if args.from_to:
+        print('  Warning: --from_to is ignored in test mode (single prediction per sample).')
+
+      test_section = fold_data.get('test')
+      if test_section is None:
+        print('  Skipping: no test data.')
+        continue
+      raw_history = test_section.get('history_test_sample_predictions')
+      if raw_history is None:
+        print('  Skipping: history_test_sample_predictions is None.')
+        continue
+
+      history        = normalize_test_history(raw_history)
+      epoch_offset   = 0
+      best_model_idx = fold_data['best_model']['best_model_idx']
+      print(f'  Best model epoch: {best_model_idx}')
+
+    # --- Output directories ---
     fold_out_dir = os.path.join(base_out, fold_key)
-    fold_traj_dir = os.path.join(fold_out_dir, 'prediction_trajectories')
     os.makedirs(fold_out_dir, exist_ok=True)
-    os.makedirs(fold_traj_dir, exist_ok=True)
-    print(f'  Trajectory output dir: {fold_traj_dir}')
+
+    if args.split == 'val':
+      fold_traj_dir = os.path.join(fold_out_dir, 'prediction_trajectories')
+      os.makedirs(fold_traj_dir, exist_ok=True)
+      print(f'  Trajectory output dir: {fold_traj_dir}')
 
     if not gt:
       print('  Skipping: GT labels unavailable.')
@@ -788,49 +875,53 @@ def main() -> None:
         f'Using top_k={effective_top_k}.'
       )
 
-    label_suffix = f'  [GT labels: {",".join(str(l) for l in sorted(args.gt_labels))}]' if args.gt_labels else ''
+    # Build title suffix
+    label_suffix = ''
+    if args.split == 'test':
+      label_suffix += f'  [Test | Best Epoch: {best_model_idx}]'
+    if args.gt_labels:
+      label_suffix += f'  [GT labels: {",".join(str(l) for l in sorted(args.gt_labels))}]'
 
     # Feature 2
     plot_bar_best_worst(mae_dict, gt_fold, effective_top_k, fold_out_dir, title_suffix=label_suffix)
 
-    # Feature 5 (grouped top/worst trajectories when --sample_id is not provided)
-    if args.sample_id is None:
-      plot_grouped_trajectories(
-        sample_ids=top_k_ids,
-        history=history,
-        gt=gt_fold,
-        epoch_offset=epoch_offset,
-        fold_out_dir=fold_traj_dir,
-        group_label='top',
-        top_k=effective_top_k,
-        max_per_group=args.group_plot_size,
-        title_suffix=label_suffix,
-      )
-      plot_grouped_trajectories(
-        sample_ids=worst_k_ids,
-        history=history,
-        gt=gt_fold,
-        epoch_offset=epoch_offset,
-        fold_out_dir=fold_traj_dir,
-        group_label='worst',
-        top_k=effective_top_k,
-        max_per_group=args.group_plot_size,
-        title_suffix=label_suffix,
-      )
+    # Feature 5 (trajectories — val only; test has no epoch dimension)
+    if args.split == 'val':
+      if args.sample_id is None:
+        plot_grouped_trajectories(
+          sample_ids=top_k_ids,
+          history=history,
+          gt=gt_fold,
+          epoch_offset=epoch_offset,
+          fold_out_dir=fold_traj_dir,
+          group_label='top',
+          top_k=effective_top_k,
+          max_per_group=args.group_plot_size,
+          title_suffix=label_suffix,
+        )
+        plot_grouped_trajectories(
+          sample_ids=worst_k_ids,
+          history=history,
+          gt=gt_fold,
+          epoch_offset=epoch_offset,
+          fold_out_dir=fold_traj_dir,
+          group_label='worst',
+          top_k=effective_top_k,
+          max_per_group=args.group_plot_size,
+          title_suffix=label_suffix,
+        )
+      else:
+        if args.gt_labels and args.sample_id in gt and gt[args.sample_id]['class_id'] not in set(args.gt_labels):
+          print(
+            f'  Warning: sample_id {args.sample_id} has GT label '
+            f"{gt[args.sample_id]['class_id']} which is not in --gt_labels {args.gt_labels} "
+            f'— skipping trajectory plot.'
+          )
+        else:
+          plot_sample_trajectory(args.sample_id, history, gt_fold, epoch_offset, fold_traj_dir, title_suffix=label_suffix)
 
     # Feature 6
     # plot_error_heatmap(history, gt_fold, fold_out_dir, title_suffix=label_suffix)
-
-    # Feature 5 (optional)
-    if args.sample_id is not None:
-      if args.gt_labels and args.sample_id in gt and gt[args.sample_id]['class_id'] not in set(args.gt_labels):
-        print(
-          f'  Warning: sample_id {args.sample_id} has GT label '
-          f"{gt[args.sample_id]['class_id']} which is not in --gt_labels {args.gt_labels} "
-          f'— skipping trajectory plot.'
-        )
-      else:
-        plot_sample_trajectory(args.sample_id, history, gt_fold, epoch_offset, fold_traj_dir, title_suffix=label_suffix)
 
     # Feature 7 (optional)
     if args.epoch is not None:
