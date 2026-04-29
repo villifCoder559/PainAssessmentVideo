@@ -31,7 +31,7 @@ from custom.helper import (
   HEAD,
   GLOBAL_PATH,
 )
-from custom.head import earlyStoppingAccuracy, earlyStoppingLoss
+from custom.head import earlyStoppingAccuracy, earlyStoppingLoss, earlyStoppingDummy
 from custom.tools import plot_masked_attention, get_pth_path_from_project_folder
 from custom.optimizers import OptimizerFactory
 from custom.logger import setup_logger
@@ -1232,6 +1232,7 @@ if __name__ == '__main__':
   parser.add_argument('--p_early_stop', type=int, default=2000, help='Patience.')
   parser.add_argument('--min_delta', type=float, default=0.001, help='Min delta.')
   parser.add_argument('--threshold_mode', type=str, default='abs', help='Threshold mode.')
+  parser.add_argument('--early_stopping_mode', type=str, choices=['standard', 'disabled'], default='disabled', help="'standard': patience-based early stopping. 'disabled': never stop early (still tracks metric for best-model selection).")
   parser.add_argument('--log_grad_per_module', action='store_true', help='Log grad per module.')
   parser.add_argument('--log_history_sample', action='store_true', help='Log history sample.')
   parser.add_argument('--plot_live_loss', action='store_true', help='Plot live loss.')
@@ -1354,7 +1355,9 @@ if __name__ == '__main__':
 
   dict_args['target_metric_best_model'] = args.key_early_stopping
 
-  if args.key_early_stopping == 'val_loss':
+  if args.early_stopping_mode == 'disabled':
+    dict_args['early_stopping'] = earlyStoppingDummy()
+  elif args.key_early_stopping == 'val_loss':
     dict_args['early_stopping'] = earlyStoppingLoss(
       patience=args.p_early_stop,
       min_delta=args.min_delta,
