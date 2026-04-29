@@ -1053,6 +1053,7 @@ class BaseHead(nn.Module):
         plt.close(fig)
         
       if dict_eval is not None and early_stopping(dict_eval[key_for_early_stopping]):
+        print(f'Early stopping triggered at epoch {epoch} with {key_for_early_stopping}: {dict_eval[key_for_early_stopping]:.4f}')
         break
       
       if enable_optuna_pruning and dict_eval is not None and trial is not None:
