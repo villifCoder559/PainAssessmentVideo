@@ -535,7 +535,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
       fig.suptitle(f'Losses for {key} - id: {test_id}', fontsize=24,y=0.93,fontstyle='italic',fontweight='bold',color='darkred')
       if train_losses and val_loss:
         xattn_mask = data['config'].get('xattn_mask', None)
-        if xattn_mask is not None and len(xattn_mask) >0 and any([xattn_mask]):
+        if xattn_mask is not None and (not hasattr(xattn_mask, '__len__') or len(xattn_mask) > 0) and any([xattn_mask]):
           data['config']['xattn_mask'] = torch.any(xattn_mask) # compact view
         else:
           data['config']['xattn_mask'] = False
@@ -926,8 +926,9 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
       if not is_unbc and not isinstance(data['config']['criterion'],losses.RESupConLoss) and plot_acc_per_subject and len(data['results'][key]['train_val']['train_loss_per_subject']) > 0:
         y_lim = 1
         accuracy_per_subject_train = data['results'][key]['train_val'].get('list_train_accuracy_per_subject', None)
+        accuracy_per_subject_train = accuracy_per_subject_train if accuracy_per_subject_train else None
         accuracy_per_subject_val = data['results'][key]['train_val'].get('list_val_accuracy_per_subject', None)
-        accuracy_per_subject_val = accuracy_per_subject_val if accuracy_per_subject_val != None else None
+        accuracy_per_subject_val = accuracy_per_subject_val if accuracy_per_subject_val else None
         dict_per_subject_test = data['results'][key].get('test', None)
         acc_list = [accuracy_per_subject_train, accuracy_per_subject_val, dict_per_subject_test]
         total_plots = sum([1 for acc in acc_list if acc is not None])
@@ -980,7 +981,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         y_lim = 10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3
         train_loss_per_class = data['results'][key]['train_val'].get('train_loss_per_class', None)
         val_loss_per_class = data['results'][key]['train_val'].get('val_loss_per_class', None)
-        val_loss_per_class = val_loss_per_class if (val_loss_per_class != None).all() else None
+        val_loss_per_class = val_loss_per_class if (val_loss_per_class is not None and len(val_loss_per_class) > 0) else None
         accuracy_per_class_test = data['results'][key].get('test', None)
         class_loss_list = [train_loss_per_class, val_loss_per_class, accuracy_per_class_test]
         total_plots = sum([1 for class_loss in class_loss_list if class_loss is not None])
@@ -1036,8 +1037,10 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         
     if not is_unbc and plot_loss_per_class and not isinstance(data['config']['criterion'],losses.RESupConLoss):
         y_lim = 10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3
-        train_accuracy_per_class = data['results'][key]['train_val']['list_train_accuracy_per_class'][best_epoch]
-        val_accuracy_per_class = data['results'][key]['train_val']['list_val_accuracy_per_class'][best_epoch]
+        _train_acc_pc = data['results'][key]['train_val']['list_train_accuracy_per_class']
+        train_accuracy_per_class = _train_acc_pc[best_epoch] if _train_acc_pc else None
+        _val_acc_pc = data['results'][key]['train_val']['list_val_accuracy_per_class']
+        val_accuracy_per_class = _val_acc_pc[best_epoch] if _val_acc_pc else None
         dict_test = data['results'][key].get('test', None)
         class_loss_list = [train_accuracy_per_class, val_accuracy_per_class, dict_test]  
         total_plots = sum([1 for class_loss in class_loss_list if class_loss is not None])
@@ -1614,7 +1617,7 @@ def plot_confusion_matrices(data, root_output_folder, test_id, additional_info='
     
     best_epoch_idx =  dict_sub_fold['train_val']['best_model_idx']
     dict_train_conf_matrix = dict_sub_fold['train_val']['train_confusion_matricies']
-    dict_val_conf_matrix = dict_sub_fold['train_val']['val_confusion_matricies']
+    dict_val_conf_matrix = dict_sub_fold['train_val'].get('val_confusion_matricies', None)
     dict_test_conf_matrix = None
       
     if 'test' in data['results'][key] and data['results'][key]['test'] != {}:
@@ -1804,8 +1807,12 @@ def plot_accuray_per_class_across_epochs(data, run_output_folder, test_id, addit
   for key in data['results'].keys():
     if 'final' in key:
       continue
-    val_accuracy = np.stack(data['results'][key]['train_val']['list_val_accuracy_per_class'])
-    val_loss = np.stack(data['results'][key]['train_val']['val_loss_per_class'])
+    _val_acc_pc = data['results'][key]['train_val']['list_val_accuracy_per_class']
+    _val_lpc = data['results'][key]['train_val']['val_loss_per_class']
+    if not _val_acc_pc or len(_val_lpc) == 0:
+      continue
+    val_accuracy = np.stack(_val_acc_pc)
+    val_loss = np.stack(_val_lpc)
 
     n_epochs, n_classes = val_accuracy.shape
 
