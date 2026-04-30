@@ -2,9 +2,11 @@
 import argparse
 import os
 import pickle
+import re
 import time
 from pathlib import Path
 import shutil
+import numpy as np
 import pandas as pd
 import tqdm
 import custom.helper as helper
@@ -35,8 +37,8 @@ def clean_csv_from_augmentations(csv_path):
   df_clean.to_csv(cleaned_csv_path, index=False, sep='\t')
   return cleaned_csv_path
   
-def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None, nr_samples=None,free_space=False,
-                                   disable_video_embeddings=False, disable_cross_attention=False):
+def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None, nr_samples=None, free_space=False,
+                                   disable_video_embeddings=False, disable_cross_attention=False, slim=True):
   # Initialize logging flags
   helper.init_log_cross_attention()
   helper.init_log_video_embeddings()
@@ -138,49 +140,91 @@ def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None
     'nr_samples': nr_samples
   }
 
+  # Audit log: strip config_model entirely — config_model_path already points to the full
+  # k_fold_results.pkl, so consumers can reload it if needed. Always applied, independent of --slim.
+  config_logging_slim = {k: v for k, v in config_logging.items() if k != 'config_model'}
+
   # Aggregate results
   dict_res = {
     'results': results,
     # 'config_model': config_model,
     'csv_original_path': test_csv_path,
     'csv_path': csv_copy_path,
+    'config_logging': config_logging_slim,  # nested key so consumers can access it reliably
     **config_logging
   }
+  if slim:
+    # Strip k-fold training history (~250 MB) — no consumer script reads config_model['results'].
+    dict_res['config_model'] = {k: v for k, v in dict_res['config_model'].items() if k != 'results'}
   if free_space:
-    dict_res['config_model']['results'] = None  # Free up space
-    
+    dict_res['config_model'] = None
+
   if video_embeddings is not None:
+    if slim:
+      # Flatten list-of-batch-tensors into a single float32 numpy array for compact storage.
+      # Consumers handle both formats via the _load_embeddings() compat shim.
+      flat_embeddings = [
+        desc.cpu().numpy()
+        for batch_list in video_embeddings['embeddings']
+        for desc in batch_list
+      ]
+      video_embeddings = {
+        **video_embeddings,
+        'embeddings': np.array(flat_embeddings, dtype=np.float32),
+        'pkl_format_version': 2,
+      }
     dict_res['video_embeddings'] = video_embeddings
   if cross_attention is not None:
     dict_res['cross_attention'] = cross_attention
 
   # Save results
+  pkl_bytes = pickle.dumps(dict_res)
+  print(f'Saving pkl ({len(pkl_bytes) / 1e6:.1f} MB) to {out_path}')
   with open(out_path, 'wb') as f:
-    pickle.dump(dict_res, f)
+    f.write(pkl_bytes)
     print(f'Saved results to {out_path}')
 
-  # Save config logging (pickle + human readable)
+  # Save config logging (pickle + human readable) — always uses slim version (no config_model)
   config_pickle_path = os.path.join(folder_out, 'config_logging.pkl')
   with open(config_pickle_path, 'wb') as f:
-    pickle.dump(config_logging, f)
+    pickle.dump(config_logging_slim, f)
     print(f'Saved config logging to {config_pickle_path}')
 
   config_txt_path = os.path.join(folder_out, 'config_logging.txt')
   with open(config_txt_path, 'w') as f:
-    for k, v in config_logging.items():
+    for k, v in config_logging_slim.items():
       f.write(f'{k}: {v}\n')
     print(f'Saved config logging to {config_txt_path}')
   return dict_res
 
 
 def get_all_pth_files_in_folders(dict_args):
+  """
+  Collect all .pth/.pt files under model_pth_path restricted to k{i}_cross_val_sub_{j} folders.
+
+  Args:
+    dict_args: CLI argument dict. When dict_args['idx_pth_folders'] == ['all'],
+               every k{i}_cross_val_sub_{j} folder in the tree is searched;
+               otherwise only the explicitly listed i,j pairs are searched.
+
+  Returns:
+    list of str — absolute paths to found checkpoint files.
+  """
   list_pth_files = []
-  folders_to_search = [f'k{i}_cross_val_sub_{j}' for idxs in dict_args['idx_pth_folders'] for i,j in [map(int, idxs.split(','))]]
-  for root, dirs, files in os.walk(dict_args['model_pth_path']):
-    if any(folder in root for folder in folders_to_search):
-      for file in files:
-        if file.endswith(".pth") or file.endswith(".pt"):
-          list_pth_files.append(os.path.join(root, file))  
+  if dict_args['idx_pth_folders'] == ['all']:
+    pattern = re.compile(r'k\d+_cross_val_sub_\d+')
+    for root, dirs, files in os.walk(dict_args['model_pth_path']):
+      if pattern.search(root):
+        for file in files:
+          if file.endswith(".pth") or file.endswith(".pt"):
+            list_pth_files.append(os.path.join(root, file))
+  else:
+    folders_to_search = [f'k{i}_cross_val_sub_{j}' for idxs in dict_args['idx_pth_folders'] for i,j in [map(int, idxs.split(','))]]
+    for root, dirs, files in os.walk(dict_args['model_pth_path']):
+      if any(folder in root for folder in folders_to_search):
+        for file in files:
+          if file.endswith(".pth") or file.endswith(".pt"):
+            list_pth_files.append(os.path.join(root, file))
   print(f"Found {len(list_pth_files)} .pth files.")
   return list_pth_files
 
@@ -212,6 +256,9 @@ if __name__ == '__main__':
   parser.add_argument('--idx_pth_folders', nargs='*', type=str, default=None,
                       help='List of folder paths containing model .pth files to process.'+
                       ' Ex: 0,0 2,3. They means k0_cross_val_sub_0 and k2_cross_val_sub_3')
+  parser.add_argument('--no_slim', action='store_true',
+                      help='Disable pkl slimming (by default, config_model[results] and raw '
+                           'tensor embeddings are stripped to reduce file size ~250 MB).')
   dict_args = vars(parser.parse_args())
   
   # MULTIPLE .pth files in specified folders
@@ -233,18 +280,20 @@ if __name__ == '__main__':
                                     disable_cross_attention=dict_args['disable_cross_attention'],
                                     model_pth_path=dict_args['model_pth_path'],
                                     split_chunks=dict_args['split_chunks'],
-                                    nr_samples=dict_args['nr_samples'])
+                                    nr_samples=dict_args['nr_samples'],
+                                    slim=not dict_args['no_slim'])
   else:
   # SINGLE .pth file
     if dict_args['csv_path'] is None:
       csv_paths = get_csv_paths_for_pth(dict_args['model_pth_path'])
     else:
       csv_paths = [dict_args['csv_path']]
-      
+
     for csv_path in csv_paths:
       log_cross_attention_from_model(csv_path=csv_path,
                                     disable_video_embeddings=dict_args['disable_video_embeddings'],
                                     disable_cross_attention=dict_args['disable_cross_attention'],
                                     model_pth_path=dict_args['model_pth_path'],
                                     split_chunks=dict_args['split_chunks'],
-                                    nr_samples=dict_args['nr_samples'])
+                                    nr_samples=dict_args['nr_samples'],
+                                    slim=not dict_args['no_slim'])
