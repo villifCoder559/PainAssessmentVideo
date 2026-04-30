@@ -72,12 +72,12 @@ def plot_reducted_embeddings(reduced_embeddings, labels, output_folder, save_plo
   if len(unique_labels) <= 20:  # Only show legend if not too many labels
     ax.legend(title=group_by)
   # if colormap is continuous, add colorbar
-  if group_by == 'labels':
-    norm = plt.Normalize(vmin=v_min if v_min is not None else np.min(labels), vmax=v_max if v_max is not None else np.max(labels))
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    cbar = plt.colorbar(sm, ax=ax)
-    cbar.set_label(group_by)
+  # if group_by == 'labels':
+  #   norm = plt.Normalize(vmin=v_min if v_min is not None else np.min(labels), vmax=v_max if v_max is not None else np.max(labels))
+  #   sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+  #   sm.set_array([])
+  #   cbar = plt.colorbar(sm, ax=ax)
+  #   cbar.set_label(group_by)
   ax.set_xlabel(f"{reduction_name} Dimension 1")
   ax.set_ylabel(f"{reduction_name} Dimension 2")
   ax.set_title(title)
@@ -252,6 +252,26 @@ def set_cmap(data, group_by, cmap):
   
   return cmap
 
+def _load_embeddings(data):
+  """
+  Return embeddings as a single (N, D) float32 numpy array.
+
+  Handles two storage formats:
+    v2 (new): data['video_embeddings']['embeddings'] is already a numpy array.
+    v1 (old): data['video_embeddings']['embeddings'] is list[list[torch.Tensor]].
+
+  Args:
+    data: dict loaded from an xattn_embeds pkl file.
+
+  Returns:
+    numpy.ndarray of shape (N_samples, embedding_dim), dtype float32.
+  """
+  raw = data['video_embeddings']['embeddings']
+  if isinstance(raw, np.ndarray):
+    return raw
+  return np.array([desc.cpu().numpy() for batch_list in raw for desc in batch_list], dtype=np.float32)
+
+
 def get_valid_indices(data, list_sample_ids):
   custom_ds = get_custom_ds(data) # set the helper.step_shift
   valid_indices = [i for i, sample_id in enumerate(list_sample_ids) if sample_id <= helper.step_shift]
@@ -261,17 +281,7 @@ def get_valid_indices(data, list_sample_ids):
 def compute_valid_tsne_embeddings(data, return_valid_indices=False):
   list_sample_ids = np.array(data['video_embeddings']['sample_ids'])
   valid_indices = get_valid_indices(data, list_sample_ids)
-  
-  embeddings_data = data['video_embeddings']['embeddings']
-  embeddings = [
-      desc.cpu().numpy() 
-      for batch_list in embeddings_data 
-      for desc in batch_list
-  ]
-  embeddings = np.array(embeddings)
-  
-  # Filter out augmented samples if any
-  embeddings = embeddings[valid_indices]
+  embeddings = _load_embeddings(data)[valid_indices]
   
   # Compute t-SNE
   tsne = TSNE(n_components=2, random_state=42, n_jobs=1)
@@ -283,17 +293,7 @@ def compute_valid_tsne_embeddings(data, return_valid_indices=False):
 def compute_valid_umap_embeddings(data, return_valid_indices=False):
   list_sample_ids = np.array(data['video_embeddings']['sample_ids'])
   valid_indices = get_valid_indices(data, list_sample_ids)
-  
-  embeddings_data = data['video_embeddings']['embeddings']
-  embeddings = [
-      desc.cpu().numpy() 
-      for batch_list in embeddings_data 
-      for desc in batch_list
-  ]
-  embeddings = np.array(embeddings)
-  
-  # Filter out augmented samples if any
-  embeddings = embeddings[valid_indices]
+  embeddings = _load_embeddings(data)[valid_indices]
   
   # Compute UMAP
   reducer = umap.UMAP(random_state=42)
