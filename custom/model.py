@@ -444,34 +444,33 @@ class Model_Advanced: # Scenario_Advanced
       print('No coral loss. Using standard loss function.')
     batch_size = self.batch_size_training
     final_df = pd.read_csv(train_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
-    # Stratified training for UNBC dataset
-    if 'unbc' in self.path_to_extracted_features.lower() and kwargs.get('stratified_training', False):
-      df_original = pd.read_csv(train_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
-      target_samples_per_class = kwargs['stratified_training']
+    _original_df = final_df.copy()  # save before augment_csv overwrites train_csv_path
+    # Stratified augmentation: add latent augmentation types based on stratified_training value
+    if kwargs.get('stratified_training', False):
+      final_df = self.augment_csv(train_csv_path=train_csv_path,
+                        target_list_string=kwargs['only_augments'],
+                        stratified_training=kwargs['stratified_training'])
+    # Target K samples per class via balanced augmentation
+    if kwargs.get('target_samples_per_class_training') is not None:
+      # Use the pre-augmentation df to avoid double-shifting already-augmented sample_ids
+      df_original = _original_df
+      target_samples_per_class = kwargs['target_samples_per_class_training']
       df_final = helper.generate_balanced_dataframe(df_original=df_original,
                                          list_augmentations_available=helper.get_augmentation_availables(self.path_to_extracted_features),
                                          target_samples_per_class=target_samples_per_class)
       if kwargs['perfect_bal_strategy'] is not None:
-        # target_samples_per_class = helper.get_perfectly_balanced_target_samples_per_class(df_final, self.batch_size_training)
         class_counts = df_final['class_id'].value_counts()
         n_classes = len(class_counts)
-        batch_size = batch_size * n_classes # batch size is a multiple of n_classes
-        print(f'Adjusted batch size for perfect balancing: {self.batch_size_training}')
+        batch_size = batch_size * n_classes
+        print(f'Adjusted batch size for perfect balancing: {batch_size}')
         assert batch_size % n_classes == 0, "Batch size must be divisible by number of classes for perfect balancing."
-        print(f'################ Using perfectly balanced stratification train with {target_samples_per_class} samples per class ################')
+        print(f'################ Using perfectly balanced stratification with {target_samples_per_class} samples per class ################')
         df_final = helper.refine_perfectly_balanced_target_samples_per_class(df_final, target_samples_per_class, kwargs['perfect_bal_strategy'])
-        
-      df_original.to_csv(os.path.basename(train_csv_path).replace('.csv','_original.csv'), index=False, sep='\t')
+      df_original.to_csv(os.path.basename(train_csv_path).replace('.csv', '_original.csv'), index=False, sep='\t')
       df_final.to_csv(train_csv_path, index=False, sep='\t')
       print(f"Original class distribution:\n{df_original['class_id'].value_counts().sort_index()}")
       print(f"Stratification completed. New class distribution:\n{df_final['class_id'].value_counts().sort_index()}")
       final_df = df_final
-    # Stratified training for BIOVID dataset
-    if 'parta' in self.path_to_extracted_features.lower():
-      if kwargs.get('stratified_training', False):
-        final_df = self.augment_csv(train_csv_path=train_csv_path,
-                          target_list_string=kwargs['only_augments'],
-                          stratified_training=kwargs['stratified_training'])
         
     if kwargs.get('sampler_augmented_only_types', False) and not kwargs.get('stratified_training', False):
       final_df = self.augment_csv(train_csv_path=train_csv_path,

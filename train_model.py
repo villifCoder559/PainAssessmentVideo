@@ -418,6 +418,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   concatenate_temp_dim = trial.suggest_categorical('concatenate_temp_dim', kwargs['concatenate_temp_dim'])
   concatenate_quadrants = trial.suggest_categorical('concatenate_quadrants', kwargs['concatenate_quadrants'])
   stratified_training = trial.suggest_categorical('stratified_training', kwargs['stratified_training'])
+  target_samples_per_class_training = trial.suggest_categorical('target_samples_per_class_training', kwargs['target_samples_per_class_training'])
   only_augments = trial.suggest_categorical('only_augments', kwargs['only_augments'])
   sampler_augmented_only_types = trial.suggest_categorical('sampler_augmented_only_types', kwargs['sampler_augmented_only_types'])
   sampler_loader_type = trial.suggest_categorical('sampler_loader_type', kwargs['sampler_loader_type'])
@@ -725,6 +726,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'CCC_loss': losses.CCCLoss() if add_CCC_loss > 0 else None,
     'concatenate_quadrants': concatenate_quadrants,
     'stratified_training': stratified_training,
+    'target_samples_per_class_training': target_samples_per_class_training,
     'is_subject_independent': kwargs['is_subject_independent'],
     'skip_test': kwargs['skip_test'],
     'scheduler_config_dict': scheduler_config_dict,
@@ -756,6 +758,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'gaussian_sigma_min': kwargs['gaussian_sigma_min'],
     'gaussian_sigma_max': kwargs['gaussian_sigma_max'],
     'gaussian_kernel_size': kwargs['gaussian_kernel_size'],
+    'normalize_labels': kwargs['normalize_labels'],
+    'max_label': kwargs['max_label'],
   }
   add_kwargs.update(head_dependent_add_kwargs)
   
@@ -991,6 +995,18 @@ def validate_arguments(dict_args):
   if dict_args['add_CCC_loss'][0] and dict_args['loss'][0] not in ['l1', 'l2', 'huber']:
     raise ValueError("CCC loss can only be added to 'l1', 'l2', or 'huber' loss.")
 
+  if dict_args.get('normalize_labels', 0):
+    _regression_losses = ['l1', 'l2', 'huber', 'logcosh']
+    if dict_args['loss'] is None or dict_args['loss'][0] not in _regression_losses:
+      raise ValueError(
+        f"--normalize_labels=1 requires a pure regression loss (one of {_regression_losses}). "
+        f"Got: {dict_args.get('loss')}"
+      )
+    if dict_args['composite_loss'][0] is not None:
+      raise ValueError("--normalize_labels cannot be used with --composite_loss.")
+    if dict_args['disent_loss_p_s'][0] is not None:
+      raise ValueError("--normalize_labels cannot be used with --disent_loss_p_s.")
+
   for method in dict_args['queries_agg_method']:
     if method not in helper.QUERIES_AGG_METHOD:
        raise ValueError(f"Invalid queries aggregation method: {method}")
@@ -1171,10 +1187,12 @@ if __name__ == '__main__':
   parser.add_argument('--contrastive_lambda_weight', type=str, nargs='*', default=[None], help='Lambda weight for contrastive loss.')
   parser.add_argument('--spearman_reg', type=str, nargs='*', choices=['l2', 'kl'], default=['l2'], help='Spearman regression type.')
   parser.add_argument('--spearman_reg_strength', type=str, nargs='*', default=[None], help='Spearman regression strength.')
-  parser.add_argument('--stratified_training', type=int, nargs='*', default=[0], help='Use stratified sampling. If Biovid it adds the following latent augm:'+
-                                                                              ' 2: latent_basic; '+
-                                                                              ' 3: latent_masking; '+
-                                                                              ' 4: both latent_basic and latent_masking.')
+  parser.add_argument('--stratified_training', type=int, nargs='*', default=[0],
+                      help='Augmentation mode for stratified training: 0=disabled, 1=available augmentations only, '
+                           '2=also add latent_basic, 3=also add latent_masking, 4=add both latent_basic and latent_masking.')
+  parser.add_argument('--target_samples_per_class_training', type=int, nargs='*', default=[None],
+                      help='Target number of samples per class during training. Uses generate_balanced_dataframe to '
+                           'add augmented samples until each class reaches this count. Dataset-agnostic.')
   parser.add_argument('--only_augments', nargs='*', type=str, default=[None], help="Only use these augmentations during training. Options can bel like: 'hflip', 'jitter', 'rotation', 'latent_basic', 'latent_masking', 'shift_augm'."+
                       "The startified_training argument must be set to 1 when using this.")
   parser.add_argument('--perfect_bal_strategy', type=str, nargs='*', default=[None], help="Perfect balancing strategy.")
@@ -1279,6 +1297,10 @@ if __name__ == '__main__':
   parser.add_argument('--feature_merge_type', type=str, nargs='*', default=[None], help='Merge top/down feature variants: concat, sum, or None.')
   parser.add_argument('--feature_merge_lambda', type=float, nargs='*', default=[None], help='Scaling factor k for sum mode: orig + k*(top+down).')
   parser.add_argument('--feature_merge_orig', type=int, nargs='*', default=[1], help='Include original features in merge (1) or only top+down (0).')
+  parser.add_argument('--normalize_labels', type=int, choices=[0, 1], default=0,
+                      help='Normalize labels to [0,1] by dividing by the global max class_id. '
+                           'Only supported for regression losses (l1, l2, huber, logcosh). '
+                           'All logged metrics are reported in the original label scale.')
 
   args = parser.parse_args()
   args.timeout = int(args.timeout * 3600)  # Convert hours to seconds
@@ -1292,6 +1314,12 @@ if __name__ == '__main__':
       dict_args['key_early_stopping'] = 'val_loss'
     print(f"\n*********key_early_stopping not set. Set: {dict_args['key_early_stopping']}*********\n")
   validate_arguments(dict_args)
+
+  if dict_args['normalize_labels']:
+    dict_args['max_label'] = int(pd.read_csv(dict_args['csv'], sep='\t')['class_id'].max())
+    print(f"\nLabel normalization enabled. max_label = {dict_args['max_label']}\n")
+  else:
+    dict_args['max_label'] = None
 
   dict_args['pooling_embedding_reduction'] = helper.EMBEDDING_REDUCTION.get_embedding_reduction(
     dict_args['embedding_reduction']

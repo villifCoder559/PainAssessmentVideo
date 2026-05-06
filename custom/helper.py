@@ -232,7 +232,7 @@ def get_augmentation_type(sample_id): # folder based on cvs_path, so must contai
   elif is_gaussian_smooth_augmentation(sample_id):
     return 'gaussian'
   else:
-    raise ValueError(f"Sample id {sample_id} not recognized for augmentation type")
+    raise ValueError(f"Sample id {sample_id} not recognized for augmentation type. step_shift: {step_shift}")
 
 augmentations_list = ['hflip','jitter','rotation','latent_basic','latent_masking','shift','zoom','gaussian']
 
@@ -240,8 +240,9 @@ def get_augmentation_availables(fold_feature_path):
   folder_name = os.path.basename(fold_feature_path)
   list_folder = os.listdir(os.path.dirname(fold_feature_path))
   augment_available = [f.replace(folder_name+'_',"") for f in list_folder if ((folder_name in f) and (f != folder_name))]
-  # validate that the augmentations found are in the augmentations list
-  # augment_available = [aug for aug in augment_available if aug in augmentations_list]
+  # Strip $N variant suffixes and deduplicate — $N variants are handled transparently
+  # by customDatasetWhole._load_element via aug_variant_folders, not via sample_id shifts
+  augment_available = list(dict.fromkeys(a.split('$')[0] for a in augment_available))
   return augment_available
 
 
@@ -551,7 +552,20 @@ class CUSTOM_DATASET_TYPE(Enum):
   WHOLE = 'whole' # features not reduced and saved in more folders (like Biovid video)
   BASE = 'base' # video->frames->backbone->features
 
-def generate_csv_augmented(original_csv_path, dict_augmentation, out_csv_path,path_to_extracted_features='',stratified_training=False):
+def generate_csv_augmented(original_csv_path, dict_augmentation, out_csv_path, stratified_training=False):
+  """
+  Generate an augmented CSV by appending shifted sample IDs for each active augmentation type.
+
+  Args:
+    original_csv_path: Path to the original TSV label file.
+    dict_augmentation: Dict mapping augmentation name to sampling fraction (0 < p <= 1).
+    out_csv_path:      Destination path for the merged TSV file.
+    stratified_training: Unused — kept for interface compatibility. Augmentation mode
+                         is controlled via dict_augmentation / augment_csv in model.py.
+
+  Returns:
+    pd.DataFrame: Merged DataFrame (originals + augmented rows).
+  """
   def _get_rnd_from_type(type_augm):
     if type_augm == 'hflip':
       return 42
@@ -580,27 +594,11 @@ def generate_csv_augmented(original_csv_path, dict_augmentation, out_csv_path,pa
   list_df = []
   df = pd.read_csv(original_csv_path,sep='\t', dtype={'sample_name':str,'subject_name':str})
   list_df.append(df)
-  
-  if stratified_training == -1 and 'unbc' in path_to_extracted_features.lower():
-    # if False:
-    augmented_list = ['hflip','jitter','rotation','shift']
-    # get 5 class with less samples
-    minority_classes = df['class_id'].value_counts().nsmallest(5).index
-    df_minority = df[df['class_id'].isin(minority_classes)].copy()
-    print(f'Stratified training: augmenting minority classes {minority_classes.tolist()} with all augmentations: {augmented_list}')
-    for type_augm in augmented_list:
-      copy_df = df_minority.copy(deep=True)
-      # if type_augm == 'shift' keep only the 2 lowest minority classes
-      if type_augm == 'shift' or type_augm == 'jitter':
-        copy_df = df_minority.nsmallest(2, 'class_id')
-      copy_df['sample_id'] = copy_df['sample_id'].apply(lambda x: x + get_shift_for_sample_id(type_augm))
-      list_df.append(copy_df)
-  else:
-    for type_augm, p in dict_augmentation.items():
-      if p > 0 and p<= 1:
-        df_sampled = df.sample(frac=p, random_state=_get_rnd_from_type(type_augm))
-        df_sampled['sample_id'] = df_sampled['sample_id'].apply(lambda x: x + get_shift_for_sample_id(type_augm))
-        list_df.append(df_sampled)
+  for type_augm, p in dict_augmentation.items():
+    if p > 0 and p<= 1:
+      df_sampled = df.sample(frac=p, random_state=_get_rnd_from_type(type_augm))
+      df_sampled['sample_id'] = df_sampled['sample_id'].apply(lambda x: x + get_shift_for_sample_id(type_augm))
+      list_df.append(df_sampled)
   df_merged = pd.concat(list_df, ignore_index=True)
   os.makedirs(os.path.dirname(out_csv_path), exist_ok=True)
   df_merged.to_csv(out_csv_path, index=False, sep='\t')

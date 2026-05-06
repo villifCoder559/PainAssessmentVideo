@@ -519,6 +519,9 @@ class BaseHead(nn.Module):
     is_rnc_loss = isinstance(criterion, losses.RnCLossV2) or isinstance(criterion, losses.RnCLoss)
     debug_grad_flow = bool(kwargs.get('debug_grad_flow', 0))
     debug_grad_flow_batches = int(kwargs.get('debug_grad_flow_batches', 1))
+    normalize_labels = bool(kwargs.get('normalize_labels', 0))
+    max_label = kwargs.get('max_label', None)
+    _label_denorm = float(max_label) if normalize_labels and max_label else 1.0
     
     # save .pt model before the traingn for the future logs of the untrained model
     torch.save(self.state_dict(), os.path.join(saving_path, f'model_epoch_-1.pt'))
@@ -599,7 +602,9 @@ class BaseHead(nn.Module):
         
         if adv_criterion is not None:
           batch_subjects = batch_subjects.to(torch.long).to(device)
-        
+        batch_y_original = batch_y.detach().clone()  # original integer labels for metric logging
+        if normalize_labels and max_label:
+          batch_y = batch_y.float() / max_label
         dict_batch_X = {key: value.to(device) if value is not None else None for key, value in dict_batch_X.items()}
         dict_log_time['transfer_to_device'] = dict_log_time.get('transfer_to_device',0) + time.perf_counter() - transfer_to_device
         optimizer.zero_grad()
@@ -726,7 +731,7 @@ class BaseHead(nn.Module):
         if helper.PROFILING_GPU_SYNC and torch.cuda.is_available():
           torch.cuda.synchronize()
         dict_log_time['optimizer'] = dict_log_time.get('optimizer',0) + time.perf_counter()-start_optimizer
-        train_loss += loss.item()
+        train_loss += loss.item() * _label_denorm
         
         # Log learning rate and weight decay
         monitoring_values = OptimizerFactory.get_monitoring_values(optimizer)
@@ -743,22 +748,25 @@ class BaseHead(nn.Module):
           wd_scheduler.step()
           
         start_logs = time.perf_counter()
+        # De-normalize outputs for all metric logging when label normalization is active
+        _outputs_for_log = (outputs * max_label) if normalize_labels and max_label else outputs
+        _batch_y_for_log = batch_y_original  # always original integer scale
         if not is_resupcon_loss and not is_rnc_loss and (helper.LOG_PER_CLASS or helper.LOG_PER_SUBJECT or helper.LOG_CONFIDENCE_PREDICTION):
           if is_coral_loss:
-            outputs = proba_to_label(torch.sigmoid(outputs)) # convert probabilities to labels for coral loss
-            batch_y = torch.sum(batch_y, dim=1) # convert levels to labels for coral loss
+            _outputs_for_log = proba_to_label(torch.sigmoid(outputs)) # convert probabilities to labels for coral loss
+            _batch_y_for_log = torch.sum(batch_y, dim=1) # convert levels to labels for coral loss
           if helper.LOG_PER_CLASS:
-            tools.compute_loss_per_class_(batch_y=batch_y,
+            tools.compute_loss_per_class_(batch_y=_batch_y_for_log,
                                         class_loss=class_loss if not is_coral_loss else None,
                                         unique_train_val_classes=train_unique_classes,
-                                        outputs=outputs,
+                                        outputs=_outputs_for_log,
                                         class_accuracy=class_accuracy,
                                         criterion=criterion)
           if helper.LOG_PER_SUBJECT:
             tools.compute_loss_per_subject_v2_(batch_subjects=batch_subjects,
                                           criterion=criterion,
-                                          batch_y=batch_y,
-                                          outputs=outputs,
+                                          batch_y=_batch_y_for_log,
+                                          outputs=_outputs_for_log,
                                           subject_loss=subject_loss if not is_coral_loss else None,
                                           subject_accuracy=subject_accuracy,
                                           unique_train_val_subjects=train_unique_subjects)
@@ -768,8 +776,8 @@ class BaseHead(nn.Module):
                                                     list_prediction_right_std=batch_train_confidence_prediction_right_std,
                                                     list_prediction_wrong_mean=batch_train_confidence_prediction_wrong_mean,
                                                     list_prediction_wrong_std=batch_train_confidence_prediction_wrong_std,
-                                                    gt=batch_y,
-                                                    outputs=outputs)
+                                                    gt=_batch_y_for_log,
+                                                    outputs=_outputs_for_log)
 
         if helper.LOG_GRADIENT_PER_MODULE:
           self.log_gradient_per_module(batch_dict_gradient_per_module)
@@ -778,29 +786,27 @@ class BaseHead(nn.Module):
           grad_flow_stats = self._collect_gradient_flow_stats(epoch=epoch, batch_idx=count_batch)
           grad_flow_debug_logs.append(grad_flow_stats)
           self._print_gradient_flow_stats(grad_flow_stats)
-        
+
         count_batch+=1
 
         if not is_resupcon_loss and not is_disentangled_loss and not is_rnc_loss:
           if self.is_classification:
             if is_coral_loss:
-              predictions = outputs.detach().cpu() # outputs are already labels for coral loss
+              predictions = _outputs_for_log.detach().cpu() # outputs are already labels for coral loss
             else:
-              predictions = torch.argmax(outputs, dim=1).detach().cpu().reshape(-1)
+              predictions = torch.argmax(_outputs_for_log, dim=1).detach().cpu().reshape(-1)
           else:
-            predictions = torch.copysign(torch.floor(torch.abs(outputs) + 0.5), outputs).detach().cpu().float() # to avoid the banker's rounding implemented as IEEE standard
+            predictions = torch.copysign(torch.floor(torch.abs(_outputs_for_log) + 0.5), _outputs_for_log).detach().cpu().float() # to avoid the banker's rounding implemented as IEEE standard
             mask = torch.isin(predictions, train_unique_classes)
             predictions[~mask] = train_unique_classes.shape[0] # put prediction in the last class (bad_classified)
-            
-          batch_y = batch_y.detach().cpu()
-          
-          
+
+          batch_y = _batch_y_for_log.detach().cpu()
           if batch_y.dim() > 1:
             batch_y = torch.argmax(batch_y, dim=1).reshape(-1)
-          
-          list_train_epoch_predictions.append(outputs.detach().cpu().numpy() if not self.is_classification else predictions.numpy())
+
+          list_train_epoch_predictions.append(_outputs_for_log.detach().cpu().numpy() if not self.is_classification else predictions.numpy())
           list_train_ground_truths.append(batch_y.numpy())
-          
+
           try:
             train_confusion_matrix.update(predictions, batch_y)
           except Exception as e:
@@ -1128,10 +1134,10 @@ class BaseHead(nn.Module):
       'list_train_performance_metric': list_train_performance_metric,
       # 'list_val_macro_accuracy': list_val_performance_metric,
       'epochs': epoch,
-      'list_mean_total_norm_epoch': np.array(total_norm_epoch).mean(axis=1) ,
-      'list_std_total_norm_epoch': np.array(total_norm_epoch).std(axis=1),
-      'list_max_total_norm_epoch': np.array(total_norm_epoch).max(axis=1),
-      'list_min_total_norm_epoch': np.array(total_norm_epoch).min(axis=1),
+      'list_mean_total_norm_epoch': np.array([np.mean(ep) if ep else 0.0 for ep in total_norm_epoch]),
+      'list_std_total_norm_epoch': np.array([np.std(ep) if ep else 0.0 for ep in total_norm_epoch]),
+      'list_max_total_norm_epoch': np.array([np.max(ep) if ep else 0.0 for ep in total_norm_epoch]),
+      'list_min_total_norm_epoch': np.array([np.min(ep) if ep else 0.0 for ep in total_norm_epoch]),
       'list_lrs': list_lrs,
       'list_wds': list_wds,
       'train_epoch_mean_hsic_subject': train_epoch_mean_hsic_sbj,
@@ -1242,8 +1248,11 @@ class BaseHead(nn.Module):
       
       amp_dtype = torch.bfloat16 if helper.AMP_DTYPE == 'bfloat16' else torch.float16
       enable_autocast = helper.AMP_ENABLED
+      normalize_labels = bool(kwargs.get('normalize_labels', 0))
+      max_label = kwargs.get('max_label', None)
+      _label_denorm = float(max_label) if normalize_labels and max_label else 1.0
       return_embeddings = getattr(criterion, 'return_embeddings', False) or \
-                          helper.LOG_VIDEO_EMBEDDINGS['enable'] 
+                          helper.LOG_VIDEO_EMBEDDINGS['enable']
       hsic_enabled = kwargs['HSIC_subject_lambda'] > 0 or kwargs['HSIC_pain_lambda'] > 0
       center_loss_enabled = (kwargs.get('center_loss_fn', None) is not None
                              and kwargs.get('lambda_center_loss', 0.0) > 0)
@@ -1261,6 +1270,9 @@ class BaseHead(nn.Module):
         
         dict_batch_X = {key: value.to(device) if value is not None else None for key, value in dict_batch_X.items()}
         batch_y = batch_y.to(device)
+        batch_y_original = batch_y.detach().clone()  # original integer labels for metric logging
+        if normalize_labels and max_label:
+          batch_y = batch_y.float() / max_label
         if kwargs.get('adv_criterion') is not None:
           batch_subjects = batch_subjects.to(torch.long).to(device)
         # subject_batch_count[tmp] += 1
@@ -1278,9 +1290,9 @@ class BaseHead(nn.Module):
 
         if return_embeddings:
           helper.LOG_VIDEO_EMBEDDINGS['embeddings'].append(dict_out['embeddings'].detach().cpu())
-          helper.LOG_VIDEO_EMBEDDINGS['labels'].extend(batch_y.detach().cpu().numpy().tolist())
+          helper.LOG_VIDEO_EMBEDDINGS['labels'].extend(batch_y_original.detach().cpu().numpy().tolist())
           helper.LOG_VIDEO_EMBEDDINGS['sample_ids'].extend(sample_id.cpu().numpy().tolist())
-          helper.LOG_VIDEO_EMBEDDINGS['predictions'].extend(dict_out['logits'].detach().cpu().numpy().tolist())
+          helper.LOG_VIDEO_EMBEDDINGS['predictions'].extend((dict_out['logits'] * _label_denorm).detach().cpu().numpy().tolist())
         # if kwargs['CCC_loss']:
         #   loss = criterion(outputs, batch_y) + (kwargs['add_CCC_loss'] * kwargs['CCC_loss'](outputs, batch_y) if kwargs['CCC_loss'] else 0.0)
         # else:
@@ -1325,25 +1337,28 @@ class BaseHead(nn.Module):
         #   adv_logits = dict_out['adv_logits']
         #   adv_loss = kwargs['adv_criterion'](adv_logits, batch_subjects)
         #   loss = loss + adv_loss * kwargs['adversarial_loss_lambda']
-        val_loss += loss.item()
+        val_loss += loss.item() * _label_denorm
         
         if not is_resupcon_loss and not is_disentangled_loss and not is_rnc_loss:
+          # De-normalize outputs for all metric logging when label normalization is active
+          _outputs_for_log = (outputs * max_label) if normalize_labels and max_label else outputs
+          _batch_y_for_log = batch_y_original  # always original integer scale
           if is_coral_loss:
-            outputs = proba_to_label(torch.sigmoid(outputs)) # convert probabilities to labels for coral loss
-            batch_y = torch.sum(batch_y, dim=1) # convert levels to labels for coral loss
-          
+            _outputs_for_log = proba_to_label(torch.sigmoid(outputs)) # convert probabilities to labels for coral loss
+            _batch_y_for_log = torch.sum(batch_y, dim=1) # convert levels to labels for coral loss
+
           if save_log and helper.LOG_PER_CLASS:
-              tools.compute_loss_per_class_(batch_y=batch_y, 
+              tools.compute_loss_per_class_(batch_y=_batch_y_for_log,
                                             class_loss=loss_per_class if not is_coral_loss else None,
                                             unique_train_val_classes=unique_val_classes,
-                                            outputs=outputs,
+                                            outputs=_outputs_for_log,
                                             criterion=criterion,
                                             class_accuracy=accuracy_per_class)
-          if save_log and helper.LOG_PER_SUBJECT:  
-            tools.compute_loss_per_subject_v2_(batch_subjects=batch_subjects, 
+          if save_log and helper.LOG_PER_SUBJECT:
+            tools.compute_loss_per_subject_v2_(batch_subjects=batch_subjects,
                                               criterion=criterion,
-                                              batch_y=batch_y,
-                                              outputs=outputs,
+                                              batch_y=_batch_y_for_log,
+                                              outputs=_outputs_for_log,
                                               subject_loss=subject_loss if not is_coral_loss else None,
                                               unique_train_val_subjects=unique_val_subjects,
                                               subject_accuracy=accuracy_per_subject)
@@ -1353,29 +1368,29 @@ class BaseHead(nn.Module):
                                                       list_prediction_wrong_mean=batch_confidence_prediction_wrong_mean,
                                                       list_prediction_right_std=batch_confidence_prediction_right_std,
                                                       list_prediction_wrong_std=batch_confidence_prediction_wrong_std,
-                                                      gt=batch_y, outputs=outputs)
+                                                      gt=_batch_y_for_log, outputs=_outputs_for_log)
           if self.is_classification:
             if is_coral_loss:
-              predictions = outputs.detach().cpu() # outputs are already labels for coral loss
+              predictions = _outputs_for_log.detach().cpu() # outputs are already labels for coral loss
             else:
-              predictions = torch.argmax(outputs, dim=1).detach().cpu().reshape(-1)
+              predictions = torch.argmax(_outputs_for_log, dim=1).detach().cpu().reshape(-1)
           else:
-            predictions = torch.copysign(torch.floor(torch.abs(outputs) + 0.5), outputs).detach().cpu().float() # to avoid the banker's rounding implemented as IEEE standard
+            predictions = torch.copysign(torch.floor(torch.abs(_outputs_for_log) + 0.5), _outputs_for_log).detach().cpu().float() # to avoid the banker's rounding implemented as IEEE standard
             mask = torch.isin(predictions, unique_val_classes)
             predictions[~mask] = loss_per_class.shape[1] # put prediction in the last class (bad_classified)
-          
+
           if history_val_sample_predictions is not None:
             tools.log_predictions_per_sample_(dict_log_sample=history_val_sample_predictions,
                                               tensor_sample_id=sample_id,
-                                              tensor_predictions=outputs.detach().cpu() if isinstance(criterion, (torch.nn.L1Loss, torch.nn.MSELoss, torch.nn.HuberLoss)) else predictions,
+                                              tensor_predictions=_outputs_for_log.detach().cpu() if isinstance(criterion, (torch.nn.L1Loss, torch.nn.MSELoss, torch.nn.HuberLoss)) else predictions,
                                               epoch=epoch)
-          batch_y = batch_y.detach().cpu()
+          batch_y = _batch_y_for_log.detach().cpu()
           if batch_y.dim() > 1:
             batch_y = torch.argmax(batch_y, dim=1).reshape(-1)
-            
-          list_val_epoch_predictions.append(outputs.detach().cpu().numpy() if not self.is_classification else predictions.numpy())
+
+          list_val_epoch_predictions.append(_outputs_for_log.detach().cpu().numpy() if not self.is_classification else predictions.numpy())
           list_val_ground_truths.append(batch_y.numpy())
-          
+
           val_confusion_matricies.update(predictions, batch_y)
         count += 1
       
