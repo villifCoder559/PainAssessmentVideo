@@ -829,7 +829,6 @@ class customDataset(torch.utils.data.Dataset):
     return helper.generate_csv_augmented(original_csv_path=original_csv_path,
                            out_csv_path=out_csv_path,
                            dict_augmentation=dict_augmentation,
-                           path_to_extracted_features=self.path_dataset,
                            stratified_training=stratified_training)
 
 class customDatasetAggregated(torch.utils.data.Dataset):
@@ -962,7 +961,6 @@ class customDatasetAggregated(torch.utils.data.Dataset):
     return helper.generate_csv_augmented(original_csv_path=original_csv_path,
                            out_csv_path=out_csv_path,
                            dict_augmentation=dict_augmentation,
-                           path_to_extracted_features=self.root_folder_feature,
                            stratified_training=stratified_training)
 
 
@@ -1172,7 +1170,6 @@ class customDatasetWhole(torch.utils.data.Dataset):
     return helper.generate_csv_augmented(original_csv_path=original_csv_path,
                            out_csv_path=out_csv_path,
                            dict_augmentation=dict_augmentation,
-                           path_to_extracted_features=self.root_folder_features,
                            stratified_training=stratified_training)
   
 # Alternative version with even more optimizations for large batches
