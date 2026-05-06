@@ -240,6 +240,7 @@ def get_augmentation_availables(fold_feature_path):
   folder_name = os.path.basename(fold_feature_path)
   list_folder = os.listdir(os.path.dirname(fold_feature_path))
   augment_available = [f.replace(folder_name+'_',"") for f in list_folder if ((folder_name in f) and (f != folder_name))]
+  print(f'Total augmentations: {len(augment_available)}.\n')
   # Strip $N variant suffixes and deduplicate — $N variants are handled transparently
   # by customDatasetWhole._load_element via aug_variant_folders, not via sample_id shifts
   augment_available = list(dict.fromkeys(a.split('$')[0] for a in augment_available))
