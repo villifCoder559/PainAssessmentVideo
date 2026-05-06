@@ -1025,6 +1025,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
     base_name = os.path.basename(self.root_folder_features)
     if not parent_dir or not os.path.isdir(parent_dir):
       return
+    # look for folders matching the pattern {base_name}_{aug_type} or {base_name}_{aug_type}$N
     pattern = re.compile(r'^' + re.escape(base_name) + r'_([^$]+?)(?:\$(\d+))?$')
     for entry in os.listdir(parent_dir):
       m = pattern.match(entry)
