@@ -155,3 +155,5 @@ AgeDB/video/*
 UNBC/*
 TRAIN_tests/*
 log_key_frmae_Selector/*
+FINAL_MODEL_BIOVID/*
+FAST_MODEL_BIOVID/*
