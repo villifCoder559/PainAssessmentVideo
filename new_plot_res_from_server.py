@@ -548,8 +548,8 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         # add test_id in dict_to_string
         dict_to_string += f'\nTest ID: {test_id}'
         dict_to_string += f'\nfold_subfold: {key.split("_")[0]}_{key.split("_")[-1]}'
-        y_lim_loss = 2.5 if 'parta' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower() else 9.1
-        step_lim = 0.25 if 'parta' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower() else 1
+        y_lim_loss = 2.5 if 'parta' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower() else 4
+        step_lim = 0.25 if 'parta' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower() else 0.4
         if isinstance(data['config']['criterion'],torch.nn.MSELoss):
           y_lim_loss = 15.1
           step_lim = 3
