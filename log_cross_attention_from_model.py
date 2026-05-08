@@ -38,11 +38,12 @@ def clean_csv_from_augmentations(csv_path):
   return cleaned_csv_path
   
 def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None, nr_samples=None, free_space=False,
-                                   disable_video_embeddings=False, disable_cross_attention=False, slim=True):
+                                   disable_video_embeddings=False, disable_cross_attention=False, slim=True,
+                                   ffsp_override=None):
   # Initialize logging flags
   helper.init_log_cross_attention()
   helper.init_log_video_embeddings()
-  
+
   # Load config (k_fold_results.pkl sits 4 levels above checkpoint)
   config_model_path = os.path.join(*Path(model_pth_path).parts[:-4], 'k_fold_results.pkl')
   with open(config_model_path, 'rb') as f:
@@ -66,9 +67,9 @@ def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None
   # Model instantiation
   model_advanced_params = config_model['model_advanced_params']
   model_advanced_params['head_params']['skip_init_weights'] = True  # Skip head weight initialization to avoid loading issues
-  if 'UNBC' in csv_path:
-    model_advanced_params['features_folder_saving_path'] = 'UNBC/video/features/DFER/spatial_pooled_features_UNBC_B_last143_stride16_interpol'
-    print(f'***For csv_path {csv_path}, set features_folder_saving_path to {model_advanced_params["features_folder_saving_path"]}***')
+  if ffsp_override is not None:
+    model_advanced_params['features_folder_saving_path'] = ffsp_override
+    print(f'***Overriding features_folder_saving_path to {ffsp_override}***')
   model = Model_Advanced(**model_advanced_params)
 
   # Decide test CSV
@@ -259,6 +260,9 @@ if __name__ == '__main__':
   parser.add_argument('--no_slim', action='store_true',
                       help='Disable pkl slimming (by default, config_model[results] and raw '
                            'tensor embeddings are stripped to reduce file size ~250 MB).')
+  parser.add_argument('--features_folder_saving_path', type=str, default=None,
+                      help='Override features_folder_saving_path from the stored config. '
+                           'Use when the stored path is wrong (e.g. moved features, different machine, wrong backbone path).')
   dict_args = vars(parser.parse_args())
   
   # MULTIPLE .pth files in specified folders
@@ -281,7 +285,8 @@ if __name__ == '__main__':
                                     model_pth_path=dict_args['model_pth_path'],
                                     split_chunks=dict_args['split_chunks'],
                                     nr_samples=dict_args['nr_samples'],
-                                    slim=not dict_args['no_slim'])
+                                    slim=not dict_args['no_slim'],
+                                    ffsp_override=dict_args.get('features_folder_saving_path'))
   else:
   # SINGLE .pth file
     if dict_args['csv_path'] is None:
@@ -296,4 +301,5 @@ if __name__ == '__main__':
                                     model_pth_path=dict_args['model_pth_path'],
                                     split_chunks=dict_args['split_chunks'],
                                     nr_samples=dict_args['nr_samples'],
-                                    slim=not dict_args['no_slim'])
+                                    slim=not dict_args['no_slim'],
+                                    ffsp_override=dict_args.get('features_folder_saving_path'))
