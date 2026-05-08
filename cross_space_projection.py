@@ -17,13 +17,16 @@ Pipeline:
 """
 import argparse
 import copy
+import itertools
 import os
 import pickle
 import random
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
+import optuna
 import pandas as pd
 import torch
 
@@ -292,6 +295,399 @@ def _compute_weights(z, anchors, sim_type, method, temperature, sigma):
   return _softmax(scores)
 
 
+def _select_anchors(df_full, num_anchors, selection_type):
+  """
+  Select anchor samples from a DataFrame according to the given strategy.
+
+  Args:
+    df_full        (pd.DataFrame): Full pool of candidate anchor samples.
+    num_anchors    (int): Anchors per stratum (or total for 'random').
+    selection_type (str): One of:
+      'random'               — sample num_anchors uniformly at random.
+      'balance_class_random' — sample num_anchors per class_id;
+                               total = num_anchors × num_classes.
+      'balance_subject_random' — sample num_anchors per subject_id;
+                               total = num_anchors × num_subjects.
+      'balance_class_subject' — sample num_anchors per (class_id, subject_id) pair,
+                               skipping empty combos (with a warning);
+                               total ≤ num_anchors × num_classes × num_subjects.
+
+  Returns:
+    pd.DataFrame: Selected rows, reset index.
+
+  Raises:
+    ValueError: If any non-empty stratum has fewer than num_anchors samples,
+                or if selection_type is unknown.
+  """
+  if selection_type == 'random':
+    if len(df_full) < num_anchors:
+      raise ValueError(
+        f'random: only {len(df_full)} samples available but num_anchors={num_anchors}.'
+      )
+    return df_full.sample(n=num_anchors, random_state=_SEED).reset_index(drop=True)
+
+  if selection_type == 'balance_class_random':
+    dfs = []
+    for cid in sorted(df_full['class_id'].unique()):
+      df_cls = df_full[df_full['class_id'] == cid]
+      if len(df_cls) < num_anchors:
+        raise ValueError(
+          f'balance_class_random: class_id={cid} has {len(df_cls)} samples '
+          f'but num_anchors={num_anchors}.'
+        )
+      dfs.append(df_cls.sample(n=num_anchors, random_state=_SEED))
+    return pd.concat(dfs, ignore_index=True)
+
+  if selection_type == 'balance_subject_random':
+    dfs = []
+    for sid in sorted(df_full['subject_id'].unique()):
+      df_subj = df_full[df_full['subject_id'] == sid]
+      if len(df_subj) < num_anchors:
+        raise ValueError(
+          f'balance_subject_random: subject_id={sid} has {len(df_subj)} samples '
+          f'but num_anchors={num_anchors}.'
+        )
+      dfs.append(df_subj.sample(n=num_anchors, random_state=_SEED))
+    return pd.concat(dfs, ignore_index=True)
+
+  if selection_type == 'balance_class_subject':
+    dfs = []
+    for cid in sorted(df_full['class_id'].unique()):
+      for sid in sorted(df_full['subject_id'].unique()):
+        df_cs = df_full[(df_full['class_id'] == cid) & (df_full['subject_id'] == sid)]
+        if len(df_cs) == 0:
+          print(f'  [balance_class_subject] Warning: skipping empty combo class_id={cid}, subject_id={sid}')
+          continue
+        if len(df_cs) < num_anchors:
+          raise ValueError(
+            f'balance_class_subject: class_id={cid}, subject_id={sid} has {len(df_cs)} samples '
+            f'but num_anchors={num_anchors}.'
+          )
+        dfs.append(df_cs.sample(n=num_anchors, random_state=_SEED))
+    if not dfs:
+      raise ValueError('balance_class_subject: no valid (class_id, subject_id) combos found.')
+    return pd.concat(dfs, ignore_index=True)
+
+  raise ValueError(f'Unknown anchor_selection_type: {selection_type!r}')
+
+
+# ---------------------------------------------------------------------------
+# Optuna helpers
+# ---------------------------------------------------------------------------
+
+def _get_sampler(sampler_name, search_space):
+  """
+  Create an Optuna sampler.
+
+  Args:
+    sampler_name (str): 'tpe', 'random', or 'grid'.
+    search_space (dict): Mapping param_name → list of values (used by GridSampler).
+
+  Returns:
+    optuna.samplers.BaseSampler
+  """
+  if sampler_name == 'grid':
+    return optuna.samplers.GridSampler(search_space)
+  if sampler_name == 'random':
+    return optuna.samplers.RandomSampler()
+  return optuna.samplers.TPESampler()
+
+
+def _build_search_space(args):
+  """
+  Build Optuna search space dict from parsed CLI args.
+
+  Args:
+    args (argparse.Namespace): Parsed CLI args (hyper args are lists).
+
+  Returns:
+    dict: Mapping each of the 8 hyper param names to its candidate list.
+  """
+  return {
+    'num_anchors':              args.num_anchors,
+    'anchor_selection_type':    args.anchor_selection_type,
+    'csv_anchor_selection':     args.csv_anchor_selection,
+    'old_model_csv':            args.old_model_csv,
+    'interpolation_similarity': args.interpolation_similarity,
+    'weighting_method':         args.weighting_method,
+    'temperature':              args.temperature,
+    'rbf_sigma':                args.rbf_sigma,
+  }
+
+
+def _precompute_embeddings(
+  old_model, new_model, old_model_pth, new_model_pth,
+  old_config, new_config, old_features_path, new_features_path,
+  args, precomputed_dir,
+):
+  """
+  Pre-extract and cache all embeddings needed across Optuna trials.
+
+  Anchor embeddings are keyed by (csv_anchor_selection, num_anchors, anchor_selection_type).
+  Old-model tensor embeddings are keyed by old_model_csv split name.
+
+  Args:
+    old_model           (Model_Advanced): Old model instance.
+    new_model           (Model_Advanced): New model instance.
+    old_model_pth       (str): Path to old model checkpoint.
+    new_model_pth       (str): Path to new model checkpoint.
+    old_config          (dict): Old model k_fold_results.pkl.
+    new_config          (dict): New model k_fold_results.pkl.
+    old_features_path   (str): Old model features folder.
+    new_features_path   (str): New model features folder.
+    args (argparse.Namespace): Parsed CLI args (hyper args are lists).
+    precomputed_dir     (str): Directory for shared intermediate CSVs (anchors, tensors).
+
+  Returns:
+    tuple[dict, dict]:
+      anchor_cache — (csv_anchor_selection, num_anchors, anchor_selection_type) →
+          {'old': old_model_anchors, 'new': new_model_anchors_aligned, 'anchors_csv': str}
+      tensor_cache — old_model_csv →
+          {'old_tensors': old_model_tensors, 'old_tensors_csv': str}
+  """
+  anchor_cache = {}
+  tensor_cache = {}
+  biovid_features_for_old = _get_features_path(old_features_path, 'BIOVID')
+
+  # --- Anchor embeddings (one extraction per unique combo) ---
+  anchor_combos = list(itertools.product(
+    args.csv_anchor_selection, args.num_anchors, args.anchor_selection_type,
+  ))
+  for csv_sel, num_anch, sel_type in anchor_combos:
+    key = (csv_sel, num_anch, sel_type)
+    if key in anchor_cache:
+      continue
+    raw_anchor_csv = _resolve_split_csv(new_model_pth, csv_sel)
+    assert os.path.isfile(raw_anchor_csv), f'Anchor CSV not found: {raw_anchor_csv}'
+    helper.set_step_shift(new_features_path)
+    clean_anchor_csv = clean_csv_from_augmentations(raw_anchor_csv)
+    df_full = pd.read_csv(clean_anchor_csv, sep='\t', dtype={'sample_name': str})
+    df_anch = _select_anchors(df_full, num_anch, sel_type)
+    anchors_csv = os.path.join(precomputed_dir, f'anchors_{csv_sel}_{num_anch}_{sel_type}.csv')
+    df_anch.to_csv(anchors_csv, index=False, sep='\t')
+    print(f'[precompute] anchor key={key} ({len(df_anch)} rows) → {anchors_csv}')
+
+    old_anch = _extract_embeddings(
+      old_model, old_model_pth, anchors_csv, old_config,
+      features_path_override=biovid_features_for_old,
+    )
+    new_anch = _extract_embeddings(new_model, new_model_pth, anchors_csv, new_config)
+    anchor_cache[key] = {
+      'old': old_anch,
+      'new': _align_by_sample_id(old_anch, new_anch),
+      'anchors_csv': anchors_csv,
+    }
+
+  # --- Old-model tensor embeddings (one extraction per unique split) ---
+  for old_csv_split in set(args.old_model_csv):
+    if old_csv_split in tensor_cache:
+      continue
+    raw_csvs = _resolve_old_model_csvs(old_model_pth, old_csv_split)
+    helper.set_step_shift(old_features_path)
+    dfs = []
+    for p in raw_csvs:
+      assert os.path.isfile(p), f'Old model CSV not found: {p}'
+      clean_p = clean_csv_from_augmentations(p)
+      dfs.append(pd.read_csv(clean_p, sep='\t', dtype={'sample_name': str}))
+    df_old = pd.concat(dfs, ignore_index=True).drop_duplicates(subset='sample_id')
+    old_tensors_csv = os.path.join(precomputed_dir, f'old_tensors_{old_csv_split}.csv')
+    df_old.to_csv(old_tensors_csv, index=False, sep='\t')
+    print(f'[precompute] old_tensors split={old_csv_split} ({len(df_old)} samples) → {old_tensors_csv}')
+    tensor_cache[old_csv_split] = {
+      'old_tensors': _extract_embeddings(old_model, old_model_pth, old_tensors_csv, old_config),
+      'old_tensors_csv': old_tensors_csv,
+    }
+
+  return anchor_cache, tensor_cache
+
+
+def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model, new_config, trial_dir, uid):
+  """
+  Run a single cheap projection trial using pre-cached embeddings.
+
+  Args:
+    trial_params  (dict): Suggested hyper values for this trial (all 8 keys).
+    trial_number  (int): Optuna trial number (logged in the saved result).
+    anchor_cache  (dict): Pre-computed anchor embeddings from _precompute_embeddings.
+    tensor_cache  (dict): Pre-computed old-model tensor embeddings.
+    new_model     (Model_Advanced): New model instance (head.linear used for classification).
+    new_config    (dict): New model k_fold_results.pkl.
+    trial_dir     (str): Directory where results.pkl will be saved.
+    uid           (int): Timestamp uid of the parent Optuna search run (saved in results.pkl).
+
+  Returns:
+    float: MAE for this trial.
+  """
+  anchor_key = (
+    trial_params['csv_anchor_selection'],
+    trial_params['num_anchors'],
+    trial_params['anchor_selection_type'],
+  )
+  old_model_anchors       = anchor_cache[anchor_key]['old']
+  new_model_anchors_aligned = anchor_cache[anchor_key]['new']
+  old_model_tensors       = tensor_cache[trial_params['old_model_csv']]['old_tensors']
+
+  weights = _compute_weights(
+    z=old_model_tensors['embeddings'],
+    anchors=old_model_anchors['embeddings'],
+    sim_type=trial_params['interpolation_similarity'],
+    method=trial_params['weighting_method'],
+    temperature=trial_params['temperature'],
+    sigma=trial_params['rbf_sigma'],
+  )
+  projected = (weights @ new_model_anchors_aligned['embeddings'].astype(np.float32))
+
+  normalize_labels = bool(new_config['config'].get('normalize_labels', 0))
+  max_label = new_config['config'].get('max_label', None)
+  label_denorm = float(max_label) if normalize_labels and max_label else 1.0
+
+  new_model.head.eval()
+  device = next(new_model.head.linear.parameters()).device
+  with torch.no_grad():
+    logits = new_model.head.linear(
+      torch.tensor(projected, dtype=torch.float32).to(device)
+    ).cpu()
+  predictions = (logits.numpy() * label_denorm).astype(np.float32)
+  preds_flat  = predictions.squeeze(-1) if predictions.ndim > 1 else predictions
+  labels_true = old_model_tensors['labels']
+  mae = float(np.mean(np.abs(preds_flat - labels_true)))
+  ccc = float(tools.concordance_ccc(y_true=labels_true, y_pred=preds_flat))
+  print(f'  [trial {trial_number}] MAE={mae:.4f}  CCC={ccc:.4f}  params={trial_params}')
+
+  os.makedirs(trial_dir, exist_ok=True)
+  trial_result = {
+    'trial_params': trial_params,
+    'trial_number': trial_number,
+    'uid': uid,
+    'new_model_tensors': {
+      **old_model_tensors,
+      'embeddings':  projected,
+      'weights':     weights.astype(np.float32),
+      'logits':      logits.numpy().astype(np.float32),
+      'predictions': predictions,
+    },
+    'old_model_tensors': old_model_tensors,
+    'metrics': {'mae': mae, 'ccc': ccc},
+  }
+  with open(os.path.join(trial_dir, 'results.pkl'), 'wb') as f:
+    pickle.dump(trial_result, f)
+  return mae
+
+
+def run_optuna(args):
+  """
+  Run an Optuna hyperparameter search over cross-space projection parameters.
+
+  Models are built once; embeddings are pre-extracted and cached before the study starts
+  so only the cheap projection + classification ops run per trial.
+
+  Args:
+    args (argparse.Namespace): Parsed CLI args. Hyper args are lists; model paths are strings.
+
+  Returns:
+    str: Path to the output directory containing study results.
+  """
+  np.random.seed(_SEED)
+  random.seed(_SEED)
+  optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+  uid = int(time.time())
+
+  def _fmt(vals):
+    return '-'.join(str(v) for v in vals)
+
+  args_tag = (
+    f'K{_fmt(args.num_anchors)}'
+    f'_{_fmt(args.anchor_selection_type)}'
+    f'_{_fmt(args.csv_anchor_selection)}'
+    f'_{_fmt(args.old_model_csv)}'
+    f'_{_fmt(args.interpolation_similarity)}'
+    f'_{_fmt(args.weighting_method)}'
+    f'_t{_fmt(args.temperature)}'
+    f'_s{_fmt(args.rbf_sigma)}'
+  )
+  out_dir = os.path.join(
+    os.getcwd(), 'Cross_projection', f'search_{args_tag}_{uid}',
+  )
+  precomputed_dir = os.path.join(out_dir, 'precomputed')
+  os.makedirs(precomputed_dir, exist_ok=True)
+  print(f'[run_optuna] Output: {out_dir}  n_trials={args.n_trials}  sampler={args.optuna_sampler}')
+
+  print('Loading configs...')
+  old_config = _load_config(args.old_model_pth)
+  new_config  = _load_config(args.new_model_pth)
+  old_features_path = old_config['model_advanced_params']['features_folder_saving_path']
+  new_features_path = new_config['model_advanced_params']['features_folder_saving_path']
+  old_model = _build_model(old_config)
+  new_model  = _build_model(new_config)
+
+  anchor_cache, tensor_cache = _precompute_embeddings(
+    old_model, new_model, args.old_model_pth, args.new_model_pth,
+    old_config, new_config, old_features_path, new_features_path,
+    args, precomputed_dir,
+  )
+
+  search_space = _build_search_space(args)
+  sampler = _get_sampler(args.optuna_sampler, search_space)
+  study = optuna.create_study(direction='minimize', sampler=sampler)
+
+  def objective(trial):
+    params = {
+      'num_anchors':              trial.suggest_categorical('num_anchors',              args.num_anchors),
+      'anchor_selection_type':    trial.suggest_categorical('anchor_selection_type',    args.anchor_selection_type),
+      'csv_anchor_selection':     trial.suggest_categorical('csv_anchor_selection',     args.csv_anchor_selection),
+      'old_model_csv':            trial.suggest_categorical('old_model_csv',            args.old_model_csv),
+      'interpolation_similarity': trial.suggest_categorical('interpolation_similarity', args.interpolation_similarity),
+      'weighting_method':         trial.suggest_categorical('weighting_method',         args.weighting_method),
+      'temperature':              trial.suggest_categorical('temperature',              args.temperature),
+      'rbf_sigma':                trial.suggest_categorical('rbf_sigma',               args.rbf_sigma),
+    }
+    trial_tag = (
+      f'K{params["num_anchors"]}'
+      f'_{params["anchor_selection_type"]}'
+      f'_{params["csv_anchor_selection"]}'
+      f'_{params["old_model_csv"]}'
+      f'_{params["interpolation_similarity"]}'
+      f'_{params["weighting_method"]}'
+      f'_t{params["temperature"]}'
+      f'_s{params["rbf_sigma"]}'
+    )
+    trial_dir = os.path.join(out_dir, f'cross_space_projection_{trial_tag}_{trial.number}')
+    return _run_trial(params, trial.number, anchor_cache, tensor_cache, new_model, new_config, trial_dir, uid)
+
+  if args.n_trials is None:
+    if args.optuna_sampler != 'grid':
+      raise ValueError(
+        '--n_trials=None (auto) is only supported with --optuna_sampler grid. '
+        'Set --n_trials explicitly for tpe/random samplers.'
+      )
+    n_trials = 1
+    for v in search_space.values():
+      n_trials *= len(v)
+    print(f'[run_optuna] n_trials=None + grid sampler → running all {n_trials} grid combinations')
+  else:
+    n_trials = args.n_trials
+
+  study.optimize(objective, n_trials=n_trials)
+
+  best = study.best_trial
+  print(f'\n[run_optuna] Best trial #{best.number}: MAE={best.value:.4f}')
+  print(f'  params: {best.params}')
+
+  with open(os.path.join(out_dir, 'optuna_study.pkl'), 'wb') as f:
+    pickle.dump(study, f)
+
+  with open(os.path.join(out_dir, 'best_config.txt'), 'w') as f:
+    f.write(f'script_cmd: {" ".join(sys.argv)}\n')
+    f.write(f'best_trial: {best.number}\n')
+    f.write(f'mae: {best.value:.6f}\n')
+    for k, v in best.params.items():
+      f.write(f'{k}: {v}\n')
+
+  print(f'Done. All outputs in {out_dir}')
+  return out_dir
+
+
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
@@ -313,7 +709,17 @@ def cross_space_projection(args):
   random.seed(_SEED)
 
   uid = int(time.time())
-  out_dir = os.path.join(os.getcwd(), 'Cross_projection', f'cross_space_projection_{uid}')
+  args_tag = (
+    f'K{args.num_anchors}'
+    f'_{args.anchor_selection_type}'
+    f'_{args.csv_anchor_selection}'
+    f'_{args.old_model_csv}'
+    f'_{args.interpolation_similarity}'
+    f'_{args.weighting_method}'
+    f'_t{args.temperature}'
+    f'_s{args.rbf_sigma}'
+  )
+  out_dir = os.path.join(os.getcwd(), 'Cross_projection', f'cross_space_projection_{args_tag}_{uid}')
   os.makedirs(out_dir, exist_ok=True)
   print(f'[cross_space_projection] Output: {out_dir}')
 
@@ -338,13 +744,10 @@ def cross_space_projection(args):
   helper.set_step_shift(new_features_path)
   clean_anchor_csv = clean_csv_from_augmentations(raw_anchor_csv)
   df_anchors_full = pd.read_csv(clean_anchor_csv, sep='\t', dtype={'sample_name': str})
-  assert len(df_anchors_full) >= args.num_anchors, (
-    f'Requested {args.num_anchors} anchors but only {len(df_anchors_full)} clean samples available.'
-  )
-  df_anchors = df_anchors_full.sample(n=args.num_anchors, random_state=_SEED).reset_index(drop=True)
+  df_anchors = _select_anchors(df_anchors_full, args.num_anchors, args.anchor_selection_type)
   anchors_csv_path = os.path.join(out_dir, 'anchors.csv')
   df_anchors.to_csv(anchors_csv_path, index=False, sep='\t')
-  print(f'Anchors ({args.num_anchors}) saved to {anchors_csv_path}')
+  print(f'Anchors ({len(df_anchors)}) saved to {anchors_csv_path}')
 
   # --- Step 3: Build old model projection dataset ---
   raw_old_csvs = _resolve_old_model_csvs(args.old_model_pth, args.old_model_csv)
@@ -452,6 +855,7 @@ def cross_space_projection(args):
     'anchors_csv_path':        anchors_csv_path,
     'old_tensors_csv_path':    old_tensors_csv_path,
     'out_dir':                 out_dir,
+    'script_cmd':              ' '.join(sys.argv),
   }
 
   dict_res = {
@@ -490,22 +894,48 @@ if __name__ == '__main__':
                       help='Path to new model checkpoint (.pt/.pth)')
   parser.add_argument('--old_model_pth', type=str, required=True,
                       help='Path to old model checkpoint (.pt/.pth)')
-  parser.add_argument('--num_anchors', type=int, required=True,
-                      help='Number of anchor samples to select from new model domain')
-  parser.add_argument('--anchor_selection_type', type=str, default='random',
-                      help='Anchor selection strategy (currently only "random")')
-  parser.add_argument('--csv_anchor_selection', type=str, required=True,
-                      help='Split to select anchors from (train/val/test) — new model domain')
-  parser.add_argument('--old_model_csv', type=str, required=True,
-                      help='Split to project (train/val/test/all) — old model domain')
-  parser.add_argument('--interpolation_similarity', type=str, default='cos',
+  # --- Hyper args: accept one or more values; multiple values trigger Optuna ---
+  parser.add_argument('--num_anchors', type=int, nargs='+', required=True,
+                      help='Number of anchor samples (one or more values to sweep)')
+  parser.add_argument('--anchor_selection_type', type=str, nargs='+', default=['random'],
+                      choices=['random', 'balance_class_random', 'balance_subject_random', 'balance_class_subject'],
+                      help='Anchor selection strategy (one or more values to sweep). '
+                           'balance_* strategies use num_anchors per stratum.')
+  parser.add_argument('--csv_anchor_selection', type=str, nargs='+', required=True,
+                      help='Split(s) to select anchors from (train/val/test) — new model domain')
+  parser.add_argument('--old_model_csv', type=str, nargs='+', required=True,
+                      help='Split(s) to project (train/val/test/all) — old model domain')
+  parser.add_argument('--interpolation_similarity', type=str, nargs='+', default=['cos'],
                       choices=['cos', 'l1', 'l2', 'l_inf'],
-                      help='Similarity/distance metric for weight computation')
-  parser.add_argument('--weighting_method', type=str, required=True,
+                      help='Similarity/distance metric(s) for weight computation')
+  parser.add_argument('--weighting_method', type=str, nargs='+', required=True,
                       choices=['softmax', 'rbf'],
-                      help='Method to convert similarities to interpolation weights')
-  parser.add_argument('--temperature', type=float, default=1.0,
-                      help='Temperature for softmax weighting (ignored for rbf)')
-  parser.add_argument('--rbf_sigma', type=float, default=1.0,
-                      help='Sigma for RBF kernel: exp(-d²/(2σ²)) (ignored for softmax)')
-  cross_space_projection(parser.parse_args())
+                      help='Method(s) to convert similarities to interpolation weights')
+  parser.add_argument('--temperature', type=float, nargs='+', default=[1.0],
+                      help='Temperature(s) for softmax weighting (ignored for rbf)')
+  parser.add_argument('--rbf_sigma', type=float, nargs='+', default=[1.0],
+                      help='Sigma value(s) for RBF kernel: exp(-d²/(2σ²)) (ignored for softmax)')
+  # --- Optuna settings ---
+  parser.add_argument('--n_trials', type=int, default=None,
+                      help='Number of Optuna trials. If None (default) and --optuna_sampler grid, '
+                           'runs the full grid automatically.')
+  parser.add_argument('--optuna_sampler', type=str, default='grid',
+                      choices=['tpe', 'random', 'grid'],
+                      help='Optuna sampler (tpe, random, grid). Default is grid')
+
+  args = parser.parse_args()
+  _hyper_lists = [
+    args.num_anchors, args.anchor_selection_type, args.csv_anchor_selection,
+    args.old_model_csv, args.interpolation_similarity, args.weighting_method,
+    args.temperature, args.rbf_sigma,
+  ]
+  use_optuna = any(len(v) > 1 for v in _hyper_lists) or (args.n_trials is not None and args.n_trials > 1)
+
+  if use_optuna:
+    run_optuna(args)
+  else:
+    # Unwrap single-element lists so cross_space_projection receives scalar args
+    single_args = argparse.Namespace(**{
+      k: (v[0] if isinstance(v, list) else v) for k, v in vars(args).items()
+    })
+    cross_space_projection(single_args)
