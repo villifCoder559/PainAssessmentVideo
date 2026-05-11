@@ -130,6 +130,8 @@ def set_step_shift(folder_feature):
     step_shift = 13176
   elif 'parta' in folder_feature.lower() or 'biovid' in folder_feature.lower(): # Biovid Part A, sample_id starts from 1 
     step_shift = 8700
+  elif 'morph' in folder_feature.lower(): # MORPH dataset, sample_id starts from 1
+    step_shift = 50015
   elif 'agedb' in folder_feature.lower(): # AgeDB dataset, sample_id starts from 1 
     step_shift = 16488
   else:  
