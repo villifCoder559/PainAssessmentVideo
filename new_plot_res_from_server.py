@@ -2024,11 +2024,11 @@ def _process_single_run(args):
     clean_data(data['results'], data['config'])
     data['config']['model_type'] = data['config']['model_type'].name
     plot_grouped_k_fold(data, output_root, test_id)
-    plot_grouped_confusion_matrix(data, output_root, test_id)
     plot_losses(data, output_root, test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
     plot_separated_losses_adversarial(data, output_root, test_id)
     plot_hsic_per_epoch(data, output_root, test_id)
     if not plot_only_loss:
+      plot_grouped_confusion_matrix(data, output_root, test_id)
       plot_confusion_matrices(data, output_root, test_id)
       plot_lr_wd_across_epochs(data, output_root, test_id)
       if is_unbc:
