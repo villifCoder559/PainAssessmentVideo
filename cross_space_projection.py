@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-Cross-space projection: project embeddings produced by an old model (e.g. UNBC-trained)
-into the embedding space of a new model (e.g. BIOVID-trained) via anchor-based
-interpolation, then classify the projected embeddings using the new model's final
-linear layer.
+Cross-space projection: project embeddings produced by an old model into the embedding
+space of a new model via anchor-based interpolation, then classify the projected
+embeddings using the new model's final linear layer.
+
+Datasets and backbones are auto-detected from each model's features folder path,
+so any dataset pair supported by _FEATURES_MAP works (e.g. UNBC→BIOVID, BIOVID→UNBC,
+AgeDB-split-A→AgeDB-split-B, etc.).
 
 Pipeline:
-  1. Select K anchor samples from the new model domain (BIOVID).
-  2. Extract K embeddings with old model (BIOVID features) → old_model_anchors (K, D_old).
-  3. Extract K embeddings with new model (BIOVID features) → new_model_anchors (K, D_new).
-  4. Extract N embeddings with old model (UNBC features)   → old_model_tensors (N, D_old).
+  1. Select K anchor samples from the new model domain.
+  2. Extract K embeddings with old model (new-domain features) → old_model_anchors (K, D_old).
+  3. Extract K embeddings with new model (new-domain features) → new_model_anchors (K, D_new).
+  4. Extract N embeddings with old model (old-domain features) → old_model_tensors (N, D_old).
   5. Compute similarity weights (N, K) in old model space.
   6. Project: projected (N, D_new) = weights @ new_model_anchors.
   7. Classify: new_model.head.linear(projected) → logits.
@@ -36,27 +39,70 @@ from custom.model import Model_Advanced
 from log_cross_attention_from_model import clean_csv_from_augmentations
 
 _SEED = 42
+_ZERO_ANCHOR_KEY    = (None,  0, None)  # anchor_cache sentinel for the num_anchors=0 identity case
+_NEG_ONE_ANCHOR_KEY = (None, -1, None)  # anchor_cache sentinel for num_anchors=-1 oracle case
 
 # (backbone_key, dataset_key) → pre-extracted features folder path
 _FEATURES_MAP = {
   ('DFER',     'UNBC'):   'UNBC/video/features/DFER/spatial_pooled_features_UNBC_B_last143_stride16_interpol',
   ('DFER',     'BIOVID'): 'partA/video/features/DFER/spatial_pooled_features_Biovid_B_last143_stride16_interpol',
+  ('DFER',     'AGEDB'):  'AgeDB/features/DFER/all_pooled_features_age',
+  ('VIDEOMAE', 'AGEDB'):  'AgeDB/features/VideoMaev2_S/all_pooled_features_age',
   ('VIDEOMAE', 'UNBC'):   'UNBC/video/features/VideoMaev2_S/spatial_pooled_features_UNBC_B_last143_stride16_interpol',
   ('VIDEOMAE', 'BIOVID'): 'partA/video/features/VideoMaev2_S/spatial_pooled_features_Biovid_B_last143_stride16_interpol',
 }
 
 
-def _detect_backbone(features_path):
+
+
+def _detect_dataset(features_path: str) -> str:
   """
-  Detect backbone type from a pre-extracted features folder path.
+  Return the uppercase dataset name inferred from a features folder path.
 
   Args:
-    features_path (str): Path to the features folder.
+    features_path (str): Features folder path (e.g. model_advanced_params['features_folder_saving_path']).
 
   Returns:
-    str: 'DFER' or 'VIDEOMAE'.
+    str: One of 'UNBC', 'BIOVID', 'AGEDB', 'CAER', 'MORPH'.
+
+  Raises:
+    ValueError: If no known dataset keyword is found in the path.
   """
-  return 'DFER' if 'DFER' in str(features_path).upper() else 'VIDEOMAE'
+  p = str(features_path).lower()
+  if 'unbc' in p:
+    return 'UNBC'
+  if 'parta' in p or 'biovid' in p:
+    return 'BIOVID'
+  if 'agedb' in p:
+    return 'AGEDB'
+  if 'caer' in p:
+    return 'CAER'
+  if 'morph' in p:
+    return 'MORPH'
+  raise ValueError(f'Cannot detect dataset from features path: {features_path!r}')
+
+
+def _detect_backbone(features_path: str) -> str:
+  """
+  Return the backbone key inferred from a features folder path.
+
+  Args:
+    features_path (str): Features folder path.
+
+  Returns:
+    str: One of 'DFER', 'VIDEOMAE', 'VJEPA2'.
+
+  Raises:
+    ValueError: If no known backbone keyword is found in the path.
+  """
+  p = str(features_path).upper()
+  if 'DFER' in p:
+    return 'DFER'
+  if 'VIDEOMAE' in p:
+    return 'VIDEOMAE'
+  if 'VJEPA' in p or 'JEPA' in p:
+    return 'VJEPA2'
+  raise ValueError(f'Cannot detect backbone from features path: {features_path!r}')
 
 
 def _get_features_path(current_features_path, target_dataset):
@@ -64,11 +110,14 @@ def _get_features_path(current_features_path, target_dataset):
   Return the features folder path for the same backbone but a different target dataset.
 
   Args:
-    current_features_path (str): Existing features path (used to infer backbone).
-    target_dataset (str): 'UNBC' or 'BIOVID'.
+    current_features_path (str): Existing features path (used to infer backbone via _detect_backbone).
+    target_dataset (str): Target dataset name, e.g. 'UNBC', 'BIOVID', 'AGEDB'.
 
   Returns:
     str: Features folder path for (backbone, target_dataset).
+
+  Raises:
+    ValueError: If the (backbone, target_dataset) combo is absent from _FEATURES_MAP.
   """
   backbone = _detect_backbone(current_features_path)
   key = (backbone, target_dataset.upper())
@@ -130,20 +179,83 @@ def _resolve_split_csv(model_pth, split_name):
   return os.path.join(*Path(model_pth).parts[:-1], f'{split_name}.csv')
 
 
+def _resolve_split_csv_strict(model_pth, split_name):
+  """
+  Resolve a split name to its CSV path, raising if the file does not exist.
+
+  Unlike _resolve_split_csv, no test→val fallback is applied.
+
+  Args:
+    model_pth  (str): Path to model checkpoint file.
+    split_name (str): One of 'train', 'val', 'test'.
+
+  Returns:
+    str: Absolute path to the CSV file.
+
+  Raises:
+    FileNotFoundError: If the expected CSV path does not exist.
+  """
+  p = os.path.join(*Path(model_pth).parts[:-1], f'{split_name}.csv')
+  if not os.path.exists(p):
+    raise FileNotFoundError(f'Split CSV not found (strict): {p}')
+  return p
+
+
+def _exc_split_paths(model_pth, exc_split):
+  """
+  Return the two CSV paths for all splits except exc_split, using strict resolution.
+
+  Args:
+    model_pth (str): Path to model checkpoint file.
+    exc_split (str): The split to exclude; must be 'train', 'val', or 'test'.
+
+  Returns:
+    List[str]: Two CSV paths for the remaining splits, in (train, val, test) order.
+
+  Raises:
+    ValueError:           If exc_split is not one of 'train', 'val', 'test'.
+    FileNotFoundError:    If either remaining split CSV is missing.
+  """
+  if exc_split not in ('train', 'val', 'test'):
+    raise ValueError(f'exc_ requires train/val/test, got: {exc_split!r}')
+  return [_resolve_split_csv_strict(model_pth, s)
+          for s in ('train', 'val', 'test') if s != exc_split]
+
+
 def _resolve_old_model_csvs(model_pth, split_or_all):
   """
-  Resolve a split name (or 'all') to a list of old model CSV paths.
+  Resolve a split name (or 'all' / 'exc_{set}') to a list of old model CSV paths.
 
   Args:
     model_pth     (str): Path to old model checkpoint file.
-    split_or_all  (str): 'train', 'val', 'test', or 'all'.
+    split_or_all  (str): 'train', 'val', 'test', 'all',
+                         or 'exc_train' / 'exc_val' / 'exc_test'.
 
   Returns:
     List[str]: List of CSV file paths.
   """
   if split_or_all == 'all':
     return [_resolve_split_csv(model_pth, s) for s in ('train', 'val', 'test')]
+  if split_or_all.startswith('exc_'):
+    return _exc_split_paths(model_pth, split_or_all[4:])
   return [_resolve_split_csv(model_pth, split_or_all)]
+
+
+def _resolve_anchor_csvs(model_pth, csv_sel):
+  """
+  Resolve an anchor split spec to a list of CSV paths.
+
+  Args:
+    model_pth (str): Path to model checkpoint file (new model).
+    csv_sel   (str): 'train', 'val', 'test',
+                     or 'exc_train' / 'exc_val' / 'exc_test'.
+
+  Returns:
+    List[str]: One or two CSV paths (two for exc_* specs).
+  """
+  if csv_sel.startswith('exc_'):
+    return _exc_split_paths(model_pth, csv_sel[4:])
+  return [_resolve_split_csv(model_pth, csv_sel)]
 
 
 def _extract_embeddings(model, model_pth, csv_path, config_model, features_path_override=None):
@@ -424,6 +536,8 @@ def _precompute_embeddings(
   Pre-extract and cache all embeddings needed across Optuna trials.
 
   Anchor embeddings are keyed by (csv_anchor_selection, num_anchors, anchor_selection_type).
+  When num_anchors=0, no anchor extraction is performed and _ZERO_ANCHOR_KEY is registered
+  as a sentinel entry in anchor_cache.
   Old-model tensor embeddings are keyed by old_model_csv split name.
 
   Args:
@@ -442,12 +556,18 @@ def _precompute_embeddings(
     tuple[dict, dict]:
       anchor_cache — (csv_anchor_selection, num_anchors, anchor_selection_type) →
           {'old': old_model_anchors, 'new': new_model_anchors_aligned, 'anchors_csv': str}
+          _ZERO_ANCHOR_KEY → {'old': None, 'new': None, 'anchors_csv': None}
       tensor_cache — old_model_csv →
           {'old_tensors': old_model_tensors, 'old_tensors_csv': str}
   """
   anchor_cache = {}
   tensor_cache = {}
-  biovid_features_for_old = _get_features_path(old_features_path, 'BIOVID')
+  new_dataset = _detect_dataset(new_features_path)
+  old_backbone = _detect_backbone(old_features_path)
+  new_backbone = _detect_backbone(new_features_path)
+  if old_backbone != new_backbone:
+    print(f'  WARNING: old backbone ({old_backbone}) differs from new backbone ({new_backbone}) — proceeding anyway')
+  anchor_domain_features_for_old = _get_features_path(old_features_path, new_dataset)
 
   # --- Anchor embeddings (one extraction per unique combo) ---
   anchor_combos = list(itertools.product(
@@ -457,11 +577,18 @@ def _precompute_embeddings(
     key = (csv_sel, num_anch, sel_type)
     if key in anchor_cache:
       continue
-    raw_anchor_csv = _resolve_split_csv(new_model_pth, csv_sel)
-    assert os.path.isfile(raw_anchor_csv), f'Anchor CSV not found: {raw_anchor_csv}'
+    if num_anch == 0:
+      continue
+    anchor_paths = _resolve_anchor_csvs(new_model_pth, csv_sel)
     helper.set_step_shift(new_features_path)
-    clean_anchor_csv = clean_csv_from_augmentations(raw_anchor_csv)
-    df_full = pd.read_csv(clean_anchor_csv, sep='\t', dtype={'sample_name': str})
+    anchor_dfs = []
+    for p in anchor_paths:
+      assert os.path.isfile(p), f'Anchor CSV not found: {p}'
+      anchor_dfs.append(pd.read_csv(clean_csv_from_augmentations(p), sep='\t', dtype={'sample_name': str}))
+    df_full = (
+      pd.concat(anchor_dfs, ignore_index=True).drop_duplicates(subset='sample_id')
+      if len(anchor_dfs) > 1 else anchor_dfs[0]
+    )
     df_anch = _select_anchors(df_full, num_anch, sel_type)
     anchors_csv = os.path.join(precomputed_dir, f'anchors_{csv_sel}_{num_anch}_{sel_type}.csv')
     df_anch.to_csv(anchors_csv, index=False, sep='\t')
@@ -469,7 +596,7 @@ def _precompute_embeddings(
 
     old_anch = _extract_embeddings(
       old_model, old_model_pth, anchors_csv, old_config,
-      features_path_override=biovid_features_for_old,
+      features_path_override=anchor_domain_features_for_old,
     )
     new_anch = _extract_embeddings(new_model, new_model_pth, anchors_csv, new_config)
     anchor_cache[key] = {
@@ -477,6 +604,9 @@ def _precompute_embeddings(
       'new': _align_by_sample_id(old_anch, new_anch),
       'anchors_csv': anchors_csv,
     }
+
+  if 0 in args.num_anchors:
+    anchor_cache[_ZERO_ANCHOR_KEY] = {'old': None, 'new': None, 'anchors_csv': None}
 
   # --- Old-model tensor embeddings (one extraction per unique split) ---
   for old_csv_split in set(args.old_model_csv):
@@ -498,6 +628,25 @@ def _precompute_embeddings(
       'old_tensors_csv': old_tensors_csv,
     }
 
+  # --- New-model oracle embeddings for num_anchors=-1 (one extraction per unique split) ---
+  if -1 in args.num_anchors:
+    old_dataset = _detect_dataset(old_features_path)
+    new_features_for_old = _get_features_path(new_features_path, old_dataset)
+    print(f'[precompute] num_anchors=-1 oracle: new model features override → {new_features_for_old}')
+    for old_csv_split in set(args.old_model_csv):
+      oracle_key = f'__oracle__{old_csv_split}'
+      if oracle_key in tensor_cache:
+        continue
+      old_tensors_csv = tensor_cache[old_csv_split]['old_tensors_csv']
+      oracle_raw = _extract_embeddings(
+        new_model, new_model_pth, old_tensors_csv, new_config,
+        features_path_override=new_features_for_old,
+      )
+      old_tensors = tensor_cache[old_csv_split]['old_tensors']
+      tensor_cache[oracle_key] = _align_by_sample_id(old_tensors, oracle_raw)
+      print(f'[precompute] oracle key={oracle_key!r} → {tensor_cache[oracle_key]["embeddings"].shape}')
+    anchor_cache[_NEG_ONE_ANCHOR_KEY] = {'old': None, 'new': None, 'anchors_csv': None}
+
   return anchor_cache, tensor_cache
 
 
@@ -518,24 +667,40 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
   Returns:
     float: MAE for this trial.
   """
-  anchor_key = (
-    trial_params['csv_anchor_selection'],
-    trial_params['num_anchors'],
-    trial_params['anchor_selection_type'],
-  )
-  old_model_anchors       = anchor_cache[anchor_key]['old']
-  new_model_anchors_aligned = anchor_cache[anchor_key]['new']
-  old_model_tensors       = tensor_cache[trial_params['old_model_csv']]['old_tensors']
+  old_model_tensors = tensor_cache[trial_params['old_model_csv']]['old_tensors']
 
-  weights = _compute_weights(
-    z=old_model_tensors['embeddings'],
-    anchors=old_model_anchors['embeddings'],
-    sim_type=trial_params['interpolation_similarity'],
-    method=trial_params['weighting_method'],
-    temperature=trial_params['temperature'],
-    sigma=trial_params['rbf_sigma'],
-  )
-  projected = (weights @ new_model_anchors_aligned['embeddings'].astype(np.float32))
+  if trial_params['num_anchors'] == 0:
+    d_old = old_model_tensors['embeddings'].shape[1]
+    d_new = new_model.head.linear.in_features
+    if d_old != d_new:
+      raise ValueError(
+        f'num_anchors=0 requires D_old == D_new, but got D_old={d_old}, D_new={d_new}'
+      )
+    projected = old_model_tensors['embeddings']
+    print(f"  [trial {trial_number}] num_anchors=0 → projecting by identity (no interpolation)")
+    weights   = np.zeros((len(projected), 0), dtype=np.float32)
+  elif trial_params['num_anchors'] == -1:
+    oracle_key = f'__oracle__{trial_params["old_model_csv"]}'
+    projected  = tensor_cache[oracle_key]['embeddings']
+    weights    = np.zeros((len(projected), 0), dtype=np.float32)
+    print(f"  [trial {trial_number}] num_anchors=-1 → oracle (full new model on old domain)")
+  else:
+    anchor_key = (
+      trial_params['csv_anchor_selection'],
+      trial_params['num_anchors'],
+      trial_params['anchor_selection_type'],
+    )
+    old_model_anchors         = anchor_cache[anchor_key]['old']
+    new_model_anchors_aligned = anchor_cache[anchor_key]['new']
+    weights = _compute_weights(
+      z=old_model_tensors['embeddings'],
+      anchors=old_model_anchors['embeddings'],
+      sim_type=trial_params['interpolation_similarity'],
+      method=trial_params['weighting_method'],
+      temperature=trial_params['temperature'],
+      sigma=trial_params['rbf_sigma'],
+    )
+    projected = (weights @ new_model_anchors_aligned['embeddings'].astype(np.float32))
 
   normalize_labels = bool(new_config['config'].get('normalize_labels', 0))
   max_label = new_config['config'].get('max_label', None)
@@ -606,8 +771,9 @@ def run_optuna(args):
     f'_t{_fmt(args.temperature)}'
     f'_s{_fmt(args.rbf_sigma)}'
   )
+  tag_prefix = f'{args.run_tag}_' if args.run_tag else ''
   out_dir = os.path.join(
-    os.getcwd(), 'Cross_projection', f'search_{args_tag}_{uid}',
+    os.getcwd(), 'Cross_projection', f'search_{tag_prefix}{args_tag}_{uid}',
   )
   precomputed_dir = os.path.join(out_dir, 'precomputed')
   os.makedirs(precomputed_dir, exist_ok=True)
@@ -631,6 +797,11 @@ def run_optuna(args):
   sampler = _get_sampler(args.optuna_sampler, search_space)
   study = optuna.create_study(direction='minimize', sampler=sampler)
 
+  # Cache for num_anchors=0 and num_anchors=-1: all anchor-param combos produce the same
+  # output per old_model_csv, so only the first trial per split actually runs.
+  _zero_anchor_mae_cache:    dict = {}
+  _neg_one_anchor_mae_cache: dict = {}
+
   def objective(trial):
     params = {
       'num_anchors':              trial.suggest_categorical('num_anchors',              args.num_anchors),
@@ -642,6 +813,16 @@ def run_optuna(args):
       'temperature':              trial.suggest_categorical('temperature',              args.temperature),
       'rbf_sigma':                trial.suggest_categorical('rbf_sigma',               args.rbf_sigma),
     }
+    if params['num_anchors'] == 0:
+      old_csv = params['old_model_csv']
+      if old_csv in _zero_anchor_mae_cache:
+        print(f'  [trial {trial.number}] num_anchors=0, old_model_csv={old_csv!r} — reusing cached result')
+        return _zero_anchor_mae_cache[old_csv]
+    if params['num_anchors'] == -1:
+      old_csv = params['old_model_csv']
+      if old_csv in _neg_one_anchor_mae_cache:
+        print(f'  [trial {trial.number}] num_anchors=-1, old_model_csv={old_csv!r} — reusing cached result')
+        return _neg_one_anchor_mae_cache[old_csv]
     trial_tag = (
       f'K{params["num_anchors"]}'
       f'_{params["anchor_selection_type"]}'
@@ -653,7 +834,12 @@ def run_optuna(args):
       f'_s{params["rbf_sigma"]}'
     )
     trial_dir = os.path.join(out_dir, f'cross_space_projection_{trial_tag}_{trial.number}')
-    return _run_trial(params, trial.number, anchor_cache, tensor_cache, new_model, new_config, trial_dir, uid)
+    mae = _run_trial(params, trial.number, anchor_cache, tensor_cache, new_model, new_config, trial_dir, uid)
+    if params['num_anchors'] == 0:
+      _zero_anchor_mae_cache[params['old_model_csv']] = mae
+    if params['num_anchors'] == -1:
+      _neg_one_anchor_mae_cache[params['old_model_csv']] = mae
+    return mae
 
   if args.n_trials is None:
     if args.optuna_sampler != 'grid':
@@ -719,7 +905,8 @@ def cross_space_projection(args):
     f'_t{args.temperature}'
     f'_s{args.rbf_sigma}'
   )
-  out_dir = os.path.join(os.getcwd(), 'Cross_projection', f'cross_space_projection_{args_tag}_{uid}')
+  tag_prefix = f'{args.run_tag}_' if args.run_tag else ''
+  out_dir = os.path.join(os.getcwd(), 'Cross_projection', f'cross_space_projection_{tag_prefix}{args_tag}_{uid}')
   os.makedirs(out_dir, exist_ok=True)
   print(f'[cross_space_projection] Output: {out_dir}')
 
@@ -737,18 +924,6 @@ def cross_space_projection(args):
   old_model = _build_model(old_config)
   new_model = _build_model(new_config)
 
-  # --- Step 2: Select anchors from new model domain ---
-  raw_anchor_csv = _resolve_split_csv(args.new_model_pth, args.csv_anchor_selection)
-  assert os.path.isfile(raw_anchor_csv), f'Anchor CSV not found: {raw_anchor_csv}'
-
-  helper.set_step_shift(new_features_path)
-  clean_anchor_csv = clean_csv_from_augmentations(raw_anchor_csv)
-  df_anchors_full = pd.read_csv(clean_anchor_csv, sep='\t', dtype={'sample_name': str})
-  df_anchors = _select_anchors(df_anchors_full, args.num_anchors, args.anchor_selection_type)
-  anchors_csv_path = os.path.join(out_dir, 'anchors.csv')
-  df_anchors.to_csv(anchors_csv_path, index=False, sep='\t')
-  print(f'Anchors ({len(df_anchors)}) saved to {anchors_csv_path}')
-
   # --- Step 3: Build old model projection dataset ---
   raw_old_csvs = _resolve_old_model_csvs(args.old_model_pth, args.old_model_csv)
   helper.set_step_shift(old_features_path)
@@ -764,51 +939,102 @@ def cross_space_projection(args):
 
   # --- Step 4: Extract embeddings ---
 
-  # 4.1 old model on BIOVID anchors: use same backbone but BIOVID feature folder
-  # (old model was trained on VideoMAEv2-S; its head cannot process DFER features)
-  biovid_features_for_old_model = _get_features_path(old_features_path, 'BIOVID')
-  print(f'Extracting old_model_anchors with features override → {biovid_features_for_old_model}')
-  old_model_anchors = _extract_embeddings(
-    old_model, args.old_model_pth, anchors_csv_path, old_config,
-    features_path_override=biovid_features_for_old_model,
-  )
-  print(f'  old_model_anchors: {old_model_anchors["embeddings"].shape}')
-
-  # 4.2 new model on BIOVID anchors (no override — new_model already uses BIOVID features)
-  print('Extracting new_model_anchors...')
-  new_model_anchors = _extract_embeddings(
-    new_model, args.new_model_pth, anchors_csv_path, new_config,
-  )
-  print(f'  new_model_anchors: {new_model_anchors["embeddings"].shape}')
-
-  # 4.3 old model on old domain (UNBC) samples
+  # 4.3 old model on old domain samples (always required)
   print('Extracting old_model_tensors...')
   old_model_tensors = _extract_embeddings(
     old_model, args.old_model_pth, old_tensors_csv_path, old_config,
   )
   print(f'  old_model_tensors: {old_model_tensors["embeddings"].shape}')
 
-  # --- Step 5: Align anchor embeddings by sample_id ---
-  new_model_anchors_aligned = _align_by_sample_id(old_model_anchors, new_model_anchors)
+  if args.num_anchors == 0:
+    # --- Identity projection: skip anchor steps, pass old features through unchanged ---
+    d_old = old_model_tensors['embeddings'].shape[1]
+    d_new = new_model.head.linear.in_features
+    if d_old != d_new:
+      raise ValueError(
+        f'num_anchors=0 requires D_old == D_new, but got D_old={d_old}, D_new={d_new}'
+      )
+    print('[cross_space_projection] num_anchors=0 — identity projection (old features passed through)')
+    projected                 = old_model_tensors['embeddings']
+    weights                   = np.zeros((len(projected), 0), dtype=np.float32)
+    old_model_anchors         = None
+    new_model_anchors_aligned = None
+    anchors_csv_path          = None
+  elif args.num_anchors == -1:
+    # --- Oracle: run full new model forward pass on old-domain samples using new backbone features ---
+    old_dataset = _detect_dataset(old_features_path)
+    new_features_for_old = _get_features_path(new_features_path, old_dataset)
+    print(
+      f'[cross_space_projection] num_anchors=-1 — oracle: full new model on old domain '
+      f'(features override → {new_features_for_old})'
+    )
+    oracle_raw = _extract_embeddings(
+      new_model, args.new_model_pth, old_tensors_csv_path, new_config,
+      features_path_override=new_features_for_old,
+    )
+    new_model_oracle          = _align_by_sample_id(old_model_tensors, oracle_raw)
+    projected                 = new_model_oracle['embeddings']
+    weights                   = np.zeros((len(projected), 0), dtype=np.float32)
+    old_model_anchors         = None
+    new_model_anchors_aligned = None
+    anchors_csv_path          = None
+  else:
+    # --- Step 2: Select anchors from new model domain ---
+    anchor_paths = _resolve_anchor_csvs(args.new_model_pth, args.csv_anchor_selection)
+    assert all(os.path.isfile(p) for p in anchor_paths), f'One or more anchor CSVs missing: {anchor_paths}'
+    helper.set_step_shift(new_features_path)
+    anchor_dfs = [
+      pd.read_csv(clean_csv_from_augmentations(p), sep='\t', dtype={'sample_name': str})
+      for p in anchor_paths
+    ]
+    df_anchors_full = (
+      pd.concat(anchor_dfs, ignore_index=True).drop_duplicates(subset='sample_id')
+      if len(anchor_dfs) > 1 else anchor_dfs[0]
+    )
+    df_anchors = _select_anchors(df_anchors_full, args.num_anchors, args.anchor_selection_type)
+    anchors_csv_path = os.path.join(out_dir, 'anchors.csv')
+    df_anchors.to_csv(anchors_csv_path, index=False, sep='\t')
+    print(f'Anchors ({len(df_anchors)}) saved to {anchors_csv_path}')
 
-  # --- Step 6: Compute interpolation weights (N, K) in old model space ---
-  print('Computing interpolation weights...')
-  weights = _compute_weights(
-    z=old_model_tensors['embeddings'],
-    anchors=old_model_anchors['embeddings'],
-    sim_type=args.interpolation_similarity,
-    method=args.weighting_method,
-    temperature=args.temperature,
-    sigma=args.rbf_sigma,
-  )
-  print(f'  weights: {weights.shape}')
+    # 4.1 old model on new-domain anchors: use same backbone but new model's dataset feature folder
+    new_dataset = _detect_dataset(new_features_path)
+    old_backbone = _detect_backbone(old_features_path)
+    new_backbone = _detect_backbone(new_features_path)
+    if old_backbone != new_backbone:
+      print(f'  WARNING: old backbone ({old_backbone}) differs from new backbone ({new_backbone}) — proceeding anyway')
+    anchor_domain_features_for_old = _get_features_path(old_features_path, new_dataset)
+    print(f'Extracting old_model_anchors with features override → {anchor_domain_features_for_old}')
+    old_model_anchors = _extract_embeddings(
+      old_model, args.old_model_pth, anchors_csv_path, old_config,
+      features_path_override=anchor_domain_features_for_old,
+    )
+    print(f'  old_model_anchors: {old_model_anchors["embeddings"].shape}')
 
-  # --- Step 7: Project into new model space (N, D_new) ---
-  projected = weights @ new_model_anchors_aligned['embeddings'].astype(np.float32)
-  # projected = (
-  #   weights[:, :, np.newaxis] * new_model_anchors_aligned['embeddings'][np.newaxis, :, :]
-  # ).sum(axis=1).astype(np.float32)
-  print(f'  projected: {projected.shape}')
+    # 4.2 new model on new-domain anchors (no override — new model already uses its own features)
+    print('Extracting new_model_anchors...')
+    new_model_anchors = _extract_embeddings(
+      new_model, args.new_model_pth, anchors_csv_path, new_config,
+    )
+    print(f'  new_model_anchors: {new_model_anchors["embeddings"].shape}')
+
+    # --- Step 5: Align anchor embeddings by sample_id ---
+    new_model_anchors_aligned = _align_by_sample_id(old_model_anchors, new_model_anchors)
+
+    # --- Step 6: Compute interpolation weights (N, K) in old model space ---
+    print('Computing interpolation weights...')
+    weights = _compute_weights(
+      z=old_model_tensors['embeddings'],
+      anchors=old_model_anchors['embeddings'],
+      sim_type=args.interpolation_similarity,
+      method=args.weighting_method,
+      temperature=args.temperature,
+      sigma=args.rbf_sigma,
+    )
+    print(f'  weights: {weights.shape}')
+
+    # --- Step 7: Project into new model space (N, D_new) ---
+    projected = weights @ new_model_anchors_aligned['embeddings'].astype(np.float32)
+    print(f'  projected: {projected.shape}')
 
   new_model_tensors = {
     **old_model_tensors,
@@ -902,9 +1128,9 @@ if __name__ == '__main__':
                       help='Anchor selection strategy (one or more values to sweep). '
                            'balance_* strategies use num_anchors per stratum.')
   parser.add_argument('--csv_anchor_selection', type=str, nargs='+', required=True,
-                      help='Split(s) to select anchors from (train/val/test) — new model domain')
+                      help='Split(s) to select anchors from (train/val/test/exc_train/exc_val/exc_test) — new model domain')
   parser.add_argument('--old_model_csv', type=str, nargs='+', required=True,
-                      help='Split(s) to project (train/val/test/all) — old model domain')
+                      help='Split(s) to project (train/val/test/all/exc_train/exc_val/exc_test) — old model domain')
   parser.add_argument('--interpolation_similarity', type=str, nargs='+', default=['cos'],
                       choices=['cos', 'l1', 'l2', 'l_inf'],
                       help='Similarity/distance metric(s) for weight computation')
@@ -922,6 +1148,8 @@ if __name__ == '__main__':
   parser.add_argument('--optuna_sampler', type=str, default='grid',
                       choices=['tpe', 'random', 'grid'],
                       help='Optuna sampler (tpe, random, grid). Default is grid')
+  parser.add_argument('--run_tag', type=str, default=None,
+                      help='Optional label prepended to the output folder name for easy identification')
 
   args = parser.parse_args()
   _hyper_lists = [
