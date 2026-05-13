@@ -157,6 +157,19 @@ def _weight_entropy(weights):
   return -np.sum(weights * np.log(weights + 1e-9), axis=1)
 
 
+def _write_summary_csv(row, out_dir):
+  """
+  Write a single-row summary CSV into out_dir/summary.csv.
+
+  Args:
+    row     (dict): Flat dict of hyperparameters and metrics.
+    out_dir (str):  Directory to write the CSV into.
+  """
+  path = os.path.join(out_dir, 'summary.csv')
+  pd.DataFrame([row]).to_csv(path, index=False)
+  print(f'Saved: {path}')
+
+
 def _detect_format(data):
   """
   Detect whether a loaded pkl dict is a grid-search trial or a standalone run.
@@ -353,12 +366,16 @@ def plot_umap(embeddings, labels, sample_ids, subject_map, out_dir, run_label: s
   cmap_subj = 'tab10' if n_subj <= 10 else ('tab20' if n_subj <= 20 else 'nipy_spectral')
   suffix = f' | {run_label}' if run_label else ''
 
+  v_min, v_max = float(labels.min()), float(labels.max())
   fig, axes = plt.subplots(1, 2, figsize=(20, 8))
-  plot_reducted_embeddings(
-    reduced_embeddings=reduced, labels=labels,
-    output_folder=out_dir, title=f'UMAP — projected embeddings (by pain label){suffix}',
-    group_by='labels', cmap='jet', save_plot=False, ax=axes[0], reduction_name='UMAP',
+  sc = axes[0].scatter(
+    reduced[:, 0], reduced[:, 1], c=labels,
+    cmap='jet', vmin=v_min, vmax=v_max, s=10, alpha=0.7,
   )
+  plt.colorbar(sc, ax=axes[0], label='Pain level')
+  axes[0].set_title(f'UMAP — projected embeddings (by pain label){suffix}')
+  axes[0].set_xlabel('UMAP 1')
+  axes[0].set_ylabel('UMAP 2')
   plot_reducted_embeddings(
     reduced_embeddings=reduced, labels=subj_ids,
     output_folder=out_dir, title=f'UMAP — projected embeddings (by subject){suffix}',
@@ -380,6 +397,9 @@ def plot_anchor_weights(weights, out_dir, run_label: str = ''):
     out_dir    (str): Output directory.
     run_label  (str): Optional run identity string appended to plot titles.
   """
+  if weights.shape[1] == 0:
+    print('[plot_anchor_weights] Skipped — num_anchors=0 or -1 (no interpolation weights)')
+    return
   entropy  = _weight_entropy(weights)
   mean_w   = weights.mean(axis=0)
   top20_idx = np.argsort(mean_w)[-20:][::-1]
@@ -453,6 +473,330 @@ def plot_anchor_umap(old_anchors_emb, new_anchors_emb, anchor_labels, out_dir, r
   print(f'Saved: {path}')
 
 
+# ── search-level summary plots ────────────────────────────────────────────────
+
+def plot_hyperparam_mae_summary(df, out_dir):
+  """
+  For each hyperparameter with ≥ 2 distinct values, write mae_by_<param>.png.
+
+  Bar height = mean MAE per value; error whiskers span [min, max].
+  Y-axis top is fixed to df['mae'].max() * 1.05 across all plots so they
+  share the same scale and are directly comparable.
+
+  Args:
+    df      (pd.DataFrame): Summary DataFrame with trial metrics and hyperparams.
+    out_dir (str): Directory to write plots into.
+  """
+  hp_cols = [
+    'num_anchors', 'anchor_selection_type', 'csv_anchor_selection', 'old_model_csv',
+    'interpolation_similarity', 'weighting_method', 'temperature', 'rbf_sigma',
+  ]
+  active = [c for c in hp_cols if c in df.columns and df[c].nunique() >= 2]
+  if not active:
+    return
+
+  y_top = float(df['mae'].max()) * 1.05
+
+  for col in active:
+    grp = (
+      df.groupby(col)['mae']
+      .agg(mean='mean', lo='min', hi='max')
+      .reset_index()
+      .sort_values(col)
+    )
+    vals    = grp[col].tolist()
+    means   = grp['mean'].to_numpy()
+    yerr_lo = (grp['mean'] - grp['lo']).to_numpy()
+    yerr_hi = (grp['hi']   - grp['mean']).to_numpy()
+
+    fig, ax = plt.subplots(figsize=(max(8, len(vals) * 1.2), 5))
+    x = np.arange(len(vals))
+    bars = ax.bar(x, means, color='steelblue', alpha=0.85)
+    ax.errorbar(x, means, yerr=[yerr_lo, yerr_hi],
+                fmt='none', color='black', capsize=5, linewidth=1.5)
+    for bar in bars:
+      ax.text(
+        bar.get_x() + bar.get_width() / 2,
+        bar.get_height() + y_top * 0.01,
+        f'{bar.get_height():.3f}',
+        ha='center', va='bottom', fontsize=8,
+      )
+    ax.set_ylim(0, y_top)
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(v) for v in vals], rotation=30, ha='right')
+    ax.set_xlabel(col)
+    ax.set_ylabel('MAE')
+    ax.set_title(f'MAE by {col}  (bar = mean, whiskers = min / max)')
+
+    plt.tight_layout()
+    path = os.path.join(out_dir, f'mae_by_{col}.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'Saved: {path}')
+
+
+def plot_temperature_anchors_heatmap(df, out_dir):
+  """
+  Grid of heatmaps: temperature (x-axis) × num_anchors (y-axis), faceted by
+  weighting_method (rows) and interpolation_similarity (columns).
+
+  Cell colour encodes mean MAE; empty combinations are shown as white.
+  Skipped entirely when temperature or num_anchors has < 2 distinct values.
+
+  Args:
+    df      (pd.DataFrame): Summary DataFrame with trial metrics and hyperparams.
+    out_dir (str): Directory to write the plot into.
+  """
+  needed = {'temperature', 'num_anchors', 'weighting_method', 'interpolation_similarity', 'mae'}
+  if not needed.issubset(df.columns):
+    return
+  if df['temperature'].nunique() < 2 or df['num_anchors'].nunique() < 2:
+    return
+
+  wm_vals   = sorted(df['weighting_method'].unique())
+  is_vals   = sorted(df['interpolation_similarity'].unique())
+  temp_vals = sorted(df['temperature'].unique())
+  anc_vals  = sorted(df['num_anchors'].unique())
+
+  vmin = float(df['mae'].min())
+  vmax = float(df['mae'].max())
+  n_rows, n_cols = len(wm_vals), len(is_vals)
+
+  cell_w = max(5, len(temp_vals) * 0.8 + 1.5)
+  cell_h = max(4, len(anc_vals)  * 0.6 + 1.5)
+  fig, axes = plt.subplots(n_rows, n_cols,
+                           figsize=(n_cols * cell_w, n_rows * cell_h),
+                           squeeze=False)
+
+  im_ref = None
+  for ri, wm in enumerate(wm_vals):
+    for ci, is_ in enumerate(is_vals):
+      ax = axes[ri][ci]
+      subset = df[(df['weighting_method'] == wm) & (df['interpolation_similarity'] == is_)]
+      pivot = (
+        subset.groupby(['num_anchors', 'temperature'])['mae']
+        .mean()
+        .unstack('temperature')
+        .reindex(index=anc_vals, columns=temp_vals)
+      )
+      data = pivot.to_numpy(dtype=float)
+
+      im = ax.imshow(data, aspect='auto', cmap='RdYlGn_r', vmin=vmin, vmax=vmax,
+                     origin='lower')
+      im_ref = im
+
+      ax.set_xticks(range(len(temp_vals)))
+      ax.set_xticklabels([f'{t:.3g}' for t in temp_vals], rotation=45, ha='right')
+      ax.set_yticks(range(len(anc_vals)))
+      ax.set_yticklabels([str(a) for a in anc_vals])
+      ax.set_xlabel('temperature')
+      ax.set_ylabel('num_anchors')
+      ax.set_title(f'weighting={wm} / interp_sim={is_}')
+
+      for r in range(len(anc_vals)):
+        for c in range(len(temp_vals)):
+          val = data[r, c]
+          if not np.isnan(val):
+            ax.text(c, r, f'{val:.3f}', ha='center', va='center',
+                    fontsize=7, color='black')
+
+  if im_ref is not None:
+    fig.colorbar(im_ref, ax=axes, label='MAE', shrink=0.6)
+
+  plt.suptitle(
+    'MAE heatmap: temperature × num_anchors\n'
+    '(rows = weighting_method, cols = interpolation_similarity)',
+    fontsize=11,
+  )
+  plt.tight_layout()
+  path = os.path.join(out_dir, 'heatmap_temperature_anchors.png')
+  fig.savefig(path, dpi=150, bbox_inches='tight')
+  plt.close(fig)
+  print(f'Saved: {path}')
+
+
+def plot_scale_interp_heatmap(df, out_dir):
+  """
+  For each of temperature and rbf_sigma (if ≥ 2 distinct values), write one PNG
+  showing how MAE varies jointly with that scale parameter and interpolation_similarity.
+
+  Layout per file: rows = weighting_method, cols = num_anchors.
+  Inside each subplot: x-axis = interpolation_similarity, y-axis = scale parameter.
+  Cell colour encodes mean MAE; empty combinations are shown as white.
+
+  Args:
+    df      (pd.DataFrame): Summary DataFrame with trial metrics and hyperparams.
+    out_dir (str): Directory to write plots into.
+  """
+  base_needed = {'interpolation_similarity', 'weighting_method', 'num_anchors', 'mae'}
+  if not base_needed.issubset(df.columns):
+    return
+
+  vmin = float(df['mae'].min())
+  vmax = float(df['mae'].max())
+
+  wm_vals  = sorted(df['weighting_method'].unique())
+  anc_vals = sorted(df['num_anchors'].unique())
+  is_vals  = sorted(df['interpolation_similarity'].unique())
+
+  for scale_col in ('temperature', 'rbf_sigma'):
+    if scale_col not in df.columns or df[scale_col].nunique() < 2:
+      continue
+
+    scale_vals = sorted(df[scale_col].unique())
+    n_rows, n_cols = len(wm_vals), len(anc_vals)
+
+    cell_w = max(5, len(is_vals)    * 0.9 + 1.5)
+    cell_h = max(4, len(scale_vals) * 0.6 + 1.5)
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(n_cols * cell_w, n_rows * cell_h),
+                             squeeze=False)
+
+    im_ref = None
+    for ri, wm in enumerate(wm_vals):
+      for ci, anc in enumerate(anc_vals):
+        ax = axes[ri][ci]
+        subset = df[(df['weighting_method'] == wm) & (df['num_anchors'] == anc)]
+        pivot = (
+          subset.groupby([scale_col, 'interpolation_similarity'])['mae']
+          .mean()
+          .unstack('interpolation_similarity')
+          .reindex(index=scale_vals, columns=is_vals)
+        )
+        data = pivot.to_numpy(dtype=float)
+
+        im = ax.imshow(data, aspect='auto', cmap='RdYlGn_r', vmin=vmin, vmax=vmax,
+                       origin='lower')
+        im_ref = im
+
+        ax.set_xticks(range(len(is_vals)))
+        ax.set_xticklabels(is_vals, rotation=45, ha='right')
+        ax.set_yticks(range(len(scale_vals)))
+        ax.set_yticklabels([f'{v:.3g}' for v in scale_vals])
+        ax.set_xlabel('interpolation_similarity')
+        ax.set_ylabel(scale_col)
+        ax.set_title(f'weighting={wm} / num_anchors={anc}')
+
+        for r in range(len(scale_vals)):
+          for c in range(len(is_vals)):
+            val = data[r, c]
+            if not np.isnan(val):
+              ax.text(c, r, f'{val:.3f}', ha='center', va='center',
+                      fontsize=7, color='black')
+
+    if im_ref is not None:
+      fig.colorbar(im_ref, ax=axes, label='MAE', shrink=0.6)
+
+    plt.suptitle(
+      f'MAE heatmap: {scale_col} × interpolation_similarity\n'
+      '(rows = weighting_method, cols = num_anchors)',
+      fontsize=11,
+    )
+    # plt.tight_layout()
+    path = os.path.join(out_dir, f'heatmap_{scale_col}_interpolation_similarity.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'Saved: {path}')
+
+
+def plot_mae_anchors_per_interp_sim(df, out_dir):
+  """
+  For each distinct interpolation_similarity value, write one bar-chart PNG
+  showing MAE as a function of num_anchors.
+
+  One subplot row per weighting_method value (or a single row when the column
+  is absent). Bar height = mean MAE; error whiskers span [min, max].
+  Y-axis top is fixed to df['mae'].max() * 1.05 across all subplots and all
+  output files so every PNG shares the same scale and is directly comparable.
+  Skipped when num_anchors has < 2 distinct values.
+
+  Args:
+    df      (pd.DataFrame): Summary DataFrame with trial metrics and hyperparams.
+    out_dir (str): Directory to write the plots into.
+  """
+  needed = {'num_anchors', 'interpolation_similarity', 'mae'}
+  if not needed.issubset(df.columns):
+    return
+  if df['num_anchors'].nunique() < 2:
+    return
+
+  anc_vals = sorted(df['num_anchors'].unique())
+  is_vals  = sorted(df['interpolation_similarity'].unique())
+  wm_vals  = sorted(df['weighting_method'].unique()) if 'weighting_method' in df.columns else [None]
+  y_top    = float(df['mae'].max()) * 1.05
+
+  for is_ in is_vals:
+    subset_is = df[df['interpolation_similarity'] == is_]
+    n_rows    = len(wm_vals)
+    fig, axes = plt.subplots(
+      n_rows, 1,
+      figsize=(max(8, len(anc_vals) * 1.2), 5 * n_rows),
+      squeeze=False,
+    )
+
+    for ri, wm in enumerate(wm_vals):
+      ax = axes[ri][0]
+      subset = subset_is[subset_is['weighting_method'] == wm] if wm is not None else subset_is
+      title  = (f'weighting={wm} | interp_sim={is_}') if wm is not None else f'interp_sim={is_}'
+
+      grp = (
+        subset.groupby('num_anchors')['mae']
+        .agg(mean='mean', lo='min', hi='max')
+        .reset_index()
+        .sort_values('num_anchors')
+      )
+      vals    = grp['num_anchors'].tolist()
+      means   = grp['mean'].to_numpy()
+      yerr_lo = (grp['mean'] - grp['lo']).to_numpy()
+      yerr_hi = (grp['hi']   - grp['mean']).to_numpy()
+
+      x    = np.arange(len(vals))
+      bars = ax.bar(x, means, color='steelblue', alpha=0.85)
+      ax.errorbar(x, means, yerr=[yerr_lo, yerr_hi],
+                  fmt='none', color='black', capsize=5, linewidth=1.5)
+      for bar in bars:
+        ax.text(
+          bar.get_x() + bar.get_width() / 2,
+          bar.get_height() + y_top * 0.01,
+          f'{bar.get_height():.3f}',
+          ha='center', va='bottom', fontsize=8,
+        )
+      ax.set_ylim(0, y_top)
+      ax.set_xticks(x)
+      ax.set_xticklabels([str(v) for v in vals])
+      ax.set_xlabel('num_anchors')
+      ax.set_ylabel('MAE')
+      ax.set_title(title)
+
+    is_str = str(is_).replace('/', '_').replace(' ', '_')
+    plt.tight_layout()
+    path = os.path.join(out_dir, f'mae_anchors_interp_{is_str}.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'Saved: {path}')
+
+
+def generate_search_summary_plots(df, search_dir):
+  """
+  Write all search-level summary plots into <search_dir>/search_summary/.
+
+  Args:
+    df         (pd.DataFrame): Full summary DataFrame (all trials, sorted by MAE).
+    search_dir (str): Root folder of the grid search.
+
+  Returns:
+    str: Path to the search_summary directory.
+  """
+  summary_dir = os.path.join(search_dir, 'search_summary')
+  os.makedirs(summary_dir, exist_ok=True)
+  print(f'[cross_space_logs] Writing search summary plots to {summary_dir}')
+  plot_hyperparam_mae_summary(df, summary_dir)
+  plot_temperature_anchors_heatmap(df, summary_dir)
+  plot_scale_interp_heatmap(df, summary_dir)
+  plot_mae_anchors_per_interp_sim(df, summary_dir)
+  return summary_dir
+
+
 # ── search-folder aggregation ────────────────────────────────────────────────
 
 def generate_logs_search(search_dir, plot_only_top_k=None):
@@ -510,6 +854,8 @@ def generate_logs_search(search_dir, plot_only_top_k=None):
     df.drop(columns=['_pkl_path'], errors='ignore').to_csv(csv_path, index=False)
     print(f'Saved summary: {csv_path}')
 
+    generate_search_summary_plots(df, search_dir)
+
     if plot_only_top_k is not None:
       k = min(plot_only_top_k, len(df))
       print(f'[cross_space_logs] Plotting top {k} trial(s) by MAE...')
@@ -520,6 +866,103 @@ def generate_logs_search(search_dir, plot_only_top_k=None):
           print(f'[WARN] Skipping {pkl_path}: {exc}')
 
   return search_dir
+
+
+# ── multi-folder entry point ─────────────────────────────────────────────────
+
+def generate_logs_multi(search_dirs, plot_only_top_k=None):
+  """
+  Process multiple grid-search root folders in a single pass.
+
+  Runs per-folder analysis (per-trial diagnostic plots, per-folder summary.csv,
+  per-folder search_summary/ plots) and then writes a cross-folder global summary
+  into a global_summary/ subdirectory inside every input folder.
+
+  When plot_only_top_k is set, the top-K limit is applied globally across all
+  folders combined: only the K trials with the lowest MAE — regardless of which
+  folder they belong to — receive per-trial diagnostic plots.
+
+  Args:
+    search_dirs     (list[str]): Paths to grid-search root folders to process.
+    plot_only_top_k (int | None): If set, generate per-trial plots only for the
+      K trials with the lowest MAE across all folders. Summary CSVs and global
+      plots still cover all trials. If None, plots every trial.
+
+  Returns:
+    list[str]: List of search_dir paths processed.
+  """
+  # Phase 1: collect metrics from all folders
+  all_rows = []
+  for search_dir in search_dirs:
+    pkl_paths = sorted(glob.glob(
+      os.path.join(search_dir, '**', 'results.pkl'), recursive=True,
+    ))
+    if not pkl_paths:
+      print(f'[cross_space_logs] No results.pkl found under {search_dir}')
+      continue
+    print(f'[cross_space_logs] Found {len(pkl_paths)} trial(s) under {search_dir}')
+    for pkl_path in tqdm(pkl_paths, desc=f'Collecting {os.path.basename(search_dir)}', unit='trial'):
+      try:
+        data = _load_pkl(pkl_path)
+        if _detect_format(data) != 'grid':
+          print(f'[WARN] Skipping non-grid pkl: {pkl_path}')
+          continue
+        row = _collect_summary_row(data, pkl_path)
+        row['_pkl_path']   = pkl_path
+        row['_search_dir'] = search_dir
+        all_rows.append(row)
+      except Exception as exc:
+        print(f'[WARN] Skipping {pkl_path}: {exc}')
+
+  if not all_rows:
+    print('[cross_space_logs] No grid-format trials found across all folders.')
+    return search_dirs
+
+  global_df = pd.DataFrame(all_rows).sort_values('mae').reset_index(drop=True)
+  print(f'[cross_space_logs] Total trials collected: {len(global_df)}')
+
+  # Phase 2: determine which trials to plot
+  if plot_only_top_k is not None:
+    k = min(plot_only_top_k, len(global_df))
+    plot_paths = set(global_df.head(k)['_pkl_path'])
+    print(f'[cross_space_logs] Plotting top {k} trial(s) by MAE (global ranking)...')
+  else:
+    plot_paths = set(global_df['_pkl_path'])
+
+  # Phase 3: per-trial diagnostic plots for selected trials
+  for pkl_path in tqdm(sorted(plot_paths), desc='Plotting selected trials', unit='trial'):
+    try:
+      generate_logs(pkl_path)
+    except Exception as exc:
+      print(f'[WARN] Skipping plot for {pkl_path}: {exc}')
+
+  # Phase 4: per-folder summaries
+  for search_dir in search_dirs:
+    folder_mask = global_df['_search_dir'] == search_dir
+    folder_df   = global_df[folder_mask].copy()
+    if folder_df.empty:
+      continue
+    folder_clean = folder_df.drop(columns=['_pkl_path', '_search_dir'])
+    csv_path = os.path.join(search_dir, 'summary.csv')
+    folder_clean.to_csv(csv_path, index=False)
+    print(f'Saved per-folder summary: {csv_path}')
+    generate_search_summary_plots(folder_clean, search_dir)
+
+  # Phase 5: global summary into each folder
+  clean_global_df = global_df.drop(columns=['_pkl_path', '_search_dir'])
+  for search_dir in search_dirs:
+    global_out_dir = os.path.join(search_dir, 'global_summary')
+    os.makedirs(global_out_dir, exist_ok=True)
+    csv_path = os.path.join(global_out_dir, 'global_summary.csv')
+    clean_global_df.to_csv(csv_path, index=False)
+    print(f'Saved global summary: {csv_path}')
+    print(f'[cross_space_logs] Writing global summary plots to {global_out_dir}')
+    plot_hyperparam_mae_summary(clean_global_df, global_out_dir)
+    plot_temperature_anchors_heatmap(clean_global_df, global_out_dir)
+    plot_scale_interp_heatmap(clean_global_df, global_out_dir)
+    plot_mae_anchors_per_interp_sim(clean_global_df, global_out_dir)
+
+  return search_dirs
 
 
 # ── entry point ──────────────────────────────────────────────────────────────
@@ -552,22 +995,38 @@ def generate_logs(pkl_path, plot_only_top_k=None):
   fmt  = _detect_format(data)
 
   if fmt == 'grid':
-    out_dir     = os.path.join(os.path.dirname(pkl_path), 'logs')
-    search_root = os.path.dirname(os.path.dirname(pkl_path))
-    uid         = data.get('uid') or os.path.basename(search_root).split('_')[-1]
-    run_label   = f"Trial #{data['trial_number']} | UID: {uid}"
+    out_dir       = os.path.join(os.path.dirname(pkl_path), 'logs')
+    search_root   = os.path.dirname(os.path.dirname(pkl_path))
+    uid           = data.get('uid') or os.path.basename(search_root).split('_')[-1]
+    run_label     = f"Trial #{data['trial_number']} | UID: {uid}"
+    num_anchors_val = data['trial_params']['num_anchors']
     old_model_csv = data['trial_params']['old_model_csv']
-    csv_path    = os.path.join(search_root, 'precomputed', f'old_tensors_{old_model_csv}.csv')
-    subject_map = _get_subject_map(csv_path)
-    mae         = data['metrics']['mae']
-    ccc         = data['metrics']['ccc']
-    summary_row = _collect_summary_row(data, pkl_path)
+    csv_path      = os.path.join(search_root, 'precomputed', f'old_tensors_{old_model_csv}.csv')
+    subject_map   = _get_subject_map(csv_path)
+    mae           = data['metrics']['mae']
+    ccc           = data['metrics']['ccc']
+    summary_row   = _collect_summary_row(data, pkl_path)
   else:
-    cfg         = data['config_cross_space_projection']
-    out_dir     = os.path.join(cfg['out_dir'], 'logs')
-    run_label   = f"UID: {cfg['uid']}"
-    subject_map = _get_subject_map(cfg['old_tensors_csv_path'])
-    summary_row = None
+    cfg             = data['config_cross_space_projection']
+    out_dir         = os.path.join(cfg['out_dir'], 'logs')
+    run_label       = f"UID: {cfg['uid']}"
+    num_anchors_val = cfg.get('num_anchors')
+    subject_map     = _get_subject_map(cfg['old_tensors_csv_path'])
+    summary_row     = {
+      'uid':                      cfg.get('uid'),
+      'num_anchors':              cfg.get('num_anchors'),
+      'anchor_selection_type':    cfg.get('anchor_selection_type'),
+      'old_model_csv':            cfg.get('old_model_csv'),
+      'interpolation_similarity': cfg.get('interpolation_similarity'),
+      'weighting_method':         cfg.get('weighting_method'),
+      'temperature':              cfg.get('temperature'),
+      'rbf_sigma':                cfg.get('rbf_sigma'),
+    }
+
+  if num_anchors_val == 0:
+    run_label += ' | K=0 (identity)'
+  elif num_anchors_val == -1:
+    run_label += ' | K=-1 (original_video)'
 
   os.makedirs(out_dir, exist_ok=True)
   print(f'[cross_space_logs] Output: {out_dir}')
@@ -583,6 +1042,8 @@ def generate_logs(pkl_path, plot_only_top_k=None):
   if fmt == 'standalone':
     mae = float(np.mean(np.abs(new_preds - labels)))
     ccc = concordance_ccc(labels, new_preds)
+    summary_row['mae'] = mae
+    summary_row['ccc'] = ccc
   print(f'Global metrics — MAE: {mae:.4f}  CCC: {ccc:.4f}')
 
   plot_predictions_histogram(new_preds, old_preds, labels, out_dir, run_label=run_label)
@@ -592,7 +1053,7 @@ def generate_logs(pkl_path, plot_only_top_k=None):
   plot_umap(new_t['embeddings'], labels, sample_ids, subject_map, out_dir, run_label=run_label)
   plot_anchor_weights(weights, out_dir, run_label=run_label)
 
-  if fmt == 'standalone':
+  if fmt == 'standalone' and data.get('old_model_anchors_embeddings') is not None:
     plot_anchor_umap(
       data['old_model_anchors_embeddings']['embeddings'],
       data['new_model_anchors_embeddings']['embeddings'],
@@ -601,6 +1062,7 @@ def generate_logs(pkl_path, plot_only_top_k=None):
       run_label=run_label,
     )
 
+  _write_summary_csv(summary_row, out_dir)
   print(f'Done. All logs in {out_dir}')
   return out_dir, summary_row
 
@@ -610,11 +1072,14 @@ if __name__ == '__main__':
     description='Generate diagnostic plots from a cross_space_projection pkl file or grid-search folder.'
   )
   parser.add_argument(
-    '--pkl_path', type=str, required=True,
+    '--pkl_path', type=str, nargs='+', required=True,
     help=(
-      'Path to a results pkl produced by cross_space_projection.py, '
-      'OR the root folder of a grid search (all results.pkl files inside will be processed '
-      'and a summary.csv will be written at the root).'
+      'One or more paths to a results pkl produced by cross_space_projection.py, '
+      'OR grid-search root folder(s). '
+      'Single path: behaviour is unchanged — pkl or folder processed as before. '
+      'Multiple paths: per-folder analysis is run for each folder and a merged '
+      'global_summary/ (global_summary.csv + hyperparameter plots) is written '
+      'into every input folder.'
     ),
   )
   parser.add_argument(
@@ -627,4 +1092,7 @@ if __name__ == '__main__':
     ),
   )
   args = parser.parse_args()
-  generate_logs(args.pkl_path, plot_only_top_k=args.plot_only_top_k)
+  if len(args.pkl_path) > 1:
+    generate_logs_multi(args.pkl_path, plot_only_top_k=args.plot_only_top_k)
+  else:
+    generate_logs(args.pkl_path[0], plot_only_top_k=args.plot_only_top_k)
