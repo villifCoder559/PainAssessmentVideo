@@ -548,8 +548,8 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         # add test_id in dict_to_string
         dict_to_string += f'\nTest ID: {test_id}'
         dict_to_string += f'\nfold_subfold: {key.split("_")[0]}_{key.split("_")[-1]}'
-        y_lim_loss = 2.5 if 'parta' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower() else 4
-        step_lim = 0.25 if 'parta' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower() else 0.4
+        y_lim_loss = 2.5 if 'parta' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower() else 16
+        step_lim = 0.25 if 'parta' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower() else 2
         if isinstance(data['config']['criterion'],torch.nn.MSELoss):
           y_lim_loss = 15.1
           step_lim = 3
@@ -2128,9 +2128,12 @@ def plot_filtered_run_details(parent_folder, output_root, filter_dict, only_csv,
   plot_run_details(filtered_data, filtered_output_folder, only_csv, {}, split_by_dataset=split_by_dataset)
 
 if __name__ == '__main__':
-  parser = argparse.ArgumentParser(description='Plot results from a folder') 
-  parser.add_argument('--parent_folder', type=str, required=True,
-                      help='Path to folder containing all the results')
+  parser = argparse.ArgumentParser(description='Plot results from a folder')
+  input_group = parser.add_mutually_exclusive_group(required=True)
+  input_group.add_argument('--parent_folder', type=str,
+                            help='Path to folder containing all the results')
+  input_group.add_argument('--pkl_file', type=str,
+                            help='Path to a single k_fold_results.pkl file')
   parser.add_argument('--loss_plot_type', type=str, default='loss', help='Type of loss plot: dist or loss')
   parser.add_argument('--filter', type=str, default='',
                       help='Optional filter criteria in format key1=val1,key2=val2')
@@ -2150,20 +2153,31 @@ if __name__ == '__main__':
                       help='Also generate one summary_{csv_name}.csv per unique path_csv_dataset value.')
   args = parser.parse_args()
   dict_args = vars(args)
-  parent_folder = args.parent_folder
   only_csv = args.only_csv
-  
-  print(f'Parent folder: {parent_folder}')
-  output_root = os.path.join(parent_folder, '_summary')
+
+  if args.pkl_file:
+    output_root = os.path.join(os.path.dirname(os.path.abspath(args.pkl_file)), '_summary')
+  else:
+    parent_folder = args.parent_folder
+    print(f'Parent folder: {parent_folder}')
+    output_root = os.path.join(parent_folder, '_summary')
   os.makedirs(output_root, exist_ok=True)
-  if args.print_filter == True:
-    print(f'Printing filter from: {args.print_filter}')
-    results_files = find_results_files(args.parent_folder)
-    if len(results_files) == 0:
-      raise ValueError(f'No results files found in {args.parent_folder}')
-    data = load_results(results_files[0])
+
+  if args.print_filter:
+    if args.pkl_file:
+      data = load_results(args.pkl_file)
+    else:
+      results_files = find_results_files(args.parent_folder)
+      if len(results_files) == 0:
+        raise ValueError(f'No results files found in {args.parent_folder}')
+      data = load_results(results_files[0])
     config = data.get('config', {})
-    print(f'Available filter keys:\n{[f" {k}" for k in config.keys()]}')  
+    print(f'Available filter keys:\n{[f" {k}" for k in config.keys()]}')
+
+  elif args.pkl_file:
+    pkl_file = os.path.abspath(args.pkl_file)
+    results_data = {pkl_file: load_results(pkl_file)}
+    plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args, plot_only_loss=args.plot_only_loss, max_workers=args.num_workers, split_by_dataset=args.split_csv_by_dataset)
 
   else:
     if args.filter:
@@ -2175,10 +2189,10 @@ if __name__ == '__main__':
           try:
             filter_dict_arg[key.strip()] = float(value.strip())
           except ValueError:
-            filter_dict_arg[key.strip()] = value.strip() 
+            filter_dict_arg[key.strip()] = value.strip()
       print(f'Applying filter: {filter_dict_arg}')
       plot_filtered_run_details(parent_folder, output_root, filter_dict_arg, only_csv, split_by_dataset=args.split_csv_by_dataset)
-      
+
     else:
     # Generate the unfiltered plots
       if args.test_ids:
