@@ -28,8 +28,12 @@ from tqdm import tqdm
 
 import matplotlib
 matplotlib.use('Agg')
+import matplotlib.colors as mcolors
+import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
+from scipy import stats
 import pandas as pd
 import torch
 import umap
@@ -69,18 +73,19 @@ def _get_subject_map(csv_path):
   return dict(zip(df['sample_id'].astype(int), df['subject_id'].astype(int)))
 
 
-def _round_preds(preds):
+def _round_preds(preds, num_classes: int):
   """
-  Squeeze, round to nearest integer, and clip to [0, 9].
+  Squeeze, round to nearest integer, and clip to [0, num_classes - 1].
 
   Args:
-    preds (np.ndarray): Float predictions, shape (N,) or (N, 1).
+    preds       (np.ndarray): Float predictions, shape (N,) or (N, 1).
+    num_classes (int):        Number of classes; determines the upper clip bound.
 
   Returns:
     np.ndarray: Integer predictions, shape (N,), dtype int64.
   """
   arr = np.asarray(preds, dtype=np.float32).squeeze()
-  return np.clip(np.round(arr), 0, 9).astype(np.int64)
+  return np.clip(np.round(arr), 0, num_classes - 1).astype(np.int64)
 
 
 def _mae_per_group(preds, labels, group_ids):
@@ -101,6 +106,25 @@ def _mae_per_group(preds, labels, group_ids):
     mask = group_ids == gid
     result[int(gid)] = (float(np.mean(abs_err[mask])), int(mask.sum()))
   return result
+
+
+def _raw_errors_per_group(preds, labels, group_ids):
+  """
+  Return per-sample absolute errors grouped by group_id.
+
+  Args:
+    preds     (np.ndarray): Shape (N,), float predictions.
+    labels    (np.ndarray): Shape (N,), float ground truth.
+    group_ids (np.ndarray): Shape (N,), integer group identifier.
+
+  Returns:
+    tuple[list[int], list[np.ndarray]]:
+      - Sorted list of group ids.
+      - One 1-D float array of absolute errors per group (same order).
+  """
+  abs_err = np.abs(np.asarray(preds, dtype=np.float32) - np.asarray(labels, dtype=np.float32))
+  gids    = sorted(int(g) for g in np.unique(group_ids))
+  return gids, [abs_err[group_ids == gid] for gid in gids]
 
 
 def _single_bar(ax, groups, vals, ylabel, title, color):
@@ -128,6 +152,70 @@ def _single_bar(ax, groups, vals, ylabel, title, color):
   ax.set_xticklabels([str(g) for g in groups])
   ax.set_ylabel(ylabel)
   ax.set_title(title)
+
+
+def _draw_bar_boxplot(ax_bar, ax_box, groups, vals, raw_by_group, ylabel, title, color):
+  """
+  Draw a stacked bar (top) + box plot (bottom) into two pre-existing axes.
+
+  Args:
+    ax_bar       (matplotlib.axes.Axes): Axes for the bar chart (top).
+    ax_box       (matplotlib.axes.Axes): Axes for the box plot (bottom).
+    groups       (list): Group labels for the x-axis.
+    vals         (list[float]): Mean value per group (bar heights).
+    raw_by_group (list[np.ndarray]): Per-sample value arrays, one per group.
+    ylabel       (str): Y-axis label for both subplots.
+    title        (str): Title for the bar subplot.
+    color        (str): Bar fill and box fill color.
+  """
+  x      = np.arange(len(groups))
+  margin = 0.6
+  xlim   = (x[0] - margin, x[-1] + margin) if len(x) > 0 else (-0.6, 0.6)
+
+  # Bar chart
+  bars = ax_bar.bar(x, vals, color=color, alpha=0.85, edgecolor='white', linewidth=0.7)
+  ax_bar.set_xlim(*xlim)
+  ax_bar.set_xticks(x)
+  ax_bar.set_xticklabels([])
+  ax_bar.set_ylabel(ylabel)
+  ax_bar.set_title(title)
+  ax_bar.grid(axis='y', alpha=0.3)
+  val_range = max(vals) - min(vals) if len(vals) > 1 else abs(vals[0]) if vals else 0
+  offset    = val_range * 0.02 + 1e-6
+  for bar in bars:
+    h = bar.get_height()
+    ax_bar.text(
+      bar.get_x() + bar.get_width() / 2, h + offset,
+      f'{h:.2f}', ha='center', va='bottom', fontsize=7,
+    )
+
+  # Box plot
+  face_rgba      = list(mcolors.to_rgba(color))
+  face_rgba[3]   = 0.5
+  box_data = [
+    arr if (len(arr) > 0 and not np.all(np.isnan(arr))) else np.array([np.nan])
+    for arr in raw_by_group
+  ]
+  bp = ax_box.boxplot(
+    box_data,
+    positions=x,
+    widths=0.5,
+    patch_artist=True,
+    showfliers=True,
+    flierprops=dict(marker='o', markersize=3, alpha=0.5,
+                    markerfacecolor=color, markeredgecolor='none'),
+    medianprops=dict(color='#222222', linewidth=1.5),
+    whiskerprops=dict(linewidth=1.0),
+    capprops=dict(linewidth=1.0),
+  )
+  for patch in bp['boxes']:
+    patch.set_facecolor(face_rgba)
+    patch.set_edgecolor(color)
+  ax_box.set_xlim(*xlim)
+  ax_box.set_xticks(x)
+  ax_box.set_xticklabels([str(g) for g in groups])
+  ax_box.set_ylabel(ylabel)
+  ax_box.grid(axis='y', alpha=0.3)
 
 
 def _compute_umap(embeddings):
@@ -213,46 +301,92 @@ def _collect_summary_row(data, pkl_path):
 
 # ── plot functions ───────────────────────────────────────────────────────────
 
-def plot_predictions_histogram(new_preds, old_preds, labels, out_dir, run_label: str = ''):
+def plot_predictions_histogram(new_preds, old_preds, labels, out_dir,
+                               run_label: str = '', axes=None):
   """
-  Side-by-side histograms of new and old model predictions overlaid with ground truth.
+  Side-by-side histograms of new and old model predictions with KDE overlay.
+
+  Bars inside the ground-truth label range are blue; bars outside are orange.
+  Dotted vertical lines mark the label min/max. A KDE curve is overlaid on each
+  panel.
 
   Args:
     new_preds  (np.ndarray): Shape (N,), projected model float predictions.
     old_preds  (np.ndarray): Shape (N,), old model float predictions.
     labels     (np.ndarray): Shape (N,), ground-truth pain labels.
-    out_dir    (str): Directory where the plot is saved.
+    out_dir    (str): Directory where the plot is saved (ignored when axes provided).
     run_label  (str): Optional run identity string appended to plot titles.
+    axes       (array-like[Axes] | None): Two pre-existing axes for dashboard
+               embedding. When None a new figure is created and saved.
   """
-  lo = float(min(labels.min(), new_preds.min(), old_preds.min()))
-  hi = float(max(labels.max(), new_preds.max(), old_preds.max()))
-  bins_fine   = np.arange(lo, hi + 0.11, 0.1)
-  bins_coarse = np.arange(lo, hi + 1.1,  1.0)
-  suffix = f' | {run_label}' if run_label else ''
+  label_lo = float(labels.min())
+  label_hi = float(labels.max())
+  step     = 0.1
+  suffix   = f' | {run_label}' if run_label else ''
 
-  fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-  for ax, preds, color, name in [
-    (axes[0], new_preds, 'darkorange', 'Projected (new model)'),
-    (axes[1], old_preds, 'steelblue',  'Old model'),
+  standalone = axes is None
+  if standalone:
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+  else:
+    fig = axes[0].figure
+
+  for ax, preds, name in [
+    (axes[0], new_preds, 'Projected (new model)'),
+    (axes[1], old_preds, 'Old model'),
   ]:
-    ax.hist(preds,  bins=bins_fine,   alpha=0.7, label=name,           color=color)
-    ax.hist(labels, bins=bins_coarse, alpha=0.4, label='Ground truth', color='green', edgecolor='darkgreen')
+    pred_lo = float(preds.min())
+    pred_hi = float(preds.max())
+    lo = min(label_lo, pred_lo)
+    hi = max(label_hi, pred_hi)
+
+    bins              = np.arange(lo, hi + step, step)
+    counts, edges     = np.histogram(preds, bins=bins)
+    centers           = (edges[:-1] + edges[1:]) / 2.0
+    bar_colors        = [
+      '#DD8452' if (c < label_lo or c > label_hi) else '#4C72B0'
+      for c in centers
+    ]
+
+    in_mask  = np.array([c == '#4C72B0' for c in bar_colors])
+    oob_mask = ~in_mask
+
+    ax.bar(centers[in_mask],  counts[in_mask],  width=step,
+           color='#4C72B0', edgecolor='white', linewidth=0.6, alpha=0.75, label='In range')
+    if oob_mask.any():
+      ax.bar(centers[oob_mask], counts[oob_mask], width=step,
+             color='#DD8452', edgecolor='white', linewidth=0.6, alpha=0.75, label='Out of range')
+
+    if len(preds) > 1:
+      kde    = stats.gaussian_kde(preds)
+      x_fine = np.linspace(lo, hi, 500)
+      ax.plot(x_fine, kde(x_fine) * len(preds) * step,
+              color='#C44E52', linewidth=1.8, label='KDE')
+
+    for val in (label_lo, label_hi):
+      ax.axvline(val, linestyle=':', color='#555555', linewidth=1.5)
+
     ax.set_xlabel('Pain level')
     ax.set_ylabel('Count')
     ax.set_title(f'Prediction distribution — {name}{suffix}')
-    ax.legend()
+    ax.set_xlim(lo - step, hi + step)
+    ax.legend(fontsize=8)
+    ax.grid(axis='y', alpha=0.3)
 
-  plt.tight_layout()
-  path = os.path.join(out_dir, 'predictions_histogram.png')
-  fig.savefig(path, dpi=150)
-  plt.close(fig)
-  print(f'Saved: {path}')
+  if standalone:
+    plt.tight_layout()
+    path = os.path.join(out_dir, 'predictions_histogram.png')
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f'Saved: {path}')
 
 
 def plot_mae_per_class(new_preds, old_preds, labels, out_dir, run_label: str = ''):
   """
-  Two separate single-bar figures of MAE per pain class (0–9): one for the old
+  Two separate stacked bar+box figures of MAE per pain class: one for the old
   model and one for the projected model.
+
+  The bar row shows mean MAE per class; the box row shows the full per-sample
+  absolute error distribution per class.
 
   Args:
     new_preds  (np.ndarray): Shape (N,), projected model predictions.
@@ -267,15 +401,24 @@ def plot_mae_per_class(new_preds, old_preds, labels, out_dir, run_label: str = '
   groups   = sorted(set(old_mae) | set(new_mae))
   old_vals = [old_mae.get(g, (float('nan'), 0))[0] for g in groups]
   new_vals = [new_mae.get(g, (float('nan'), 0))[0] for g in groups]
+
+  _, old_raw = _raw_errors_per_group(old_preds, labels, labels_int)
+  _, new_raw = _raw_errors_per_group(new_preds, labels, labels_int)
+
   suffix = f' | {run_label}' if run_label else ''
 
-  for vals, color, name, filename in [
-    (old_vals, 'steelblue',  'Old model',       'mae_per_class_old.png'),
-    (new_vals, 'darkorange', 'Projected (new)', 'mae_per_class_projected.png'),
+  for vals, raw_errors, color, name, filename in [
+    (old_vals, old_raw, 'steelblue',  'Old model',       'mae_per_class_old.png'),
+    (new_vals, new_raw, 'darkorange', 'Projected (new)', 'mae_per_class_projected.png'),
   ]:
-    fig, ax = plt.subplots(figsize=(12, 5))
-    _single_bar(ax, groups, vals, 'MAE', f'MAE per pain class — {name}{suffix}', color)
-    ax.set_xlabel('Pain level')
+    fig, (ax_bar, ax_box) = plt.subplots(
+      2, 1, figsize=(12, 7), height_ratios=[2, 1],
+    )
+    _draw_bar_boxplot(
+      ax_bar, ax_box, groups, vals, raw_errors,
+      'MAE', f'MAE per pain class — {name}{suffix}', color,
+    )
+    ax_box.set_xlabel('Pain level')
     plt.tight_layout()
     path = os.path.join(out_dir, filename)
     fig.savefig(path, dpi=150)
@@ -320,31 +463,49 @@ def plot_mae_per_subject(new_preds, old_preds, labels, sample_ids, subject_map, 
     print(f'Saved: {path}')
 
 
-def plot_confusion_matrix_cross(new_preds, labels, out_dir, run_label: str = ''):
+def plot_confusion_matrix_cross(new_preds, labels, out_dir, num_classes: int,
+                                run_label: str = '', ax=None):
   """
   Confusion matrix of rounded projected predictions vs ground-truth labels.
 
-  Predictions are rounded to the nearest integer and clipped to [0, 9].
+  Predictions are rounded to the nearest integer and clipped to [0, num_classes - 1].
 
   Args:
-    new_preds  (np.ndarray): Shape (N,), float projected predictions.
-    labels     (np.ndarray): Shape (N,), ground-truth float labels.
-    out_dir    (str): Output directory.
-    run_label  (str): Optional run identity string appended to plot titles.
+    new_preds   (np.ndarray): Shape (N,), float projected predictions.
+    labels      (np.ndarray): Shape (N,), ground-truth float labels.
+    out_dir     (str): Output directory (ignored when ax is provided).
+    num_classes (int): Number of distinct pain classes inferred from the labels.
+    run_label   (str): Optional run identity string appended to plot titles.
+    ax          (matplotlib.axes.Axes | None): Pre-existing axes for dashboard
+                embedding. When None the plot is saved as confusion_matrix.png.
   """
-  preds_int  = torch.tensor(_round_preds(new_preds),                       dtype=torch.long)
-  labels_int = torch.tensor(np.clip(np.round(labels), 0, 9).astype(np.int64), dtype=torch.long)
-  cm = MulticlassConfusionMatrix(num_classes=10)
+  preds_int  = torch.tensor(_round_preds(new_preds, num_classes),                                    dtype=torch.long)
+  labels_int = torch.tensor(np.clip(np.round(labels), 0, num_classes - 1).astype(np.int64), dtype=torch.long)
+  cm = MulticlassConfusionMatrix(num_classes=num_classes)
   cm.update(preds_int, labels_int)
+  cm_arr = cm.compute().cpu().numpy()[:num_classes, :num_classes].astype(int)
   suffix = f' | {run_label}' if run_label else ''
-  path = os.path.join(out_dir, 'confusion_matrix.png')
-  plot_confusion_matrix(
-    cm,
-    title=f'Confusion matrix — projected predictions (rounded){suffix}',
-    saving_path=path,
+
+  standalone = ax is None
+  if standalone:
+    fig, ax = plt.subplots(figsize=(5, 4))
+
+  sns.heatmap(
+    cm_arr, annot=True, fmt='d', cmap='Blues', ax=ax,
+    linewidths=0.5, linecolor='lightgray', annot_kws={'size': 7},
   )
-  plt.close('all')
-  print(f'Saved: {path}')
+  ax.set_title(f'Confusion matrix{suffix}', fontsize=10, fontweight='bold')
+  ax.set_xlabel('Predicted', fontsize=8)
+  ax.set_ylabel('True', fontsize=8)
+  ax.tick_params(axis='x', rotation=45, labelsize=7)
+  ax.tick_params(axis='y', rotation=0,  labelsize=7)
+
+  if standalone:
+    fig.tight_layout()
+    path = os.path.join(out_dir, 'confusion_matrix.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'Saved: {path}')
 
 
 def plot_umap(embeddings, labels, sample_ids, subject_map, out_dir, run_label: str = ''):
@@ -468,6 +629,135 @@ def plot_anchor_umap(old_anchors_emb, new_anchors_emb, anchor_labels, out_dir, r
   plt.suptitle(f'Anchor embeddings in UMAP space — old vs new model{suffix}')
   plt.tight_layout()
   path = os.path.join(out_dir, 'anchor_umap.png')
+  fig.savefig(path, dpi=150)
+  plt.close(fig)
+  print(f'Saved: {path}')
+
+
+def plot_prediction_scatter(new_preds, old_preds, labels, out_dir,
+                            run_label: str = '', axes=None):
+  """
+  Side-by-side scatter of model predictions vs ground-truth labels.
+
+  Left panel: projected (new) model. Right panel: old model.
+  Each panel includes a red y=x reference line and a text annotation with
+  MAE and CCC.
+
+  Args:
+    new_preds  (np.ndarray): Shape (N,), projected model float predictions.
+    old_preds  (np.ndarray): Shape (N,), old model float predictions.
+    labels     (np.ndarray): Shape (N,), ground-truth pain labels.
+    out_dir    (str): Directory where the plot is saved (ignored when axes provided).
+    run_label  (str): Optional run identity string appended to plot titles.
+    axes       (array-like[Axes] | None): Two pre-existing axes for dashboard
+               embedding. When None a new figure is created and saved.
+  """
+  suffix     = f' | {run_label}' if run_label else ''
+  standalone = axes is None
+  if standalone:
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+  else:
+    fig = axes[0].figure
+
+  for ax, preds, name in [
+    (axes[0], new_preds, 'Projected (new model)'),
+    (axes[1], old_preds, 'Old model'),
+  ]:
+    mae_val = float(np.mean(np.abs(preds - labels)))
+    ccc_val = float(concordance_ccc(labels, preds))
+
+    ax.scatter(labels, preds, alpha=0.45, s=18, color='#4C72B0',
+               edgecolors='white', linewidths=0.3)
+
+    lo = float(min(labels.min(), preds.min())) - 0.5
+    hi = float(max(labels.max(), preds.max())) + 0.5
+    ax.plot([lo, hi], [lo, hi], 'r--', linewidth=1.2, label='y = x')
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+
+    ax.text(0.04, 0.95, f'MAE={mae_val:.3f}\nCCC={ccc_val:.3f}',
+            transform=ax.transAxes, va='top', fontsize=8,
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
+    ax.set_title(f'Predicted vs Ground Truth — {name}{suffix}', fontsize=10, fontweight='bold')
+    ax.set_xlabel('True label', fontsize=9)
+    ax.set_ylabel('Predicted value', fontsize=9)
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+
+  if standalone:
+    plt.tight_layout()
+    path = os.path.join(out_dir, 'prediction_scatter.png')
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f'Saved: {path}')
+
+
+def plot_prediction_by_class_boxplot(new_preds, old_preds, labels, out_dir, run_label: str = ''):
+  """
+  1×2 box plot of raw float predictions grouped by ground-truth pain class.
+
+  Left panel: projected (new) model. Right panel: old model.
+  A short red reference segment at y = class_id marks perfect calibration.
+
+  Args:
+    new_preds  (np.ndarray): Shape (N,), projected model float predictions.
+    old_preds  (np.ndarray): Shape (N,), old model float predictions.
+    labels     (np.ndarray): Shape (N,), ground-truth pain labels.
+    out_dir    (str): Output directory.
+    run_label  (str): Optional run identity string appended to plot titles.
+  """
+  class_ids  = sorted(int(c) for c in np.unique(np.round(labels).astype(int)))
+  labels_int = np.round(labels).astype(int)
+  suffix     = f' | {run_label}' if run_label else ''
+  x          = np.arange(len(class_ids))
+  margin     = 0.6
+  xlim       = (x[0] - margin, x[-1] + margin)
+
+  color      = '#4C72B0'
+  ref_color  = '#C44E52'
+  face_rgba  = list(mcolors.to_rgba(color))
+  face_rgba[3] = 0.5
+
+  box_kwargs = dict(
+    positions=x, widths=0.5, patch_artist=True, showfliers=True,
+    flierprops=dict(marker='o', markersize=3, alpha=0.5,
+                    markerfacecolor=color, markeredgecolor='none'),
+    medianprops=dict(color='#222222', linewidth=1.5),
+    whiskerprops=dict(linewidth=1.0),
+    capprops=dict(linewidth=1.0),
+  )
+
+  fig, axes = plt.subplots(1, 2, figsize=(max(14, len(class_ids) * 1.1), 5))
+
+  for ax, preds, model_name in [
+    (axes[0], new_preds, 'Projected (new model)'),
+    (axes[1], old_preds, 'Old model'),
+  ]:
+    box_data = []
+    for cid in class_ids:
+      mask = labels_int == cid
+      arr  = preds[mask].astype(np.float64)
+      box_data.append(arr if arr.size > 0 else np.array([np.nan]))
+
+    bp = ax.boxplot(box_data, **box_kwargs)
+    for patch in bp['boxes']:
+      patch.set_facecolor(face_rgba)
+      patch.set_edgecolor(color)
+
+    for i, cid in enumerate(class_ids):
+      ax.plot([x[i] - 0.38, x[i] + 0.38], [cid, cid],
+              color=ref_color, linewidth=2.0, zorder=5)
+
+    ax.set_xlim(*xlim)
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(c) for c in class_ids], rotation=45, ha='right', fontsize=8)
+    ax.set_title(f'{model_name}{suffix}', fontsize=10, fontweight='bold')
+    ax.set_xlabel('True pain class', fontsize=9)
+    ax.set_ylabel('Predicted value', fontsize=9)
+    ax.grid(axis='y', alpha=0.3)
+
+  plt.tight_layout()
+  path = os.path.join(out_dir, 'prediction_by_class_boxplot.png')
   fig.savefig(path, dpi=150)
   plt.close(fig)
   print(f'Saved: {path}')
@@ -797,6 +1087,172 @@ def generate_search_summary_plots(df, search_dir):
   return summary_dir
 
 
+def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
+                   run_label: str = ''):
+  """
+  Combined dashboard PNG with all key diagnostic plots for a single run.
+
+  Layout (3 rows × 3 cols via GridSpec):
+    Row 0: confusion_matrix | mae_per_class_new (bar+box) | prediction_scatter
+    Row 1: pred_by_class projected | pred_by_class old | metrics table
+    Row 2: prediction_histogram (full width, 3 columns)
+
+  The MAE per class bar+box cell uses a nested GridSpec (2 sub-rows).
+
+  Args:
+    new_preds   (np.ndarray): Shape (N,), projected model float predictions.
+    old_preds   (np.ndarray): Shape (N,), old model float predictions.
+    labels      (np.ndarray): Shape (N,), ground-truth pain labels.
+    num_classes (int): Number of distinct pain classes.
+    mae         (float): Global MAE for the projected model.
+    ccc         (float): Global CCC for the projected model.
+    out_dir     (str): Output directory.
+    run_label   (str): Optional run identity string appended to the suptitle.
+  """
+  suffix     = f' | {run_label}' if run_label else ''
+  labels_int = np.round(labels).astype(int)
+  class_ids  = sorted(int(c) for c in np.unique(labels_int))
+
+  # Pre-compute MAE per class (new model) for the bar+box cell
+  new_mae_dict            = _mae_per_group(new_preds, labels, labels_int)
+  groups                  = sorted(new_mae_dict)
+  new_vals                = [new_mae_dict.get(g, (float('nan'), 0))[0] for g in groups]
+  _, new_raw              = _raw_errors_per_group(new_preds, labels, labels_int)
+
+  fig = plt.figure(figsize=(26, 22))
+  gs  = gridspec.GridSpec(3, 3, figure=fig, hspace=0.5, wspace=0.38)
+
+  # ── Row 0, Col 0: confusion matrix ──────────────────────────────────────────
+  plot_confusion_matrix_cross(
+    new_preds, labels, out_dir, num_classes,
+    run_label=run_label, ax=fig.add_subplot(gs[0, 0]),
+  )
+
+  # ── Row 0, Col 1: MAE per class — new model (bar + box) ─────────────────────
+  inner_mae = gridspec.GridSpecFromSubplotSpec(
+    2, 1, subplot_spec=gs[0, 1], height_ratios=[2, 1], hspace=0.08,
+  )
+  _draw_bar_boxplot(
+    fig.add_subplot(inner_mae[0]),
+    fig.add_subplot(inner_mae[1]),
+    groups, new_vals, new_raw,
+    'MAE', f'MAE per class — Projected{suffix}', 'darkorange',
+  )
+  fig.axes[-1].set_xlabel('Pain level', fontsize=8)
+
+  # ── Row 0, Col 2: prediction scatter (nested 1×2) ───────────────────────────
+  inner_scatter = gridspec.GridSpecFromSubplotSpec(
+    1, 2, subplot_spec=gs[0, 2], wspace=0.35,
+  )
+  plot_prediction_scatter(
+    new_preds, old_preds, labels, out_dir,
+    run_label=run_label,
+    axes=[fig.add_subplot(inner_scatter[0]), fig.add_subplot(inner_scatter[1])],
+  )
+
+  # ── Row 1, Col 0: predictions by class — raw ────────────────────────────────
+  ax_raw = fig.add_subplot(gs[1, 0])
+  color  = '#4C72B0'
+  face_rgba = list(mcolors.to_rgba(color))
+  face_rgba[3] = 0.5
+  x = np.arange(len(class_ids))
+  box_data = []
+  for cid in class_ids:
+    mask = labels_int == cid
+    arr  = new_preds[mask].astype(np.float64)
+    box_data.append(arr if arr.size > 0 else np.array([np.nan]))
+  bp = ax_raw.boxplot(
+    box_data, positions=x, widths=0.5, patch_artist=True,
+    showfliers=True,
+    flierprops=dict(marker='o', markersize=3, alpha=0.5,
+                    markerfacecolor=color, markeredgecolor='none'),
+    medianprops=dict(color='#222222', linewidth=1.5),
+    whiskerprops=dict(linewidth=1.0), capprops=dict(linewidth=1.0),
+  )
+  for patch in bp['boxes']:
+    patch.set_facecolor(face_rgba)
+    patch.set_edgecolor(color)
+  for i, cid in enumerate(class_ids):
+    ax_raw.plot([x[i] - 0.38, x[i] + 0.38], [cid, cid],
+                color='#C44E52', linewidth=2.0, zorder=5)
+  ax_raw.set_xticks(x)
+  ax_raw.set_xticklabels([str(c) for c in class_ids], rotation=45, ha='right', fontsize=7)
+  ax_raw.set_title(f'Pred by class — Projected{suffix}', fontsize=9, fontweight='bold')
+  ax_raw.set_xlabel('True pain class', fontsize=8)
+  ax_raw.set_ylabel('Predicted value', fontsize=8)
+  ax_raw.grid(axis='y', alpha=0.3)
+
+  # ── Row 1, Col 1: predictions by class — old model ──────────────────────────
+  ax_old = fig.add_subplot(gs[1, 1])
+  box_data_old = []
+  for cid in class_ids:
+    mask = labels_int == cid
+    arr  = old_preds[mask].astype(np.float64)
+    box_data_old.append(arr if arr.size > 0 else np.array([np.nan]))
+  bp2 = ax_old.boxplot(
+    box_data_old, positions=x, widths=0.5, patch_artist=True,
+    showfliers=True,
+    flierprops=dict(marker='o', markersize=3, alpha=0.5,
+                    markerfacecolor=color, markeredgecolor='none'),
+    medianprops=dict(color='#222222', linewidth=1.5),
+    whiskerprops=dict(linewidth=1.0), capprops=dict(linewidth=1.0),
+  )
+  for patch in bp2['boxes']:
+    patch.set_facecolor(face_rgba)
+    patch.set_edgecolor(color)
+  for i, cid in enumerate(class_ids):
+    ax_old.plot([x[i] - 0.38, x[i] + 0.38], [cid, cid],
+                color='#C44E52', linewidth=2.0, zorder=5)
+  ax_old.set_xticks(x)
+  ax_old.set_xticklabels([str(c) for c in class_ids], rotation=45, ha='right', fontsize=7)
+  ax_old.set_title(f'Pred by class — Old model{suffix}', fontsize=9, fontweight='bold')
+  ax_old.set_xlabel('True pain class', fontsize=8)
+  ax_old.set_ylabel('Predicted value', fontsize=8)
+  ax_old.grid(axis='y', alpha=0.3)
+
+  # ── Row 1, Col 2: metrics table ──────────────────────────────────────────────
+  ax_tbl = fig.add_subplot(gs[1, 2])
+  ax_tbl.axis('off')
+  rows_data = [
+    ['MAE (projected)', f'{mae:.4f}'],
+    ['CCC (projected)', f'{ccc:.4f}'],
+    ['MAE (old)',       f'{float(np.mean(np.abs(old_preds - labels))):.4f}'],
+    ['N samples',       str(len(labels))],
+    ['N classes',       str(num_classes)],
+  ]
+  tbl = ax_tbl.table(
+    cellText=rows_data, colLabels=['Metric', 'Value'],
+    loc='center', cellLoc='center',
+  )
+  tbl.auto_set_font_size(False)
+  tbl.set_fontsize(9)
+  tbl.scale(1.2, 1.8)
+  for col in range(2):
+    tbl[(0, col)].set_facecolor('#4C72B0')
+    tbl[(0, col)].set_text_props(color='white', fontweight='bold')
+  for row in range(1, len(rows_data) + 1):
+    bg = '#eef2ff' if row % 2 == 0 else 'white'
+    for col in range(2):
+      tbl[(row, col)].set_facecolor(bg)
+  ax_tbl.set_title('Metrics Summary', fontsize=10, fontweight='bold', pad=8)
+
+  # ── Row 2: prediction histogram (full width, nested 1×2) ────────────────────
+  inner_hist = gridspec.GridSpecFromSubplotSpec(
+    1, 2, subplot_spec=gs[2, :], wspace=0.3,
+  )
+  plot_predictions_histogram(
+    new_preds, old_preds, labels, out_dir,
+    run_label=run_label,
+    axes=[fig.add_subplot(inner_hist[0]), fig.add_subplot(inner_hist[1])],
+  )
+
+  fig.suptitle(f'Dashboard{suffix}', fontsize=15, fontweight='bold', y=1.002)
+  path = os.path.join(out_dir, 'dashboard.png')
+  fig.savefig(path, dpi=150, bbox_inches='tight')
+  plt.close(fig)
+  print(f'Saved: {path}')
+
+
 # ── search-folder aggregation ────────────────────────────────────────────────
 
 def generate_logs_search(search_dir, plot_only_top_k=None):
@@ -1033,11 +1489,12 @@ def generate_logs(pkl_path, plot_only_top_k=None):
 
   new_t      = data['new_model_tensors']
   old_t      = data['old_model_tensors']
-  new_preds  = np.asarray(new_t['predictions'], dtype=np.float32).squeeze()
-  old_preds  = np.asarray(old_t['predictions'], dtype=np.float32).squeeze()
-  labels     = np.asarray(new_t['labels'],      dtype=np.float32)
-  sample_ids = np.asarray(new_t['sample_ids'],  dtype=np.int64)
-  weights    = np.asarray(new_t['weights'],      dtype=np.float32)
+  new_preds   = np.asarray(new_t['predictions'], dtype=np.float32).squeeze()
+  old_preds   = np.asarray(old_t['predictions'], dtype=np.float32).squeeze()
+  labels      = np.asarray(new_t['labels'],      dtype=np.float32)
+  sample_ids  = np.asarray(new_t['sample_ids'],  dtype=np.int64)
+  weights     = np.asarray(new_t['weights'],      dtype=np.float32)
+  num_classes = int(np.round(labels).max()) + 1
 
   if fmt == 'standalone':
     mae = float(np.mean(np.abs(new_preds - labels)))
@@ -1049,9 +1506,12 @@ def generate_logs(pkl_path, plot_only_top_k=None):
   plot_predictions_histogram(new_preds, old_preds, labels, out_dir, run_label=run_label)
   plot_mae_per_class(new_preds, old_preds, labels, out_dir, run_label=run_label)
   plot_mae_per_subject(new_preds, old_preds, labels, sample_ids, subject_map, out_dir, run_label=run_label)
-  plot_confusion_matrix_cross(new_preds, labels, out_dir, run_label=run_label)
+  plot_confusion_matrix_cross(new_preds, labels, out_dir, num_classes, run_label=run_label)
   plot_umap(new_t['embeddings'], labels, sample_ids, subject_map, out_dir, run_label=run_label)
   plot_anchor_weights(weights, out_dir, run_label=run_label)
+  plot_prediction_scatter(new_preds, old_preds, labels, out_dir, run_label=run_label)
+  plot_prediction_by_class_boxplot(new_preds, old_preds, labels, out_dir, run_label=run_label)
+  plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir, run_label=run_label)
 
   if fmt == 'standalone' and data.get('old_model_anchors_embeddings') is not None:
     plot_anchor_umap(

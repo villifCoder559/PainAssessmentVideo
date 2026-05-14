@@ -16,6 +16,7 @@ import pickle
 
 import matplotlib
 matplotlib.use('Agg')
+import matplotlib.colors as mcolors
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
@@ -334,6 +335,74 @@ def build_sample_df(data: dict, results: dict) -> pd.DataFrame:
       })
 
   return pd.DataFrame(rows)
+
+
+def _raw_errors_by_group(
+  sample_df: pd.DataFrame,
+  group_col: str,
+  ordered_ids: list,
+  preds_arr: np.ndarray = None,
+) -> list:
+  """
+  Compute per-sample absolute prediction errors grouped by class or subject.
+
+  Args:
+    sample_df:   DataFrame with columns [pred, true_class, subject_id].
+                 Shape: (N_samples,).
+    group_col:   Column to group by ('true_class' or 'subject_id').
+    ordered_ids: Group IDs in display order (aligns with class/subject labels).
+    preds_arr:   Optional predictions row-aligned with sample_df (e.g. scaled).
+                 If None, uses sample_df['pred'].
+
+  Returns:
+    List of 1-D float64 arrays of absolute errors, one per ID in ordered_ids.
+    Empty groups produce np.array([np.nan]).
+  """
+  preds  = preds_arr if preds_arr is not None else sample_df['pred'].values
+  errors = np.abs(
+    preds.astype(np.float64) - sample_df['true_class'].values.astype(np.float64)
+  )
+  groups = sample_df[group_col].values
+
+  result = []
+  for gid in ordered_ids:
+    mask = groups == int(gid)
+    result.append(errors[mask].copy() if mask.sum() > 0 else np.array([np.nan]))
+  return result
+
+
+def _preds_by_group(
+  sample_df: pd.DataFrame,
+  ordered_ids: list,
+  preds_arr: np.ndarray = None,
+  round_preds: bool = False,
+) -> list:
+  """
+  Collect per-sample predictions grouped by true class.
+
+  Args:
+    sample_df:   DataFrame with columns [pred, true_class, subject_id].
+                 Shape: (N_samples,).
+    ordered_ids: Class IDs in display order (aligns with class_labels).
+    preds_arr:   Optional predictions row-aligned with sample_df (e.g. scaled).
+                 If None, uses sample_df['pred'].
+    round_preds: If True, round predictions to nearest integer before grouping.
+
+  Returns:
+    List of 1-D float64 arrays of predictions, one per ID in ordered_ids.
+    Empty groups produce np.array([np.nan]).
+  """
+  preds = (
+    preds_arr if preds_arr is not None else sample_df['pred'].values
+  ).astype(np.float64)
+  if round_preds:
+    preds = np.round(preds)
+  groups = sample_df['true_class'].values
+  result = []
+  for gid in ordered_ids:
+    mask = groups == int(gid)
+    result.append(preds[mask].copy() if mask.sum() > 0 else np.array([np.nan]))
+  return result
 
 
 # ---------------------------------------------------------------------------
@@ -657,6 +726,225 @@ def plot_bar(
   if standalone and out_path is not None:
     fig.tight_layout()
     _save_fig(fig, out_path)
+  return fig
+
+
+def plot_bar_boxplot(
+  values: np.ndarray,
+  raw_by_group: list,
+  labels: list,
+  title: str,
+  xlabel: str,
+  ylabel: str,
+  out_path: str = None,
+  ax_bar: plt.Axes = None,
+  ax_box: plt.Axes = None,
+  sort_by_value: bool = False,
+  color: str = 'steelblue',
+  ylim: tuple = None,
+  title_suffix: str = '',
+) -> plt.Figure:
+  """
+  Stacked bar + box plot: bar chart of group means on top, box plot of the
+  raw per-sample distribution below, with aligned x-axis grouping.
+
+  Args:
+    values:        Mean value per group (bar heights). Shape: (N_groups,).
+    raw_by_group:  List of 1-D arrays of raw sample values, one per group.
+    labels:        Tick labels for each group (same length as values).
+    title:         Plot title (applied to the bar subplot).
+    xlabel:        X-axis label (applied to the box subplot).
+    ylabel:        Y-axis label for both subplots.
+    out_path:      Save path for the standalone PNG. Pass None to skip saving.
+    ax_bar:        Axes for the bar chart (dashboard mode).
+                   Must be provided together with ax_box, or both omitted.
+    ax_box:        Axes for the box plot (dashboard mode).
+    sort_by_value: If True, sort groups by ascending mean value.
+    color:         Bar fill and box fill color.
+    ylim:          Optional (min, max) y-axis limits for the bar chart.
+    title_suffix:  String appended to the title.
+
+  Returns:
+    The matplotlib Figure containing both subplots.
+  """
+  values       = np.array(values, dtype=float)
+  labels       = list(labels)
+  raw_by_group = list(raw_by_group)
+
+  if sort_by_value:
+    order        = np.argsort(values)
+    values       = values[order]
+    labels       = [labels[i]       for i in order]
+    raw_by_group = [raw_by_group[i] for i in order]
+
+  x = np.arange(len(labels))
+
+  standalone = ax_bar is None and ax_box is None
+  if standalone:
+    fig, (ax_bar, ax_box) = plt.subplots(
+      2, 1,
+      figsize=(max(7, len(labels) * 0.55), 6.5),
+      height_ratios=[2, 1],
+    )
+  else:
+    fig = ax_bar.figure
+
+  margin = 0.6
+  xlim   = (x[0] - margin, x[-1] + margin) if len(x) > 0 else (-0.6, 0.6)
+
+  # --- Top subplot: bar chart ---
+  bars = ax_bar.bar(x, values, color=color, edgecolor='white', linewidth=0.7)
+  ax_bar.set_xlim(*xlim)
+  ax_bar.set_xticks(x)
+  ax_bar.set_xticklabels([])
+  ax_bar.set_title(title + title_suffix, fontsize=11, fontweight='bold')
+  ax_bar.set_ylabel(ylabel, fontsize=9)
+  if ylim is not None:
+    ax_bar.set_ylim(ylim)
+  ax_bar.grid(axis='y', alpha=0.3)
+  val_range = values.max() - values.min() if len(values) > 1 else abs(float(values[0]))
+  offset    = val_range * 0.02 + 1e-6
+  for bar in bars:
+    h = bar.get_height()
+    ax_bar.text(
+      bar.get_x() + bar.get_width() / 2.0, h + offset,
+      f'{h:.2f}', ha='center', va='bottom', fontsize=6.5,
+    )
+
+  # --- Bottom subplot: box plot ---
+  box_data = [
+    arr if (len(arr) > 0 and not np.all(np.isnan(arr))) else np.array([np.nan])
+    for arr in raw_by_group
+  ]
+  face_rgba      = list(mcolors.to_rgba(color))
+  face_rgba[3]   = 0.5
+  bp = ax_box.boxplot(
+    box_data,
+    positions=x,
+    widths=0.5,
+    patch_artist=True,
+    showfliers=True,
+    flierprops=dict(
+      marker='o', markersize=3, alpha=0.5,
+      markerfacecolor=color, markeredgecolor='none',
+    ),
+    medianprops=dict(color='#222222', linewidth=1.5),
+    whiskerprops=dict(linewidth=1.0),
+    capprops=dict(linewidth=1.0),
+  )
+  for patch in bp['boxes']:
+    patch.set_facecolor(face_rgba)
+    patch.set_edgecolor(color)
+
+  ax_box.set_xlim(*xlim)
+  ax_box.set_xticks(x)
+  ax_box.set_xticklabels(labels, rotation=45, ha='right', fontsize=8)
+  ax_box.set_xlabel(xlabel, fontsize=9)
+  ax_box.set_ylabel(ylabel, fontsize=9)
+  ax_box.grid(axis='y', alpha=0.3)
+
+  if standalone:
+    fig.tight_layout()
+    if out_path is not None:
+      _save_fig(fig, out_path)
+  return fig
+
+
+def plot_prediction_by_class_boxplot(
+  sample_df: pd.DataFrame,
+  unique_class_ids: list,
+  class_labels: list,
+  out_dir: str,
+  title_suffix: str = '',
+  filename_suffix: str = '',
+  preds_arr: np.ndarray = None,
+) -> plt.Figure:
+  """
+  Two-panel box plot of model predictions grouped by ground-truth class.
+
+  Top panel:    raw (continuous float) predictions per true class.
+  Bottom panel: rounded (integer) predictions per true class.
+  Both panels show a short red reference segment at y = class_id for each box,
+  indicating where predictions would land if the model were perfectly calibrated.
+
+  Args:
+    sample_df:        DataFrame with columns [pred, true_class, subject_id].
+                      Shape: (N_samples,).
+    unique_class_ids: Class IDs in ascending order (aligns with class_labels).
+    class_labels:     Class label strings. Same length as unique_class_ids.
+    out_dir:          Directory to save the standalone PNG.
+    title_suffix:     String appended to subplot titles.
+    filename_suffix:  String appended before .png (e.g. '_scaled').
+    preds_arr:        Optional predictions row-aligned with sample_df
+                      (e.g. scaled values). If None, uses sample_df['pred'].
+
+  Returns:
+    The matplotlib Figure containing both subplots.
+  """
+  raw_preds     = _preds_by_group(sample_df, unique_class_ids, preds_arr, round_preds=False)
+  rounded_preds = _preds_by_group(sample_df, unique_class_ids, preds_arr, round_preds=True)
+
+  x      = np.arange(len(class_labels))
+  margin = 0.6
+  xlim   = (x[0] - margin, x[-1] + margin) if len(x) > 0 else (-0.6, 0.6)
+
+  fig, (ax_top, ax_bot) = plt.subplots(
+    2, 1,
+    figsize=(max(7, len(class_labels) * 0.55), 7),
+    height_ratios=[1, 1],
+  )
+
+  color     = '#4C72B0'
+  ref_color = '#C44E52'
+  face_rgba = list(mcolors.to_rgba(color))
+  face_rgba[3] = 0.5
+
+  box_kwargs = dict(
+    positions=x,
+    widths=0.5,
+    patch_artist=True,
+    showfliers=True,
+    flierprops=dict(
+      marker='o', markersize=3, alpha=0.5,
+      markerfacecolor=color, markeredgecolor='none',
+    ),
+    medianprops=dict(color='#222222', linewidth=1.5),
+    whiskerprops=dict(linewidth=1.0),
+    capprops=dict(linewidth=1.0),
+  )
+
+  for ax, data, panel_title in (
+    (ax_top, raw_preds,     'Predictions per True Class (raw)'),
+    (ax_bot, rounded_preds, 'Predictions per True Class (rounded)'),
+  ):
+    box_data = [
+      arr if (len(arr) > 0 and not np.all(np.isnan(arr))) else np.array([np.nan])
+      for arr in data
+    ]
+    bp = ax.boxplot(box_data, **box_kwargs)
+    for patch in bp['boxes']:
+      patch.set_facecolor(face_rgba)
+      patch.set_edgecolor(color)
+
+    # Reference segments at y = true class_id
+    for i, cid in enumerate(unique_class_ids):
+      ax.plot(
+        [x[i] - 0.38, x[i] + 0.38], [cid, cid],
+        color=ref_color, linewidth=2.0, zorder=5,
+      )
+
+    ax.set_xlim(*xlim)
+    ax.set_xticks(x)
+    ax.set_title(panel_title + title_suffix, fontsize=11, fontweight='bold')
+    ax.set_ylabel('Predicted Value', fontsize=9)
+    ax.grid(axis='y', alpha=0.3)
+
+  for ax in (ax_top, ax_bot):
+    ax.set_xticklabels(class_labels, rotation=45, ha='right', fontsize=8)
+    ax.set_xlabel('True Class', fontsize=9)
+
+  fig.tight_layout()
+  _save_fig(fig, os.path.join(out_dir, f'prediction_by_class_boxplot{filename_suffix}.png'))
   return fig
 
 
@@ -1020,6 +1308,8 @@ def plot_dashboard(
   filename_suffix: str = '',
   preds_arr: np.ndarray = None,
   trues_arr: np.ndarray = None,
+  raw_class_errors: list = None,
+  raw_subject_errors: list = None,
 ) -> None:
   """
   Generate a 4×3 dashboard combining all key plots and save it.
@@ -1027,50 +1317,85 @@ def plot_dashboard(
   Layout:
     Row 0: confusion_raw | confusion_norm | metrics_summary
     Row 1: loss_per_class | loss_per_subject | prediction_scatter
+            (each loss cell uses a nested bar+box layout when raw errors are
+             provided, otherwise a plain bar chart)
     Row 2: accuracy_per_class | accuracy_per_subject | precision_recall
     Row 3: prediction_histogram (full width, spanning all 3 columns)
 
   Args:
-    data:              Full pkl dictionary.
-    results:           Results dictionary (original or recomputed scaled).
-    class_labels:      Class label strings. Length: n_classes.
-    subject_labels:    Subject label strings. Length: n_subjects.
-    cm:                Confusion matrix. Shape: (n_classes, n_classes).
-    loss_per_class:    Mean loss per class. Shape: (n_classes,).
-    loss_per_subject:  Mean loss per subject. Shape: (n_subjects,).
-    acc_per_class:     Accuracy per class. Shape: (n_classes,).
-    acc_per_subject:   Accuracy per subject. Shape: (n_subjects,).
-    out_dir:           Directory where dashboard.png is saved.
-    title_suffix:      Suffix appended to each subplot title.
-    dashboard_title:   Overall suptitle of the dashboard figure.
-    filename_suffix:   String appended before .png (e.g. '_scaled').
-    preds_arr:         Optional scaled predictions for the scatter plot.
-    trues_arr:         Optional ground-truth values for the scatter plot.
+    data:                Full pkl dictionary.
+    results:             Results dictionary (original or recomputed scaled).
+    class_labels:        Class label strings. Length: n_classes.
+    subject_labels:      Subject label strings. Length: n_subjects.
+    cm:                  Confusion matrix. Shape: (n_classes, n_classes).
+    loss_per_class:      Mean loss per class. Shape: (n_classes,).
+    loss_per_subject:    Mean loss per subject. Shape: (n_subjects,).
+    acc_per_class:       Accuracy per class. Shape: (n_classes,).
+    acc_per_subject:     Accuracy per subject. Shape: (n_subjects,).
+    out_dir:             Directory where dashboard.png is saved.
+    title_suffix:        Suffix appended to each subplot title.
+    dashboard_title:     Overall suptitle of the dashboard figure.
+    filename_suffix:     String appended before .png (e.g. '_scaled').
+    preds_arr:           Optional scaled predictions for the scatter plot.
+    trues_arr:           Optional ground-truth values for the scatter plot.
+    raw_class_errors:    List of per-sample error arrays grouped by class.
+                         When provided, the loss-per-class cell shows a
+                         stacked bar + box plot.
+    raw_subject_errors:  List of per-sample error arrays grouped by subject.
+                         When provided, the loss-per-subject cell shows a
+                         stacked bar + box plot.
   """
   fig = plt.figure(figsize=(26, 26))
   gs  = gridspec.GridSpec(4, 3, figure=fig, hspace=0.5, wspace=0.38)
-  ax  = [[fig.add_subplot(gs[r, c]) for c in range(3)] for r in range(3)]
 
   # Row 0: confusion matrices + metrics table
   plot_confusion_matrix(cm, class_labels, out_dir, normalized=False,
-                        ax=ax[0][0], title_suffix=title_suffix)
+                        ax=fig.add_subplot(gs[0, 0]), title_suffix=title_suffix)
   plot_confusion_matrix(cm, class_labels, out_dir, normalized=True,
-                        ax=ax[0][1], title_suffix=title_suffix)
-  plot_metrics_summary(results, out_dir, ax=ax[0][2], title_suffix=title_suffix)
+                        ax=fig.add_subplot(gs[0, 1]), title_suffix=title_suffix)
+  plot_metrics_summary(results, out_dir, ax=fig.add_subplot(gs[0, 2]),
+                       title_suffix=title_suffix)
 
-  # Row 1: loss bars + scatter
-  plot_bar(
-    loss_per_class, class_labels,
-    'Loss per Class', 'Class', 'Mean Loss',
-    ax=ax[1][0], color='#4C72B0', title_suffix=title_suffix,
-  )
-  plot_bar(
-    loss_per_subject, subject_labels,
-    'Loss per Subject', 'Subject ID', 'Mean Loss',
-    ax=ax[1][1], sort_by_value=True, color='#C44E52', title_suffix=title_suffix,
-  )
+  # Row 1: loss bars (optionally with box plots) + scatter
+  if raw_class_errors is not None:
+    inner_c = gridspec.GridSpecFromSubplotSpec(
+      2, 1, subplot_spec=gs[1, 0], height_ratios=[2, 1], hspace=0.08,
+    )
+    plot_bar_boxplot(
+      loss_per_class, raw_class_errors, class_labels,
+      'Loss per Class', 'Class', 'Mean Loss',
+      ax_bar=fig.add_subplot(inner_c[0]),
+      ax_box=fig.add_subplot(inner_c[1]),
+      color='#4C72B0', title_suffix=title_suffix,
+    )
+  else:
+    plot_bar(
+      loss_per_class, class_labels,
+      'Loss per Class', 'Class', 'Mean Loss',
+      ax=fig.add_subplot(gs[1, 0]), color='#4C72B0', title_suffix=title_suffix,
+    )
+
+  if raw_subject_errors is not None:
+    inner_s = gridspec.GridSpecFromSubplotSpec(
+      2, 1, subplot_spec=gs[1, 1], height_ratios=[2, 1], hspace=0.08,
+    )
+    plot_bar_boxplot(
+      loss_per_subject, raw_subject_errors, subject_labels,
+      'Loss per Subject', 'Subject ID', 'Mean Loss',
+      ax_bar=fig.add_subplot(inner_s[0]),
+      ax_box=fig.add_subplot(inner_s[1]),
+      sort_by_value=True, color='#C44E52', title_suffix=title_suffix,
+    )
+  else:
+    plot_bar(
+      loss_per_subject, subject_labels,
+      'Loss per Subject', 'Subject ID', 'Mean Loss',
+      ax=fig.add_subplot(gs[1, 1]), sort_by_value=True, color='#C44E52',
+      title_suffix=title_suffix,
+    )
+
   plot_prediction_scatter(
-    data, results, out_dir, ax=ax[1][2],
+    data, results, out_dir, ax=fig.add_subplot(gs[1, 2]),
     title_suffix=title_suffix, preds_arr=preds_arr, trues_arr=trues_arr,
   )
 
@@ -1078,16 +1403,18 @@ def plot_dashboard(
   plot_bar(
     acc_per_class, class_labels,
     'Accuracy per Class', 'Class', 'Accuracy',
-    ax=ax[2][0], color='#55A868', ylim=(0, 1), title_suffix=title_suffix,
+    ax=fig.add_subplot(gs[2, 0]), color='#55A868', ylim=(0, 1),
+    title_suffix=title_suffix,
   )
   plot_bar(
     acc_per_subject, subject_labels,
     'Accuracy per Subject', 'Subject ID', 'Accuracy',
-    ax=ax[2][1], sort_by_value=True, color='#8172B2', ylim=(0, 1),
-    title_suffix=title_suffix,
+    ax=fig.add_subplot(gs[2, 1]), sort_by_value=True, color='#8172B2',
+    ylim=(0, 1), title_suffix=title_suffix,
   )
   plot_precision_recall_per_class(
-    results, class_labels, out_dir, ax=ax[2][2], title_suffix=title_suffix,
+    results, class_labels, out_dir, ax=fig.add_subplot(gs[2, 2]),
+    title_suffix=title_suffix,
   )
 
   # Row 3: prediction histogram (full width)
@@ -1117,28 +1444,36 @@ def _run_all_plots(
   filename_suffix: str,
   preds_arr: np.ndarray = None,
   trues_arr: np.ndarray = None,
+  raw_class_errors: list = None,
+  raw_subject_errors: list = None,
 ) -> None:
   """
-  Run all 9 individual plot functions and the dashboard for one pass.
+  Run all individual plot functions and the dashboard for one pass.
 
   Encapsulates a complete plotting pass so that main() can call it twice
   without code duplication (once for original predictions, once for scaled).
 
   Args:
-    plot_results:    Results dictionary (original or recomputed scaled).
-    data:            Full pkl dictionary.
-    class_labels:    List of class label strings.
-    subject_labels:  List of subject label strings (original order).
-    cm:              Confusion matrix ndarray. Shape: (n_classes, n_classes).
-    out_dir:         Output directory path.
-    title_suffix:    String appended to every plot title
-                     (e.g. '\nbest_model_ep_24').
-    filename_suffix: String appended before .png in every saved filename
-                     (e.g. '_scaled').
-    preds_arr:       Optional pre-computed prediction array for the scatter
-                     plot. Shape: (N,). Pass None to read from pkl.
-    trues_arr:       Optional pre-computed ground-truth array for scatter.
-                     Shape: (N,). Must be provided when preds_arr is given.
+    plot_results:       Results dictionary (original or recomputed scaled).
+    data:               Full pkl dictionary.
+    class_labels:       List of class label strings.
+    subject_labels:     List of subject label strings (original order).
+    cm:                 Confusion matrix ndarray. Shape: (n_classes, n_classes).
+    out_dir:            Output directory path.
+    title_suffix:       String appended to every plot title
+                        (e.g. '\nbest_model_ep_24').
+    filename_suffix:    String appended before .png in every saved filename
+                        (e.g. '_scaled').
+    preds_arr:          Optional pre-computed prediction array for the scatter
+                        plot. Shape: (N,). Pass None to read from pkl.
+    trues_arr:          Optional pre-computed ground-truth array for scatter.
+                        Shape: (N,). Must be provided when preds_arr is given.
+    raw_class_errors:   List of per-sample absolute error arrays grouped by
+                        class (aligned with class_labels). When provided,
+                        generates an additional loss_per_class_boxplot PNG.
+    raw_subject_errors: List of per-sample absolute error arrays grouped by
+                        subject (aligned with subject_labels). When provided,
+                        generates an additional loss_per_subject_boxplot PNG.
   """
   loss_per_class   = _to_numpy(plot_results['test_loss_per_class'])
   loss_per_subject = _to_numpy(plot_results['test_loss_per_subject'])
@@ -1147,11 +1482,11 @@ def _run_all_plots(
 
   plot_confusion_matrix(cm, class_labels, out_dir, normalized=False,
                         title_suffix=title_suffix, filename_suffix=filename_suffix)
-  print(f'  [1/10] confusion_matrix_raw{filename_suffix}.png')
+  print(f'  [1/12] confusion_matrix_raw{filename_suffix}.png')
 
   plot_confusion_matrix(cm, class_labels, out_dir, normalized=True,
                         title_suffix=title_suffix, filename_suffix=filename_suffix)
-  print(f'  [2/10] confusion_matrix_normalized{filename_suffix}.png')
+  print(f'  [2/12] confusion_matrix_normalized{filename_suffix}.png')
 
   plot_bar(
     loss_per_class, class_labels,
@@ -1159,7 +1494,16 @@ def _run_all_plots(
     out_path=os.path.join(out_dir, f'loss_per_class{filename_suffix}.png'),
     color='#4C72B0', title_suffix=title_suffix,
   )
-  print(f'  [3/10] loss_per_class{filename_suffix}.png')
+  print(f'  [3/12] loss_per_class{filename_suffix}.png')
+
+  if raw_class_errors is not None:
+    plot_bar_boxplot(
+      loss_per_class, raw_class_errors, class_labels,
+      'Loss per Class', 'Class', 'Mean Loss',
+      out_path=os.path.join(out_dir, f'loss_per_class_boxplot{filename_suffix}.png'),
+      color='#4C72B0', title_suffix=title_suffix,
+    )
+    print(f'  [4/12] loss_per_class_boxplot{filename_suffix}.png')
 
   plot_bar(
     loss_per_subject, subject_labels,
@@ -1167,7 +1511,16 @@ def _run_all_plots(
     out_path=os.path.join(out_dir, f'loss_per_subject{filename_suffix}.png'),
     sort_by_value=True, color='#C44E52', title_suffix=title_suffix,
   )
-  print(f'  [4/10] loss_per_subject{filename_suffix}.png')
+  print(f'  [5/12] loss_per_subject{filename_suffix}.png')
+
+  if raw_subject_errors is not None:
+    plot_bar_boxplot(
+      loss_per_subject, raw_subject_errors, subject_labels,
+      'Loss per Subject', 'Subject ID', 'Mean Loss',
+      out_path=os.path.join(out_dir, f'loss_per_subject_boxplot{filename_suffix}.png'),
+      sort_by_value=True, color='#C44E52', title_suffix=title_suffix,
+    )
+    print(f'  [6/12] loss_per_subject_boxplot{filename_suffix}.png')
 
   plot_bar(
     acc_per_class, class_labels,
@@ -1175,7 +1528,7 @@ def _run_all_plots(
     out_path=os.path.join(out_dir, f'accuracy_per_class{filename_suffix}.png'),
     color='#55A868', ylim=(0, 1), title_suffix=title_suffix,
   )
-  print(f'  [5/10] accuracy_per_class{filename_suffix}.png')
+  print(f'  [7/12] accuracy_per_class{filename_suffix}.png')
 
   plot_bar(
     acc_per_subject, subject_labels,
@@ -1183,31 +1536,31 @@ def _run_all_plots(
     out_path=os.path.join(out_dir, f'accuracy_per_subject{filename_suffix}.png'),
     sort_by_value=True, color='#8172B2', ylim=(0, 1), title_suffix=title_suffix,
   )
-  print(f'  [6/10] accuracy_per_subject{filename_suffix}.png')
+  print(f'  [8/12] accuracy_per_subject{filename_suffix}.png')
 
   plot_precision_recall_per_class(
     plot_results, class_labels, out_dir,
     title_suffix=title_suffix, filename_suffix=filename_suffix,
   )
-  print(f'  [7/10] precision_recall_per_class{filename_suffix}.png')
+  print(f'  [9/12] precision_recall_per_class{filename_suffix}.png')
 
   plot_prediction_scatter(
     data, plot_results, out_dir,
     title_suffix=title_suffix, filename_suffix=filename_suffix,
     preds_arr=preds_arr, trues_arr=trues_arr,
   )
-  print(f'  [8/10] prediction_scatter{filename_suffix}.png')
+  print(f'  [10/12] prediction_scatter{filename_suffix}.png')
 
   plot_metrics_summary(plot_results, out_dir,
                        title_suffix=title_suffix, filename_suffix=filename_suffix)
-  print(f'  [9/10] metrics_summary{filename_suffix}.png')
+  print(f'  [11/12] metrics_summary{filename_suffix}.png')
 
   plot_prediction_histogram(
     data, plot_results, out_dir,
     title_suffix=title_suffix, filename_suffix=filename_suffix,
     preds_arr=preds_arr,
   )
-  print(f'  [10/10] prediction_histogram{filename_suffix}.png')
+  print(f'  [12/12] prediction_histogram{filename_suffix}.png')
 
   dashboard_title = f'Test Results Dashboard{title_suffix}'
   plot_dashboard(
@@ -1221,6 +1574,8 @@ def _run_all_plots(
     filename_suffix=filename_suffix,
     preds_arr=preds_arr,
     trues_arr=trues_arr,
+    raw_class_errors=raw_class_errors,
+    raw_subject_errors=raw_subject_errors,
   )
   print(f'  dashboard{filename_suffix}.png')
 
@@ -1259,21 +1614,55 @@ def main() -> None:
   unique_subjects = [int(v) for v in results['test_unique_subject_ids']]
   n_classes       = len(class_labels)
 
+  # Build per-sample DataFrame (needed for box plots; always computed)
+  sample_df        = build_sample_df(data, results)
+  unique_class_ids = sorted(int(v) for v in results['test_unique_y'])
+
+  if not sample_df.empty:
+    raw_class_errors_orig   = _raw_errors_by_group(
+      sample_df, 'true_class', unique_class_ids,
+    )
+    raw_subject_errors_orig = _raw_errors_by_group(
+      sample_df, 'subject_id', unique_subjects,
+    )
+  else:
+    raw_class_errors_orig   = None
+    raw_subject_errors_orig = None
+
   # --- Pass 1: original predictions (always) ---
+  if not sample_df.empty:
+    _trues_orig = sample_df['true_class'].values.astype(int)
+    _preds_orig = np.clip(
+      np.round(sample_df['pred'].values).astype(int), 0, n_classes - 1
+    )
+    cm_orig = sk_confusion_matrix(
+      _trues_orig, _preds_orig, labels=list(range(n_classes))
+    )
+  else:
+    cm_orig = get_confusion_matrix(results)
+
   print('Generating original plots...')
   _run_all_plots(
     results, data, class_labels, subject_labels,
-    cm=get_confusion_matrix(results),
+    cm=cm_orig,
     out_dir=out_dir,
     title_suffix=f'\n{model_name}',
     filename_suffix='',
+    raw_class_errors=raw_class_errors_orig,
+    raw_subject_errors=raw_subject_errors_orig,
   )
+  if not sample_df.empty:
+    plot_prediction_by_class_boxplot(
+      sample_df, unique_class_ids, class_labels, out_dir,
+      title_suffix=f'\n{model_name}',
+      filename_suffix='',
+    )
+    print('  prediction_by_class_boxplot.png')
 
   # --- Pass 2: scaled predictions (only when --scale_predictions) ---
   if args.scale_predictions:
-    scale     = compute_scale_factor(data)
-    sample_df = build_sample_df(data, results)
-    scaled    = recompute_scaled(sample_df, scale, n_classes, unique_subjects)
+    scale  = compute_scale_factor(data)
+    scaled = recompute_scaled(sample_df, scale, n_classes, unique_subjects)
 
     # Merge scaled metrics into a results-compatible dict
     plot_results = {**results, **{
@@ -1286,6 +1675,12 @@ def main() -> None:
       )
     }}
 
+    raw_class_errors_scaled   = _raw_errors_by_group(
+      sample_df, 'true_class', unique_class_ids, preds_arr=scaled['_preds_arr'],
+    )
+    raw_subject_errors_scaled = _raw_errors_by_group(
+      sample_df, 'subject_id', unique_subjects, preds_arr=scaled['_preds_arr'],
+    )
     print(f'Predictions scaled by ×{scale:.4f}')
     print('Generating scaled plots...')
     _run_all_plots(
@@ -1296,7 +1691,17 @@ def main() -> None:
       filename_suffix='_scaled',
       preds_arr=scaled['_preds_arr'],
       trues_arr=scaled['_trues_arr'],
+      raw_class_errors=raw_class_errors_scaled,
+      raw_subject_errors=raw_subject_errors_scaled,
     )
+    if not sample_df.empty:
+      plot_prediction_by_class_boxplot(
+        sample_df, unique_class_ids, class_labels, out_dir,
+        title_suffix=f'\n{model_name}  |  scale ×{scale:.2f}',
+        filename_suffix='_scaled',
+        preds_arr=scaled['_preds_arr'],
+      )
+      print('  prediction_by_class_boxplot_scaled.png')
 
   saved = sorted(os.listdir(out_dir))
   print(f'\nDone. {len(saved)} files in {out_dir}:')

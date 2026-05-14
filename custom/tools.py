@@ -1967,6 +1967,7 @@ def compute_loss_per_class_(
         if out_masked.dim() > 1 and out_masked.size(1) == 1:
           out_masked = out_masked.view(-1)
         predicted = torch.copysign(torch.floor(torch.abs(out_masked) + 0.5), out_masked)
+        predicted = predicted.clamp(0, unique_train_val_classes.max().item())
       else:
         if outputs.dim() == 2:
           predicted = torch.argmax(outputs[mask], dim=1)
@@ -2010,6 +2011,7 @@ def compute_loss_per_subject_v2_(
   outputs: torch.Tensor,
   subject_loss: Optional[torch.Tensor] = None,
   subject_accuracy: Optional[torch.Tensor] = None,
+  unique_train_val_classes: Optional[torch.Tensor] = None,
 ):
   """
   Updated to support CompositeLoss-like criterion.
@@ -2058,6 +2060,8 @@ def compute_loss_per_subject_v2_(
       preds = torch.copysign(torch.floor(torch.abs(outputs) + 0.5), outputs)
       if preds.dim() > 1 and preds.size(1) == 1:
         preds = preds.view(-1)
+      if unique_train_val_classes is not None:
+        preds = preds.clamp(0, unique_train_val_classes.max().item())
     else:
       if outputs.dim() == 2:
         preds = torch.argmax(outputs, dim=1)

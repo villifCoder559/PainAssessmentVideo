@@ -38,7 +38,7 @@ def clean_csv_from_augmentations(csv_path):
   return cleaned_csv_path
   
 def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None, nr_samples=None, free_space=False,
-                                   disable_video_embeddings=False, disable_cross_attention=False, slim=True,
+                                   disable_video_embeddings=False, disable_cross_attention=True, slim=True,
                                    ffsp_override=None):
   # Initialize logging flags
   helper.init_log_cross_attention()
@@ -55,9 +55,19 @@ def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None
     disable_cross_attention = True
 
   uid = int(time.time())
+  model_stem = Path(model_pth_path).stem
+  _csv_for_name = csv_path if csv_path is not None else os.path.join(
+    *Path(model_pth_path).parts[:-2], 'test.csv'
+  )
+  csv_stem = Path(_csv_for_name).stem
 
   # Output folder
-  out_folder_name = f'{"cross_attention" if not disable_cross_attention else ""}{"_" if not disable_cross_attention and not disable_video_embeddings else ""}{"video_embeddings" if not disable_video_embeddings else ""}_{uid}_{"split_chunks" if split_chunks>0 else ""}'
+  out_folder_name = (
+    f'{"cross_attention" if not disable_cross_attention else ""}'
+    f'{"_" if not disable_cross_attention and not disable_video_embeddings else ""}'
+    f'{"video_embeddings" if not disable_video_embeddings else ""}'
+    f'_{model_stem}_{csv_stem}_{uid}_{"split_chunks" if split_chunks > 0 else ""}'
+  )
   folder_out = os.path.join(
     *Path(model_pth_path).parts[:-1],
     out_folder_name
@@ -252,8 +262,8 @@ if __name__ == '__main__':
                       help='Number of samples to use from the CSV file (for quick testing)')
   parser.add_argument('--disable_video_embeddings', action='store_true',
                       help='Disable logging video embeddings (enabled by default)')
-  parser.add_argument('--disable_cross_attention', action='store_true',
-                      help='Disable logging cross-attention (enabled by default)')
+  parser.add_argument('--enable_cross_attention', action='store_true',
+                      help='Enable logging cross-attention (disabled by default)')
   parser.add_argument('--idx_pth_folders', nargs='*', type=str, default=None,
                       help='List of folder paths containing model .pth files to process.'+
                       ' Ex: 0,0 2,3. They means k0_cross_val_sub_0 and k2_cross_val_sub_3')
@@ -281,7 +291,7 @@ if __name__ == '__main__':
         assert os.path.isfile(csv_path), f"CSV file {csv_path} does not exist."
         log_cross_attention_from_model(csv_path=csv_path,
                                     disable_video_embeddings=dict_args['disable_video_embeddings'],
-                                    disable_cross_attention=dict_args['disable_cross_attention'],
+                                    disable_cross_attention=not dict_args['enable_cross_attention'],
                                     model_pth_path=dict_args['model_pth_path'],
                                     split_chunks=dict_args['split_chunks'],
                                     nr_samples=dict_args['nr_samples'],
@@ -297,7 +307,7 @@ if __name__ == '__main__':
     for csv_path in csv_paths:
       log_cross_attention_from_model(csv_path=csv_path,
                                     disable_video_embeddings=dict_args['disable_video_embeddings'],
-                                    disable_cross_attention=dict_args['disable_cross_attention'],
+                                    disable_cross_attention=not dict_args['enable_cross_attention'],
                                     model_pth_path=dict_args['model_pth_path'],
                                     split_chunks=dict_args['split_chunks'],
                                     nr_samples=dict_args['nr_samples'],

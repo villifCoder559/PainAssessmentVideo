@@ -552,7 +552,7 @@ class BaseHead(nn.Module):
       subject_loss = torch.zeros(train_unique_subjects.shape[0])
       subject_accuracy = torch.zeros(train_unique_subjects.shape[0])
       sample_per_subject_count = torch.zeros(train_unique_subjects.shape[0])
-      train_confusion_matrix = ConfusionMatrix(task='multiclass',num_classes=max_train_class+1)
+      train_confusion_matrix = ConfusionMatrix(task='multiclass',num_classes=max_train_class)
       train_loss = 0.0
       # subject_count_batch = torch.zeros(train_unique_subjects.shape[0])
       count_batch=0
@@ -769,7 +769,8 @@ class BaseHead(nn.Module):
                                           outputs=_outputs_for_log,
                                           subject_loss=subject_loss if not is_coral_loss else None,
                                           subject_accuracy=subject_accuracy,
-                                          unique_train_val_subjects=train_unique_subjects)
+                                          unique_train_val_subjects=train_unique_subjects,
+                                          unique_train_val_classes=train_unique_classes)
           if helper.LOG_CONFIDENCE_PREDICTION:
             if self.is_classification and not is_coral_loss:
               tools.compute_confidence_predictions_(list_prediction_right_mean=batch_train_confidence_prediction_right_mean,
@@ -797,14 +798,13 @@ class BaseHead(nn.Module):
               predictions = torch.argmax(_outputs_for_log, dim=1).detach().cpu().reshape(-1)
           else:
             predictions = torch.copysign(torch.floor(torch.abs(_outputs_for_log) + 0.5), _outputs_for_log).detach().cpu().float() # to avoid the banker's rounding implemented as IEEE standard
-            mask = torch.isin(predictions, train_unique_classes)
-            predictions[~mask] = train_unique_classes.shape[0] # put prediction in the last class (bad_classified)
+            predictions = predictions.clamp(0, train_unique_classes.max().item())
 
           batch_y = _batch_y_for_log.detach().cpu()
           if batch_y.dim() > 1:
             batch_y = torch.argmax(batch_y, dim=1).reshape(-1)
 
-          list_train_epoch_predictions.append(_outputs_for_log.detach().cpu().numpy() if not self.is_classification else predictions.numpy())
+          list_train_epoch_predictions.append(predictions.numpy())
           list_train_ground_truths.append(batch_y.numpy())
 
           try:
@@ -1238,7 +1238,7 @@ class BaseHead(nn.Module):
       accuracy_per_subject = torch.zeros(unique_val_subjects.shape[0])
       # subject_batch_count = torch.zeros(unique_val_subjects.shape[0])
       sample_per_subject_count = torch.zeros(unique_val_subjects.shape[0])
-      val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=val_loader.dataset.get_unique_classes().max().item()+2) # start from 0 (so +1) and additive class(last) is for bad_classified in regression
+      val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=val_loader.dataset.get_unique_classes().max().item()+1) # start from 0, so +1
       batch_confidence_prediction_right_mean = []
       batch_confidence_prediction_wrong_mean = []
       batch_confidence_prediction_right_std = []
@@ -1361,7 +1361,8 @@ class BaseHead(nn.Module):
                                               outputs=_outputs_for_log,
                                               subject_loss=subject_loss if not is_coral_loss else None,
                                               unique_train_val_subjects=unique_val_subjects,
-                                              subject_accuracy=accuracy_per_subject)
+                                              subject_accuracy=accuracy_per_subject,
+                                              unique_train_val_classes=unique_val_classes)
           if save_log and helper.LOG_CONFIDENCE_PREDICTION:
             if self.is_classification and not is_coral_loss:
                 tools.compute_confidence_predictions_(list_prediction_right_mean=batch_confidence_prediction_right_mean,
@@ -1376,19 +1377,18 @@ class BaseHead(nn.Module):
               predictions = torch.argmax(_outputs_for_log, dim=1).detach().cpu().reshape(-1)
           else:
             predictions = torch.copysign(torch.floor(torch.abs(_outputs_for_log) + 0.5), _outputs_for_log).detach().cpu().float() # to avoid the banker's rounding implemented as IEEE standard
-            mask = torch.isin(predictions, unique_val_classes)
-            predictions[~mask] = loss_per_class.shape[1] # put prediction in the last class (bad_classified)
+            predictions = predictions.clamp(0, unique_val_classes.max().item())
 
           if history_val_sample_predictions is not None:
             tools.log_predictions_per_sample_(dict_log_sample=history_val_sample_predictions,
                                               tensor_sample_id=sample_id,
-                                              tensor_predictions=_outputs_for_log.detach().cpu() if isinstance(criterion, (torch.nn.L1Loss, torch.nn.MSELoss, torch.nn.HuberLoss)) else predictions,
+                                              tensor_predictions=predictions,
                                               epoch=epoch)
           batch_y = _batch_y_for_log.detach().cpu()
           if batch_y.dim() > 1:
             batch_y = torch.argmax(batch_y, dim=1).reshape(-1)
 
-          list_val_epoch_predictions.append(_outputs_for_log.detach().cpu().numpy() if not self.is_classification else predictions.numpy())
+          list_val_epoch_predictions.append(predictions.numpy())
           list_val_ground_truths.append(batch_y.numpy())
 
           val_confusion_matricies.update(predictions, batch_y)
