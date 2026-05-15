@@ -32,6 +32,7 @@ import numpy as np
 import optuna
 import pandas as pd
 import torch
+import tqdm
 
 import custom.helper as helper
 import custom.tools as tools
@@ -41,6 +42,43 @@ from log_cross_attention_from_model import clean_csv_from_augmentations
 _SEED = 42
 _ZERO_ANCHOR_KEY    = (None,  0, None)  # anchor_cache sentinel for the num_anchors=0 identity case
 _NEG_ONE_ANCHOR_KEY = (None, -1, None)  # anchor_cache sentinel for num_anchors=-1 oracle case
+
+
+def _linear_projector_tag() -> str:
+  """
+  Build a short folder-name tag from the active LINEAR_PROJECTOR_CONFIG.
+
+  Returns:
+    str: Compact string like 'lr0.0001_bs64_adamw_wd0.0001_ep100_normT_mse_sp70-10-20'.
+  """
+  cfg = LINEAR_PROJECTOR_CONFIG
+  sr  = cfg['split_ratios']
+  sp  = f"{int(sr[0]*100)}-{int(sr[1]*100)}-{int(sr[2]*100)}"
+  return (
+    f"lr{cfg['lr']}"
+    f"_bs{cfg['batch_size']}"
+    f"_{cfg['optimizer']}"
+    f"_wd{cfg['weight_decay']}"
+    f"_ep{cfg['epochs']}"
+    f"_norm{'T' if cfg['normalize_embeddings'] else 'F'}"
+    f"_{cfg['loss']}"
+    f"_sp{sp}"
+  )
+
+# Hyperparameters for the learned linear projector (interpolation_similarity='linear').
+# Edit values here to change the training recipe; no CLI flag is exposed.
+LINEAR_PROJECTOR_CONFIG = {
+  'lr':                   1e-4,
+  'batch_size':           64,
+  'optimizer':            'adamw',   # 'adam' | 'adamw' | 'sgd'
+  'weight_decay':         1e-4,
+  'epochs':               300,
+  'normalize_embeddings': True,
+  'loss':                 'mse',     # 'mse' | 'mae' | 'cosine'
+  'split_ratios':         (0.70, 0.10, 0.20),
+  'device':               'cuda',
+  'num_workers':          4,
+}
 
 # (backbone_key, dataset_key) → pre-extracted features folder path
 _FEATURES_MAP = {
@@ -407,6 +445,548 @@ def _compute_weights(z, anchors, sim_type, method, temperature, sigma):
   return _softmax(scores)
 
 
+# ---------------------------------------------------------------------------
+# Linear projector helpers (interpolation_similarity='linear')
+# ---------------------------------------------------------------------------
+
+def _make_subject_stratified_split(df, ratios, seed):
+  """
+  Build subject-disjoint, class-stratified train/val/test split of an anchor DataFrame.
+
+  Subjects are assigned wholly to one split (no subject appears in two splits).
+  Class proportions are kept as balanced as possible using StratifiedGroupKFold
+  with a fallback to GroupShuffleSplit when too few subjects/classes make
+  stratification infeasible.
+
+  Args:
+    df     (pd.DataFrame): Anchor rows with at least 'subject_id' and 'class_id' columns.
+    ratios (tuple[float, float, float]): (train, val, test) ratios; must sum to 1.0.
+    seed   (int): RNG seed for reproducibility.
+
+  Returns:
+    dict[str, pd.DataFrame]: {'train': df_tr, 'val': df_va, 'test': df_te} (indices reset).
+
+  Raises:
+    ValueError: If df has fewer than 3 distinct subject_ids, if ratios are invalid,
+                or if any split would contain zero rows.
+  """
+  from sklearn.model_selection import GroupShuffleSplit
+  r_tr, r_va, r_te = ratios
+  if not np.isclose(r_tr + r_va + r_te, 1.0):
+    raise ValueError(f'split ratios must sum to 1.0, got {ratios}')
+  if df['subject_id'].nunique() < 3:
+    raise ValueError(
+      f'subject-disjoint split requires >=3 distinct subject_ids, '
+      f'got {df["subject_id"].nunique()}'
+    )
+
+  groups = df['subject_id'].to_numpy()
+  classes = df['class_id'].to_numpy()
+  idx_all = np.arange(len(df))
+
+  # Step 1: split off test (r_te) from the rest using GroupShuffleSplit.
+  gss1 = GroupShuffleSplit(n_splits=1, test_size=r_te, random_state=seed)
+  trval_idx, test_idx = next(gss1.split(idx_all, classes, groups))
+  # Step 2: split val out of the trval portion. val_size relative to trval.
+  rel_val = r_va / (r_tr + r_va)
+  gss2 = GroupShuffleSplit(n_splits=1, test_size=rel_val, random_state=seed)
+  sub_train_idx, sub_val_idx = next(
+    gss2.split(trval_idx, classes[trval_idx], groups[trval_idx])
+  )
+  train_idx = trval_idx[sub_train_idx]
+  val_idx   = trval_idx[sub_val_idx]
+
+  splits = {
+    'train': df.iloc[train_idx].reset_index(drop=True),
+    'val':   df.iloc[val_idx].reset_index(drop=True),
+    'test':  df.iloc[test_idx].reset_index(drop=True),
+  }
+
+  # Subject-disjointness sanity check.
+  s_tr = set(splits['train']['subject_id'].tolist())
+  s_va = set(splits['val']['subject_id'].tolist())
+  s_te = set(splits['test']['subject_id'].tolist())
+  overlap = (s_tr & s_va) | (s_tr & s_te) | (s_va & s_te)
+  assert not overlap, f'subject-id overlap across splits: {overlap}'
+
+  for name, sp in splits.items():
+    if len(sp) == 0:
+      raise ValueError(f'split {name!r} is empty after subject-disjoint partitioning')
+
+  return splits, (train_idx, val_idx, test_idx)
+
+
+def _make_random_split(df, ratios, seed):
+  """
+  Build a plain random train/val/test split that ignores subject_id.
+
+  Used as a fallback when _make_subject_stratified_split cannot satisfy
+  subject-disjointness (e.g. too few subjects or empty groups). Subjects
+  may appear in multiple splits.
+
+  Args:
+    df     (pd.DataFrame): Anchor rows; row order is preserved.
+    ratios (tuple[float, float, float]): (train, val, test) ratios; must sum to 1.0.
+    seed   (int): RNG seed for reproducibility.
+
+  Returns:
+    tuple:
+      - dict[str, pd.DataFrame]: {'train': df_tr, 'val': df_va, 'test': df_te}
+        with indices reset.
+      - tuple[np.ndarray, np.ndarray, np.ndarray]: (train_idx, val_idx, test_idx)
+        into the input df.
+
+  Raises:
+    ValueError: If ratios do not sum to 1.0 or any resulting split is empty.
+  """
+  r_tr, r_va, r_te = ratios
+  if not np.isclose(r_tr + r_va + r_te, 1.0):
+    raise ValueError(f'split ratios must sum to 1.0, got {ratios}')
+
+  n = len(df)
+  rng = np.random.default_rng(seed)
+  perm = rng.permutation(n)
+  n_te = int(np.floor(n * r_te))
+  n_va = int(np.floor(n * r_va))
+  n_tr = n - n_te - n_va  # remainder absorbed by train
+
+  train_idx = perm[:n_tr]
+  val_idx   = perm[n_tr:n_tr + n_va]
+  test_idx  = perm[n_tr + n_va:]
+
+  splits = {
+    'train': df.iloc[train_idx].reset_index(drop=True),
+    'val':   df.iloc[val_idx].reset_index(drop=True),
+    'test':  df.iloc[test_idx].reset_index(drop=True),
+  }
+  for name, sp in splits.items():
+    if len(sp) == 0:
+      raise ValueError(f'split {name!r} is empty after random partitioning')
+
+  return splits, (train_idx, val_idx, test_idx)
+
+
+def _compute_norm_stats(X):
+  """
+  Compute per-feature mean and standard deviation.
+
+  Args:
+    X (np.ndarray): Shape (N, D).
+
+  Returns:
+    tuple[np.ndarray, np.ndarray]: (mean, std), each shape (D,). Std clamped to >=1e-8.
+  """
+  mean = X.mean(axis=0).astype(np.float32)
+  std  = X.std(axis=0).astype(np.float32)
+  std  = np.maximum(std, 1e-8)
+  return mean, std
+
+
+def _apply_norm(X, mean, std):
+  """
+  Apply per-feature normalization to a 2D array.
+
+  Args:
+    X    (np.ndarray): Shape (N, D).
+    mean (np.ndarray): Shape (D,).
+    std  (np.ndarray): Shape (D,), assumed > 0.
+
+  Returns:
+    np.ndarray: Shape (N, D), dtype float32.
+  """
+  return ((X - mean) / std).astype(np.float32)
+
+
+def _build_projector_optimizer(params, cfg):
+  """
+  Build an optimizer for the linear projector according to LINEAR_PROJECTOR_CONFIG.
+
+  Args:
+    params (iterable): Iterable of nn.Parameter (typically projector.parameters()).
+    cfg    (dict): LINEAR_PROJECTOR_CONFIG.
+
+  Returns:
+    torch.optim.Optimizer
+
+  Raises:
+    ValueError: If cfg['optimizer'] is unknown.
+  """
+  name = cfg['optimizer'].lower()
+  if name == 'adam':
+    return torch.optim.Adam(params, lr=cfg['lr'], weight_decay=cfg['weight_decay'])
+  if name == 'adamw':
+    return torch.optim.AdamW(params, lr=cfg['lr'], weight_decay=cfg['weight_decay'])
+  if name == 'sgd':
+    return torch.optim.SGD(params, lr=cfg['lr'], weight_decay=cfg['weight_decay'])
+  raise ValueError(f"Unknown linear-projector optimizer: {cfg['optimizer']!r}")
+
+
+def _projector_selection_rule(loss_name):
+  """
+  Map a loss name to the (metric_key, is_better_fn, init_value) used to pick
+  the best projector checkpoint by validation performance.
+
+  The rule mirrors the loss the optimizer is minimizing:
+    'mse'    → min va_mse
+    'mae'    → min va_mae
+    'cosine' → max va_cos  (loss is 1 - cos, so best = highest cos)
+
+  Args:
+    loss_name (str): 'mse' | 'mae' | 'cosine'.
+
+  Returns:
+    tuple[str, Callable[[float, float], bool], float]:
+      (metric_key in {'mse','mae','cos'}, comparator new<>best, sentinel init).
+
+  Raises:
+    ValueError: If loss_name is unknown.
+  """
+  if loss_name == 'mse':
+    return 'mse', (lambda new, best: new < best),  float('inf')
+  if loss_name == 'mae':
+    return 'mae', (lambda new, best: new < best),  float('inf')
+  if loss_name == 'cosine':
+    return 'cos', (lambda new, best: new > best), -float('inf')
+  raise ValueError(f'Unknown linear-projector loss for selection: {loss_name!r}')
+
+
+def _projector_loss_fn(name):
+  """
+  Resolve a loss name to a callable taking (pred, target) → scalar tensor.
+
+  Args:
+    name (str): 'mse' | 'mae' | 'cosine'.
+
+  Returns:
+    Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+
+  Raises:
+    ValueError: If name is unknown.
+  """
+  import torch.nn.functional as F
+  if name == 'mse':
+    return F.mse_loss
+  if name == 'mae':
+    return F.l1_loss
+  if name == 'cosine':
+    return lambda p, t: 1.0 - F.cosine_similarity(p, t, dim=1).mean()
+  raise ValueError(f'Unknown linear-projector loss: {name!r}')
+
+
+def _eval_projector_batch_metrics(pred, target):
+  """
+  Compute per-batch MSE, MAE and mean cosine similarity.
+
+  Args:
+    pred   (torch.Tensor): Shape (B, D_new).
+    target (torch.Tensor): Shape (B, D_new).
+
+  Returns:
+    tuple[float, float, float]: (mse, mae, mean_cosine_similarity).
+  """
+  import torch.nn.functional as F
+  mse = F.mse_loss(pred, target).item()
+  mae = F.l1_loss(pred, target).item()
+  cos = F.cosine_similarity(pred, target, dim=1).mean().item()
+  return mse, mae, cos
+
+
+def _accum_projector_batch_metrics(pred, target, sums):
+  """
+  Accumulate per-batch MSE / MAE / mean-cosine-similarity into GPU scalar tensors
+  in-place, without forcing a CUDA synchronization.
+
+  Args:
+    pred   (torch.Tensor): Shape (B, D_new).
+    target (torch.Tensor): Shape (B, D_new).
+    sums   (dict[str, torch.Tensor]): Pre-allocated zero scalar tensors with
+      keys 'mse', 'mae', 'cos' on the same device as pred/target. Updated
+      in-place.
+  """
+  import torch.nn.functional as F
+  with torch.no_grad():
+    sums['mse'] += F.mse_loss(pred, target)
+    sums['mae'] += F.l1_loss(pred, target)
+    sums['cos'] += F.cosine_similarity(pred, target, dim=1).mean()
+
+
+def _train_linear_projector(old_anchors, new_anchors, df_anch, projector_dir, anchor_key_tag):
+  """
+  Train a learned linear projector mapping old anchor embeddings to new anchor embeddings.
+
+  Anchors are split subject-disjointly (and class-stratified where possible) into
+  train/val/test according to LINEAR_PROJECTOR_CONFIG['split_ratios']. Model
+  selection mirrors the loss the optimizer is minimizing
+  (see _projector_selection_rule): val MSE for loss='mse', val MAE for
+  loss='mae', and val cosine similarity (maximized) for loss='cosine'.
+  The test split is held out and evaluated exactly once with the best
+  checkpoint.
+
+  Args:
+    old_anchors    (dict): Output of _extract_embeddings on old model — keys
+                           'embeddings' (K, D_old), 'sample_ids' (K,), 'labels' (K,).
+    new_anchors    (dict): Output of _extract_embeddings on new model, already
+                           aligned to old_anchors via _align_by_sample_id —
+                           'embeddings' (K, D_new), 'sample_ids' (K,).
+    df_anch        (pd.DataFrame): Anchor table written to disk (sample_id, subject_id,
+                                   class_id columns required).
+    projector_dir  (str): Output directory; contents created here:
+                          split_training_stage/{train,val,test}.csv,
+                          best_projector_{best_epoch}.pt.
+    anchor_key_tag (str): Short slug used in log lines.
+
+  Returns:
+    dict: keys 'projector', 'norm_stats', 'splits', 'metrics', 'best_epoch',
+          'best_val_mse' (legacy — always populated with MSE at best_epoch),
+          'best_val_metric' (value of the metric used for selection),
+          'best_val_metric_name' ('mse' | 'mae' | 'cos'), 'ckpt_path', 'config'.
+  """
+  from torch.utils.data import DataLoader, TensorDataset
+  cfg = copy.deepcopy(LINEAR_PROJECTOR_CONFIG)
+  device = torch.device(cfg['device'])
+
+  os.makedirs(projector_dir, exist_ok=True)
+  splits_dir = os.path.join(projector_dir, 'split_training_stage')
+  os.makedirs(splits_dir, exist_ok=True)
+
+  # --- Align df_anch row order with old_anchors['sample_ids'] ---
+  sid_col = df_anch['sample_id'].astype(np.int64).to_numpy()
+  emb_sids = old_anchors['sample_ids'].astype(np.int64)
+  sid_to_row = {int(s): i for i, s in enumerate(sid_col)}
+  missing = set(emb_sids.tolist()) - set(sid_col.tolist())
+  assert not missing, f'sample_ids missing from anchor df: {missing}'
+  order = np.array([sid_to_row[int(s)] for s in emb_sids], dtype=np.int64)
+  df_anch_aligned = df_anch.iloc[order].reset_index(drop=True)
+
+  # --- Build subject-disjoint stratified split, falling back to a plain
+  # random split (subject_id ignored) if the subject-aware split is infeasible
+  # for this anchor df (too few subjects, empty groups, sklearn failure, etc.).
+  try:
+    splits_df, (idx_tr, idx_va, idx_te) = _make_subject_stratified_split(
+      df_anch_aligned, cfg['split_ratios'], _SEED,
+    )
+    split_mode = 'subject_disjoint'
+  except Exception as e:
+    print(f"  [linear_proj:{anchor_key_tag}] WARNING: subject-disjoint split failed "
+          f"({type(e).__name__}: {e}). Falling back to plain random split "
+          f"(subjects may overlap across train/val/test).")
+    splits_df, (idx_tr, idx_va, idx_te) = _make_random_split(
+      df_anch_aligned, cfg['split_ratios'], _SEED,
+    )
+    split_mode = 'fallback_random'
+  X_old = old_anchors['embeddings'].astype(np.float32)
+  X_new = new_anchors['embeddings'].astype(np.float32)
+  labels = old_anchors['labels'].astype(np.float32)
+
+  split_arrays = {}
+  for name, idx in (('train', idx_tr), ('val', idx_va), ('test', idx_te)):
+    split_arrays[name] = {
+      'old':         X_old[idx],
+      'new':         X_new[idx],
+      'sample_ids':  emb_sids[idx],
+      'subject_ids': df_anch_aligned['subject_id'].to_numpy()[idx],
+      'labels':      labels[idx],
+    }
+
+  print(f"  [linear_proj:{anchor_key_tag}] [split_mode={split_mode}] anchor pairs: "
+        f"total={len(df_anch_aligned)} "
+        f"train={len(idx_tr)} val={len(idx_va)} test={len(idx_te)}")
+  print(f"  [linear_proj:{anchor_key_tag}] [split_mode={split_mode}] unique subjects per split — "
+        f"train={splits_df['train']['subject_id'].nunique()} "
+        f"val={splits_df['val']['subject_id'].nunique()} "
+        f"test={splits_df['test']['subject_id'].nunique()}")
+  if split_mode == 'subject_disjoint':
+    s_tr = set(splits_df['train']['subject_id'].tolist())
+    s_va = set(splits_df['val']['subject_id'].tolist())
+    s_te = set(splits_df['test']['subject_id'].tolist())
+    print(f"  [linear_proj:{anchor_key_tag}] subject overlap: "
+          f"train-val={len(s_tr & s_va)} train-test={len(s_tr & s_te)} val-test={len(s_va & s_te)}")
+  else:
+    print(f"  [linear_proj:{anchor_key_tag}] subject overlap not enforced "
+          f"(split_mode={split_mode}); train/val/test may share subjects.")
+
+  # --- Persist split CSVs ---
+  split_csv_paths = {}
+  for name, sdf in splits_df.items():
+    p = os.path.join(splits_dir, f'{name}.csv')
+    sdf.to_csv(p, index=False, sep='\t')
+    split_csv_paths[name] = p
+
+  # --- Optional normalization (train-only stats) ---
+  norm_stats = None
+  if cfg['normalize_embeddings']:
+    old_mean, old_std = _compute_norm_stats(split_arrays['train']['old'])
+    new_mean, new_std = _compute_norm_stats(split_arrays['train']['new'])
+    norm_stats = {
+      'old_mean': old_mean, 'old_std': old_std,
+      'new_mean': new_mean, 'new_std': new_std,
+    }
+    for name in ('train', 'val', 'test'):
+      split_arrays[name]['old_norm'] = _apply_norm(split_arrays[name]['old'], old_mean, old_std)
+      split_arrays[name]['new_norm'] = _apply_norm(split_arrays[name]['new'], new_mean, new_std)
+  else:
+    for name in ('train', 'val', 'test'):
+      split_arrays[name]['old_norm'] = split_arrays[name]['old']
+      split_arrays[name]['new_norm'] = split_arrays[name]['new']
+
+  d_old = X_old.shape[1]
+  d_new = X_new.shape[1]
+  projector = torch.nn.Linear(d_old, d_new).to(device)
+  optimizer = _build_projector_optimizer(projector.parameters(), cfg)
+  loss_fn = _projector_loss_fn(cfg['loss'])
+
+  # Pre-load every split to `device` once. The training tensors are tiny
+  # (≤ a few MB), so the one-shot PCIe transfer is cheap and lets us drop
+  # both per-batch .to(device) calls and DataLoader workers (which only pay
+  # off for I/O-bound datasets, not in-memory regression).
+  def _to_loader(name, shuffle):
+    ds = TensorDataset(
+      torch.from_numpy(split_arrays[name]['old_norm']).to(device),
+      torch.from_numpy(split_arrays[name]['new_norm']).to(device),
+    )
+    return DataLoader(ds, batch_size=cfg['batch_size'], shuffle=shuffle,
+                      num_workers=0, pin_memory=False)
+
+  train_loader = _to_loader('train', shuffle=True)
+  val_loader   = _to_loader('val',   shuffle=False)
+  test_loader  = _to_loader('test',  shuffle=False)
+
+  metrics = {'train': [], 'val': [], 'test': None}
+  sel_key, is_better, sel_init = _projector_selection_rule(cfg['loss'])
+  best_val_metric = sel_init
+  best_epoch = -1
+  best_state_dict = None
+
+  for epoch in tqdm.tqdm(range(1, cfg['epochs'] + 1), desc=f'Linear projector training ({anchor_key_tag})'):
+    projector.train()
+    tr_sums = {k: torch.zeros((), device=device) for k in ('mse', 'mae', 'cos')}
+    tr_n = 0
+    for xb, yb in train_loader:
+      pred = projector(xb)
+      loss = loss_fn(pred, yb)
+      optimizer.zero_grad(set_to_none=True)
+      loss.backward()
+      optimizer.step()
+      _accum_projector_batch_metrics(pred.detach(), yb, tr_sums)
+      tr_n += 1
+
+    projector.eval()
+    va_sums = {k: torch.zeros((), device=device) for k in ('mse', 'mae', 'cos')}
+    va_n = 0
+    with torch.no_grad():
+      for xb, yb in val_loader:
+        pred = projector(xb)
+        _accum_projector_batch_metrics(pred, yb, va_sums)
+        va_n += 1
+
+    # Single sync per epoch: stack the three GPU scalars and convert in one .tolist().
+    tr_vals = torch.stack([tr_sums['mse'], tr_sums['mae'], tr_sums['cos']]) / max(tr_n, 1)
+    va_vals = torch.stack([va_sums['mse'], va_sums['mae'], va_sums['cos']]) / max(va_n, 1)
+    tr_mse, tr_mae, tr_cos = tr_vals.tolist()
+    va_mse, va_mae, va_cos = va_vals.tolist()
+    metrics['train'].append({'epoch': epoch, 'mse': tr_mse, 'mae': tr_mae, 'cos': tr_cos})
+    metrics['val'].append(  {'epoch': epoch, 'mse': va_mse, 'mae': va_mae, 'cos': va_cos})
+
+    va_sel = {'mse': va_mse, 'mae': va_mae, 'cos': va_cos}[sel_key]
+    if is_better(va_sel, best_val_metric):
+      best_val_metric = va_sel
+      best_epoch = epoch
+      best_state_dict = {k: v.detach().cpu().clone() for k, v in projector.state_dict().items()}
+
+  # Snapshot the val row at best_epoch so we can preserve `best_val_mse` (legacy
+  # field) regardless of which metric drove selection.
+  best_val_row = (metrics['val'][best_epoch - 1] if best_epoch > 0
+                  else {'mse': float('nan'), 'mae': float('nan'), 'cos': float('nan')})
+  best_val_mse = best_val_row['mse']
+
+  print(f"  [linear_proj:{anchor_key_tag}] best epoch: {best_epoch}  "
+        f"best val {sel_key.upper()}: {best_val_metric:.6f}  "
+        f"(loss='{cfg['loss']}')")
+
+  # --- Restore best weights and run a single test evaluation ---
+  projector.load_state_dict(best_state_dict)
+  projector.eval()
+  te_sums = {k: torch.zeros((), device=device) for k in ('mse', 'mae', 'cos')}
+  te_n = 0
+  with torch.no_grad():
+    for xb, yb in test_loader:
+      pred = projector(xb)
+      _accum_projector_batch_metrics(pred, yb, te_sums)
+      te_n += 1
+  te_vals = torch.stack([te_sums['mse'], te_sums['mae'], te_sums['cos']]) / max(te_n, 1)
+  te_mse, te_mae, te_cos = te_vals.tolist()
+  test_metrics = {'mse': te_mse, 'mae': te_mae, 'cos': te_cos}
+  metrics['test'] = test_metrics
+  print(f"  [linear_proj:{anchor_key_tag}] test — MSE: {test_metrics['mse']:.6f}  "
+        f"MAE: {test_metrics['mae']:.6f}  cos: {test_metrics['cos']:.6f}")
+
+  # --- Persist best checkpoint ---
+  ckpt_path = os.path.join(projector_dir, f'best_projector_{best_epoch}.pt')
+  torch.save(best_state_dict, ckpt_path)
+
+  # --- Project each split's embeddings using the best (now-loaded) projector ---
+  projector_cpu = torch.nn.Linear(d_old, d_new)
+  projector_cpu.load_state_dict(best_state_dict)
+  projector_cpu.eval()
+
+  splits_out = {}
+  for name in ('train', 'val', 'test'):
+    with torch.no_grad():
+      pred_norm = projector_cpu(
+        torch.from_numpy(split_arrays[name]['old_norm'])
+      ).numpy().astype(np.float32)
+    if norm_stats is not None:
+      pred = (pred_norm * norm_stats['new_std']) + norm_stats['new_mean']
+    else:
+      pred = pred_norm
+    splits_out[name] = {
+      'df_path':     split_csv_paths[name],
+      'projected':   pred.astype(np.float32),
+      'target':      split_arrays[name]['new'].astype(np.float32),
+      'sample_ids':  split_arrays[name]['sample_ids'].astype(np.int64),
+      'subject_ids': split_arrays[name]['subject_ids'],
+      'labels':      split_arrays[name]['labels'].astype(np.float32),
+    }
+
+  return {
+    'projector':            projector_cpu,
+    'norm_stats':           norm_stats,
+    'splits':               splits_out,
+    'metrics':              metrics,
+    'best_epoch':           best_epoch,
+    'best_val_mse':         float(best_val_mse),
+    'best_val_metric':      float(best_val_metric),
+    'best_val_metric_name': sel_key,
+    'ckpt_path':            ckpt_path,
+    'config':               cfg,
+    'split_mode':           split_mode,
+  }
+
+
+def _apply_linear_projector(projector, norm_stats, old_embeddings):
+  """
+  Apply a trained linear projector to a batch of old-space embeddings, with
+  optional input normalization and output un-normalization.
+
+  Args:
+    projector      (torch.nn.Linear): Trained projector (any device).
+    norm_stats     (dict | None): {'old_mean','old_std','new_mean','new_std'} or None.
+    old_embeddings (np.ndarray): Shape (N, D_old).
+
+  Returns:
+    np.ndarray: Projected embeddings, shape (N, D_new), dtype float32.
+  """
+  X = old_embeddings.astype(np.float32)
+  if norm_stats is not None:
+    X = _apply_norm(X, norm_stats['old_mean'], norm_stats['old_std'])
+  device = next(projector.parameters()).device
+  with torch.no_grad():
+    pred = projector(torch.from_numpy(X).to(device)).cpu().numpy().astype(np.float32)
+  if norm_stats is not None:
+    pred = (pred * norm_stats['new_std']) + norm_stats['new_mean']
+  return pred.astype(np.float32)
+
+
 def _select_anchors(df_full, num_anchors, selection_type):
   """
   Select anchor samples from a DataFrame according to the given strategy.
@@ -599,11 +1179,24 @@ def _precompute_embeddings(
       features_path_override=anchor_domain_features_for_old,
     )
     new_anch = _extract_embeddings(new_model, new_model_pth, anchors_csv, new_config)
+    new_aligned = _align_by_sample_id(old_anch, new_anch)
     anchor_cache[key] = {
       'old': old_anch,
-      'new': _align_by_sample_id(old_anch, new_anch),
+      'new': new_aligned,
       'anchors_csv': anchors_csv,
+      'anchors_df': df_anch,
     }
+    if 'linear' in args.interpolation_similarity:
+      projector_dir = os.path.join(
+        precomputed_dir, 'linear_projector', f'{csv_sel}_{num_anch}_{sel_type}',
+      )
+      anchor_cache[key]['projector'] = _train_linear_projector(
+        old_anchors=old_anch,
+        new_anchors=new_aligned,
+        df_anch=df_anch,
+        projector_dir=projector_dir,
+        anchor_key_tag=f'{csv_sel}_{num_anch}_{sel_type}',
+      )
 
   if 0 in args.num_anchors:
     anchor_cache[_ZERO_ANCHOR_KEY] = {'old': None, 'new': None, 'anchors_csv': None}
@@ -692,15 +1285,25 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
     )
     old_model_anchors         = anchor_cache[anchor_key]['old']
     new_model_anchors_aligned = anchor_cache[anchor_key]['new']
-    weights = _compute_weights(
-      z=old_model_tensors['embeddings'],
-      anchors=old_model_anchors['embeddings'],
-      sim_type=trial_params['interpolation_similarity'],
-      method=trial_params['weighting_method'],
-      temperature=trial_params['temperature'],
-      sigma=trial_params['rbf_sigma'],
-    )
-    projected = (weights @ new_model_anchors_aligned['embeddings'].astype(np.float32))
+    if trial_params['interpolation_similarity'] == 'linear':
+      bundle = anchor_cache[anchor_key]['projector']
+      projected = _apply_linear_projector(
+        bundle['projector'], bundle['norm_stats'],
+        old_model_tensors['embeddings'],
+      )
+      weights = np.zeros((len(projected), 0), dtype=np.float32)
+      print(f"  [trial {trial_number}] interpolation_similarity=linear → "
+            f"applying learned projector (best_epoch={bundle['best_epoch']})")
+    else:
+      weights = _compute_weights(
+        z=old_model_tensors['embeddings'],
+        anchors=old_model_anchors['embeddings'],
+        sim_type=trial_params['interpolation_similarity'],
+        method=trial_params['weighting_method'],
+        temperature=trial_params['temperature'],
+        sigma=trial_params['rbf_sigma'],
+      )
+      projected = (weights @ new_model_anchors_aligned['embeddings'].astype(np.float32))
 
   normalize_labels = bool(new_config['config'].get('normalize_labels', 0))
   max_label = new_config['config'].get('max_label', None)
@@ -734,6 +1337,24 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
     'old_model_tensors': old_model_tensors,
     'metrics': {'mae': mae, 'ccc': ccc},
   }
+  if trial_params['interpolation_similarity'] == 'linear' and trial_params['num_anchors'] not in (0, -1):
+    anchor_key = (
+      trial_params['csv_anchor_selection'],
+      trial_params['num_anchors'],
+      trial_params['anchor_selection_type'],
+    )
+    bundle = anchor_cache[anchor_key]['projector']
+    trial_result['linear_projector'] = {
+      'config':               bundle['config'],
+      'norm_stats':           bundle['norm_stats'],
+      'best_epoch':           bundle['best_epoch'],
+      'best_val_mse':         bundle['best_val_mse'],
+      'best_val_metric':      bundle['best_val_metric'],
+      'best_val_metric_name': bundle['best_val_metric_name'],
+      'ckpt_path':            bundle['ckpt_path'],
+      'metrics':              bundle['metrics'],
+      'splits':               bundle['splits'],
+    }
   with open(os.path.join(trial_dir, 'results.pkl'), 'wb') as f:
     pickle.dump(trial_result, f)
   return mae
@@ -761,6 +1382,7 @@ def run_optuna(args):
   def _fmt(vals):
     return '-'.join(str(v) for v in vals)
 
+  _lin_suffix = f'_lin_{_linear_projector_tag()}' if 'linear' in args.interpolation_similarity else ''
   args_tag = (
     f'K{_fmt(args.num_anchors)}'
     f'_{_fmt(args.anchor_selection_type)}'
@@ -770,6 +1392,7 @@ def run_optuna(args):
     f'_{_fmt(args.weighting_method)}'
     f'_t{_fmt(args.temperature)}'
     f'_s{_fmt(args.rbf_sigma)}'
+    + _lin_suffix
   )
   tag_prefix = f'{args.run_tag}_' if args.run_tag else ''
   out_dir = os.path.join(
@@ -801,6 +1424,9 @@ def run_optuna(args):
   # output per old_model_csv, so only the first trial per split actually runs.
   _zero_anchor_mae_cache:    dict = {}
   _neg_one_anchor_mae_cache: dict = {}
+  # Cache for interpolation_similarity='linear': output is determined by
+  # (anchor_key, old_model_csv); weighting_method/temperature/rbf_sigma are ignored.
+  _linear_mae_cache:         dict = {}
 
   def objective(trial):
     params = {
@@ -823,15 +1449,27 @@ def run_optuna(args):
       if old_csv in _neg_one_anchor_mae_cache:
         print(f'  [trial {trial.number}] num_anchors=-1, old_model_csv={old_csv!r} — reusing cached result')
         return _neg_one_anchor_mae_cache[old_csv]
+    if params['interpolation_similarity'] == 'linear' and params['num_anchors'] not in (0, -1):
+      linear_key = (
+        params['csv_anchor_selection'], params['num_anchors'],
+        params['anchor_selection_type'], params['old_model_csv'],
+      )
+      if linear_key in _linear_mae_cache:
+        print(f'  [trial {trial.number}] interpolation_similarity=linear, '
+              f'key={linear_key} — reusing cached result')
+        return _linear_mae_cache[linear_key]
+    _proj_tag_t = (
+      f'_lin_{_linear_projector_tag()}'
+      if params['interpolation_similarity'] == 'linear'
+      else f'_{params["weighting_method"]}_t{params["temperature"]}_s{params["rbf_sigma"]}'
+    )
     trial_tag = (
       f'K{params["num_anchors"]}'
       f'_{params["anchor_selection_type"]}'
       f'_{params["csv_anchor_selection"]}'
       f'_{params["old_model_csv"]}'
       f'_{params["interpolation_similarity"]}'
-      f'_{params["weighting_method"]}'
-      f'_t{params["temperature"]}'
-      f'_s{params["rbf_sigma"]}'
+      + _proj_tag_t
     )
     trial_dir = os.path.join(out_dir, f'cross_space_projection_{trial_tag}_{trial.number}')
     mae = _run_trial(params, trial.number, anchor_cache, tensor_cache, new_model, new_config, trial_dir, uid)
@@ -839,6 +1477,12 @@ def run_optuna(args):
       _zero_anchor_mae_cache[params['old_model_csv']] = mae
     if params['num_anchors'] == -1:
       _neg_one_anchor_mae_cache[params['old_model_csv']] = mae
+    if params['interpolation_similarity'] == 'linear' and params['num_anchors'] not in (0, -1):
+      linear_key = (
+        params['csv_anchor_selection'], params['num_anchors'],
+        params['anchor_selection_type'], params['old_model_csv'],
+      )
+      _linear_mae_cache[linear_key] = mae
     return mae
 
   if args.n_trials is None:
@@ -895,15 +1539,18 @@ def cross_space_projection(args):
   random.seed(_SEED)
 
   uid = int(time.time())
+  _proj_tag = (
+    f'_lin_{_linear_projector_tag()}'
+    if args.interpolation_similarity == 'linear'
+    else f'_{args.weighting_method}_t{args.temperature}_s{args.rbf_sigma}'
+  )
   args_tag = (
     f'K{args.num_anchors}'
     f'_{args.anchor_selection_type}'
     f'_{args.csv_anchor_selection}'
     f'_{args.old_model_csv}'
     f'_{args.interpolation_similarity}'
-    f'_{args.weighting_method}'
-    f'_t{args.temperature}'
-    f'_s{args.rbf_sigma}'
+    + _proj_tag
   )
   tag_prefix = f'{args.run_tag}_' if args.run_tag else ''
   out_dir = os.path.join(os.getcwd(), 'Cross_projection', f'cross_space_projection_{tag_prefix}{args_tag}_{uid}')
@@ -923,6 +1570,7 @@ def cross_space_projection(args):
 
   old_model = _build_model(old_config)
   new_model = _build_model(new_config)
+  linear_bundle = None  # populated only when interpolation_similarity == 'linear'
 
   # --- Step 3: Build old model projection dataset ---
   raw_old_csvs = _resolve_old_model_csvs(args.old_model_pth, args.old_model_csv)
@@ -1020,21 +1668,38 @@ def cross_space_projection(args):
     # --- Step 5: Align anchor embeddings by sample_id ---
     new_model_anchors_aligned = _align_by_sample_id(old_model_anchors, new_model_anchors)
 
-    # --- Step 6: Compute interpolation weights (N, K) in old model space ---
-    print('Computing interpolation weights...')
-    weights = _compute_weights(
-      z=old_model_tensors['embeddings'],
-      anchors=old_model_anchors['embeddings'],
-      sim_type=args.interpolation_similarity,
-      method=args.weighting_method,
-      temperature=args.temperature,
-      sigma=args.rbf_sigma,
-    )
-    print(f'  weights: {weights.shape}')
+    if args.interpolation_similarity == 'linear':
+      # --- Step 6 (linear): train learned linear projector on anchor pairs ---
+      projector_dir = os.path.join(out_dir, 'linear_projector')
+      linear_bundle = _train_linear_projector(  # noqa: F841 — also persisted into dict_res below
+        old_anchors=old_model_anchors,
+        new_anchors=new_model_anchors_aligned,
+        df_anch=df_anchors,
+        projector_dir=projector_dir,
+        anchor_key_tag='single',
+      )
+      projected = _apply_linear_projector(
+        linear_bundle['projector'], linear_bundle['norm_stats'],
+        old_model_tensors['embeddings'],
+      )
+      weights = np.zeros((len(projected), 0), dtype=np.float32)
+      print(f'  projected (linear): {projected.shape}')
+    else:
+      # --- Step 6: Compute interpolation weights (N, K) in old model space ---
+      print('Computing interpolation weights...')
+      weights = _compute_weights(
+        z=old_model_tensors['embeddings'],
+        anchors=old_model_anchors['embeddings'],
+        sim_type=args.interpolation_similarity,
+        method=args.weighting_method,
+        temperature=args.temperature,
+        sigma=args.rbf_sigma,
+      )
+      print(f'  weights: {weights.shape}')
 
-    # --- Step 7: Project into new model space (N, D_new) ---
-    projected = weights @ new_model_anchors_aligned['embeddings'].astype(np.float32)
-    print(f'  projected: {projected.shape}')
+      # --- Step 7: Project into new model space (N, D_new) ---
+      projected = weights @ new_model_anchors_aligned['embeddings'].astype(np.float32)
+      print(f'  projected: {projected.shape}')
 
   new_model_tensors = {
     **old_model_tensors,
@@ -1096,6 +1761,18 @@ def cross_space_projection(args):
     'new_model_tensors':            new_model_tensors, # includes projected embeddings, logits, predictions
     'metrics':                      metrics,
   }
+  if linear_bundle is not None:
+    dict_res['linear_projector'] = {
+      'config':               linear_bundle['config'],
+      'norm_stats':           linear_bundle['norm_stats'],
+      'best_epoch':           linear_bundle['best_epoch'],
+      'best_val_mse':         linear_bundle['best_val_mse'],
+      'best_val_metric':      linear_bundle['best_val_metric'],
+      'best_val_metric_name': linear_bundle['best_val_metric_name'],
+      'ckpt_path':            linear_bundle['ckpt_path'],
+      'metrics':              linear_bundle['metrics'],
+      'splits':               linear_bundle['splits'],
+    }
 
   out_pkl = os.path.join(out_dir, f'results_{uid}.pkl')
   pkl_bytes = pickle.dumps(dict_res)
@@ -1132,11 +1809,15 @@ if __name__ == '__main__':
   parser.add_argument('--old_model_csv', type=str, nargs='+', required=True,
                       help='Split(s) to project (train/val/test/all/exc_train/exc_val/exc_test) — old model domain')
   parser.add_argument('--interpolation_similarity', type=str, nargs='+', default=['cos'],
-                      choices=['cos', 'l1', 'l2', 'l_inf'],
-                      help='Similarity/distance metric(s) for weight computation')
-  parser.add_argument('--weighting_method', type=str, nargs='+', required=True,
+                      choices=['cos', 'l1', 'l2', 'l_inf', 'linear'],
+                      help='Similarity/distance metric(s) for weight computation. '
+                           "'linear' trains a learned nn.Linear(D_old, D_new) projector on the "
+                           'anchor pairs (subject-disjoint split, see LINEAR_PROJECTOR_CONFIG); '
+                           'weighting_method/temperature/rbf_sigma are ignored in that mode.')
+  parser.add_argument('--weighting_method', type=str, nargs='+', default=None,
                       choices=['softmax', 'rbf'],
-                      help='Method(s) to convert similarities to interpolation weights')
+                      help='Method(s) to convert similarities to interpolation weights '
+                           '(not required when --interpolation_similarity is linear)')
   parser.add_argument('--temperature', type=float, nargs='+', default=[1.0],
                       help='Temperature(s) for softmax weighting (ignored for rbf)')
   parser.add_argument('--rbf_sigma', type=float, nargs='+', default=[1.0],
@@ -1152,6 +1833,19 @@ if __name__ == '__main__':
                       help='Optional label prepended to the output folder name for easy identification')
 
   args = parser.parse_args()
+  if args.weighting_method is None:
+    non_linear = [s for s in args.interpolation_similarity if s != 'linear']
+    if non_linear:
+      parser.error(
+        '--weighting_method is required when --interpolation_similarity '
+        f'includes a non-linear metric (got: {non_linear})'
+      )
+    args.weighting_method = ['softmax']  # dummy; never used in linear mode
+  if 'linear' in args.interpolation_similarity and set(args.num_anchors) <= {0, -1}:
+    parser.error(
+      "interpolation_similarity='linear' requires at least one --num_anchors > 0 "
+      "(linear mode trains a projector on anchor pairs; num_anchors=0/-1 use no anchors)"
+    )
   _hyper_lists = [
     args.num_anchors, args.anchor_selection_type, args.csv_anchor_selection,
     args.old_model_csv, args.interpolation_similarity, args.weighting_method,

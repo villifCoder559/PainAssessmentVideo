@@ -176,7 +176,7 @@ def _draw_bar_boxplot(ax_bar, ax_box, groups, vals, raw_by_group, ylabel, title,
   bars = ax_bar.bar(x, vals, color=color, alpha=0.85, edgecolor='white', linewidth=0.7)
   ax_bar.set_xlim(*xlim)
   ax_bar.set_xticks(x)
-  ax_bar.set_xticklabels([])
+  ax_bar.set_xticklabels([str(g) for g in groups], rotation=45, ha='right')
   ax_bar.set_ylabel(ylabel)
   ax_bar.set_title(title)
   ax_bar.grid(axis='y', alpha=0.3)
@@ -213,7 +213,7 @@ def _draw_bar_boxplot(ax_bar, ax_box, groups, vals, raw_by_group, ylabel, title,
     patch.set_edgecolor(color)
   ax_box.set_xlim(*xlim)
   ax_box.set_xticks(x)
-  ax_box.set_xticklabels([str(g) for g in groups])
+  ax_box.set_xticklabels([str(g) for g in groups], rotation=45, ha='right')
   ax_box.set_ylabel(ylabel)
   ax_box.grid(axis='y', alpha=0.3)
 
@@ -297,6 +297,26 @@ def _collect_summary_row(data, pkl_path):
     'mae':                   m['mae'],
     'ccc':                   m['ccc'],
   }
+
+
+def _extract_linear_bundle(data):
+  """
+  Return the linear-projector training bundle from a pkl dict, if present.
+
+  The bundle has identical shape in standalone and grid pkls (see
+  cross_space_projection.py:1191-1199 and :1599-1607). It is absent for runs
+  where the projector was not trained: num_anchors in {0, -1} or
+  interpolation_similarity != 'linear'.
+
+  Args:
+    data (dict): Deserialized pkl contents.
+
+  Returns:
+    dict | None: The 'linear_projector' bundle with keys
+      'config', 'norm_stats', 'best_epoch', 'best_val_mse', 'ckpt_path',
+      'metrics', 'splits'. Returns None if the key is absent.
+  """
+  return data.get('linear_projector')
 
 
 # ── plot functions ───────────────────────────────────────────────────────────
@@ -412,7 +432,7 @@ def plot_mae_per_class(new_preds, old_preds, labels, out_dir, run_label: str = '
     (new_vals, new_raw, 'darkorange', 'Projected (new)', 'mae_per_class_projected.png'),
   ]:
     fig, (ax_bar, ax_box) = plt.subplots(
-      2, 1, figsize=(12, 7), height_ratios=[2, 1],
+      2, 1, figsize=(max(12, len(groups) * 1.2), 7), height_ratios=[2, 1],
     )
     _draw_bar_boxplot(
       ax_bar, ax_box, groups, vals, raw_errors,
@@ -763,6 +783,438 @@ def plot_prediction_by_class_boxplot(new_preds, old_preds, labels, out_dir, run_
   print(f'Saved: {path}')
 
 
+# ── linear-projector training-diagnostics plots ──────────────────────────────
+
+def _projector_curve_arrays(metrics):
+  """
+  Convert metrics['train']/metrics['val'] lists into per-key numpy arrays.
+
+  Args:
+    metrics (dict): Bundle from linear_projector['metrics']. Expected keys
+      'train' and 'val', each a list of dicts with at least 'epoch', 'mse',
+      'cos' (and 'mae' when produced by the updated training script).
+
+  Returns:
+    tuple[dict, dict, bool]:
+      - train arrays:  {'epoch': (E,), 'mse': (E,), 'mae': (E,) or None, 'cos': (E,)}
+      - val   arrays:  same shape
+      - has_mae: True iff every train/val entry carries an 'mae' key.
+  """
+  def _stack(rows, key):
+    return np.asarray([r[key] for r in rows], dtype=np.float32) if rows else np.zeros(0, dtype=np.float32)
+
+  train_rows = metrics.get('train', []) or []
+  val_rows   = metrics.get('val',   []) or []
+  has_mae    = bool(train_rows) and bool(val_rows) \
+               and all('mae' in r for r in train_rows) \
+               and all('mae' in r for r in val_rows)
+
+  tr = {
+    'epoch': _stack(train_rows, 'epoch'),
+    'mse':   _stack(train_rows, 'mse'),
+    'cos':   _stack(train_rows, 'cos'),
+    'mae':   _stack(train_rows, 'mae') if has_mae else None,
+  }
+  va = {
+    'epoch': _stack(val_rows, 'epoch'),
+    'mse':   _stack(val_rows, 'mse'),
+    'cos':   _stack(val_rows, 'cos'),
+    'mae':   _stack(val_rows, 'mae') if has_mae else None,
+  }
+  return tr, va, has_mae
+
+
+def _plot_metric_curve(ax, tr_epochs, tr_vals, va_epochs, va_vals,
+                      best_epoch, test_value, ylabel, title, log_y=False):
+  """
+  Draw a single train/val curve plus a star at the test metric of the saved
+  best checkpoint.
+
+  The star sits at (best_epoch, test_value) — i.e. the test-set evaluation of
+  the checkpoint chosen by val MSE. It is intentionally NOT drawn at the val
+  value at best_epoch: that would conflate the selection criterion with the
+  reported generalization performance.
+
+  Args:
+    ax         (matplotlib.axes.Axes): Axes to draw on.
+    tr_epochs  (np.ndarray): Training-epoch indices, shape (E,).
+    tr_vals    (np.ndarray): Training-metric values, shape (E,).
+    va_epochs  (np.ndarray): Validation-epoch indices, shape (E,).
+    va_vals    (np.ndarray): Validation-metric values, shape (E,).
+    best_epoch (int):       Epoch index (1-based) of the saved checkpoint.
+    test_value (float | None): Test-set metric for this curve at the best
+      checkpoint. When None or non-finite, no star is drawn (we deliberately
+      do not fall back to the val value).
+    ylabel     (str):       Y-axis label.
+    title      (str):       Subplot title.
+    log_y      (bool):      If True, use a symlog y-scale (useful for MSE).
+  """
+  ax.plot(tr_epochs, tr_vals, '-', color='#1f77b4', label='train', linewidth=1.5)
+  ax.plot(va_epochs, va_vals, '-', color='#d62728', label='val',   linewidth=1.5)
+
+  if (best_epoch is not None and best_epoch > 0
+      and test_value is not None and np.isfinite(test_value)):
+    ax.scatter([best_epoch], [float(test_value)], marker='*', s=180,
+               color='#2ca02c', edgecolor='black', linewidth=0.7,
+               zorder=5,
+               label=f'test @ best ep {best_epoch} = {float(test_value):.4f}')
+
+  ax.set_xlabel('Epoch')
+  ax.set_ylabel(ylabel)
+  ax.set_title(title)
+  ax.grid(alpha=0.3)
+  ax.legend(loc='best', fontsize=8)
+  if log_y:
+    ax.set_yscale('symlog', linthresh=1e-4)
+
+
+def _format_projector_config_text(linear_bundle):
+  """
+  Build a human-readable, monospace-friendly summary of the projector run.
+
+  Includes the LINEAR_PROJECTOR_CONFIG hyperparameters, derived I/O shapes,
+  best epoch / val MSE, and the one-shot test metrics.
+
+  Args:
+    linear_bundle (dict): Output of _extract_linear_bundle.
+
+  Returns:
+    str: Multi-line text block.
+  """
+  cfg    = linear_bundle.get('config', {}) or {}
+  metrics_test = (linear_bundle.get('metrics') or {}).get('test') or {}
+  splits = linear_bundle.get('splits') or {}
+  norm   = linear_bundle.get('norm_stats') or {}
+
+  d_new = None
+  if 'train' in splits and splits['train'].get('projected') is not None:
+    d_new = int(np.asarray(splits['train']['projected']).shape[1])
+  d_old = None
+  if norm.get('old_mean') is not None:
+    d_old = int(np.asarray(norm['old_mean']).shape[-1])
+
+  rows = ['── LINEAR_PROJECTOR_CONFIG ──']
+  for k in ('lr', 'batch_size', 'optimizer', 'weight_decay', 'epochs',
+            'normalize_embeddings', 'loss', 'split_ratios', 'device',
+            'num_workers'):
+    if k in cfg:
+      rows.append(f'{k:<22s} {cfg[k]}')
+
+  rows.append('')
+  rows.append('── samples ──')
+  split_mode = linear_bundle.get('split_mode')
+  if split_mode is not None:
+    rows.append(f'split_mode             {split_mode}')
+  for name in ('train', 'val', 'test'):
+    split = splits.get(name) or {}
+    arr = (split.get('labels')
+           if split.get('labels') is not None
+           else split.get('projected')
+           if split.get('projected') is not None
+           else split.get('sample_ids'))
+    if arr is not None:
+      rows.append(f'n_{name:<20s} {int(np.asarray(arr).shape[0])}')
+
+  rows.append('')
+  rows.append('── shapes ──')
+  rows.append(f'd_old → d_new          {d_old} → {d_new}')
+
+  rows.append('')
+  sel_name     = (linear_bundle.get('best_val_metric_name') or 'mse').lower()
+  sel_val      = linear_bundle.get('best_val_metric',
+                                   linear_bundle.get('best_val_mse'))
+  best_epoch   = linear_bundle.get('best_epoch')
+  best_val_mse = linear_bundle.get('best_val_mse')
+  rows.append(f'── best (val {sel_name.upper()}) ──')
+  rows.append(f'best_epoch             {best_epoch}')
+  if sel_val is not None:
+    rows.append(f'best_val_{sel_name:<13s} {float(sel_val):.6f}')
+  # Always also show MSE for cross-run comparability when the selection metric
+  # was something else.
+  if sel_name != 'mse' and best_val_mse is not None:
+    rows.append(f'best_val_mse           {float(best_val_mse):.6f}')
+
+  if metrics_test:
+    rows.append('')
+    rows.append('── test (best ckpt) ──')
+    for k in ('mse', 'mae', 'cos'):
+      if k in metrics_test:
+        rows.append(f'test_{k:<17s} {float(metrics_test[k]):.6f}')
+
+  return '\n'.join(rows)
+
+
+def plot_projector_training_curves(linear_bundle, out_dir, run_label: str = ''):
+  """
+  Render a 2×2 figure with train/val curves for MSE, MAE and cosine similarity,
+  plus a text block listing the projector's hyperparameters and final metrics.
+
+  A green star marks the best epoch (lowest val MSE) on each metric subplot.
+  When per-epoch MAE is missing (older pkls produced before MAE-per-epoch was
+  tracked in cross_space_projection.py), the MAE subplot displays a placeholder
+  message instead of crashing.
+
+  Args:
+    linear_bundle (dict): Output of _extract_linear_bundle. Must include
+      'metrics' (with 'train' and 'val' lists), 'best_epoch', and 'config'.
+    out_dir       (str):  Directory in which to write the PNG.
+    run_label     (str):  Suptitle suffix identifying the run.
+  """
+  metrics = linear_bundle.get('metrics') or {}
+  tr, va, has_mae = _projector_curve_arrays(metrics)
+  best_epoch = linear_bundle.get('best_epoch')
+  test_metrics = metrics.get('test') or {}
+
+  fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+  _plot_metric_curve(
+    axes[0, 0], tr['epoch'], tr['mse'], va['epoch'], va['mse'],
+    best_epoch, test_metrics.get('mse'),
+    ylabel='MSE', title='MSE (train vs val, ★ = test @ best ckpt)', log_y=True,
+  )
+
+  if has_mae:
+    _plot_metric_curve(
+      axes[0, 1], tr['epoch'], tr['mae'], va['epoch'], va['mae'],
+      best_epoch, test_metrics.get('mae'),
+      ylabel='MAE', title='MAE (train vs val, ★ = test @ best ckpt)', log_y=False,
+    )
+  else:
+    axes[0, 1].axis('off')
+    axes[0, 1].text(
+      0.5, 0.5,
+      'Per-epoch MAE not available in this pkl.\n'
+      '(Produced before MAE-per-epoch logging was added.)',
+      ha='center', va='center', fontsize=10, color='#555555',
+      transform=axes[0, 1].transAxes,
+    )
+    axes[0, 1].set_title('MAE (train vs val)')
+
+  _plot_metric_curve(
+    axes[1, 0], tr['epoch'], tr['cos'], va['epoch'], va['cos'],
+    best_epoch, test_metrics.get('cos'),
+    ylabel='cosine similarity',
+    title='Cosine similarity (train vs val, ★ = test @ best ckpt)',
+    log_y=False,
+  )
+
+  axes[1, 1].axis('off')
+  axes[1, 1].text(
+    0.0, 1.0, _format_projector_config_text(linear_bundle),
+    ha='left', va='top', family='monospace', fontsize=9,
+    transform=axes[1, 1].transAxes,
+  )
+
+  fig.suptitle(f'Linear projector training — {run_label}', fontsize=13, fontweight='bold')
+  plt.tight_layout(rect=(0, 0, 1, 0.97))
+  path = os.path.join(out_dir, 'projector_training_curves.png')
+  fig.savefig(path, dpi=150)
+  plt.close(fig)
+  print(f'Saved: {path}')
+
+
+def plot_projector_train_val_gap(linear_bundle, out_dir, run_label: str = ''):
+  """
+  Plot the validation-minus-training gap for MSE (and MAE when available)
+  across epochs, to make over/under-fitting visually obvious.
+
+  A horizontal dashed line at zero marks parity; a star marks the best epoch.
+
+  Args:
+    linear_bundle (dict): Output of _extract_linear_bundle.
+    out_dir       (str):  Directory in which to write the PNG.
+    run_label     (str):  Suptitle suffix identifying the run.
+  """
+  metrics = linear_bundle.get('metrics') or {}
+  tr, va, has_mae = _projector_curve_arrays(metrics)
+  best_epoch = linear_bundle.get('best_epoch')
+
+  if tr['epoch'].size == 0 or va['epoch'].size == 0:
+    print('[WARN] projector train/val gap: empty metrics — skipping.')
+    return
+
+  fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+  ax.plot(va['epoch'], va['mse'] - tr['mse'], '-', color='#1f77b4',
+          label='val − train (MSE)', linewidth=1.5)
+  if has_mae:
+    ax.plot(va['epoch'], va['mae'] - tr['mae'], '-', color='#ff7f0e',
+            label='val − train (MAE)', linewidth=1.5)
+
+  ax.axhline(0.0, color='black', linestyle='--', linewidth=0.8, alpha=0.6)
+
+  if best_epoch is not None and best_epoch > 0:
+    idx = np.argmin(np.abs(va['epoch'] - best_epoch))
+    ax.scatter([va['epoch'][idx]], [(va['mse'] - tr['mse'])[idx]],
+               marker='*', s=180, color='#2ca02c', edgecolor='black',
+               linewidth=0.7, zorder=5, label=f'best (ep {best_epoch})')
+
+  ax.set_xlabel('Epoch')
+  ax.set_ylabel('val − train')
+  ax.set_title('Train/val gap (positive = val worse than train)')
+  ax.grid(alpha=0.3)
+  ax.legend(loc='best', fontsize=9)
+  fig.suptitle(f'Projector train/val gap — {run_label}', fontsize=12, fontweight='bold')
+  plt.tight_layout(rect=(0, 0, 1, 0.95))
+  path = os.path.join(out_dir, 'projector_train_val_gap.png')
+  fig.savefig(path, dpi=150)
+  plt.close(fig)
+  print(f'Saved: {path}')
+
+
+def plot_projector_weight_analysis(linear_bundle, out_dir, run_label: str = ''):
+  """
+  Visualize the learned linear projector's weight matrix and its singular
+  value spectrum to expose rank collapse or sparsity patterns.
+
+  Generates three side-by-side panels:
+    1. Heatmap of W (shape d_new × d_old), centered at 0.
+    2. Histogram of |W| values.
+    3. Singular value spectrum on log y, annotated with the effective rank
+       (s.sum())² / (s²).sum().
+
+  Args:
+    linear_bundle (dict): Output of _extract_linear_bundle. Must include
+      'ckpt_path' pointing to a torch state_dict with a 'weight' tensor.
+    out_dir       (str):  Directory in which to write the PNG.
+    run_label     (str):  Suptitle suffix identifying the run.
+  """
+  ckpt_path = linear_bundle.get('ckpt_path')
+  if not ckpt_path or not os.path.isfile(ckpt_path):
+    print(f'[WARN] projector weight analysis: checkpoint not found at {ckpt_path} — skipping.')
+    return
+
+  state = torch.load(ckpt_path, map_location='cpu')
+  if 'weight' not in state:
+    print('[WARN] projector weight analysis: state_dict has no "weight" key — skipping.')
+    return
+  W = state['weight'].detach().cpu().numpy().astype(np.float32)
+
+  fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+  vmax = float(np.abs(W).max()) if W.size else 1.0
+  sns.heatmap(
+    W, ax=axes[0],
+    cmap='RdBu_r', center=0.0, vmin=-vmax, vmax=vmax,
+    cbar_kws={'shrink': 0.7},
+  )
+  axes[0].set_title(f'W heatmap  shape={W.shape}')
+  axes[0].set_xlabel('d_old')
+  axes[0].set_ylabel('d_new')
+
+  axes[1].hist(np.abs(W).ravel(), bins=80, color='#4c72b0', edgecolor='white')
+  axes[1].set_title('Histogram of |W|')
+  axes[1].set_xlabel('|weight|')
+  axes[1].set_ylabel('count')
+  axes[1].grid(alpha=0.3)
+
+  s = np.linalg.svd(W, compute_uv=False)
+  s_sq_sum = float((s ** 2).sum())
+  eff_rank = float((s.sum() ** 2) / s_sq_sum) if s_sq_sum > 0 else 0.0
+  axes[2].plot(np.arange(1, len(s) + 1), s, marker='o', markersize=3,
+               linewidth=1.2, color='#2ca02c')
+  axes[2].set_yscale('log')
+  axes[2].set_xlabel('index')
+  axes[2].set_ylabel('singular value')
+  axes[2].set_title(f'SVD spectrum  (eff. rank ≈ {eff_rank:.1f} / {len(s)})')
+  axes[2].grid(alpha=0.3, which='both')
+
+  fig.suptitle(f'Linear projector weight analysis — {run_label}', fontsize=13, fontweight='bold')
+  plt.tight_layout(rect=(0, 0, 1, 0.95))
+  path = os.path.join(out_dir, 'projector_weight_analysis.png')
+  fig.savefig(path, dpi=150)
+  plt.close(fig)
+  print(f'Saved: {path}')
+
+
+def plot_projector_norm_comparison(linear_bundle, out_dir, run_label: str = ''):
+  """
+  Compare the L2-norms of projected vs target embeddings on the test split.
+
+  Left panel: scatter of ||target|| (x) vs ||projected|| (y) per sample, with
+  an identity line for reference.
+  Right panel: overlayed histograms of both norm distributions.
+
+  Args:
+    linear_bundle (dict): Output of _extract_linear_bundle. Must contain a
+      'splits' dict whose 'test' entry has 'projected' (N, D) and
+      'target' (N, D) numpy arrays.
+    out_dir       (str):  Directory in which to write the PNG.
+    run_label     (str):  Suptitle suffix identifying the run.
+  """
+  splits = linear_bundle.get('splits') or {}
+  test   = splits.get('test')
+  if not test or test.get('projected') is None or test.get('target') is None:
+    print('[WARN] projector norm comparison: missing test projected/target — skipping.')
+    return
+
+  proj = np.asarray(test['projected'], dtype=np.float32)
+  tgt  = np.asarray(test['target'],    dtype=np.float32)
+  if proj.shape != tgt.shape or proj.ndim != 2:
+    print(f'[WARN] projector norm comparison: shape mismatch {proj.shape} vs {tgt.shape} — skipping.')
+    return
+
+  proj_n = np.linalg.norm(proj, axis=1)
+  tgt_n  = np.linalg.norm(tgt,  axis=1)
+
+  if proj_n.size >= 2 and tgt_n.size >= 2:
+    pearson_r = float(stats.pearsonr(tgt_n, proj_n)[0])
+  else:
+    pearson_r = float('nan')
+  mean_ratio = float(np.mean(proj_n / np.clip(tgt_n, 1e-12, None)))
+
+  fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+  axes[0].scatter(tgt_n, proj_n, s=10, alpha=0.5, color='#4c72b0')
+  lo = float(min(tgt_n.min(), proj_n.min()))
+  hi = float(max(tgt_n.max(), proj_n.max()))
+  axes[0].plot([lo, hi], [lo, hi], '--', color='black', linewidth=0.8, alpha=0.7, label='y = x')
+  axes[0].set_xlabel('||target||')
+  axes[0].set_ylabel('||projected||')
+  axes[0].set_title(f'Embedding norms (test)  r={pearson_r:.3f}  mean(proj/tgt)={mean_ratio:.3f}')
+  axes[0].grid(alpha=0.3)
+  axes[0].legend(loc='best', fontsize=8)
+
+  bins = 60
+  axes[1].hist(tgt_n,  bins=bins, alpha=0.55, color='#2ca02c', label='||target||',    edgecolor='white')
+  axes[1].hist(proj_n, bins=bins, alpha=0.55, color='#d62728', label='||projected||', edgecolor='white')
+  axes[1].set_xlabel('L2 norm')
+  axes[1].set_ylabel('count')
+  axes[1].set_title('Norm distributions (test)')
+  axes[1].grid(alpha=0.3)
+  axes[1].legend(loc='best', fontsize=9)
+
+  fig.suptitle(f'Projector norm comparison — {run_label}', fontsize=12, fontweight='bold')
+  plt.tight_layout(rect=(0, 0, 1, 0.95))
+  path = os.path.join(out_dir, 'projector_norm_comparison.png')
+  fig.savefig(path, dpi=150)
+  plt.close(fig)
+  print(f'Saved: {path}')
+
+
+def plot_projector_diagnostics(linear_bundle, out_dir, run_label: str = ''):
+  """
+  Convenience wrapper: emit all four projector-training diagnostic plots.
+
+  Skips gracefully (with a console warning) if linear_bundle is None — useful
+  for callers that don't want to repeat the check themselves.
+
+  Args:
+    linear_bundle (dict | None): Output of _extract_linear_bundle.
+    out_dir       (str):         Directory in which to write the PNGs.
+    run_label     (str):         Suptitle suffix identifying the run.
+  """
+  if linear_bundle is None:
+    print('[cross_space_logs] No linear_projector in pkl — skipping projector-training plots.')
+    return
+  plot_projector_training_curves(linear_bundle, out_dir, run_label=run_label)
+  plot_projector_train_val_gap(linear_bundle, out_dir, run_label=run_label)
+  try:
+    plot_projector_weight_analysis(linear_bundle, out_dir, run_label=run_label)
+  except Exception as exc:
+    print(f'[WARN] projector weight analysis failed: {exc}')
+  plot_projector_norm_comparison(linear_bundle, out_dir, run_label=run_label)
+
+
 # ── search-level summary plots ────────────────────────────────────────────────
 
 def plot_hyperparam_mae_summary(df, out_dir):
@@ -898,7 +1350,7 @@ def plot_temperature_anchors_heatmap(df, out_dir):
     '(rows = weighting_method, cols = interpolation_similarity)',
     fontsize=11,
   )
-  plt.tight_layout()
+  # plt.tight_layout()
   path = os.path.join(out_dir, 'heatmap_temperature_anchors.png')
   fig.savefig(path, dpi=150, bbox_inches='tight')
   plt.close(fig)
@@ -1423,7 +1875,7 @@ def generate_logs_multi(search_dirs, plot_only_top_k=None):
 
 # ── entry point ──────────────────────────────────────────────────────────────
 
-def generate_logs(pkl_path, plot_only_top_k=None):
+def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
   """
   Load a cross_space_projection pkl and write all diagnostic plots.
 
@@ -1435,9 +1887,13 @@ def generate_logs(pkl_path, plot_only_top_k=None):
   the anchor-UMAP plot is skipped (anchor embeddings are absent in that format).
 
   Args:
-    pkl_path        (str): Path to a results pkl, or a grid-search root directory.
-    plot_only_top_k (int | None): When pkl_path is a directory, limits plot
+    pkl_path            (str): Path to a results pkl, or a grid-search root directory.
+    plot_only_top_k     (int | None): When pkl_path is a directory, limits plot
       generation to the top K trials by MAE ascending. Ignored for single files.
+    only_projector_plots (bool): If True, emit only the linear-projector
+      training-diagnostic plots (projector_training_curves, train_val_gap,
+      weight_analysis, norm_comparison) and skip everything else. Useful for
+      regenerating these on existing pkls without redoing UMAPs / heavy work.
 
   Returns:
     tuple[str, dict | None]:
@@ -1449,6 +1905,20 @@ def generate_logs(pkl_path, plot_only_top_k=None):
 
   data = _load_pkl(pkl_path)
   fmt  = _detect_format(data)
+
+  if only_projector_plots:
+    if fmt == 'grid':
+      out_dir   = os.path.join(os.path.dirname(pkl_path), 'logs')
+      uid       = data.get('uid') or os.path.basename(os.path.dirname(os.path.dirname(pkl_path))).split('_')[-1]
+      run_label = f"Trial #{data['trial_number']} | UID: {uid}"
+    else:
+      cfg       = data['config_cross_space_projection']
+      out_dir   = os.path.join(cfg['out_dir'], 'logs')
+      run_label = f"UID: {cfg['uid']}"
+    os.makedirs(out_dir, exist_ok=True)
+    print(f'[cross_space_logs] (projector-only) Output: {out_dir}')
+    plot_projector_diagnostics(_extract_linear_bundle(data), out_dir, run_label=run_label)
+    return out_dir, None
 
   if fmt == 'grid':
     out_dir       = os.path.join(os.path.dirname(pkl_path), 'logs')
@@ -1508,10 +1978,15 @@ def generate_logs(pkl_path, plot_only_top_k=None):
   plot_mae_per_subject(new_preds, old_preds, labels, sample_ids, subject_map, out_dir, run_label=run_label)
   plot_confusion_matrix_cross(new_preds, labels, out_dir, num_classes, run_label=run_label)
   plot_umap(new_t['embeddings'], labels, sample_ids, subject_map, out_dir, run_label=run_label)
-  plot_anchor_weights(weights, out_dir, run_label=run_label)
+  try:
+    plot_anchor_weights(weights, out_dir, run_label=run_label)
+  except Exception as exc:
+    print(f'[WARN] Failed to plot anchor weights: {exc}')
   plot_prediction_scatter(new_preds, old_preds, labels, out_dir, run_label=run_label)
   plot_prediction_by_class_boxplot(new_preds, old_preds, labels, out_dir, run_label=run_label)
   plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir, run_label=run_label)
+
+  plot_projector_diagnostics(_extract_linear_bundle(data), out_dir, run_label=run_label)
 
   if fmt == 'standalone' and data.get('old_model_anchors_embeddings') is not None:
     plot_anchor_umap(
@@ -1543,7 +2018,7 @@ if __name__ == '__main__':
     ),
   )
   parser.add_argument(
-    '--plot_only_top_k', type=int, default=None,
+    '--plot_only_top_k', type=int, default=3,
     help=(
       'When pkl_path is a folder, generate diagnostic plots only for the '
       'top K trials ranked by MAE ascending. Metrics are still collected '
@@ -1551,8 +2026,24 @@ if __name__ == '__main__':
       'Ignored when pkl_path is a single pkl file.'
     ),
   )
+  parser.add_argument(
+    '--only_projector_plots', action='store_true', default=False,
+    help=(
+      'Emit only the linear-projector training-diagnostic plots and skip '
+      'everything else (UMAPs, confusion matrix, dashboard, etc.). Only '
+      'applies when pkl_path is a single pkl file.'
+    ),
+  )
   args = parser.parse_args()
   if len(args.pkl_path) > 1:
-    generate_logs_multi(args.pkl_path, plot_only_top_k=args.plot_only_top_k)
+    if args.only_projector_plots:
+      for p in args.pkl_path:
+        generate_logs(p, only_projector_plots=True)
+    else:
+      generate_logs_multi(args.pkl_path, plot_only_top_k=args.plot_only_top_k)
   else:
-    generate_logs(args.pkl_path[0], plot_only_top_k=args.plot_only_top_k)
+    generate_logs(
+      args.pkl_path[0],
+      plot_only_top_k=args.plot_only_top_k,
+      only_projector_plots=args.only_projector_plots,
+    )

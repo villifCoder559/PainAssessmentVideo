@@ -2560,7 +2560,8 @@ def intraclass_icc(data, icc_type='ICC2'):
     raise ValueError('data must be 2-D: shape (n_subjects, n_raters)')
   n, k = arr.shape
   if n < 2:
-    raise ValueError('Need at least 2 subjects to compute ICC')
+    return np.nan
+    # raise ValueError('Need at least 2 subjects to compute ICC')
 
   mean_per_subject = arr.mean(axis=1)
   mean_per_rater = arr.mean(axis=0)

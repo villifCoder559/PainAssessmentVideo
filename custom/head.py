@@ -1414,7 +1414,7 @@ class BaseHead(nn.Module):
         CCC = tools.concordance_ccc(y_pred=list_val_epoch_predictions,
                                     y_true=list_val_ground_truths)
         ICC = tools.intraclass_icc(data=np.column_stack((list_val_ground_truths, list_val_epoch_predictions)),
-                                  icc_type='ICC2')
+                                    icc_type='ICC2')
         l1_error = np.mean(np.abs(list_val_epoch_predictions - list_val_ground_truths))
         rmse = np.sqrt(np.mean((list_val_epoch_predictions - list_val_ground_truths)**2))
       else:

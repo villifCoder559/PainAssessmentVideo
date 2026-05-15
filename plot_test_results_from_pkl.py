@@ -129,7 +129,7 @@ def _read_csv_safe(data: dict, keys: tuple = ('csv_path', 'csv_original_path')) 
       except Exception:
         pass
   return pd.DataFrame()
-
+ 
 
 # ---------------------------------------------------------------------------
 # Label helpers
