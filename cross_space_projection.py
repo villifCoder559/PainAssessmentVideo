@@ -15,6 +15,8 @@ Pipeline:
   4. Extract N embeddings with old model (old-domain features) → old_model_tensors (N, D_old).
   5. Compute similarity weights (N, K) in old model space.
   6. Project: projected (N, D_new) = weights @ new_model_anchors.
+     (interpolation_similarity='linear': instead train a linear projector on all K
+      anchor pairs, validated/tested on the new model's val.csv, then apply it.)
   7. Classify: new_model.head.linear(projected) → logits.
   8. Compute MAE + CCC metrics, save pkl.
 """
@@ -75,7 +77,11 @@ LINEAR_PROJECTOR_CONFIG = {
   'epochs':               300,
   'normalize_embeddings': True,
   'loss':                 'mse',     # 'mse' | 'mae' | 'cosine'
-  'split_ratios':         (0.70, 0.10, 0.20),
+  # (train, val, test). The projector trains on ALL K anchors, so the train
+  # entry is unused; val/test are a subject-disjoint split of the new model's
+  # val.csv sized by these fractions of the val.csv row count (test absorbs
+  # the remainder so every val.csv row is used).
+  'split_ratios':         (0.0, 0.50, 0.50),
   'device':               'cuda',
   'num_workers':          4,
 }
@@ -389,6 +395,30 @@ def _align_by_sample_id(reference, to_align):
   return {k: v[order] if isinstance(v, np.ndarray) else v for k, v in to_align.items()}
 
 
+def _align_df_to_sample_ids(df, sample_ids, label):
+  """
+  Reorder a DataFrame's rows to match a given sample_id sequence.
+
+  Args:
+    df         (pd.DataFrame): Table with a 'sample_id' column.
+    sample_ids (np.ndarray): Target sample_id order.
+    label      (str): Human-readable name of df, used in the error message.
+
+  Returns:
+    pd.DataFrame: df reindexed to the sample_ids order, with index reset.
+
+  Raises:
+    AssertionError: If any sample_id in sample_ids is absent from df.
+  """
+  sid_col = df['sample_id'].astype(np.int64).to_numpy()
+  target  = np.asarray(sample_ids, dtype=np.int64)
+  sid_to_row = {int(s): i for i, s in enumerate(sid_col)}
+  missing = set(target.tolist()) - set(sid_col.tolist())
+  assert not missing, f'sample_ids missing from {label}: {missing}'
+  order = np.array([sid_to_row[int(s)] for s in target], dtype=np.int64)
+  return df.iloc[order].reset_index(drop=True)
+
+
 def _softmax(x):
   """
   Numerically stable row-wise softmax.
@@ -449,121 +479,47 @@ def _compute_weights(z, anchors, sim_type, method, temperature, sigma):
 # Linear projector helpers (interpolation_similarity='linear')
 # ---------------------------------------------------------------------------
 
-def _make_subject_stratified_split(df, ratios, seed):
+def _make_subject_disjoint_subsets(df, n_first, seed):
   """
-  Build subject-disjoint, class-stratified train/val/test split of an anchor DataFrame.
+  Partition a DataFrame into two subject-disjoint subsets, the first ~n_first rows.
 
-  Subjects are assigned wholly to one split (no subject appears in two splits).
-  Class proportions are kept as balanced as possible using StratifiedGroupKFold
-  with a fallback to GroupShuffleSplit when too few subjects/classes make
-  stratification infeasible.
+  Unique subject_ids are shuffled (seeded) and assigned whole to subset A until it
+  reaches n_first rows; every remaining subject goes to subset B. No subject_id appears
+  in both subsets and every row lands in exactly one subset. Because subjects are
+  assigned whole, the realised size of subset A is approximate.
 
   Args:
-    df     (pd.DataFrame): Anchor rows with at least 'subject_id' and 'class_id' columns.
-    ratios (tuple[float, float, float]): (train, val, test) ratios; must sum to 1.0.
-    seed   (int): RNG seed for reproducibility.
+    df      (pd.DataFrame): Rows with a 'subject_id' column.
+    n_first (int): Target row count for subset A (>= 1).
+    seed    (int): RNG seed for the subject shuffle.
 
   Returns:
-    dict[str, pd.DataFrame]: {'train': df_tr, 'val': df_va, 'test': df_te} (indices reset).
+    tuple[np.ndarray, np.ndarray]: (idx_a, idx_b), positional index arrays into df.
 
   Raises:
-    ValueError: If df has fewer than 3 distinct subject_ids, if ratios are invalid,
-                or if any split would contain zero rows.
+    ValueError: If either subset ends up empty.
   """
-  from sklearn.model_selection import GroupShuffleSplit
-  r_tr, r_va, r_te = ratios
-  if not np.isclose(r_tr + r_va + r_te, 1.0):
-    raise ValueError(f'split ratios must sum to 1.0, got {ratios}')
-  if df['subject_id'].nunique() < 3:
-    raise ValueError(
-      f'subject-disjoint split requires >=3 distinct subject_ids, '
-      f'got {df["subject_id"].nunique()}'
-    )
-
-  groups = df['subject_id'].to_numpy()
-  classes = df['class_id'].to_numpy()
-  idx_all = np.arange(len(df))
-
-  # Step 1: split off test (r_te) from the rest using GroupShuffleSplit.
-  gss1 = GroupShuffleSplit(n_splits=1, test_size=r_te, random_state=seed)
-  trval_idx, test_idx = next(gss1.split(idx_all, classes, groups))
-  # Step 2: split val out of the trval portion. val_size relative to trval.
-  rel_val = r_va / (r_tr + r_va)
-  gss2 = GroupShuffleSplit(n_splits=1, test_size=rel_val, random_state=seed)
-  sub_train_idx, sub_val_idx = next(
-    gss2.split(trval_idx, classes[trval_idx], groups[trval_idx])
-  )
-  train_idx = trval_idx[sub_train_idx]
-  val_idx   = trval_idx[sub_val_idx]
-
-  splits = {
-    'train': df.iloc[train_idx].reset_index(drop=True),
-    'val':   df.iloc[val_idx].reset_index(drop=True),
-    'test':  df.iloc[test_idx].reset_index(drop=True),
-  }
-
-  # Subject-disjointness sanity check.
-  s_tr = set(splits['train']['subject_id'].tolist())
-  s_va = set(splits['val']['subject_id'].tolist())
-  s_te = set(splits['test']['subject_id'].tolist())
-  overlap = (s_tr & s_va) | (s_tr & s_te) | (s_va & s_te)
-  assert not overlap, f'subject-id overlap across splits: {overlap}'
-
-  for name, sp in splits.items():
-    if len(sp) == 0:
-      raise ValueError(f'split {name!r} is empty after subject-disjoint partitioning')
-
-  return splits, (train_idx, val_idx, test_idx)
-
-
-def _make_random_split(df, ratios, seed):
-  """
-  Build a plain random train/val/test split that ignores subject_id.
-
-  Used as a fallback when _make_subject_stratified_split cannot satisfy
-  subject-disjointness (e.g. too few subjects or empty groups). Subjects
-  may appear in multiple splits.
-
-  Args:
-    df     (pd.DataFrame): Anchor rows; row order is preserved.
-    ratios (tuple[float, float, float]): (train, val, test) ratios; must sum to 1.0.
-    seed   (int): RNG seed for reproducibility.
-
-  Returns:
-    tuple:
-      - dict[str, pd.DataFrame]: {'train': df_tr, 'val': df_va, 'test': df_te}
-        with indices reset.
-      - tuple[np.ndarray, np.ndarray, np.ndarray]: (train_idx, val_idx, test_idx)
-        into the input df.
-
-  Raises:
-    ValueError: If ratios do not sum to 1.0 or any resulting split is empty.
-  """
-  r_tr, r_va, r_te = ratios
-  if not np.isclose(r_tr + r_va + r_te, 1.0):
-    raise ValueError(f'split ratios must sum to 1.0, got {ratios}')
-
-  n = len(df)
   rng = np.random.default_rng(seed)
-  perm = rng.permutation(n)
-  n_te = int(np.floor(n * r_te))
-  n_va = int(np.floor(n * r_va))
-  n_tr = n - n_te - n_va  # remainder absorbed by train
-
-  train_idx = perm[:n_tr]
-  val_idx   = perm[n_tr:n_tr + n_va]
-  test_idx  = perm[n_tr + n_va:]
-
-  splits = {
-    'train': df.iloc[train_idx].reset_index(drop=True),
-    'val':   df.iloc[val_idx].reset_index(drop=True),
-    'test':  df.iloc[test_idx].reset_index(drop=True),
-  }
-  for name, sp in splits.items():
-    if len(sp) == 0:
-      raise ValueError(f'split {name!r} is empty after random partitioning')
-
-  return splits, (train_idx, val_idx, test_idx)
+  subjects = df['subject_id'].to_numpy()
+  unique_subjects = rng.permutation(np.unique(subjects))
+  rows_a, rows_b = [], []
+  count_a = 0
+  for subj in unique_subjects:
+    rows = np.where(subjects == subj)[0]
+    if count_a < n_first:
+      rows_a.append(rows)
+      count_a += len(rows)
+    else:
+      rows_b.append(rows)
+  idx_a = np.concatenate(rows_a) if rows_a else np.array([], dtype=np.int64)
+  idx_b = np.concatenate(rows_b) if rows_b else np.array([], dtype=np.int64)
+  if len(idx_a) == 0 or len(idx_b) == 0:
+    raise ValueError(
+      f'subject-disjoint split produced an empty subset '
+      f'(|A|={len(idx_a)}, |B|={len(idx_b)}; target n_first={n_first}, '
+      f'unique_subjects={len(unique_subjects)})'
+    )
+  return idx_a, idx_b
 
 
 def _compute_norm_stats(X):
@@ -710,17 +666,61 @@ def _accum_projector_batch_metrics(pred, target, sums):
     sums['cos'] += F.cosine_similarity(pred, target, dim=1).mean()
 
 
-def _train_linear_projector(old_anchors, new_anchors, df_anch, projector_dir, anchor_key_tag):
+def _extract_linear_val_pool(
+  old_model, new_model, old_model_pth, new_model_pth,
+  old_config, new_config, new_features_path, anchor_domain_features_for_old,
+):
+  """
+  Extract the val.csv embedding pool used to validate/test the linear projector.
+
+  The projector's validation and test sets are drawn from the new model's val.csv
+  (the validation split from the new model's own training run), resolved next to
+  new_model_pth. Both old- and new-model embeddings are extracted on the new-model
+  domain, so the old model uses anchor_domain_features_for_old as a features override.
+
+  Args:
+    old_model     (Model_Advanced): Old model instance.
+    new_model     (Model_Advanced): New model instance.
+    old_model_pth (str): Path to old model checkpoint.
+    new_model_pth (str): Path to new model checkpoint.
+    old_config    (dict): Old model k_fold_results.pkl.
+    new_config    (dict): New model k_fold_results.pkl.
+    new_features_path (str): New model features folder (for set_step_shift).
+    anchor_domain_features_for_old (str): Old-backbone features for the new-model
+      dataset, used as the old model's features override.
+
+  Returns:
+    dict: keys 'old' (old-model embeddings dict), 'new' (new-model embeddings dict,
+          aligned to 'old' by sample_id), 'df' (val.csv DataFrame), 'csv' (path str).
+  """
+  val_csv = _resolve_split_csv(new_model_pth, 'val')
+  assert os.path.isfile(val_csv), f'New model val.csv not found: {val_csv}'
+  helper.set_step_shift(new_features_path)
+  df_val = pd.read_csv(
+    clean_csv_from_augmentations(val_csv), sep='\t', dtype={'sample_name': str},
+  )
+  old_emb = _extract_embeddings(
+    old_model, old_model_pth, val_csv, old_config,
+    features_path_override=anchor_domain_features_for_old,
+  )
+  new_emb = _extract_embeddings(new_model, new_model_pth, val_csv, new_config)
+  new_aligned = _align_by_sample_id(old_emb, new_emb)
+  print(f'[linear val pool] new model val.csv ({len(df_val)} rows) → {val_csv}')
+  return {'old': old_emb, 'new': new_aligned, 'df': df_val, 'csv': val_csv}
+
+
+def _train_linear_projector(old_anchors, new_anchors, df_anch, val_pool, projector_dir, anchor_key_tag):
   """
   Train a learned linear projector mapping old anchor embeddings to new anchor embeddings.
 
-  Anchors are split subject-disjointly (and class-stratified where possible) into
-  train/val/test according to LINEAR_PROJECTOR_CONFIG['split_ratios']. Model
-  selection mirrors the loss the optimizer is minimizing
-  (see _projector_selection_rule): val MSE for loss='mse', val MAE for
-  loss='mae', and val cosine similarity (maximized) for loss='cosine'.
-  The test split is held out and evaluated exactly once with the best
-  checkpoint.
+  The projector is fit on *all* K anchor pairs selected from --csv_anchor_selection
+  (the new-model domain). Its validation and test sets are a subject-disjoint split
+  of the new model's val.csv (val_pool): with M = number of val.csv rows, val gets
+  ~round(split_ratios[1] * M) rows for model selection and test absorbs the
+  remainder, so val and test together cover every val.csv row. Model selection
+  mirrors the loss the optimizer is minimizing (see _projector_selection_rule):
+  val MSE for loss='mse', val MAE for loss='mae', and val cosine similarity
+  (maximized) for loss='cosine'.
 
   Args:
     old_anchors    (dict): Output of _extract_embeddings on old model — keys
@@ -730,6 +730,8 @@ def _train_linear_projector(old_anchors, new_anchors, df_anch, projector_dir, an
                            'embeddings' (K, D_new), 'sample_ids' (K,).
     df_anch        (pd.DataFrame): Anchor table written to disk (sample_id, subject_id,
                                    class_id columns required).
+    val_pool       (dict): Output of _extract_linear_val_pool — keys 'old', 'new'
+                           (embedding dicts on the new model's val.csv) and 'df'.
     projector_dir  (str): Output directory; contents created here:
                           split_training_stage/{train,val,test}.csv,
                           best_projector_{best_epoch}.pt.
@@ -749,61 +751,70 @@ def _train_linear_projector(old_anchors, new_anchors, df_anch, projector_dir, an
   splits_dir = os.path.join(projector_dir, 'split_training_stage')
   os.makedirs(splits_dir, exist_ok=True)
 
-  # --- Align df_anch row order with old_anchors['sample_ids'] ---
-  sid_col = df_anch['sample_id'].astype(np.int64).to_numpy()
-  emb_sids = old_anchors['sample_ids'].astype(np.int64)
-  sid_to_row = {int(s): i for i, s in enumerate(sid_col)}
-  missing = set(emb_sids.tolist()) - set(sid_col.tolist())
-  assert not missing, f'sample_ids missing from anchor df: {missing}'
-  order = np.array([sid_to_row[int(s)] for s in emb_sids], dtype=np.int64)
-  df_anch_aligned = df_anch.iloc[order].reset_index(drop=True)
+  # --- Align df_anch / val.csv df row order with their embeddings' sample_ids ---
+  df_anch_aligned = _align_df_to_sample_ids(df_anch, old_anchors['sample_ids'], 'anchor df')
+  val_df_aligned  = _align_df_to_sample_ids(
+    val_pool['df'], val_pool['old']['sample_ids'], 'val.csv df',
+  )
 
-  # --- Build subject-disjoint stratified split, falling back to a plain
-  # random split (subject_id ignored) if the subject-aware split is infeasible
-  # for this anchor df (too few subjects, empty groups, sklearn failure, etc.).
-  try:
-    splits_df, (idx_tr, idx_va, idx_te) = _make_subject_stratified_split(
-      df_anch_aligned, cfg['split_ratios'], _SEED,
+  # --- Overlap check: anchors must not share sample_ids with the val.csv pool ---
+  anchor_sids = set(old_anchors['sample_ids'].astype(np.int64).tolist())
+  val_sids    = set(val_pool['old']['sample_ids'].astype(np.int64).tolist())
+  overlap = anchor_sids & val_sids
+  if overlap:
+    raise ValueError(
+      f"[linear_proj:{anchor_key_tag}] {len(overlap)} anchor sample_id(s) also appear "
+      f"in the new model's val.csv: {sorted(overlap)[:10]}"
+      f"{' ...' if len(overlap) > 10 else ''}. Pick a --csv_anchor_selection split "
+      f"disjoint from 'val' (e.g. 'train')."
     )
-    split_mode = 'subject_disjoint'
-  except Exception as e:
-    print(f"  [linear_proj:{anchor_key_tag}] WARNING: subject-disjoint split failed "
-          f"({type(e).__name__}: {e}). Falling back to plain random split "
-          f"(subjects may overlap across train/val/test).")
-    splits_df, (idx_tr, idx_va, idx_te) = _make_random_split(
-      df_anch_aligned, cfg['split_ratios'], _SEED,
-    )
-    split_mode = 'fallback_random'
-  X_old = old_anchors['embeddings'].astype(np.float32)
-  X_new = new_anchors['embeddings'].astype(np.float32)
-  labels = old_anchors['labels'].astype(np.float32)
 
-  split_arrays = {}
-  for name, idx in (('train', idx_tr), ('val', idx_va), ('test', idx_te)):
+  # --- Split val.csv subject-disjointly into val / test (test = remainder) ---
+  M = len(val_pool['old']['embeddings'])
+  n_val = round(cfg['split_ratios'][1] * M)
+  if n_val < 1 or n_val >= M:
+    raise ValueError(
+      f"[linear_proj:{anchor_key_tag}] cannot build a val/test split from val.csv: "
+      f"n_val={n_val} (val.csv rows={M}, split_ratios={cfg['split_ratios']})."
+    )
+  idx_va, idx_te = _make_subject_disjoint_subsets(val_df_aligned, n_val, _SEED)
+
+  # --- Assemble split arrays: train = all anchors; val/test = val.csv subsets ---
+  split_arrays = {
+    'train': {
+      'old':         old_anchors['embeddings'].astype(np.float32),
+      'new':         new_anchors['embeddings'].astype(np.float32),
+      'sample_ids':  old_anchors['sample_ids'].astype(np.int64),
+      'subject_ids': df_anch_aligned['subject_id'].to_numpy(),
+      'labels':      old_anchors['labels'].astype(np.float32),
+    },
+  }
+  for name, idx in (('val', idx_va), ('test', idx_te)):
     split_arrays[name] = {
-      'old':         X_old[idx],
-      'new':         X_new[idx],
-      'sample_ids':  emb_sids[idx],
-      'subject_ids': df_anch_aligned['subject_id'].to_numpy()[idx],
-      'labels':      labels[idx],
+      'old':         val_pool['old']['embeddings'][idx].astype(np.float32),
+      'new':         val_pool['new']['embeddings'][idx].astype(np.float32),
+      'sample_ids':  val_pool['old']['sample_ids'][idx].astype(np.int64),
+      'subject_ids': val_df_aligned['subject_id'].to_numpy()[idx],
+      'labels':      val_pool['old']['labels'][idx].astype(np.float32),
     }
 
-  print(f"  [linear_proj:{anchor_key_tag}] [split_mode={split_mode}] anchor pairs: "
-        f"total={len(df_anch_aligned)} "
-        f"train={len(idx_tr)} val={len(idx_va)} test={len(idx_te)}")
-  print(f"  [linear_proj:{anchor_key_tag}] [split_mode={split_mode}] unique subjects per split — "
+  splits_df = {
+    'train': df_anch_aligned.reset_index(drop=True),
+    'val':   val_df_aligned.iloc[idx_va].reset_index(drop=True),
+    'test':  val_df_aligned.iloc[idx_te].reset_index(drop=True),
+  }
+  split_mode = 'anchors_train/valcsv_eval'
+
+  print(f"  [linear_proj:{anchor_key_tag}] [{split_mode}] "
+        f"train={len(split_arrays['train']['old'])} (all anchors)  "
+        f"val={len(idx_va)} test={len(idx_te)} (subject-disjoint subsets of val.csv, {M} rows)")
+  print(f"  [linear_proj:{anchor_key_tag}] unique subjects per split — "
         f"train={splits_df['train']['subject_id'].nunique()} "
         f"val={splits_df['val']['subject_id'].nunique()} "
         f"test={splits_df['test']['subject_id'].nunique()}")
-  if split_mode == 'subject_disjoint':
-    s_tr = set(splits_df['train']['subject_id'].tolist())
-    s_va = set(splits_df['val']['subject_id'].tolist())
-    s_te = set(splits_df['test']['subject_id'].tolist())
-    print(f"  [linear_proj:{anchor_key_tag}] subject overlap: "
-          f"train-val={len(s_tr & s_va)} train-test={len(s_tr & s_te)} val-test={len(s_va & s_te)}")
-  else:
-    print(f"  [linear_proj:{anchor_key_tag}] subject overlap not enforced "
-          f"(split_mode={split_mode}); train/val/test may share subjects.")
+  s_va = set(splits_df['val']['subject_id'].tolist())
+  s_te = set(splits_df['test']['subject_id'].tolist())
+  print(f"  [linear_proj:{anchor_key_tag}] val/test subject overlap: {len(s_va & s_te)}")
 
   # --- Persist split CSVs ---
   split_csv_paths = {}
@@ -829,8 +840,8 @@ def _train_linear_projector(old_anchors, new_anchors, df_anch, projector_dir, an
       split_arrays[name]['old_norm'] = split_arrays[name]['old']
       split_arrays[name]['new_norm'] = split_arrays[name]['new']
 
-  d_old = X_old.shape[1]
-  d_new = X_new.shape[1]
+  d_old = split_arrays['train']['old'].shape[1]
+  d_new = split_arrays['train']['new'].shape[1]
   projector = torch.nn.Linear(d_old, d_new).to(device)
   optimizer = _build_projector_optimizer(projector.parameters(), cfg)
   loss_fn = _projector_loss_fn(cfg['loss'])
@@ -1149,6 +1160,14 @@ def _precompute_embeddings(
     print(f'  WARNING: old backbone ({old_backbone}) differs from new backbone ({new_backbone}) — proceeding anyway')
   anchor_domain_features_for_old = _get_features_path(old_features_path, new_dataset)
 
+  # --- val.csv pool for the linear projector (extracted once, reused per combo) ---
+  linear_val_pool = None
+  if 'linear' in args.interpolation_similarity:
+    linear_val_pool = _extract_linear_val_pool(
+      old_model, new_model, old_model_pth, new_model_pth,
+      old_config, new_config, new_features_path, anchor_domain_features_for_old,
+    )
+
   # --- Anchor embeddings (one extraction per unique combo) ---
   anchor_combos = list(itertools.product(
     args.csv_anchor_selection, args.num_anchors, args.anchor_selection_type,
@@ -1194,6 +1213,7 @@ def _precompute_embeddings(
         old_anchors=old_anch,
         new_anchors=new_aligned,
         df_anch=df_anch,
+        val_pool=linear_val_pool,
         projector_dir=projector_dir,
         anchor_key_tag=f'{csv_sel}_{num_anch}_{sel_type}',
       )
@@ -1669,11 +1689,16 @@ def cross_space_projection(args):
     new_model_anchors_aligned = _align_by_sample_id(old_model_anchors, new_model_anchors)
 
     if args.interpolation_similarity == 'linear':
-      # --- Step 6 (linear): train learned linear projector on anchor pairs ---
+      # --- Step 6 (linear): train projector on all anchors; val/test from val.csv ---
       projector_dir = os.path.join(out_dir, 'linear_projector')
+      linear_val_pool = _extract_linear_val_pool(
+        old_model, new_model, args.old_model_pth, args.new_model_pth,
+        old_config, new_config, new_features_path, anchor_domain_features_for_old,
+      )
       linear_bundle = _train_linear_projector(  # noqa: F841 — also persisted into dict_res below
         old_anchors=old_model_anchors,
         new_anchors=new_model_anchors_aligned,
+        val_pool=linear_val_pool,
         df_anch=df_anchors,
         projector_dir=projector_dir,
         anchor_key_tag='single',

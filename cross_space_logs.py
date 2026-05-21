@@ -7,11 +7,14 @@ to {out_dir}/logs/.
 
 Plots generated:
   1.  predictions_histogram.png     — prediction distributions (bin 0.1) + ground truth
-  2a. mae_per_class_old.png         — single bar: old model MAE per pain class
-  2b. mae_per_class_projected.png   — single bar: projected MAE per pain class
+  2a. mae_per_class_old_bar.png       — bar: old model MAE per pain class
+  2b. mae_per_class_old_box.png       — box: old model per-sample error per class
+  2c. mae_per_class_projected_bar.png — bar: projected MAE per pain class
+  2d. mae_per_class_projected_box.png — box: projected per-sample error per class
   3a. mae_per_subject_old.png       — single bar: old model MAE per subject
   3b. mae_per_subject_projected.png — single bar: projected MAE per subject
   4.  confusion_matrix.png          — new model rounded predictions vs ground truth
+                                      (skipped when num_classes > 15)
   5.  umap_all.png                  — 1×2 UMAP: colored by label and by subject
   6.  anchor_weights.png            — weight entropy histogram + top-20 anchor usage
   7.  anchor_umap.png               — old vs new anchor embeddings in UMAP space
@@ -154,49 +157,62 @@ def _single_bar(ax, groups, vals, ylabel, title, color):
   ax.set_title(title)
 
 
-def _draw_bar_boxplot(ax_bar, ax_box, groups, vals, raw_by_group, ylabel, title, color):
+def _draw_mae_bar(ax, groups, vals, ylabel, title, color):
   """
-  Draw a stacked bar (top) + box plot (bottom) into two pre-existing axes.
+  Draw a labelled MAE bar chart into a single pre-existing axes.
 
   Args:
-    ax_bar       (matplotlib.axes.Axes): Axes for the bar chart (top).
-    ax_box       (matplotlib.axes.Axes): Axes for the box plot (bottom).
-    groups       (list): Group labels for the x-axis.
-    vals         (list[float]): Mean value per group (bar heights).
-    raw_by_group (list[np.ndarray]): Per-sample value arrays, one per group.
-    ylabel       (str): Y-axis label for both subplots.
-    title        (str): Title for the bar subplot.
-    color        (str): Bar fill and box fill color.
+    ax     (matplotlib.axes.Axes): Axes for the bar chart.
+    groups (list): Group labels for the x-axis.
+    vals   (list[float]): Mean value per group (bar heights).
+    ylabel (str): Y-axis label.
+    title  (str): Plot title.
+    color  (str): Bar fill color.
   """
   x      = np.arange(len(groups))
   margin = 0.6
   xlim   = (x[0] - margin, x[-1] + margin) if len(x) > 0 else (-0.6, 0.6)
 
-  # Bar chart
-  bars = ax_bar.bar(x, vals, color=color, alpha=0.85, edgecolor='white', linewidth=0.7)
-  ax_bar.set_xlim(*xlim)
-  ax_bar.set_xticks(x)
-  ax_bar.set_xticklabels([str(g) for g in groups], rotation=45, ha='right')
-  ax_bar.set_ylabel(ylabel)
-  ax_bar.set_title(title)
-  ax_bar.grid(axis='y', alpha=0.3)
+  bars = ax.bar(x, vals, color=color, alpha=0.85, edgecolor='white', linewidth=0.7)
+  ax.set_xlim(*xlim)
+  ax.set_xticks(x)
+  ax.set_xticklabels([str(g) for g in groups], rotation=45, ha='right')
+  ax.set_ylabel(ylabel)
+  ax.set_title(title)
+  ax.grid(axis='y', alpha=0.3)
   val_range = max(vals) - min(vals) if len(vals) > 1 else abs(vals[0]) if vals else 0
   offset    = val_range * 0.02 + 1e-6
   for bar in bars:
     h = bar.get_height()
-    ax_bar.text(
+    ax.text(
       bar.get_x() + bar.get_width() / 2, h + offset,
       f'{h:.2f}', ha='center', va='bottom', fontsize=7,
     )
 
-  # Box plot
+
+def _draw_mae_box(ax, groups, raw_by_group, ylabel, color, title=None):
+  """
+  Draw a per-group box plot of per-sample values into a single pre-existing axes.
+
+  Args:
+    ax           (matplotlib.axes.Axes): Axes for the box plot.
+    groups       (list): Group labels for the x-axis.
+    raw_by_group (list[np.ndarray]): Per-sample value arrays, one per group.
+    ylabel       (str): Y-axis label.
+    color        (str): Box fill color.
+    title        (str | None): Optional plot title.
+  """
+  x      = np.arange(len(groups))
+  margin = 0.6
+  xlim   = (x[0] - margin, x[-1] + margin) if len(x) > 0 else (-0.6, 0.6)
+
   face_rgba      = list(mcolors.to_rgba(color))
   face_rgba[3]   = 0.5
   box_data = [
     arr if (len(arr) > 0 and not np.all(np.isnan(arr))) else np.array([np.nan])
     for arr in raw_by_group
   ]
-  bp = ax_box.boxplot(
+  bp = ax.boxplot(
     box_data,
     positions=x,
     widths=0.5,
@@ -211,11 +227,31 @@ def _draw_bar_boxplot(ax_bar, ax_box, groups, vals, raw_by_group, ylabel, title,
   for patch in bp['boxes']:
     patch.set_facecolor(face_rgba)
     patch.set_edgecolor(color)
-  ax_box.set_xlim(*xlim)
-  ax_box.set_xticks(x)
-  ax_box.set_xticklabels([str(g) for g in groups], rotation=45, ha='right')
-  ax_box.set_ylabel(ylabel)
-  ax_box.grid(axis='y', alpha=0.3)
+  ax.set_xlim(*xlim)
+  ax.set_xticks(x)
+  ax.set_xticklabels([str(g) for g in groups], rotation=45, ha='right')
+  ax.set_ylabel(ylabel)
+  ax.grid(axis='y', alpha=0.3)
+  if title is not None:
+    ax.set_title(title)
+
+
+def _draw_bar_boxplot(ax_bar, ax_box, groups, vals, raw_by_group, ylabel, title, color):
+  """
+  Draw a stacked bar (top) + box plot (bottom) into two pre-existing axes.
+
+  Args:
+    ax_bar       (matplotlib.axes.Axes): Axes for the bar chart (top).
+    ax_box       (matplotlib.axes.Axes): Axes for the box plot (bottom).
+    groups       (list): Group labels for the x-axis.
+    vals         (list[float]): Mean value per group (bar heights).
+    raw_by_group (list[np.ndarray]): Per-sample value arrays, one per group.
+    ylabel       (str): Y-axis label for both subplots.
+    title        (str): Title for the bar subplot.
+    color        (str): Bar fill and box fill color.
+  """
+  _draw_mae_bar(ax_bar, groups, vals, ylabel, title, color)
+  _draw_mae_box(ax_box, groups, raw_by_group, ylabel, color)
 
 
 def _compute_umap(embeddings):
@@ -402,10 +438,10 @@ def plot_predictions_histogram(new_preds, old_preds, labels, out_dir,
 
 def plot_mae_per_class(new_preds, old_preds, labels, out_dir, run_label: str = ''):
   """
-  Two separate stacked bar+box figures of MAE per pain class: one for the old
-  model and one for the projected model.
+  Four separate single-plot figures of MAE per pain class: a bar chart and a
+  box plot for each of the old model and the projected model.
 
-  The bar row shows mean MAE per class; the box row shows the full per-sample
+  The bar chart shows mean MAE per class; the box plot shows the full per-sample
   absolute error distribution per class.
 
   Args:
@@ -427,23 +463,30 @@ def plot_mae_per_class(new_preds, old_preds, labels, out_dir, run_label: str = '
 
   suffix = f' | {run_label}' if run_label else ''
 
-  for vals, raw_errors, color, name, filename in [
-    (old_vals, old_raw, 'steelblue',  'Old model',       'mae_per_class_old.png'),
-    (new_vals, new_raw, 'darkorange', 'Projected (new)', 'mae_per_class_projected.png'),
+  for vals, raw_errors, color, name, prefix in [
+    (old_vals, old_raw, 'steelblue',  'Old model',       'mae_per_class_old'),
+    (new_vals, new_raw, 'darkorange', 'Projected (new)', 'mae_per_class_projected'),
   ]:
-    fig, (ax_bar, ax_box) = plt.subplots(
-      2, 1, figsize=(max(12, len(groups) * 1.2), 7), height_ratios=[2, 1],
-    )
-    _draw_bar_boxplot(
-      ax_bar, ax_box, groups, vals, raw_errors,
-      'MAE', f'MAE per pain class — {name}{suffix}', color,
-    )
-    ax_box.set_xlabel('Pain level')
+    fig, ax = plt.subplots(figsize=(14, 5))
+    _draw_mae_bar(ax, groups, vals, 'MAE', f'MAE per pain class — {name}{suffix}', color)
+    ax.set_xlabel('Pain level')
     plt.tight_layout()
-    path = os.path.join(out_dir, filename)
-    fig.savefig(path, dpi=150)
+    bar_path = os.path.join(out_dir, f'{prefix}_bar.png')
+    fig.savefig(bar_path, dpi=150)
     plt.close(fig)
-    print(f'Saved: {path}')
+    print(f'Saved: {bar_path}')
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+    _draw_mae_box(
+      ax, groups, raw_errors, 'MAE', color,
+      title=f'MAE per pain class — {name}{suffix}',
+    )
+    ax.set_xlabel('Pain level')
+    plt.tight_layout()
+    box_path = os.path.join(out_dir, f'{prefix}_box.png')
+    fig.savefig(box_path, dpi=150)
+    plt.close(fig)
+    print(f'Saved: {box_path}')
 
 
 def plot_mae_per_subject(new_preds, old_preds, labels, sample_ids, subject_map, out_dir, run_label: str = ''):
@@ -466,14 +509,13 @@ def plot_mae_per_subject(new_preds, old_preds, labels, sample_ids, subject_map, 
   groups   = sorted(set(old_mae) | set(new_mae))
   old_vals = [old_mae.get(g, (float('nan'), 0))[0] for g in groups]
   new_vals = [new_mae.get(g, (float('nan'), 0))[0] for g in groups]
-  width    = max(12, len(groups) * 0.9)
   suffix = f' | {run_label}' if run_label else ''
 
   for vals, color, name, filename in [
     (old_vals, 'steelblue',  'Old model',       'mae_per_subject_old.png'),
     (new_vals, 'darkorange', 'Projected (new)', 'mae_per_subject_projected.png'),
   ]:
-    fig, ax = plt.subplots(figsize=(width, 5))
+    fig, ax = plt.subplots(figsize=(12, 7))
     _single_bar(ax, groups, vals, 'MAE', f'MAE per subject — {name}{suffix}', color)
     ax.set_xlabel('Subject ID')
     plt.tight_layout()
@@ -747,7 +789,7 @@ def plot_prediction_by_class_boxplot(new_preds, old_preds, labels, out_dir, run_
     capprops=dict(linewidth=1.0),
   )
 
-  fig, axes = plt.subplots(1, 2, figsize=(max(14, len(class_ids) * 1.1), 5))
+  fig, axes = plt.subplots(1, 2, figsize=(12, 7))
 
   for ax, preds, model_name in [
     (axes[0], new_preds, 'Projected (new model)'),
@@ -1549,6 +1591,8 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
     Row 1: pred_by_class projected | pred_by_class old | metrics table
     Row 2: prediction_histogram (full width, 3 columns)
 
+  The confusion-matrix cell is left empty when num_classes > 15.
+
   The MAE per class bar+box cell uses a nested GridSpec (2 sub-rows).
 
   Args:
@@ -1574,11 +1618,19 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
   fig = plt.figure(figsize=(26, 22))
   gs  = gridspec.GridSpec(3, 3, figure=fig, hspace=0.5, wspace=0.38)
 
-  # ── Row 0, Col 0: confusion matrix ──────────────────────────────────────────
-  plot_confusion_matrix_cross(
-    new_preds, labels, out_dir, num_classes,
-    run_label=run_label, ax=fig.add_subplot(gs[0, 0]),
-  )
+  # ── Row 0, Col 0: confusion matrix (skipped when num_classes > 15) ──────────
+  if num_classes <= 15:
+    plot_confusion_matrix_cross(
+      new_preds, labels, out_dir, num_classes,
+      run_label=run_label, ax=fig.add_subplot(gs[0, 0]),
+    )
+  else:
+    ax_cm = fig.add_subplot(gs[0, 0])
+    ax_cm.axis('off')
+    ax_cm.text(
+      0.5, 0.5, f'Confusion matrix skipped\n(num_classes={num_classes} > 15)',
+      ha='center', va='center', fontsize=10,
+    )
 
   # ── Row 0, Col 1: MAE per class — new model (bar + box) ─────────────────────
   inner_mae = gridspec.GridSpecFromSubplotSpec(
@@ -1976,7 +2028,10 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
   plot_predictions_histogram(new_preds, old_preds, labels, out_dir, run_label=run_label)
   plot_mae_per_class(new_preds, old_preds, labels, out_dir, run_label=run_label)
   plot_mae_per_subject(new_preds, old_preds, labels, sample_ids, subject_map, out_dir, run_label=run_label)
-  plot_confusion_matrix_cross(new_preds, labels, out_dir, num_classes, run_label=run_label)
+  if num_classes <= 15:
+    plot_confusion_matrix_cross(new_preds, labels, out_dir, num_classes, run_label=run_label)
+  else:
+    print(f'Skipped confusion matrix: num_classes={num_classes} > 15')
   plot_umap(new_t['embeddings'], labels, sample_ids, subject_map, out_dir, run_label=run_label)
   try:
     plot_anchor_weights(weights, out_dir, run_label=run_label)

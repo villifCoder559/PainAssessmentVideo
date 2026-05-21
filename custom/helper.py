@@ -408,6 +408,12 @@ class ModelTypeEntry:
   def __hash__(self):
     return hash(self.name)
 
+  def __str__(self):
+    return self.name
+
+  def __repr__(self):
+    return self.name
+
 class MODEL_TYPE:
   _entries = {
     'VIDEOMAE_v2_G_unl': ModelTypeEntry('VIDEOMAE_v2_G_unl', os.path.join("VideoMAEv2", "pretrained", "vit_g_hybrid_pt_1200e.pth")),
