@@ -22,6 +22,32 @@ import torch
 
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
 
+MAX_SUBJECTS_FOR_PLOT = 40
+
+
+def _auto_y_lim(values_list, base_y_lim, margin=1.1):
+  """
+  Return max(base_y_lim, max(values) * margin) so bars never clip.
+
+  Args:
+    values_list: Iterable of array-likes (numpy/torch/list). None entries are ignored.
+    base_y_lim:  Floor for the returned limit so plots stay visually comparable.
+    margin:      Multiplicative head-room above the observed max.
+
+  Returns:
+    A float suitable for `y_lim` on plot_error_per_class.
+  """
+  candidates = [float(base_y_lim)]
+  for v in values_list:
+    if v is None:
+      continue
+    arr = np.asarray(v, dtype=float)
+    if arr.size == 0:
+      continue
+    candidates.append(float(np.nanmax(arr)) * margin)
+  return max(candidates)
+
+
 def find_results_files(parent_folder):
   results_files = []
   list_history_folder = os.listdir(parent_folder)
@@ -166,16 +192,14 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
   for k_fold, grouped_losses in dict_grouped_losses.items():
     
     # Plot error per subject
-    fig, ax = plt.subplots(2,1,figsize=(18,10))
-    ax = ax.flatten()
     train_subject_loss = grouped_losses['subject_train_loss']
     val_subject_loss = grouped_losses['subject_val_loss'] if 'subject_val_loss' in grouped_losses else grouped_losses['subject_test_loss']
-    
+
     # Convert UNBC counts to IDs if adversarial training
     if is_adversarial_training and is_unbc:
       train_subject_loss = {helper.unbc_count_to_id[k]: v for k,v in train_subject_loss.items()}
       val_subject_loss = {helper.unbc_count_to_id[k]: v for k,v in val_subject_loss.items()}
-       
+
     unique_subject_ids_train = list(train_subject_loss.keys())
     unique_subject_ids_val = list(val_subject_loss.keys())
     y_lim = 5
@@ -183,40 +207,49 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
       y_lim = 10
     elif 'agedb' in "".join(data['config']['path_csv_dataset']).lower():
       y_lim = 20
-    tools.plot_error_per_subject(loss_per_subject=[train_subject_loss[k] for k in sorted(train_subject_loss.keys())],
-                                  unique_subject_ids=sorted(unique_subject_ids_train),
-                                  criterion=data['config']['criterion'],
-                                  title=f'Grouped mean TRAIN Loss per Subject - {k_fold} - {test_id}',
-                                  ax=ax[0],
-                                  y_lim=y_lim)
     title_plt = 'VAL' if 'subject_val_loss' in grouped_losses else 'TEST'
-    tools.plot_error_per_subject(loss_per_subject=[val_subject_loss[k] for k in sorted(val_subject_loss.keys())],
-                                  unique_subject_ids=sorted(unique_subject_ids_val),
-                                  criterion=data['config']['criterion'],
-                                  title=f'Grouped mean {title_plt} Loss per Subject - {k_fold} - {test_id}',
-                                  ax=ax[1],
-                                  y_lim=y_lim)
-    fig.tight_layout()
-    fig.savefig(os.path.join(grouped_output_folder, f'{test_id}{additional_info}_grouped_loss_per_subject_{k_fold}.png'))
-    plt.close(fig)
+    n_subjects_max = max(len(unique_subject_ids_train), len(unique_subject_ids_val))
+    if n_subjects_max <= MAX_SUBJECTS_FOR_PLOT:
+      fig, ax = plt.subplots(2,1,figsize=(18,10))
+      ax = ax.flatten()
+      tools.plot_error_per_subject(loss_per_subject=[train_subject_loss[k] for k in sorted(train_subject_loss.keys())],
+                                    unique_subject_ids=sorted(unique_subject_ids_train),
+                                    criterion=data['config']['criterion'],
+                                    title=f'Grouped mean TRAIN Loss per Subject - {k_fold} - {test_id}',
+                                    ax=ax[0],
+                                    y_lim=y_lim)
+      tools.plot_error_per_subject(loss_per_subject=[val_subject_loss[k] for k in sorted(val_subject_loss.keys())],
+                                    unique_subject_ids=sorted(unique_subject_ids_val),
+                                    criterion=data['config']['criterion'],
+                                    title=f'Grouped mean {title_plt} Loss per Subject - {k_fold} - {test_id}',
+                                    ax=ax[1],
+                                    y_lim=y_lim)
+      fig.tight_layout()
+      fig.savefig(os.path.join(grouped_output_folder, f'{test_id}{additional_info}_grouped_loss_per_subject_{k_fold}.png'))
+      plt.close(fig)
+    else:
+      print(f'[skip] grouped per-subject plot for {test_id}/{k_fold}: N={n_subjects_max} > {MAX_SUBJECTS_FOR_PLOT}')
     
     # Plot error per class
     fig, ax = plt.subplots(2,1,figsize=(18,9))
     train_class_loss = grouped_losses['class_train_loss']
     val_class_loss = grouped_losses['class_val_loss'] if 'class_val_loss' in grouped_losses else grouped_losses['class_test_loss']
-    
-    tools.plot_error_per_class(mae_per_class=[train_class_loss[k] for k in sorted(train_class_loss.keys())],
+    train_class_values = [train_class_loss[k] for k in sorted(train_class_loss.keys())]
+    val_class_values = [val_class_loss[k] for k in sorted(val_class_loss.keys())]
+    y_lim_class = _auto_y_lim([train_class_values, val_class_values], y_lim)
+
+    tools.plot_error_per_class(mae_per_class=train_class_values,
                                unique_classes=sorted(train_class_loss.keys()),
                                criterion=data['config']['criterion'],
                                ax=ax[0],
                                title=f'Grouped mean TRAIN Loss per Class - {k_fold} - {test_id}',
-                                y_lim=y_lim)
-    tools.plot_error_per_class(mae_per_class=[val_class_loss[k] for k in sorted(val_class_loss.keys())],
+                                y_lim=y_lim_class)
+    tools.plot_error_per_class(mae_per_class=val_class_values,
                                 unique_classes=sorted(val_class_loss.keys()),
                                 criterion=data['config']['criterion'],
                                 ax=ax[1],
                                 title=f'Grouped mean {title_plt} Loss per Class - {k_fold} - {test_id}',
-                                y_lim=y_lim)
+                                y_lim=y_lim_class)
     fig.tight_layout()
     fig.savefig(os.path.join(grouped_output_folder, f'{test_id}{additional_info}_grouped_loss_per_class_{k_fold}.png'))
     plt.close(fig)
@@ -654,73 +687,90 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
             best_epoch = data['results'][key]['train_val']['best_model_idx']
             loss_per_subject_train = data['results'][key]['train_val'].get('train_loss_per_subject', None)
             unique_subject_ids_train=data['results'][key]['train_val']['train_unique_subject_ids']
-            
+
             if is_adversarial_training and is_unbc:
               unique_subject_ids_train = helper.convert_unbc_count_to_id(unique_subject_ids_train)
-                
-            tools.plot_error_per_subject(loss_per_subject=loss_per_subject_train[best_epoch],
-                                        unique_subject_ids=unique_subject_ids_train,
-                                        title=f'TRAIN error per subject - Epoch_{best_epoch} ',
-                                        criterion=data['config']['criterion'],
-                                        list_stoic_subject=None,
-                                        y_lim=y_lim_error,
-                                        ax=axs[1][0])
-            
+
+            if len(unique_subject_ids_train) <= MAX_SUBJECTS_FOR_PLOT:
+              tools.plot_error_per_subject(loss_per_subject=loss_per_subject_train[best_epoch],
+                                          unique_subject_ids=unique_subject_ids_train,
+                                          title=f'TRAIN error per subject - Epoch_{best_epoch} ',
+                                          criterion=data['config']['criterion'],
+                                          list_stoic_subject=None,
+                                          y_lim=y_lim_error,
+                                          ax=axs[1][0])
+            else:
+              axs[1][0].set_visible(False)
+              print(f'[skip] in-panel TRAIN per-subject for {test_id}/{key}: N={len(unique_subject_ids_train)} > {MAX_SUBJECTS_FOR_PLOT}')
+
             # axs[1][1]: loss per class train
             loss_per_class_train = data['results'][key]['train_val'].get('train_loss_per_class', None)
+            dict_per_subject_test = data['results'][key].get('test', None)
+            if dict_per_subject_test is None:
+              loss_per_class_val_for_y = data['results'][key]['train_val'].get('val_loss_per_class', None)
+              val_class_arr_for_y = loss_per_class_val_for_y[best_epoch] if loss_per_class_val_for_y is not None else None
+            else:
+              val_class_arr_for_y = dict_per_subject_test.get('test_loss_per_class', None)
+            y_lim_class_panel = _auto_y_lim([loss_per_class_train[best_epoch], val_class_arr_for_y], y_lim_error)
             tools.plot_error_per_class(mae_per_class=loss_per_class_train[best_epoch],
                                        unique_classes=data['results'][key]['train_val']['train_unique_y'],
                                        criterion=data['config']['criterion'],
                                        ax=axs[1][1],
-                                       y_lim=y_lim_error,
+                                       y_lim=y_lim_class_panel,
                                        title=f'TRAIN error per class - Epoch_{best_epoch}')
-            
+
             # axs[2][0]: loss per subject val (or test)
-            dict_per_subject_test = data['results'][key].get('test', None)
             if dict_per_subject_test is None:
               loss_per_subject_val = data['results'][key]['train_val'].get('val_loss_per_subject', None)
               unique_subject_ids_val=data['results'][key]['train_val']['val_unique_subject_ids']
-              
+
               if is_adversarial_training and is_unbc:
                 unique_subject_ids_val = helper.convert_unbc_count_to_id(unique_subject_ids_val)
-              
-              tools.plot_error_per_subject(loss_per_subject=loss_per_subject_val[best_epoch],
-                                          unique_subject_ids=unique_subject_ids_val,
-                                          title=f'VAL error per subject - Epoch_{best_epoch} ',
-                                          criterion=data['config']['criterion'],
-                                          list_stoic_subject=None,
-                                          y_lim=y_lim_error,
-                                          ax=axs[2][0])
+
+              if len(unique_subject_ids_val) <= MAX_SUBJECTS_FOR_PLOT:
+                tools.plot_error_per_subject(loss_per_subject=loss_per_subject_val[best_epoch],
+                                            unique_subject_ids=unique_subject_ids_val,
+                                            title=f'VAL error per subject - Epoch_{best_epoch} ',
+                                            criterion=data['config']['criterion'],
+                                            list_stoic_subject=None,
+                                            y_lim=y_lim_error,
+                                            ax=axs[2][0])
+              else:
+                axs[2][0].set_visible(False)
+                print(f'[skip] in-panel VAL per-subject for {test_id}/{key}: N={len(unique_subject_ids_val)} > {MAX_SUBJECTS_FOR_PLOT}')
             else:
               unique_subject_ids_test=dict_per_subject_test['test_unique_subject_ids']
               if is_adversarial_training and is_unbc:
                 unique_subject_ids_test = helper.convert_unbc_count_to_id(unique_subject_ids_test)
-            
-              tools.plot_error_per_subject(loss_per_subject=dict_per_subject_test['test_loss_per_subject'],
-                                          unique_subject_ids=unique_subject_ids_test,
-                                          title=f'TEST error per subject - Epoch_{best_epoch} ',
-                                          criterion=data['config']['criterion'],
-                                          list_stoic_subject=None,
-                                          y_lim=y_lim_error,
-                                          ax=axs[2][0])
-        
-              
+
+              if len(unique_subject_ids_test) <= MAX_SUBJECTS_FOR_PLOT:
+                tools.plot_error_per_subject(loss_per_subject=dict_per_subject_test['test_loss_per_subject'],
+                                            unique_subject_ids=unique_subject_ids_test,
+                                            title=f'TEST error per subject - Epoch_{best_epoch} ',
+                                            criterion=data['config']['criterion'],
+                                            list_stoic_subject=None,
+                                            y_lim=y_lim_error,
+                                            ax=axs[2][0])
+              else:
+                axs[2][0].set_visible(False)
+                print(f'[skip] in-panel TEST per-subject for {test_id}/{key}: N={len(unique_subject_ids_test)} > {MAX_SUBJECTS_FOR_PLOT}')
+
+
             # axs[2][1]: loss per class val (or test)
-            dict_per_subject_test = data['results'][key].get('test', None)
             if dict_per_subject_test is None:
               loss_per_class_val = data['results'][key]['train_val'].get('val_loss_per_class', None)
               tools.plot_error_per_class(mae_per_class=loss_per_class_val[best_epoch],
                                          unique_classes=data['results'][key]['train_val']['val_unique_y'],
                                          criterion=data['config']['criterion'],
                                          ax=axs[2][1],
-                                         y_lim=y_lim_error,
+                                         y_lim=y_lim_class_panel,
                                          title=f'VAL error per class - Epoch_{best_epoch}')
             else:
               tools.plot_error_per_class(mae_per_class=dict_per_subject_test['test_loss_per_class'],
                                         unique_classes=dict_per_subject_test['test_unique_y'],
                                         criterion=data['config']['criterion'],
                                         ax=axs[2][1],
-                                        y_lim=y_lim_error,
+                                        y_lim=y_lim_class_panel,
                                         title=f'TEST error per class - Epoch_{best_epoch}')
               
             
@@ -868,8 +918,23 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         plt.close(fig)
 
       if not isinstance(data['config']['criterion'],losses.RESupConLoss) and plot_loss_per_subject and len(data['results'][key]['train_val']['list_val_accuracy_per_subject']) > 0:
+        _max_n_subjects = 0
+        if data['results'][key]['train_val'].get('train_unique_subject_ids', None) is not None:
+          _max_n_subjects = max(_max_n_subjects, len(data['results'][key]['train_val']['train_unique_subject_ids']))
+        if data['results'][key]['train_val'].get('val_unique_subject_ids', None) is not None:
+          _max_n_subjects = max(_max_n_subjects, len(data['results'][key]['train_val']['val_unique_subject_ids']))
+        _test_dict_subj = data['results'][key].get('test', None)
+        if _test_dict_subj is not None and _test_dict_subj != {} and 'test_unique_subject_ids' in _test_dict_subj:
+          _max_n_subjects = max(_max_n_subjects, len(_test_dict_subj['test_unique_subject_ids']))
+        _skip_loss_per_subject = _max_n_subjects > MAX_SUBJECTS_FOR_PLOT
+        if _skip_loss_per_subject:
+          print(f'[skip] loss_per_subject for {test_id}/{key}: N={_max_n_subjects} > {MAX_SUBJECTS_FOR_PLOT}')
+      if (not isinstance(data['config']['criterion'],losses.RESupConLoss)
+          and plot_loss_per_subject
+          and len(data['results'][key]['train_val']['list_val_accuracy_per_subject']) > 0
+          and not _skip_loss_per_subject):
         y_lim = 10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3
-        
+
         loss_per_subject_train = data['results'][key]['train_val'].get('train_loss_per_subject', None)
         loss_per_subject_val = data['results'][key]['train_val'].get('val_loss_per_subject', None)
         loss_per_subject_val = loss_per_subject_val if (loss_per_subject_val != None).all() else None
@@ -924,6 +989,22 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_loss_per_subject_{key}.png'))
         plt.close(fig)
       if not is_unbc and not isinstance(data['config']['criterion'],losses.RESupConLoss) and plot_acc_per_subject and len(data['results'][key]['train_val']['train_loss_per_subject']) > 0:
+        _max_n_subjects = 0
+        if data['results'][key]['train_val'].get('train_unique_subject_ids', None) is not None:
+          _max_n_subjects = max(_max_n_subjects, len(data['results'][key]['train_val']['train_unique_subject_ids']))
+        if data['results'][key]['train_val'].get('val_unique_subject_ids', None) is not None:
+          _max_n_subjects = max(_max_n_subjects, len(data['results'][key]['train_val']['val_unique_subject_ids']))
+        _test_dict_subj = data['results'][key].get('test', None)
+        if _test_dict_subj is not None and _test_dict_subj != {} and 'test_unique_subject_ids' in _test_dict_subj:
+          _max_n_subjects = max(_max_n_subjects, len(_test_dict_subj['test_unique_subject_ids']))
+        _skip_acc_per_subject = _max_n_subjects > MAX_SUBJECTS_FOR_PLOT
+        if _skip_acc_per_subject:
+          print(f'[skip] acc_per_subject for {test_id}/{key}: N={_max_n_subjects} > {MAX_SUBJECTS_FOR_PLOT}')
+      if (not is_unbc
+          and not isinstance(data['config']['criterion'],losses.RESupConLoss)
+          and plot_acc_per_subject
+          and len(data['results'][key]['train_val']['train_loss_per_subject']) > 0
+          and not _skip_acc_per_subject):
         y_lim = 1
         accuracy_per_subject_train = data['results'][key]['train_val'].get('list_train_accuracy_per_subject', None)
         accuracy_per_subject_train = accuracy_per_subject_train if accuracy_per_subject_train else None
@@ -985,9 +1066,19 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         accuracy_per_class_test = data['results'][key].get('test', None)
         class_loss_list = [train_loss_per_class, val_loss_per_class, accuracy_per_class_test]
         total_plots = sum([1 for class_loss in class_loss_list if class_loss is not None])
-        fig, axs = plt.subplots(total_plots,1,figsize=(10,8))
+        fig, axs = plt.subplots(total_plots,1,figsize=(14,8))
         count_axs = 0
         best_epoch = data['results'][key]['train_val']['best_model_idx']
+
+        _class_values_for_y = []
+        if train_loss_per_class is not None:
+          _class_values_for_y.append(train_loss_per_class[best_epoch])
+        if val_loss_per_class is not None and val_loss_per_class[0] is not None and np.sum(val_loss_per_class[0]) != 0:
+          _class_values_for_y.append(val_loss_per_class[best_epoch])
+        if accuracy_per_class_test is not None and accuracy_per_class_test != {} and 'test_loss_per_class' in accuracy_per_class_test:
+          _class_values_for_y.append(accuracy_per_class_test['test_loss_per_class'])
+        y_lim_class_std = _auto_y_lim(_class_values_for_y, y_lim)
+
         # Train Loss
         if train_loss_per_class is not None:
           df = pd.DataFrame({'class': data['results'][key]['train_val']['train_unique_y'], 'mae': train_loss_per_class[best_epoch]})
@@ -998,7 +1089,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                       title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
                                       criterion=data['config']['criterion'],
                                       # accuracy_per_class=data['results'][key]['train_val']['list_train_accuracy_per_class'][best_epoch],
-                                      y_lim=y_lim,
+                                      y_lim=y_lim_class_std,
                                       ax=axs[count_axs])
           count_axs += 1
         # Val Loss
@@ -1013,7 +1104,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                     title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
                                     criterion=data['config']['criterion'],
                                     # accuracy_per_class=data['results'][key]['train_val']['list_val_accuracy_per_class'][best_epoch],
-                                    y_lim=y_lim,
+                                    y_lim=y_lim_class_std,
                                     ax=axs[count_axs])
           count_axs += 1
         # Test Loss
@@ -1027,7 +1118,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                                     title=f'TEST {key} - {test_id}',
                                     criterion=data['config']['criterion'],
                                     # accuracy_per_class=data['results'][key]['test']['test_accuracy_per_class'],
-                                    y_lim=y_lim,
+                                    y_lim=y_lim_class_std,
                                     ax=axs[count_axs])
           except Exception as e:
             print(f"Error plotting test loss per class for {key} - {test_id}: {e}")
