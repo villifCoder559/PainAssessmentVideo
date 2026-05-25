@@ -21,20 +21,20 @@ import numpy as np
 import torch
 import torch.multiprocessing as mp
 import torch.nn.functional as F
-from app.vjepa_2_1.models.utils.masks_dist import compute_mask_distance
-from app.vjepa_2_1.models.utils.modules import Lambda_LinearWarmupHold
-from app.vjepa_2_1.transforms import make_transforms
-from app.vjepa_2_1.utils import (
+from vjepa2.app.vjepa_2_1.models.utils.masks_dist import compute_mask_distance
+from vjepa2.app.vjepa_2_1.models.utils.modules import Lambda_LinearWarmupHold
+from vjepa2.app.vjepa_2_1.transforms import make_transforms
+from vjepa2.app.vjepa_2_1.utils import (
     init_opt,
     init_video_model,
     load_checkpoint,
     normalize_nested,
 )
-from src.datasets.data_manager import init_data
-from src.masks.multiseq_multiblock3d import MaskCollator
-from src.masks.utils import apply_masks
-from src.utils.distributed import init_distributed
-from src.utils.logging import AverageMeter, CSVLogger, get_logger, gpu_timer
+from vjepa2.src.datasets.data_manager import init_data
+from vjepa2.src.masks.multiseq_multiblock3d import MaskCollator
+from vjepa2.src.masks.utils import apply_masks
+from vjepa2.src.utils.distributed import init_distributed
+from vjepa2.src.utils.logging import AverageMeter, CSVLogger, get_logger, gpu_timer
 from torch.nn.parallel import DistributedDataParallel
 
 

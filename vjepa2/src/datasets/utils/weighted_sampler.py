@@ -9,7 +9,7 @@ from typing import Iterator, Optional
 import numpy as np
 import torch
 
-from src.utils.logging import get_logger
+from vjepa2.src.utils.logging import get_logger
 from torch.utils.data import DistributedSampler, RandomSampler
 
 logger = get_logger("WeightedSampler")

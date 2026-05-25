@@ -13,16 +13,17 @@ import torch.nn as nn
 import os
 import sys
 
-if os.path.abspath('jepa') not in sys.path:
-    sys.path.append(os.path.abspath('jepa'))
+# if os.path.abspath('jepa') not in sys.path:
+#     sys.path.insert(0, os.path.abspath('jepa'))
+    # sys.path.append(os.path.abspath('jepa'))
     
-from src.models.utils.modules import (
+from jepa.src.models.utils.modules import (
     Block,
     CrossAttention,
     CrossAttentionBlock,
     SelfAttentionBlockWithCLS
 )
-from src.utils.tensors import trunc_normal_
+from jepa.src.utils.tensors import trunc_normal_
 from jepa.src.models.utils import pos_embs
 
 class AttentivePooler(nn.Module):

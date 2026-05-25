@@ -48,7 +48,7 @@ def init_data(
     if (data.lower() == 'imagenet') \
             or (data.lower() == 'inat21') \
             or (data.lower() == 'places205'):
-        from src.datasets.image_dataset import make_imagedataset
+        from jepa.src.datasets.image_dataset import make_imagedataset
         dataset, data_loader, dist_sampler = make_imagedataset(
             transform=transform,
             batch_size=batch_size,
@@ -66,7 +66,7 @@ def init_data(
             subset_file=subset_file)
 
     elif data.lower() == 'videodataset':
-        from src.datasets.video_dataset import make_videodataset
+        from jepa.src.datasets.video_dataset import make_videodataset
         dataset, data_loader, dist_sampler = make_videodataset(
             data_paths=root_path,
             batch_size=batch_size,

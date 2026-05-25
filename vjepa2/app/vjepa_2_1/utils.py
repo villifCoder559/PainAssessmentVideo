@@ -7,14 +7,14 @@
 import logging
 import sys
 
-import app.vjepa_2_1.models.predictor as vit_pred
-import app.vjepa_2_1.models.vision_transformer as video_vit
+import vjepa2.app.vjepa_2_1.models.predictor as vit_pred
+import vjepa2.app.vjepa_2_1.models.vision_transformer as video_vit
 import torch
 import torch.nn.functional as F
 import yaml
-from app.vjepa_2_1.wrappers import MultiSeqWrapper, PredictorMultiSeqWrapper
-from src.utils.checkpoint_loader import robust_checkpoint_loader
-from src.utils.schedulers import (
+from vjepa2.app.vjepa_2_1.wrappers import MultiSeqWrapper, PredictorMultiSeqWrapper
+from vjepa2.src.utils.checkpoint_loader import robust_checkpoint_loader
+from vjepa2.src.utils.schedulers import (
     CosineWDSchedule,
     LinearDecaySchedule,
     WarmupCosineSchedule,
@@ -333,7 +333,7 @@ def init_opt(
     ]
 
     if use_radamw:
-        from src.utils.adamw import AdamW as RAdamW
+        from vjepa2.src.utils.adamw import AdamW as RAdamW
 
         logger.info("Using Rescaled-AdamW")
         optimizer = RAdamW(param_groups, betas=betas, eps=eps)

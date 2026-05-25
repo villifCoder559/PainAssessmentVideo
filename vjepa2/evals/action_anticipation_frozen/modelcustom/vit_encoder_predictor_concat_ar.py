@@ -35,11 +35,11 @@ def _get_model_modules(pretrain_kwargs):
     """Import encoder/predictor modules based on config."""
     use_v2_1 = pretrain_kwargs.get("use_v2_1", False)
     if use_v2_1:
-        import app.vjepa_2_1.models.predictor as vit_pred
-        import app.vjepa_2_1.models.vision_transformer as vit
+        import vjepa2.app.vjepa_2_1.models.predictor as vit_pred
+        import vjepa2.app.vjepa_2_1.models.vision_transformer as vit
     else:
-        import src.models.predictor as vit_pred
-        import src.models.vision_transformer as vit
+        import vjepa2.src.models.predictor as vit_pred
+        import vjepa2.src.models.vision_transformer as vit
     return vit, vit_pred
 
 

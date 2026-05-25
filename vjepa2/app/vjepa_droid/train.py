@@ -28,11 +28,11 @@ import torch.multiprocessing as mp
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
-from app.vjepa_droid.droid import init_data
-from app.vjepa_droid.transforms import make_transforms
-from app.vjepa_droid.utils import init_opt, init_video_model, load_checkpoint, load_pretrained
-from src.utils.distributed import init_distributed
-from src.utils.logging import AverageMeter, CSVLogger, get_logger, gpu_timer
+from vjepa2.app.vjepa_droid.droid import init_data
+from vjepa2.app.vjepa_droid.transforms import make_transforms
+from vjepa2.app.vjepa_droid.utils import init_opt, init_video_model, load_checkpoint, load_pretrained
+from vjepa2.src.utils.distributed import init_distributed
+from vjepa2.src.utils.logging import AverageMeter, CSVLogger, get_logger, gpu_timer
 
 # --
 log_timings = True

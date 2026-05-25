@@ -6,11 +6,11 @@
 
 import numpy as np
 
-import src.datasets.utils.video.transforms as video_transforms
+import vjepa2.src.datasets.utils.video.transforms as video_transforms
 import torch
 import torchvision.transforms as transforms
 from PIL import Image
-from src.datasets.utils.video.randerase import RandomErasing
+from vjepa2.src.datasets.utils.video.randerase import RandomErasing
 
 
 def make_transforms(

@@ -224,7 +224,7 @@ def _make_vjepa2_1_model(
     pretrained: bool = True,
     **kwargs,
 ):
-    from app.vjepa_2_1.models import predictor as vit_predictor, vision_transformer as vit_encoder
+    from vjepa2.app.vjepa_2_1.models import predictor as vit_predictor, vision_transformer as vit_encoder
 
     vit_encoder_kwargs = dict(
         patch_size=patch_size,

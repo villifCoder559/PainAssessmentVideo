@@ -12,9 +12,9 @@ import multiprocessing as mp
 import pprint
 import yaml
 
-from src.utils.distributed import init_distributed
+from jepa.src.utils.distributed import init_distributed
 
-from evals.scaffold import main as eval_main
+from jepa.evals.scaffold import main as eval_main
 
 parser = argparse.ArgumentParser()
 parser.add_argument(

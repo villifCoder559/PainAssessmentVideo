@@ -18,7 +18,7 @@ from decord import VideoReader, cpu
 
 import torch
 
-from src.datasets.utils.weighted_sampler import DistributedWeightedSampler
+from jepa.src.datasets.utils.weighted_sampler import DistributedWeightedSampler
 
 _GLOBAL_SEED = 0
 logger = getLogger()
