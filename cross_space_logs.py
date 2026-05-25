@@ -13,6 +13,8 @@ Plots generated:
   2d. mae_per_class_projected_box.png — box: projected per-sample error per class
   3a. mae_per_subject_old.png       — single bar: old model MAE per subject
   3b. mae_per_subject_projected.png — single bar: projected MAE per subject
+  8a. mae_improvement_per_class.png   — bar: old_mae - new_mae per class (green=better, red=worse)
+  8b. mae_improvement_per_subject.png — bar: old_mae - new_mae per subject (green=better, red=worse)
   4.  confusion_matrix.png          — new model rounded predictions vs ground truth
                                       (skipped when num_classes > 15)
   5.  umap_all.png                  — 1×2 UMAP: colored by label and by subject
@@ -188,6 +190,51 @@ def _draw_mae_bar(ax, groups, vals, ylabel, title, color):
       bar.get_x() + bar.get_width() / 2, h + offset,
       f'{h:.2f}', ha='center', va='bottom', fontsize=7,
     )
+
+
+def _draw_mae_improvement_bar(ax, groups, diffs, xlabel, title):
+  """
+  Draw a signed MAE-improvement bar chart into a single pre-existing axes.
+
+  Each bar is the per-group difference old_mae - new_mae: positive (the new
+  model has lower error) is drawn green, negative (worse) is drawn red. NaN
+  diffs — a group present for only one model — are skipped entirely. The
+  signed value is printed at the bar tip, above positive bars and below
+  negative ones.
+
+  Args:
+    ax     (matplotlib.axes.Axes): Axes to draw on.
+    groups (list): Group labels for the x-axis (class or subject ids).
+    diffs  (list[float]): old_mae - new_mae per group; NaN for missing groups.
+    xlabel (str): X-axis label.
+    title  (str): Plot title.
+  """
+  x      = np.arange(len(groups))
+  margin = 0.6
+  xlim   = (x[0] - margin, x[-1] + margin) if len(x) > 0 else (-0.6, 0.6)
+
+  finite = [d for d in diffs if np.isfinite(d)]
+  val_range = (max(finite) - min(finite)) if len(finite) > 1 else (abs(finite[0]) if finite else 1.0)
+  offset    = val_range * 0.03 + 1e-6
+
+  for xi, d in zip(x, diffs):
+    if not np.isfinite(d):
+      continue
+    color = '#2ca02c' if d > 0 else '#d62728'
+    ax.bar(xi, d, color=color, alpha=0.85, edgecolor='white', linewidth=0.7)
+    if d > 0:
+      ax.text(xi, d + offset, f'{d:+.3f}', ha='center', va='bottom', fontsize=7)
+    else:
+      ax.text(xi, d - offset, f'{d:+.3f}', ha='center', va='top', fontsize=7)
+
+  ax.axhline(0.0, color='black', linestyle='-', linewidth=0.8, alpha=0.6)
+  ax.set_xlim(*xlim)
+  ax.set_xticks(x)
+  ax.set_xticklabels([str(g) for g in groups], rotation=45, ha='right')
+  ax.set_xlabel(xlabel)
+  ax.set_ylabel('MAE improvement (old - new)')
+  ax.set_title(title)
+  ax.grid(axis='y', alpha=0.3)
 
 
 def _draw_mae_box(ax, groups, raw_by_group, ylabel, color, title=None):
@@ -489,6 +536,51 @@ def plot_mae_per_class(new_preds, old_preds, labels, out_dir, run_label: str = '
     print(f'Saved: {box_path}')
 
 
+def plot_mae_improvement_per_class(new_preds, old_preds, labels, out_dir,
+                                   run_label: str = '', ax=None):
+  """
+  Bar chart of MAE improvement (old_mae - new_mae) per pain class.
+
+  Positive bars (the projected model lowered the error for that class) are
+  green; negative bars (it got worse) are red. The signed difference is
+  printed at each bar tip.
+
+  Args:
+    new_preds  (np.ndarray): Shape (N,), projected model predictions.
+    old_preds  (np.ndarray): Shape (N,), old model predictions.
+    labels     (np.ndarray): Shape (N,), ground-truth labels.
+    out_dir    (str): Output directory (ignored when ax is provided).
+    run_label  (str): Optional run identity string appended to the plot title.
+    ax         (matplotlib.axes.Axes | None): Pre-existing axes for dashboard
+               embedding. When None a new figure is created and saved.
+  """
+  labels_int = np.round(labels).astype(int)
+  old_mae = _mae_per_group(old_preds, labels, labels_int)
+  new_mae = _mae_per_group(new_preds, labels, labels_int)
+  groups  = sorted(set(old_mae) | set(new_mae))
+  diffs   = [
+    old_mae.get(g, (float('nan'), 0))[0] - new_mae.get(g, (float('nan'), 0))[0]
+    for g in groups
+  ]
+  suffix  = f' | {run_label}' if run_label else ''
+
+  standalone = ax is None
+  if standalone:
+    fig, ax = plt.subplots(figsize=(14, 5))
+
+  _draw_mae_improvement_bar(
+    ax, groups, diffs, 'Pain level',
+    f'MAE improvement per pain class (old - new){suffix}',
+  )
+
+  if standalone:
+    plt.tight_layout()
+    path = os.path.join(out_dir, 'mae_improvement_per_class.png')
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f'Saved: {path}')
+
+
 def plot_mae_per_subject(new_preds, old_preds, labels, sample_ids, subject_map, out_dir, run_label: str = ''):
   """
   Two separate single-bar figures of MAE per subject: one for the old model and
@@ -523,6 +615,46 @@ def plot_mae_per_subject(new_preds, old_preds, labels, sample_ids, subject_map, 
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f'Saved: {path}')
+
+
+def plot_mae_improvement_per_subject(new_preds, old_preds, labels, sample_ids,
+                                     subject_map, out_dir, run_label: str = ''):
+  """
+  Bar chart of MAE improvement (old_mae - new_mae) per subject.
+
+  Positive bars (the projected model lowered the error for that subject) are
+  green; negative bars (it got worse) are red. The signed difference is
+  printed at each bar tip.
+
+  Args:
+    new_preds   (np.ndarray): Shape (N,), projected model predictions.
+    old_preds   (np.ndarray): Shape (N,), old model predictions.
+    labels      (np.ndarray): Shape (N,), ground-truth labels.
+    sample_ids  (np.ndarray): Shape (N,), int sample IDs.
+    subject_map (dict[int, int]): Mapping from sample_id to subject_id.
+    out_dir     (str): Output directory.
+    run_label   (str): Optional run identity string appended to the plot title.
+  """
+  subj_ids = np.array([subject_map.get(int(sid), -1) for sid in sample_ids])
+  old_mae  = _mae_per_group(old_preds, labels, subj_ids)
+  new_mae  = _mae_per_group(new_preds, labels, subj_ids)
+  groups   = sorted(set(old_mae) | set(new_mae))
+  diffs    = [
+    old_mae.get(g, (float('nan'), 0))[0] - new_mae.get(g, (float('nan'), 0))[0]
+    for g in groups
+  ]
+  suffix   = f' | {run_label}' if run_label else ''
+
+  fig, ax = plt.subplots(figsize=(12, 7))
+  _draw_mae_improvement_bar(
+    ax, groups, diffs, 'Subject ID',
+    f'MAE improvement per subject (old - new){suffix}',
+  )
+  plt.tight_layout()
+  path = os.path.join(out_dir, 'mae_improvement_per_subject.png')
+  fig.savefig(path, dpi=150)
+  plt.close(fig)
+  print(f'Saved: {path}')
 
 
 def plot_confusion_matrix_cross(new_preds, labels, out_dir, num_classes: int,
@@ -1615,8 +1747,8 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
   new_vals                = [new_mae_dict.get(g, (float('nan'), 0))[0] for g in groups]
   _, new_raw              = _raw_errors_per_group(new_preds, labels, labels_int)
 
-  fig = plt.figure(figsize=(26, 22))
-  gs  = gridspec.GridSpec(3, 3, figure=fig, hspace=0.5, wspace=0.38)
+  fig = plt.figure(figsize=(26, 28))
+  gs  = gridspec.GridSpec(4, 3, figure=fig, hspace=0.5, wspace=0.38)
 
   # ── Row 0, Col 0: confusion matrix (skipped when num_classes > 15) ──────────
   if num_classes <= 15:
@@ -1748,6 +1880,12 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
     new_preds, old_preds, labels, out_dir,
     run_label=run_label,
     axes=[fig.add_subplot(inner_hist[0]), fig.add_subplot(inner_hist[1])],
+  )
+
+  # ── Row 3: MAE improvement per class (full width) ───────────────────────────
+  plot_mae_improvement_per_class(
+    new_preds, old_preds, labels, out_dir,
+    run_label=run_label, ax=fig.add_subplot(gs[3, :]),
   )
 
   fig.suptitle(f'Dashboard{suffix}', fontsize=15, fontweight='bold', y=1.002)
@@ -2028,6 +2166,8 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
   plot_predictions_histogram(new_preds, old_preds, labels, out_dir, run_label=run_label)
   plot_mae_per_class(new_preds, old_preds, labels, out_dir, run_label=run_label)
   plot_mae_per_subject(new_preds, old_preds, labels, sample_ids, subject_map, out_dir, run_label=run_label)
+  plot_mae_improvement_per_class(new_preds, old_preds, labels, out_dir, run_label=run_label)
+  plot_mae_improvement_per_subject(new_preds, old_preds, labels, sample_ids, subject_map, out_dir, run_label=run_label)
   if num_classes <= 15:
     plot_confusion_matrix_cross(new_preds, labels, out_dir, num_classes, run_label=run_label)
   else:
