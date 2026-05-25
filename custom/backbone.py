@@ -6,6 +6,10 @@ import yaml
 from enum import Enum
 from pathlib import Path
 
+_VJEPA2_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'vjepa2')
+if _VJEPA2_ROOT not in sys.path:
+  sys.path.insert(0, _VJEPA2_ROOT)
+
 from VideoMAEv2.models.modeling_finetune import (
   vit_small_patch16_224,
   vit_base_patch16_224,
@@ -116,6 +120,20 @@ class VideoBackbone(BackboneBase):
       if adapter_dict is not None:
         self.model.add_adapters(adapter_dict) # add_adapters defined in modeling_finetune.py
         
+    elif model_type == MODEL_TYPE.VJEPA_v2_1_B_384:
+      if adapter_dict is not None:
+        raise ValueError("Adapters are not supported for VJEPA 2.1 models.")
+      self.model = self._load_vjepa2_1_vit_base(model_type, img_size=256, num_frames=64)
+      self.tubelet_size = 2
+      self.img_size = 256
+      self.patch_size = 16
+      self.out_spatial_size = self.img_size // self.patch_size  # 16
+      self.embed_dim = 768
+      self.frame_size = 64
+      self.remove_head = remove_head
+      self.encoder_blocks = getattr(self.model, 'blocks', None)
+      self._apply_freeze_logic(freeze_backbone, unfreeze_layers)
+
     elif model_type in [MODEL_TYPE.VJEPA_v2_L_fpc64_256, MODEL_TYPE.VJEPA_v2_G_fpc64_384]:
       if adapter_dict is not None:
         raise ValueError("Adapters are not supported for JEPA2 models.")
@@ -261,6 +279,39 @@ class VideoBackbone(BackboneBase):
     #   # Load JEPA2 model
     #   self.model = self.load_jepa2_weights()[0]
       
+  def _load_vjepa2_1_vit_base(self, model_type, img_size=256, num_frames=64):
+    """
+    Load V-JEPA 2.1 ViT-B encoder from a local .pt checkpoint.
+
+    Args:
+      model_type:  ModelTypeEntry whose .value is the local .pt path.
+      img_size:    Spatial input size (RoPE handles resolution flexibly).
+      num_frames:  Frames per clip consumed by the encoder.
+
+    Returns:
+      The encoder nn.Module with pretrained weights loaded (strict=True).
+    """
+    from vjepa2.app.vjepa_2_1.models import vision_transformer as vit_encoder
+    from vjepa2.src.hub.backbones import _clean_backbone_key
+
+    encoder = vit_encoder.vit_base(
+      patch_size=16,
+      img_size=(img_size, img_size),
+      num_frames=num_frames,
+      tubelet_size=2,
+      use_sdpa=True,
+      use_SiLU=False,
+      wide_SiLU=True,
+      uniform_power=True,
+      use_rope=True,
+      img_temporal_dim_size=1,
+      interpolate_rope=True,
+    )
+    state_dict = torch.load(model_type.value, map_location='cpu', weights_only=False)
+    encoder_state_dict = _clean_backbone_key(state_dict['ema_encoder'])
+    encoder.load_state_dict(encoder_state_dict, strict=True)
+    return encoder
+
   def _load_model_pretrained(self, model_type):
     """Load a pretrained model.
     
