@@ -11,7 +11,7 @@ import time
 import torch.nn as nn
 import torch.utils
 from custom.backbone import BackboneBase
-from custom.helper import CUSTOM_DATASET_TYPE, SAMPLE_FRAME_STRATEGY, EMBEDDING_REDUCTION
+from custom.helper import CUSTOM_DATASET_TYPE, SAMPLE_FRAME_STRATEGY, EMBEDDING_REDUCTION, MODEL_TYPE
 import custom.helper as helper
 import custom.tools as tools
 from sklearn.model_selection import StratifiedKFold
@@ -661,8 +661,9 @@ class customDataset(torch.utils.data.Dataset):
     """
     # Combine preprocessed tensors from all samples
     data = torch.cat([item['preprocess'] for item in batch], dim=0) # [chunks, C, clip_length, H, W]
-    if 'vjepa2' in self.model_type.value.lower():
-      data = data.permute(0,2,1,3,4) # [chunks, clip_length, C, H, W]
+    if self.model_type in (MODEL_TYPE.VJEPA_v2_L_fpc64_256, MODEL_TYPE.VJEPA_v2_G_fpc64_384):
+      # HF transformers VJEPA2 wrapper consumes [B, T, C, H, W]; local encoders (incl. vjepa2_1_B) take [B, C, T, H, W].
+      data = data.permute(0,2,1,3,4) # → [chunks, clip_length, C, H, W]
     # Combine metadata from all samples
     labels = torch.cat([item['labels'] for item in batch], dim=0)
     path = np.concatenate([item['path'] for item in batch])

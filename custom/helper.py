@@ -423,7 +423,7 @@ class MODEL_TYPE:
     # 'VJEPA2_G_384': ModelTypeEntry('VJEPA2_G_384', os.path.join('vjepa2', 'pretrained', 'vitg-384.pt')),
     'vjepa2_L_fpc64_256': ModelTypeEntry('vjepa2_L_fpc64_256', 'facebook/vjepa2-vitl-fpc64-256'),
     'vjepa2_G_fpc64_384': ModelTypeEntry('vjepa2_G_fpc64_384', 'facebook/vjepa2-vitg-fpc64-384'),
-    'vjepa2_1_B_384': ModelTypeEntry('vjepa2_1_B_384', os.path.join('vjepa2', 'pretrained_pth', 'vjepa2_1_vitb_dist_vitG_384.pt')),
+    'vjepa2_1_B': ModelTypeEntry('vjepa2_1_B', os.path.join('vjepa2', 'pretrained_pth', 'vjepa2_1_vitb_dist_vitG_384.pt')),
     'ViT_image': ModelTypeEntry('ViT_image', 'ViT_image'),
     'DFER': ModelTypeEntry('DFER', os.path.join("MAE_DFER", "saved", "model", "pretraining", "voxceleb2", "videomae_pretrain_base_dim512_local_global_attn_depth16_region_size2510_patch16_160_frame_16x4_tube_mask_ratio_0.9_e100_with_diff_target_server170", "checkpoint-49.pth")),
   }
@@ -434,7 +434,7 @@ class MODEL_TYPE:
   VIDEOMAE_v2_G     = _entries['VIDEOMAE_v2_G']
   VJEPA_v2_L_fpc64_256 = _entries['vjepa2_L_fpc64_256']
   VJEPA_v2_G_fpc64_384 = _entries['vjepa2_G_fpc64_384']
-  VJEPA_v2_1_B_384     = _entries['vjepa2_1_B_384']
+  VJEPA_v2_1_B         = _entries['vjepa2_1_B']
   ViT_image         = _entries['ViT_image']
   DFER             = _entries['DFER']
   
@@ -448,7 +448,7 @@ class MODEL_TYPE:
       # 'VJEPA2_G_384': 'VJEPA2_G_384',
       'vjepa2_L_fpc64_256': 'vjepa2_L_fpc64_256',
       'vjepa2_G_fpc64_384': 'vjepa2_G_fpc64_384',
-      'vjepa2_1_B_384': 'vjepa2_1_B_384',
+      'vjepa2_1_B': 'vjepa2_1_B',
       'ViT_image': 'ViT_image',
       'DFER': 'DFER'
     }
@@ -467,7 +467,7 @@ class MODEL_TYPE:
       # 'VJEPA2_G_384': 'VJEPA2_G_384',
       'vjepa2_L_fpc64_256': 'vjepa2_L_fpc64_256',
       'vjepa2_G_fpc64_384': 'vjepa2_G_fpc64_384',
-      'vjepa2_1_B_384': 'vjepa2_1_B_384',
+      'vjepa2_1_B': 'vjepa2_1_B',
       'ViT_image': 'ViT_image',
       'DFER': 'DFER'
     }

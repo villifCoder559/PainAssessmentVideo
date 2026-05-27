@@ -5,6 +5,7 @@
 #   ./multiple_feature_extraction.sh 0 5 all
 #   ./multiple_feature_extraction.sh 0 5 --dataset unbc --model DFER shift
 #   ./multiple_feature_extraction.sh 0 5 --dataset biovid --model S all
+#   ./multiple_feature_extraction.sh 0 5 --dataset biovid --model VJEPA2_1 all
 
 # same saving_folder_path is managed in extract_feature.py to avoid overwriting features
 # when multiple augmentations are applied together (adds $int_id to the path)
@@ -46,10 +47,11 @@ esac
 
 # Derive model-specific identifiers
 case "$MODEL" in
-  S)    MODEL_FOLDER="VideoMaev2_S"; MODEL_TYPE_ARG="S"    ;;
-  DFER) MODEL_FOLDER="DFER";         MODEL_TYPE_ARG="DFER" ;;
+  S)        MODEL_FOLDER="VideoMaev2_S"; MODEL_TYPE_ARG="S"          ;;
+  DFER)     MODEL_FOLDER="DFER";         MODEL_TYPE_ARG="DFER"       ;;
+  VJEPA2_1) MODEL_FOLDER="VJEPA2_1_B";   MODEL_TYPE_ARG="vjepa2_1_B" ;;
   *)
-    echo "Unknown model: $MODEL (valid: S, DFER)"
+    echo "Unknown model: $MODEL (valid: S, DFER, VJEPA2_1)"
     exit 1
     ;;
 esac

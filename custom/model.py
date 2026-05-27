@@ -221,19 +221,42 @@ class Model_Advanced: # Scenario_Advanced
     formatted_folders = "\n- ".join(folders_to_scan)
     print(f'Folders to LOAD in memory:\n {formatted_folders}')
     
-    # Find all matching safetensors files
-    all_paths = []
-    for folder in folders_to_scan:
-      for root, dirs, files in os.walk(folder):
-        for file in files:
-          if file.endswith('.safetensors') and '$' not in file:
-            # sample_name = os.path.splitext(file)[0]
-            # if sample_name in list_sample_name:
-            # Load all samples in memory
-            all_paths.append(os.path.join(root, file))
+    def _scan_safetensors(folder):
+      """
+      Recursively yield (path, size_bytes) for .safetensors files under folder,
+      excluding any name containing '$'. Uses os.scandir for lower overhead than os.walk.
 
-    # Estimate memory
-    total_bytes = sum(os.path.getsize(p) for p in all_paths)
+      Args:
+        folder: Root directory to scan.
+
+      Yields:
+        tuple[str, int]: (file path, file size in bytes).
+      """
+      stack = [folder]
+      while stack:
+        current = stack.pop()
+        try:
+          with os.scandir(current) as it:
+            for entry in it:
+              if entry.is_dir(follow_symlinks=False):
+                stack.append(entry.path)
+              elif entry.is_file(follow_symlinks=False):
+                name = entry.name
+                if name.endswith('.safetensors') and '$' not in name:
+                  yield entry.path, entry.stat(follow_symlinks=False).st_size
+        except (PermissionError, FileNotFoundError):
+          continue
+
+    # Find all matching safetensors files and accumulate total size in a single pass
+    all_paths = []
+    total_bytes = 0
+    pbar = tqdm.tqdm(folders_to_scan, desc="Scanning folders for .safetensors", unit="folder")
+    for folder in pbar:
+      for path, size in _scan_safetensors(folder):
+        all_paths.append(path)
+        total_bytes += size
+        pbar.set_postfix(found=len(all_paths), gb=f"{total_bytes / (1024**3):.3f}")
+
     print(f"\nEstimated memory needed: {total_bytes / (1024**3):.2f} GB for {len(all_paths)} files")
 
     # Load all files and move tensors to shared memory

@@ -375,7 +375,7 @@ def _collect_summary_row(data, pkl_path):
     'old_model_csv':         p['old_model_csv'],
     'interpolation_similarity': p['interpolation_similarity'],
     'weighting_method':      p['weighting_method'],
-    'temperature':           p['temperature'],
+    'temperature':           p.get('temperature'),
     'rbf_sigma':             p['rbf_sigma'],
     'mae':                   m['mae'],
     'ccc':                   m['ccc'],
@@ -384,20 +384,22 @@ def _collect_summary_row(data, pkl_path):
 
 def _extract_linear_bundle(data):
   """
-  Return the linear-projector training bundle from a pkl dict, if present.
+  Return the closed-form-projector training bundle from a pkl dict, if present.
 
-  The bundle has identical shape in standalone and grid pkls (see
-  cross_space_projection.py:1191-1199 and :1599-1607). It is absent for runs
-  where the projector was not trained: num_anchors in {0, -1} or
-  interpolation_similarity != 'linear'.
+  Both interpolation_similarity='linear' and 'procrustes' write their bundle under
+  the same 'linear_projector' key (historical naming kept for log/plot compat); a
+  'kind' field inside the bundle disambiguates them. The bundle is absent for
+  runs where no projector was trained: num_anchors in {0, -1} or
+  interpolation_similarity not in {'linear', 'procrustes'}.
 
   Args:
     data (dict): Deserialized pkl contents.
 
   Returns:
-    dict | None: The 'linear_projector' bundle with keys
-      'config', 'norm_stats', 'best_epoch', 'best_val_mse', 'ckpt_path',
-      'metrics', 'splits'. Returns None if the key is absent.
+    dict | None: The bundle with keys 'config', 'norm_stats', 'best_epoch',
+      'best_val_mse', 'ckpt_path', 'metrics', 'splits', 'kind' ('linear' or
+      'procrustes'), and optionally 'procrustes_params'. Returns None if the
+      key is absent.
   """
   return data.get('linear_projector')
 
@@ -1067,12 +1069,30 @@ def _format_projector_config_text(linear_bundle):
   if norm.get('old_mean') is not None:
     d_old = int(np.asarray(norm['old_mean']).shape[-1])
 
-  rows = ['── LINEAR_PROJECTOR_CONFIG ──']
-  for k in ('lr', 'batch_size', 'optimizer', 'weight_decay', 'epochs',
-            'normalize_embeddings', 'loss', 'split_ratios', 'device',
-            'num_workers'):
+  kind = (linear_bundle.get('kind') or 'linear').lower()
+  if kind == 'procrustes':
+    header = '── PROCRUSTES (closed form) ──'
+    cfg_keys = ('normalize_embeddings', 'split_ratios', 'device')
+  else:
+    header = '── LINEAR_PROJECTOR_CONFIG ──'
+    cfg_keys = ('lr', 'batch_size', 'optimizer', 'weight_decay', 'epochs',
+                'normalize_embeddings', 'loss', 'split_ratios', 'device',
+                'num_workers')
+  rows = [header]
+  for k in cfg_keys:
     if k in cfg:
       rows.append(f'{k:<22s} {cfg[k]}')
+  proc = linear_bundle.get('procrustes_params') or {}
+  if proc:
+    rows.append('')
+    rows.append('── procrustes params ──')
+    if 'scale' in proc:
+      rows.append(f'scale                  {float(proc["scale"]):.6f}')
+    if 'R' in proc and proc['R'] is not None:
+      rows.append(f'R.shape                {tuple(np.asarray(proc["R"]).shape)}')
+    if 'sigma' in proc and proc['sigma'] is not None:
+      sig = np.asarray(proc['sigma'])
+      rows.append(f'sigma (top 5)          {np.round(sig[:5], 4).tolist()}')
 
   rows.append('')
   rows.append('── samples ──')
@@ -1199,6 +1219,9 @@ def plot_projector_train_val_gap(linear_bundle, out_dir, run_label: str = ''):
     out_dir       (str):  Directory in which to write the PNG.
     run_label     (str):  Suptitle suffix identifying the run.
   """
+  if (linear_bundle.get('kind') or '').lower() == 'procrustes':
+    print('[plot_projector_train_val_gap] Skipped — closed-form procrustes has no epoch curve.')
+    return
   metrics = linear_bundle.get('metrics') or {}
   tr, va, has_mae = _projector_curve_arrays(metrics)
   best_epoch = linear_bundle.get('best_epoch')
@@ -1895,6 +1918,532 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
   print(f'Saved: {path}')
 
 
+# ── embedding-reconstruction diagnostic ──────────────────────────────────────
+
+def _resolve_scope_sample_ids(data, fmt):
+  """
+  Read the sample-id scope and split label from a loaded pkl.
+
+  Args:
+    data (dict): Deserialized pkl contents.
+    fmt  (str):  'grid' or 'standalone' (output of _detect_format).
+
+  Returns:
+    tuple[np.ndarray, str]:
+      - sample_ids: Shape (N,), int64. Full content of
+        data['new_model_tensors']['sample_ids'].
+      - split_name: Value of old_model_csv (e.g. 'test', 'val', 'train',
+        'all', 'exc_train'). Used for filenames and titles.
+  """
+  sample_ids = np.asarray(
+    data['new_model_tensors']['sample_ids'], dtype=np.int64,
+  )
+  if fmt == 'grid':
+    split_name = str(data['trial_params']['old_model_csv'])
+  else:
+    split_name = str(data['config_cross_space_projection'].get('old_model_csv', 'unknown'))
+  return sample_ids, split_name
+
+
+def _fetch_real_embeddings_from_linear(linear_bundle, target_ids):
+  """
+  Pull real new-model embeddings out of the stored linear-projector splits.
+
+  Args:
+    linear_bundle (dict): Output of _extract_linear_bundle. Must contain a
+      'splits' dict with 'train'/'val'/'test' entries holding 'target' and
+      'sample_ids' arrays.
+    target_ids    (Iterable[int]): Sample ids of interest.
+
+  Returns:
+    dict[int, np.ndarray]: {sample_id: target_vector_1d}. Empty when
+      linear_bundle is None or its splits are missing.
+  """
+  if linear_bundle is None:
+    return {}
+  splits = linear_bundle.get('splits') or {}
+  out = {}
+  target_set = set(int(s) for s in target_ids)
+  for split_name in ('train', 'val', 'test'):
+    split = splits.get(split_name)
+    if not split:
+      continue
+    sids = np.asarray(split.get('sample_ids'), dtype=np.int64).reshape(-1)
+    tgt  = np.asarray(split.get('target'),     dtype=np.float32)
+    if sids.size == 0 or tgt.size == 0:
+      continue
+    if tgt.ndim != 2 or tgt.shape[0] != sids.shape[0]:
+      print(f'[emb_recon] linear splits[{split_name!r}]: shape mismatch '
+            f'sample_ids={sids.shape} target={tgt.shape} — skipping split.')
+      continue
+    for sid, vec in zip(sids, tgt):
+      sid_int = int(sid)
+      if sid_int in target_set and sid_int not in out:
+        out[sid_int] = vec
+  return out
+
+
+def _resolve_new_model_pth(data, fmt, pkl_path):
+  """
+  Best-effort lookup of the path to the new model's checkpoint.
+
+  Standalone pkls store it under config_cross_space_projection. Grid trial
+  pkls do not — for those we parse the search root's best_config.txt to
+  recover --new_model_pth from the saved script_cmd line.
+
+  Args:
+    data     (dict): Deserialized pkl contents.
+    fmt      (str):  'grid' or 'standalone'.
+    pkl_path (str):  Path to the loaded pkl (used to walk up to the search root).
+
+  Returns:
+    str | None: Path to the new model checkpoint, or None if it cannot be resolved.
+  """
+  if fmt == 'standalone':
+    return data.get('config_cross_space_projection', {}).get('new_model_pth')
+
+  search_root = os.path.dirname(os.path.dirname(pkl_path))
+  cfg_txt = os.path.join(search_root, 'best_config.txt')
+  if not os.path.isfile(cfg_txt):
+    return None
+  with open(cfg_txt) as f:
+    for line in f:
+      if not line.startswith('script_cmd:'):
+        continue
+      tokens = line.split()
+      for i, tok in enumerate(tokens):
+        if tok == '--new_model_pth' and i + 1 < len(tokens):
+          return tokens[i + 1]
+  return None
+
+
+def _resolve_new_features_path(data, fmt, new_model_pth):
+  """
+  Find the new model's safetensors feature folder for the diagnostic's bulk
+  head-only extraction.
+
+  When the projection ran across datasets (old domain ≠ new model's native
+  domain), the new model needs a features folder that matches the OLD
+  domain — same selection logic as cross_space_projection.py:1237-1238.
+
+  Args:
+    data           (dict): Deserialized pkl contents.
+    fmt            (str):  'grid' or 'standalone'.
+    new_model_pth  (str | None): Path to new model checkpoint (used in grid
+      fallback when new_model_config isn't in the pkl).
+
+  Returns:
+    str | None: Absolute path to the features folder for the new model on
+      the OLD domain, or None if it cannot be resolved.
+  """
+  from cross_space_projection import (
+    _detect_dataset, _get_features_path, _load_config,
+  )
+
+  old_tensors_csv_path = data.get('old_tensors_csv_path')
+  if fmt == 'standalone' and old_tensors_csv_path is None:
+    old_tensors_csv_path = data.get('config_cross_space_projection', {}).get('old_tensors_csv_path')
+  if fmt == 'grid' and old_tensors_csv_path is None:
+    # grid trials don't carry old_tensors_csv_path; reconstruct from precomputed/
+    old_csv_split = data['trial_params']['old_model_csv']
+    search_root   = data.get('_search_root')
+    old_tensors_csv_path = old_tensors_csv_path or None  # filled by caller if available
+
+  # Resolve the old-domain features path to know which dataset to match.
+  if fmt == 'standalone':
+    old_features_path = (data.get('old_model_config') or {}) \
+      .get('model_advanced_params', {}).get('features_folder_saving_path')
+    new_features_native = (data.get('new_model_config') or {}) \
+      .get('model_advanced_params', {}).get('features_folder_saving_path')
+  else:
+    if new_model_pth is None:
+      return None
+    new_cfg = _load_config(new_model_pth)
+    new_features_native = new_cfg['model_advanced_params']['features_folder_saving_path']
+    old_model_pth = data.get('config_cross_space_projection', {}).get('old_model_pth')
+    if old_model_pth is None:
+      # Try parsing search root's best_config.txt
+      search_root = os.path.dirname(os.path.dirname(
+        data.get('_pkl_path') or ''))  # populated by caller when available
+      cfg_txt = os.path.join(search_root, 'best_config.txt') if search_root else ''
+      old_model_pth = None
+      if cfg_txt and os.path.isfile(cfg_txt):
+        with open(cfg_txt) as f:
+          for line in f:
+            if line.startswith('script_cmd:'):
+              tokens = line.split()
+              for i, tok in enumerate(tokens):
+                if tok == '--old_model_pth' and i + 1 < len(tokens):
+                  old_model_pth = tokens[i + 1]
+                  break
+              break
+    if old_model_pth is None:
+      return None
+    old_cfg = _load_config(old_model_pth)
+    old_features_path = old_cfg['model_advanced_params']['features_folder_saving_path']
+
+  if new_features_native is None or old_features_path is None:
+    return None
+
+  try:
+    old_dataset = _detect_dataset(old_features_path)
+    return _get_features_path(new_features_native, old_dataset)
+  except ValueError as exc:
+    print(f'[emb_recon] could not resolve new-model features for old domain: {exc}')
+    return None
+
+
+def _fetch_real_embeddings_via_pipeline(data, fmt, pkl_path, target_ids,
+                                        out_dir, split_name):
+  """
+  Bulk-extract real new-model embeddings via head-only inference and cache them.
+
+  Builds the new model from its k_fold_results.pkl, writes a temporary
+  augmentation-free CSV restricted to ``target_ids``, calls
+  cross_space_projection._extract_embeddings once, and persists the result
+  as ``logs/real_embeddings_<split>.safetensors`` for subsequent re-runs.
+
+  Args:
+    data        (dict): Deserialized pkl contents.
+    fmt         (str):  'grid' or 'standalone'.
+    pkl_path    (str):  Path to the loaded pkl (used in grid fallback paths).
+    target_ids  (Iterable[int]): Sample ids whose real embeddings we need.
+    out_dir     (str):  Directory used to write the safetensors cache and
+      the temporary input CSV.
+    split_name  (str):  Used to name the cache file (real_embeddings_<split>.safetensors).
+
+  Returns:
+    dict[int, np.ndarray]: {sample_id: real_vector_1d}. Empty on failure.
+  """
+  from safetensors.numpy import load_file as st_load, save_file as st_save
+
+  target_set = set(int(s) for s in target_ids)
+  if not target_set:
+    return {}
+
+  cache_path = os.path.join(out_dir, f'real_embeddings_{split_name}.safetensors')
+  if os.path.isfile(cache_path):
+    try:
+      cached = st_load(cache_path)
+      sids = cached.get('sample_ids')
+      embs = cached.get('embeddings')
+      if sids is not None and embs is not None:
+        cached_map = {int(s): embs[i] for i, s in enumerate(sids)}
+        if target_set.issubset(cached_map.keys()):
+          print(f'[emb_recon] cache hit ({len(cached_map)} samples) → {cache_path}')
+          return {sid: cached_map[sid] for sid in target_set}
+        print(f'[emb_recon] cache present but missing '
+              f'{len(target_set - cached_map.keys())} ids — re-extracting.')
+    except Exception as exc:
+      print(f'[emb_recon] cache read failed ({exc}) — re-extracting.')
+
+  # We need to load the new model + the old-domain CSV that lists target ids.
+  new_model_pth = _resolve_new_model_pth(data, fmt, pkl_path)
+  if new_model_pth is None:
+    print('[emb_recon] cannot resolve new_model_pth — head-only extraction skipped.')
+    return {}
+
+  # Locate the old-domain tensors CSV (has the rows we want, with sample metadata)
+  old_tensors_csv_path = data.get('old_tensors_csv_path')
+  if old_tensors_csv_path is None and fmt == 'standalone':
+    old_tensors_csv_path = data.get('config_cross_space_projection', {}).get('old_tensors_csv_path')
+  if old_tensors_csv_path is None and fmt == 'grid':
+    search_root  = os.path.dirname(os.path.dirname(pkl_path))
+    old_csv_split = data['trial_params']['old_model_csv']
+    candidate = os.path.join(search_root, 'precomputed', f'old_tensors_{old_csv_split}.csv')
+    if os.path.isfile(candidate):
+      old_tensors_csv_path = candidate
+  if old_tensors_csv_path is None or not os.path.isfile(old_tensors_csv_path):
+    print(f'[emb_recon] old_tensors_csv_path missing ({old_tensors_csv_path!r}) — '
+          'head-only extraction skipped.')
+    return {}
+
+  # Subset that CSV to target_ids and write to a temp CSV for the extractor.
+  df_all = pd.read_csv(old_tensors_csv_path, sep='\t', dtype={'sample_name': str})
+  df_sub = df_all[df_all['sample_id'].astype(int).isin(target_set)].copy()
+  if df_sub.empty:
+    print('[emb_recon] no rows in old_tensors_csv matched target_ids — skipping.')
+    return {}
+  temp_csv = os.path.join(out_dir, f'_emb_recon_input_{split_name}.csv')
+  df_sub.to_csv(temp_csv, sep='\t', index=False)
+
+  # Build new model and run head-only extraction with the right features folder.
+  from cross_space_projection import _build_model, _extract_embeddings, _load_config
+  new_config   = _load_config(new_model_pth)
+  new_model    = _build_model(new_config)
+  features_override = _resolve_new_features_path(data, fmt, new_model_pth)
+
+  print(f'[emb_recon] extracting real embeddings for {len(df_sub)} samples '
+        f'(features_override={features_override})')
+  raw = _extract_embeddings(
+    new_model, new_model_pth, temp_csv, new_config,
+    features_path_override=features_override,
+  )
+
+  sids = np.asarray(raw['sample_ids'], dtype=np.int64)
+  embs = np.asarray(raw['embeddings'], dtype=np.float32)
+  try:
+    st_save({'sample_ids': sids, 'embeddings': embs}, cache_path)
+    print(f'[emb_recon] cached real embeddings → {cache_path}')
+  except Exception as exc:
+    print(f'[emb_recon] failed to save cache ({exc}) — continuing without cache.')
+
+  return {int(s): embs[i] for i, s in enumerate(sids) if int(s) in target_set}
+
+
+def _compute_reconstruction_metrics(real, projected):
+  """
+  Per-sample distance metrics between two aligned embedding matrices.
+
+  Args:
+    real      (np.ndarray): Shape (N, D), float — real new-model embeddings.
+    projected (np.ndarray): Shape (N, D), float — projected/reconstructed embeddings.
+
+  Returns:
+    dict[str, np.ndarray]:
+      'l1'       (N,) — sum of |real - projected| per row.
+      'l2'       (N,) — Euclidean norm of (real - projected) per row.
+      'cos_sim'  (N,) — row-wise cosine similarity, clipped to [-1, 1].
+      'cos_dist' (N,) — 1 - cos_sim.
+  """
+  real      = np.asarray(real,      dtype=np.float32)
+  projected = np.asarray(projected, dtype=np.float32)
+  diff = real - projected
+  l1   = np.sum(np.abs(diff), axis=1)
+  l2   = np.linalg.norm(diff, axis=1)
+
+  real_norm = np.linalg.norm(real,      axis=1)
+  proj_norm = np.linalg.norm(projected, axis=1)
+  denom     = np.clip(real_norm * proj_norm, 1e-12, None)
+  cos_sim   = np.clip(np.sum(real * projected, axis=1) / denom, -1.0, 1.0)
+  cos_dist  = 1.0 - cos_sim
+  return {'l1': l1, 'l2': l2, 'cos_sim': cos_sim, 'cos_dist': cos_dist}
+
+
+_EMB_RECON_METRICS = (
+  ('l1',       'L1 distance'),
+  ('l2',       'L2 distance'),
+  ('cos_sim',  'Cosine similarity'),
+  ('cos_dist', 'Cosine distance'),
+)
+
+
+def plot_embedding_reconstruction_histograms(metrics_df, out_dir,
+                                             run_label='', split_name=''):
+  """
+  2×2 histogram+KDE figure for L1, L2, cos_sim and cos_dist.
+
+  Each panel shows a 60-bin histogram, a KDE overlay (scaled to count units),
+  vertical mean & median reference lines, and an N text annotation.
+
+  Args:
+    metrics_df  (pd.DataFrame): One row per sample with at least the four
+      columns 'l1', 'l2', 'cos_sim', 'cos_dist'.
+    out_dir     (str): Output directory.
+    run_label   (str): Run identity string appended to the suptitle.
+    split_name  (str): Split key (test/val/train/all/...); used in the
+      output filename.
+  """
+  suffix = f' | {run_label}' if run_label else ''
+  fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+  for ax, (col, title) in zip(axes.flat, _EMB_RECON_METRICS):
+    vals = metrics_df[col].to_numpy(dtype=np.float32)
+    if vals.size == 0:
+      ax.axis('off')
+      ax.text(0.5, 0.5, f'No data for {col}', ha='center', va='center')
+      continue
+    bins = 60
+    counts, edges = np.histogram(vals, bins=bins)
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    width   = edges[1] - edges[0]
+    ax.bar(centers, counts, width=width, color='#4C72B0',
+           alpha=0.75, edgecolor='white', linewidth=0.4)
+
+    if vals.size > 1 and float(vals.std()) > 0:
+      try:
+        kde    = stats.gaussian_kde(vals)
+        x_fine = np.linspace(float(vals.min()), float(vals.max()), 500)
+        ax.plot(x_fine, kde(x_fine) * vals.size * width,
+                color='#C44E52', linewidth=1.6, label='KDE')
+      except Exception:
+        pass
+
+    mean_v   = float(vals.mean())
+    median_v = float(np.median(vals))
+    ax.axvline(mean_v,   color='#2ca02c', linestyle='--', linewidth=1.2,
+               label=f'mean = {mean_v:.4f}')
+    ax.axvline(median_v, color='#d62728', linestyle=':',  linewidth=1.2,
+               label=f'median = {median_v:.4f}')
+
+    ax.set_title(f'{title}  (N={vals.size})', fontsize=10, fontweight='bold')
+    ax.set_xlabel(col)
+    ax.set_ylabel('count')
+    ax.grid(axis='y', alpha=0.3)
+    ax.legend(fontsize=8, loc='best')
+
+  fig.suptitle(f'Embedding reconstruction distances — split={split_name}{suffix}',
+               fontsize=13, fontweight='bold')
+  plt.tight_layout(rect=(0, 0, 1, 0.96))
+  path = os.path.join(out_dir, f'emb_recon_histograms_{split_name}.png')
+  fig.savefig(path, dpi=150)
+  plt.close(fig)
+  print(f'Saved: {path}')
+
+
+def plot_embedding_reconstruction_per_class(metrics_df, out_dir,
+                                            run_label='', split_name=''):
+  """
+  2×2 per-class box-plot figure for L1, L2, cos_sim and cos_dist.
+
+  Samples are grouped by their rounded ground-truth pain label. Reuses
+  `_draw_mae_box` for the box rendering so styling matches the existing
+  per-class diagnostics.
+
+  Args:
+    metrics_df  (pd.DataFrame): One row per sample with columns 'label',
+      'l1', 'l2', 'cos_sim', 'cos_dist'.
+    out_dir     (str): Output directory.
+    run_label   (str): Run identity string appended to the suptitle.
+    split_name  (str): Split key (test/val/train/all/...); used in the
+      output filename.
+  """
+  suffix = f' | {run_label}' if run_label else ''
+  labels_int = np.round(metrics_df['label'].to_numpy(dtype=np.float32)).astype(int)
+  classes    = sorted(int(c) for c in np.unique(labels_int))
+
+  fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+  for ax, (col, title) in zip(axes.flat, _EMB_RECON_METRICS):
+    vals = metrics_df[col].to_numpy(dtype=np.float32)
+    raw_by_class = [vals[labels_int == c] for c in classes]
+    mean_v = float(vals.mean()) if vals.size else float('nan')
+    _draw_mae_box(
+      ax, classes, raw_by_class, col, '#4C72B0',
+      title=f'{title} per pain class  (mean={mean_v:.4f})',
+    )
+    ax.set_xlabel('Pain level')
+
+  fig.suptitle(f'Embedding reconstruction per class — split={split_name}{suffix}',
+               fontsize=13, fontweight='bold')
+  plt.tight_layout(rect=(0, 0, 1, 0.96))
+  path = os.path.join(out_dir, f'emb_recon_per_class_box_{split_name}.png')
+  fig.savefig(path, dpi=150)
+  plt.close(fig)
+  print(f'Saved: {path}')
+
+
+def log_embedding_reconstruction(data, fmt, pkl_path, out_dir, run_label=''):
+  """
+  Compare projected (reconstructed) vs real new-model embeddings.
+
+  Uses linear_projector splits when available as a fast path (no model load)
+  and falls back to head-only bulk extraction via the new model's safetensors
+  cache for the remaining sample ids. Writes a per-sample CSV plus two
+  large-N-friendly plots (histograms+KDE and per-class box plots).
+
+  Args:
+    data       (dict): Deserialized pkl contents.
+    fmt        (str):  'grid' or 'standalone'.
+    pkl_path   (str):  Path to the loaded pkl (used to walk to search-root
+      artefacts in grid mode).
+    out_dir    (str):  Directory in which to write the CSV and PNGs.
+    run_label  (str):  Run identity string appended to plot titles.
+  """
+  scope_ids, split_name = _resolve_scope_sample_ids(data, fmt)
+  if scope_ids.size == 0:
+    print('[emb_recon] new_model_tensors has no sample_ids — skipping.')
+    return
+
+  new_t      = data['new_model_tensors']
+  projected  = np.asarray(new_t['embeddings'], dtype=np.float32)
+  sids_all   = np.asarray(new_t['sample_ids'],  dtype=np.int64)
+  labels_all = np.asarray(new_t['labels'],      dtype=np.float32)
+  proj_map   = {int(sid): projected[i] for i, sid in enumerate(sids_all)}
+  label_map  = {int(sid): float(labels_all[i]) for i, sid in enumerate(sids_all)}
+
+  linear_bundle = _extract_linear_bundle(data)
+  real_from_linear = _fetch_real_embeddings_from_linear(linear_bundle, scope_ids)
+  print(f'[emb_recon] linear-projector fast path covered '
+        f'{len(real_from_linear)} / {len(scope_ids)} sample ids')
+
+  missing_ids = [int(s) for s in scope_ids if int(s) not in real_from_linear]
+  if missing_ids:
+    real_from_pipeline = _fetch_real_embeddings_via_pipeline(
+      data, fmt, pkl_path, missing_ids, out_dir, split_name,
+    )
+  else:
+    real_from_pipeline = {}
+
+  rows = []
+  for sid in scope_ids:
+    sid_i = int(sid)
+    if sid_i in real_from_linear:
+      real_vec = real_from_linear[sid_i]
+      source   = 'linear_projector_stored'
+    elif sid_i in real_from_pipeline:
+      real_vec = real_from_pipeline[sid_i]
+      source   = 'head_extracted'
+    else:
+      continue
+    proj_vec = proj_map.get(sid_i)
+    if proj_vec is None or proj_vec.shape != real_vec.shape:
+      continue
+    rows.append((sid_i, real_vec, proj_vec, source))
+
+  if not rows:
+    print('[emb_recon] no aligned (real, projected) pairs — skipping plots/CSV.')
+    return
+
+  sids_aligned = np.array([r[0] for r in rows], dtype=np.int64)
+  real_mat     = np.stack([r[1] for r in rows], axis=0).astype(np.float32)
+  proj_mat     = np.stack([r[2] for r in rows], axis=0).astype(np.float32)
+  sources      = [r[3] for r in rows]
+
+  metrics = _compute_reconstruction_metrics(real_mat, proj_mat)
+
+  # Optional subject_id column when a subject map can be built.
+  subject_map = {}
+  csv_for_subjects = data.get('old_tensors_csv_path')
+  if csv_for_subjects is None and fmt == 'standalone':
+    csv_for_subjects = data.get('config_cross_space_projection', {}).get('old_tensors_csv_path')
+  if csv_for_subjects is None and fmt == 'grid':
+    search_root  = os.path.dirname(os.path.dirname(pkl_path))
+    old_csv_split = data['trial_params']['old_model_csv']
+    cand = os.path.join(search_root, 'precomputed', f'old_tensors_{old_csv_split}.csv')
+    if os.path.isfile(cand):
+      csv_for_subjects = cand
+  if csv_for_subjects and os.path.isfile(csv_for_subjects):
+    try:
+      subject_map = _get_subject_map(csv_for_subjects)
+    except Exception as exc:
+      print(f'[emb_recon] subject map unavailable ({exc}).')
+
+  df = pd.DataFrame({
+    'sample_id':  sids_aligned,
+    'subject_id': [subject_map.get(int(s), -1) for s in sids_aligned],
+    'label':      [label_map.get(int(s), float('nan')) for s in sids_aligned],
+    'split':      split_name,
+    'l1':         metrics['l1'],
+    'l2':         metrics['l2'],
+    'cos_sim':    metrics['cos_sim'],
+    'cos_dist':   metrics['cos_dist'],
+    'source':     sources,
+  })
+
+  csv_path = os.path.join(out_dir, f'embedding_reconstruction_{split_name}.csv')
+  df.to_csv(csv_path, index=False)
+  print(f'Saved: {csv_path}')
+
+  src_counts = df['source'].value_counts().to_dict()
+  print(f'[emb_recon] source counts: {src_counts}')
+  print(f'[emb_recon] means — L1={df["l1"].mean():.4f}  L2={df["l2"].mean():.4f}  '
+        f'cos_sim={df["cos_sim"].mean():.4f}  cos_dist={df["cos_dist"].mean():.4f}')
+
+  plot_embedding_reconstruction_histograms(df, out_dir, run_label=run_label,
+                                           split_name=split_name)
+  plot_embedding_reconstruction_per_class(df, out_dir, run_label=run_label,
+                                          split_name=split_name)
+
+
 # ── search-folder aggregation ────────────────────────────────────────────────
 
 def generate_logs_search(search_dir, plot_only_top_k=None):
@@ -2182,6 +2731,11 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
   plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir, run_label=run_label)
 
   plot_projector_diagnostics(_extract_linear_bundle(data), out_dir, run_label=run_label)
+
+  try:
+    log_embedding_reconstruction(data, fmt, pkl_path, out_dir, run_label=run_label)
+  except Exception as exc:
+    print(f'[WARN] embedding reconstruction diagnostic failed: {exc}')
 
   if fmt == 'standalone' and data.get('old_model_anchors_embeddings') is not None:
     plot_anchor_umap(

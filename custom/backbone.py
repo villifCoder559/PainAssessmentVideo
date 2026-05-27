@@ -120,7 +120,7 @@ class VideoBackbone(BackboneBase):
       if adapter_dict is not None:
         self.model.add_adapters(adapter_dict) # add_adapters defined in modeling_finetune.py
         
-    elif model_type == MODEL_TYPE.VJEPA_v2_1_B_384:
+    elif model_type == MODEL_TYPE.VJEPA_v2_1_B:
       if adapter_dict is not None:
         raise ValueError("Adapters are not supported for VJEPA 2.1 models.")
       self.model = self._load_vjepa2_1_vit_base(model_type, img_size=256, num_frames=64)
@@ -399,27 +399,83 @@ class VideoBackbone(BackboneBase):
         setattr(model, layer_name, None)
         # print(f"Removed {layer_name} layer from model")
   
-  # @torch.no_grad()
-  def forward_features(self, x: torch.Tensor, return_embedding: bool = True,return_attn: bool = False) -> torch.Tensor:
-    """Extract features from video input. No preprocessing is applied, but the input tensor must be in the format [B,C,T,H,W].
-    
-    Args:
-      x: Input tensor of shape [batch_size, channels, frames, height, width]
-      return_embedding: Whether to return reshaped embeddings
-        
-    Returns:
-      Feature embeddings
+  def _prepare_input(self, x: torch.Tensor) -> torch.Tensor:
     """
-    # Shape validation
+    Validate and convert the input tensor into the layout each backbone's forward expects.
+
+    Every supported backbone consumes [B, C, T, H, W] directly, so this method is currently
+    an identity transform. It exists as the single extension point: future backbones that
+    need a different layout should add their branch here without touching forward_features.
+
+    Args:
+      x: Input video tensor of shape [B, C, T, H, W].
+
+    Returns:
+      Tensor in the layout the underlying model expects.
+
+    Raises:
+      ValueError: If x is not 5D or model_type is unsupported.
+    """
     if x.dim() != 5:
       raise ValueError(f"Expected 5D input tensor [B,C,T,H,W], got {x.shape}")
 
-    # Move model and input to device
+    if self.model_type in [
+      MODEL_TYPE.VIDEOMAE_v2_S, MODEL_TYPE.VIDEOMAE_v2_B,
+      MODEL_TYPE.VIDEOMAE_v2_G, MODEL_TYPE.VIDEOMAE_v2_G_unl,
+      MODEL_TYPE.VJEPA_v2_1_B,
+      MODEL_TYPE.VJEPA_v2_L_fpc64_256, MODEL_TYPE.VJEPA_v2_G_fpc64_384,
+      MODEL_TYPE.DFER,
+    ]:
+      return x
+
+    raise ValueError(f"Unsupported model type for input preparation: {self.model_type}")
+
+  def _format_output(self, feat, return_embedding: bool) -> torch.Tensor:
+    """
+    Unwrap and (optionally) reshape the raw backbone output into the canonical embedding grid.
+
+    Handles two responsibilities:
+      1. Backbone-specific unwrap (HF VJEPA2 returns BaseModelOutput; pulls .last_hidden_state).
+      2. Optional reshape from flat tokens [B, N, D] to the canonical grid [B, T_patch, S, S, D]
+         using cached self.out_spatial_size and self.embed_dim. T_patch is inferred from N / S^2.
+
+    Args:
+      feat:             Raw model output. Either a tensor [B, N, D] or a HF BaseModelOutput
+                        with a .last_hidden_state attribute.
+      return_embedding: If True, reshape to [B, T_patch, S, S, D]. If False, return the
+                        flat-token tensor [B, N, D] (post-unwrap).
+
+    Returns:
+      Tensor shaped according to return_embedding.
+    """
+    if self.model_type in [MODEL_TYPE.VJEPA_v2_L_fpc64_256, MODEL_TYPE.VJEPA_v2_G_fpc64_384]:
+      feat = feat.last_hidden_state
+
+    if not return_embedding:
+      return feat
+
+    B = feat.shape[0]
+    S = int(self.out_spatial_size)
+    T = int(feat.shape[1] / (S ** 2))
+    return feat.reshape(B, T, S, S, self.embed_dim)
+
+  # @torch.no_grad()
+  def forward_features(self, x: torch.Tensor, return_embedding: bool = True,return_attn: bool = False) -> torch.Tensor:
+    """Extract features from video input. No preprocessing is applied, but the input tensor must be in the format [B,C,T,H,W].
+
+    Args:
+      x: Input tensor of shape [batch_size, channels, frames, height, width]
+      return_embedding: Whether to return reshaped embeddings
+
+    Returns:
+      Feature embeddings
+    """
+    print(f"Input shape: {x.shape}")
     pid = os.getpid()
+
     t_setup = time.perf_counter()
     self.model.to(self.device)
-    x = x.to(self.device)
-    # Extract features
+    x = self._prepare_input(x).to(self.device)
     if not self.model.training:
       self.model.eval()
     helper.time_profile_dict[f'{pid}_backbone_setup_time'] = helper.time_profile_dict.get(f'{pid}_backbone_setup_time', 0) + (time.perf_counter() - t_setup)
@@ -431,23 +487,13 @@ class VideoBackbone(BackboneBase):
       feat,attn = self.model.forward_features(**args)
     else:
       feat = self.model(x)
-      if 'last_hidden_state' in dir(feat):
-        feat = feat.last_hidden_state
       attn = None
     if helper.PROFILING_GPU_SYNC and torch.cuda.is_available():
       torch.cuda.synchronize()
     helper.time_profile_dict[f'{pid}_backbone_encoder_time'] = helper.time_profile_dict.get(f'{pid}_backbone_encoder_time', 0) + (time.perf_counter() - t_encoder)
 
-    # Reshape features
     t_reshape = time.perf_counter()
-    if return_embedding:
-      B = feat.shape[0]  # Batch size
-
-      # Calculate dimensions
-      T = int(feat.shape[1] / (self.out_spatial_size ** 2))  # Temporal dimension
-      S = int(self.out_spatial_size)  # Spatial dimension
-
-      feat = feat.reshape(B, T, S, S, self.embed_dim)# [B, T, S, S, embed_dim], e.g. [1, 8, 14, 14, 768]
+    feat = self._format_output(feat, return_embedding=return_embedding)
     helper.time_profile_dict[f'{pid}_backbone_reshape_time'] = helper.time_profile_dict.get(f'{pid}_backbone_reshape_time', 0) + (time.perf_counter() - t_reshape)
 
     if return_attn:
