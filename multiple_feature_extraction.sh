@@ -32,15 +32,27 @@ case "$DATASET" in
     PATH_LABELS="partA/starting_point/samples.csv"
     SAVING_BASE="partA/video/features"
     DATASET_TAG="Biovid"
+    SAVING_NAME_PREFIX="spatial_pooled_features_${DATASET_TAG}_B_last143_stride16_interpol"
+    EMB_RED="spatial"
     ;;
   unbc)
     PATH_DATASET="UNBC/video/WarpedVideos_Cropped_interpolated_mirror"
     PATH_LABELS="UNBC/starting_point/samples.csv"
     SAVING_BASE="UNBC/video/features"
     DATASET_TAG="UNBC"
+    SAVING_NAME_PREFIX="spatial_pooled_features_${DATASET_TAG}_B_last143_stride16_interpol"
+    EMB_RED="spatial"
+    ;;
+  agedb)
+    PATH_DATASET="AgeDB/video/video_age"
+    PATH_LABELS="AgeDB/starting_point/samples.csv"
+    SAVING_BASE="AgeDB/features"
+    DATASET_TAG="age"
+    SAVING_NAME_PREFIX="all_pooled_features_${DATASET_TAG}"
+    EMB_RED="all"
     ;;
   *)
-    echo "Unknown dataset: $DATASET (valid: biovid, unbc)"
+    echo "Unknown dataset: $DATASET (valid: biovid, unbc, agedb)"
     exit 1
     ;;
 esac
@@ -68,13 +80,13 @@ run_config() {
     do
         echo "Run $i / $N_RUNS | GPU $GPU_ID | CONFIG $CONFIG | DATASET $DATASET | MODEL $MODEL"
 
-        SAVING_PATH="${SAVING_BASE}/${MODEL_FOLDER}/spatial_pooled_features_${DATASET_TAG}_B_last143_stride16_interpol_${CONFIG}"
+        SAVING_PATH="${SAVING_BASE}/${MODEL_FOLDER}/${SAVING_NAME_PREFIX}_${CONFIG}"
 
         case $CONFIG in
 
         shift)
             CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
-            --model_type $MODEL_TYPE_ARG --emb_red spatial \
+            --model_type $MODEL_TYPE_ARG --emb_red $EMB_RED \
             --path_dataset $PATH_DATASET \
             --path_labels $PATH_LABELS \
             --saving_folder_path $SAVING_PATH \
@@ -85,7 +97,7 @@ run_config() {
 
         jitter)
             CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
-            --model_type $MODEL_TYPE_ARG --emb_red spatial \
+            --model_type $MODEL_TYPE_ARG --emb_red $EMB_RED \
             --path_dataset $PATH_DATASET \
             --path_labels $PATH_LABELS \
             --saving_folder_path $SAVING_PATH \
@@ -96,7 +108,7 @@ run_config() {
 
         gaussian)
             CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
-            --model_type $MODEL_TYPE_ARG --emb_red spatial \
+            --model_type $MODEL_TYPE_ARG --emb_red $EMB_RED \
             --path_dataset $PATH_DATASET \
             --path_labels $PATH_LABELS \
             --saving_folder_path $SAVING_PATH \
@@ -107,7 +119,7 @@ run_config() {
 
         zoom)
             CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
-            --model_type $MODEL_TYPE_ARG --emb_red spatial \
+            --model_type $MODEL_TYPE_ARG --emb_red $EMB_RED \
             --path_dataset $PATH_DATASET \
             --path_labels $PATH_LABELS \
             --saving_folder_path $SAVING_PATH \
@@ -118,7 +130,7 @@ run_config() {
 
         jitter_shift)
             CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
-            --model_type $MODEL_TYPE_ARG --emb_red spatial \
+            --model_type $MODEL_TYPE_ARG --emb_red $EMB_RED \
             --path_dataset $PATH_DATASET \
             --path_labels $PATH_LABELS \
             --saving_folder_path $SAVING_PATH \
@@ -129,7 +141,7 @@ run_config() {
 
         rotation_zoom)
             CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
-            --model_type $MODEL_TYPE_ARG --emb_red spatial \
+            --model_type $MODEL_TYPE_ARG --emb_red $EMB_RED \
             --path_dataset $PATH_DATASET \
             --path_labels $PATH_LABELS \
             --saving_folder_path $SAVING_PATH \
@@ -140,7 +152,7 @@ run_config() {
 
         shift_hflip)
             CUDA_VISIBLE_DEVICES=$GPU_ID python3 extract_feature.py \
-            --model_type $MODEL_TYPE_ARG --emb_red spatial \
+            --model_type $MODEL_TYPE_ARG --emb_red $EMB_RED \
             --path_dataset $PATH_DATASET \
             --path_labels $PATH_LABELS \
             --saving_folder_path $SAVING_PATH \
