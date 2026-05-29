@@ -20,6 +20,13 @@ Plots generated:
   5.  umap_all.png                  — 1×2 UMAP: colored by label and by subject
   6.  anchor_weights.png            — weight entropy histogram + top-20 anchor usage
   7.  anchor_umap.png               — old vs new anchor embeddings in UMAP space
+  9.  anchor_norm_comparison.png    — 3-panel: scatter (old_norm vs new_norm), overlaid
+                                      histograms, and ratio (new/old) histogram
+      anchor_norm_comparison.csv    — per-anchor table: idx, label, old_norm, new_norm,
+                                      ratio, delta
+  10. weight_rank_distribution.png  — 2-panel boxplot (linear + symlog): weight value at
+                                      each rank position (0=most impactful, top_n-1=least
+                                      shown) across all N samples
 
 Usage:
   python3 cross_space_logs.py --pkl_path <path>
@@ -130,6 +137,26 @@ def _raw_errors_per_group(preds, labels, group_ids):
   abs_err = np.abs(np.asarray(preds, dtype=np.float32) - np.asarray(labels, dtype=np.float32))
   gids    = sorted(int(g) for g in np.unique(group_ids))
   return gids, [abs_err[group_ids == gid] for gid in gids]
+
+
+def _compute_global_mae(preds, labels):
+  """
+  Compute micro-averaged and macro-averaged MAE over all classes.
+
+  Args:
+    preds  (np.ndarray): Shape (N,), float predictions.
+    labels (np.ndarray): Shape (N,), float ground-truth labels.
+
+  Returns:
+    tuple[float, float]: (micro_mae, macro_mae).
+      micro_mae: mean |pred - label| over all samples (each sample equal weight).
+      macro_mae: mean of per-class MAEs (each class equal weight, ignores class size).
+  """
+  labels_int = np.round(labels).astype(int)
+  micro = float(np.mean(np.abs(preds - labels)))
+  per_class = _mae_per_group(preds, labels, labels_int)
+  macro = float(np.mean([v[0] for v in per_class.values()]))
+  return micro, macro
 
 
 def _single_bar(ax, groups, vals, ylabel, title, color):
@@ -301,6 +328,33 @@ def _draw_bar_boxplot(ax_bar, ax_box, groups, vals, raw_by_group, ylabel, title,
   _draw_mae_box(ax_box, groups, raw_by_group, ylabel, color)
 
 
+def _pairwise_cosine_sim_per_class(emb, labels_int):
+  """
+  Compute all pairwise cosine similarities within each class.
+
+  Args:
+    emb        (np.ndarray): Shape (N, D), float32 embedding matrix.
+    labels_int (np.ndarray): Shape (N,), integer class labels.
+
+  Returns:
+    dict[int, np.ndarray]: Maps class id to a 1-D array of upper-triangle
+      pairwise cosine similarities.  Classes with fewer than 2 samples get
+      a single-element array [1.0].
+  """
+  result = {}
+  for cls in np.unique(labels_int):
+    cls_emb = emb[labels_int == cls]
+    if len(cls_emb) < 2:
+      result[int(cls)] = np.array([1.0], dtype=np.float32)
+      continue
+    norms   = np.linalg.norm(cls_emb, axis=1, keepdims=True)
+    normed  = cls_emb / (norms + 1e-8)
+    cos_mat = normed @ normed.T
+    idx     = np.triu_indices(len(cls_emb), k=1)
+    result[int(cls)] = cos_mat[idx].astype(np.float32)
+  return result
+
+
 def _compute_umap(embeddings):
   """
   Fit UMAP and return 2-D projections.
@@ -365,20 +419,31 @@ def _collect_summary_row(data, pkl_path):
   Returns:
     dict: Flat row with trial_number, 8 hyperparams, mae, ccc.
   """
-  p = data['trial_params']
-  m = data['metrics']
+  p     = data['trial_params']
+  m     = data['metrics']
+  new_t = data['new_model_tensors']
+  old_t = data['old_model_tensors']
+  new_preds = np.asarray(new_t['predictions'], dtype=np.float32).squeeze()
+  old_preds = np.asarray(old_t['predictions'], dtype=np.float32).squeeze()
+  lbl       = np.asarray(new_t['labels'],      dtype=np.float32)
+  mae_micro_new, mae_macro_new = _compute_global_mae(new_preds, lbl)
+  mae_micro_old, mae_macro_old = _compute_global_mae(old_preds, lbl)
   return {
-    'trial_number':          data['trial_number'],
-    'num_anchors':           p['num_anchors'],
-    'anchor_selection_type': p['anchor_selection_type'],
-    'csv_anchor_selection':  p['csv_anchor_selection'],
-    'old_model_csv':         p['old_model_csv'],
+    'trial_number':             data['trial_number'],
+    'num_anchors':              p['num_anchors'],
+    'anchor_selection_type':    p['anchor_selection_type'],
+    'csv_anchor_selection':     p['csv_anchor_selection'],
+    'old_model_csv':            p['old_model_csv'],
     'interpolation_similarity': p['interpolation_similarity'],
-    'weighting_method':      p['weighting_method'],
-    'temperature':           p.get('temperature'),
-    'rbf_sigma':             p['rbf_sigma'],
-    'mae':                   m['mae'],
-    'ccc':                   m['ccc'],
+    'weighting_method':         p['weighting_method'],
+    'temperature':              p.get('temperature'),
+    'rbf_sigma':                p['rbf_sigma'],
+    'mae':                      m['mae'],
+    'ccc':                      m['ccc'],
+    'mae_micro':                mae_micro_new,
+    'mae_macro':                mae_macro_new,
+    'mae_micro_old':            mae_micro_old,
+    'mae_macro_old':            mae_macro_old,
   }
 
 
@@ -787,6 +852,69 @@ def plot_anchor_weights(weights, out_dir, run_label: str = ''):
   print(f'Saved: {path}')
 
 
+def plot_weight_rank_distribution(weights, out_dir, run_label: str = '', top_n: int = 30):
+  """
+  Box plot of interpolation-weight values at each rank position (most → least impactful).
+
+  For each sample the K weights are sorted descending; the value at rank j is the
+  j-th largest weight for that sample. Box plots at each rank position show the
+  distribution of that rank's weight value across all N samples, revealing whether
+  the projection is dominated by one anchor (concentrated) or spread across many (flat).
+  Two panels are produced side-by-side: linear y-scale (left) and symlog y-scale
+  (right), to expose both the dominant weights and the tail structure.
+
+  Args:
+    weights   (np.ndarray): Shape (N, K), interpolation weights per sample.
+    out_dir   (str): Directory where the plot is saved.
+    run_label (str): Optional run identity string appended to plot titles.
+    top_n     (int): Number of rank positions to display (capped at K). Default 30.
+  """
+  K = weights.shape[1]
+  if K == 0:
+    print('[plot_weight_rank_distribution] Skipped — no anchors')
+    return
+
+  n_show   = min(top_n, K)
+  sorted_w = np.sort(np.abs(weights), axis=1)[:, ::-1][:, :n_show]
+  box_data = [sorted_w[:, j] for j in range(n_show)]
+
+  suffix = f' | {run_label}' if run_label else ''
+  title  = f'Weight rank distribution (top {n_show} of {K}){suffix}'
+  color  = 'slateblue'
+  face_rgba    = list(mcolors.to_rgba(color))
+  face_rgba[3] = 0.5
+
+  fig, axes = plt.subplots(1, 2, figsize=(max(14, n_show * 0.5), 6))
+  for ax, log_y in [(axes[0], False), (axes[1], True)]:
+    bp = ax.boxplot(
+      box_data,
+      positions=np.arange(n_show),
+      widths=0.6,
+      patch_artist=True,
+      showfliers=False,
+      medianprops=dict(color='#222222', linewidth=1.5),
+      whiskerprops=dict(linewidth=0.8),
+      capprops=dict(linewidth=0.8),
+    )
+    for patch in bp['boxes']:
+      patch.set_facecolor(face_rgba)
+      patch.set_edgecolor(color)
+    ax.set_xticks(np.arange(n_show))
+    ax.set_xticklabels([str(j) for j in range(n_show)], rotation=45, ha='right', fontsize=7)
+    ax.set_xlabel('Rank (0 = most impactful)')
+    ax.set_ylabel('|Weight| value')
+    ax.set_title(f'{title} — {"symlog" if log_y else "linear"}')
+    ax.grid(axis='y', alpha=0.3)
+    if log_y:
+      ax.set_yscale('symlog', linthresh=1e-4)
+
+  plt.tight_layout()
+  path = os.path.join(out_dir, 'weight_rank_distribution.png')
+  fig.savefig(path, dpi=150)
+  plt.close(fig)
+  print(f'Saved: {path}')
+
+
 def plot_anchor_umap(old_anchors_emb, new_anchors_emb, anchor_labels, out_dir, run_label: str = ''):
   """
   Side-by-side UMAP of old and new anchor embeddings, colored by pain label.
@@ -825,6 +953,108 @@ def plot_anchor_umap(old_anchors_emb, new_anchors_emb, anchor_labels, out_dir, r
   plt.suptitle(f'Anchor embeddings in UMAP space — old vs new model{suffix}')
   plt.tight_layout()
   path = os.path.join(out_dir, 'anchor_umap.png')
+  fig.savefig(path, dpi=150)
+  plt.close(fig)
+  print(f'Saved: {path}')
+
+
+def plot_anchor_norm_comparison(old_anchors_emb, new_anchors_emb, anchor_labels,
+                                out_dir, run_label: str = ''):
+  """
+  Compare the L2 norm of each anchor between the old and new model spaces and
+  save the per-anchor data as a CSV.
+
+  Three-panel figure (1 × 3):
+    Left:   Scatter — old_norm (x) vs new_norm (y), one point per anchor,
+            colored by pain class, identity line for reference.
+    Middle: Overlaid histograms — old_norm vs new_norm distributions.
+    Right:  Histogram of the ratio new_norm / old_norm; vertical line at 1.
+
+  CSV saved alongside the plot: anchor_norm_comparison.csv, with columns
+  anchor_idx, label, old_norm, new_norm, ratio, delta.
+
+  Args:
+    old_anchors_emb (np.ndarray): Shape (K, D_old), old model anchor embeddings.
+    new_anchors_emb (np.ndarray): Shape (K, D_new), new model anchor embeddings.
+    anchor_labels   (np.ndarray): Shape (K,), pain label per anchor.
+    out_dir         (str): Output directory.
+    run_label       (str): Optional run identity string appended to plot titles.
+  """
+  old_emb = np.asarray(old_anchors_emb, dtype=np.float32)
+  new_emb = np.asarray(new_anchors_emb, dtype=np.float32)
+  labels  = np.asarray(anchor_labels,   dtype=np.float32)
+
+  old_norm = np.linalg.norm(old_emb, axis=1)
+  new_norm = np.linalg.norm(new_emb, axis=1)
+  ratio    = new_norm / np.clip(old_norm, 1e-12, None)
+  delta    = new_norm - old_norm
+
+  suffix = f' | {run_label}' if run_label else ''
+
+  # ── CSV ──────────────────────────────────────────────────────────────────────
+  df_csv = pd.DataFrame({
+    'anchor_idx': np.arange(len(old_norm)),
+    'label':      labels,
+    'old_norm':   old_norm,
+    'new_norm':   new_norm,
+    'ratio':      ratio,
+    'delta':      delta,
+  })
+  csv_path = os.path.join(out_dir, 'anchor_norm_comparison.csv')
+  df_csv.to_csv(csv_path, index=False)
+  print(f'Saved: {csv_path}')
+
+  # ── figure ───────────────────────────────────────────────────────────────────
+  fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+  # Panel 0: scatter old_norm vs new_norm, colored by pain level (continuous jet)
+  ax = axes[0]
+  v_min, v_max = float(labels.min()), float(labels.max())
+  sc = ax.scatter(
+    old_norm, new_norm,
+    c=labels, cmap='jet', vmin=v_min, vmax=v_max,
+    s=12, alpha=0.5, edgecolors='none',
+  )
+  plt.colorbar(sc, ax=ax, label='Pain level')
+  lo = float(min(old_norm.min(), new_norm.min()))
+  hi = float(max(old_norm.max(), new_norm.max()))
+  ax.plot([lo, hi], [lo, hi], '--', color='black', linewidth=0.9, alpha=0.7, label='y = x')
+  ax.set_xlabel('old model ||anchor||')
+  ax.set_ylabel('new model ||anchor||')
+  ax.set_title(f'Anchor L2 norm — old vs new{suffix}')
+  ax.legend(fontsize=8, loc='best', framealpha=0.7)
+  ax.grid(alpha=0.3)
+
+  # Panel 1: overlaid histograms of old_norm and new_norm
+  ax = axes[1]
+  bins = min(80, max(20, len(old_norm) // 30))
+  ax.hist(old_norm, bins=bins, alpha=0.55, color='#2ca02c', label='old model', edgecolor='white')
+  ax.hist(new_norm, bins=bins, alpha=0.55, color='#d62728', label='new model', edgecolor='white')
+  ax.axvline(float(old_norm.mean()), color='#2ca02c', linestyle='--', linewidth=1.4,
+             label=f'mean old = {old_norm.mean():.2f}')
+  ax.axvline(float(new_norm.mean()), color='#d62728', linestyle='--', linewidth=1.4,
+             label=f'mean new = {new_norm.mean():.2f}')
+  ax.set_xlabel('L2 norm')
+  ax.set_ylabel('Count')
+  ax.set_title(f'Anchor norm distributions{suffix}')
+  ax.legend(fontsize=8)
+  ax.grid(alpha=0.3)
+
+  # Panel 2: histogram of ratio new_norm / old_norm
+  ax = axes[2]
+  finite_ratio = ratio[np.isfinite(ratio)]
+  ax.hist(finite_ratio, bins=bins, color='#9467bd', alpha=0.8, edgecolor='white')
+  ax.axvline(1.0, color='black', linestyle='--', linewidth=1.2, label='ratio = 1')
+  ax.axvline(float(finite_ratio.mean()), color='#e377c2', linestyle='--', linewidth=1.4,
+             label=f'mean = {finite_ratio.mean():.3f}')
+  ax.set_xlabel('new_norm / old_norm')
+  ax.set_ylabel('Count')
+  ax.set_title(f'Anchor norm ratio (new / old){suffix}')
+  ax.legend(fontsize=8)
+  ax.grid(alpha=0.3)
+
+  plt.tight_layout()
+  path = os.path.join(out_dir, 'anchor_norm_comparison.png')
   fig.savefig(path, dpi=150)
   plt.close(fig)
   print(f'Saved: {path}')
@@ -1737,7 +1967,7 @@ def generate_search_summary_plots(df, search_dir):
 
 
 def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
-                   run_label: str = ''):
+                   run_label: str = '', mae_macro=None, mae_macro_old=None):
   """
   Combined dashboard PNG with all key diagnostic plots for a single run.
 
@@ -1751,14 +1981,16 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
   The MAE per class bar+box cell uses a nested GridSpec (2 sub-rows).
 
   Args:
-    new_preds   (np.ndarray): Shape (N,), projected model float predictions.
-    old_preds   (np.ndarray): Shape (N,), old model float predictions.
-    labels      (np.ndarray): Shape (N,), ground-truth pain labels.
-    num_classes (int): Number of distinct pain classes.
-    mae         (float): Global MAE for the projected model.
-    ccc         (float): Global CCC for the projected model.
-    out_dir     (str): Output directory.
-    run_label   (str): Optional run identity string appended to the suptitle.
+    new_preds     (np.ndarray): Shape (N,), projected model float predictions.
+    old_preds     (np.ndarray): Shape (N,), old model float predictions.
+    labels        (np.ndarray): Shape (N,), ground-truth pain labels.
+    num_classes   (int): Number of distinct pain classes.
+    mae           (float): Micro-averaged MAE for the projected model.
+    ccc           (float): Global CCC for the projected model.
+    out_dir       (str): Output directory.
+    run_label     (str): Optional run identity string appended to the suptitle.
+    mae_macro     (float | None): Macro-averaged MAE for the projected model.
+    mae_macro_old (float | None): Macro-averaged MAE for the old model.
   """
   suffix     = f' | {run_label}' if run_label else ''
   labels_int = np.round(labels).astype(int)
@@ -1872,12 +2104,15 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
   # ── Row 1, Col 2: metrics table ──────────────────────────────────────────────
   ax_tbl = fig.add_subplot(gs[1, 2])
   ax_tbl.axis('off')
+  mae_micro_old = float(np.mean(np.abs(old_preds - labels)))
   rows_data = [
-    ['MAE (projected)', f'{mae:.4f}'],
-    ['CCC (projected)', f'{ccc:.4f}'],
-    ['MAE (old)',       f'{float(np.mean(np.abs(old_preds - labels))):.4f}'],
-    ['N samples',       str(len(labels))],
-    ['N classes',       str(num_classes)],
+    ['MAE micro (projected)', f'{mae:.4f}'],
+    ['MAE macro (projected)', f'{mae_macro:.4f}' if mae_macro is not None else '—'],
+    ['CCC (projected)',       f'{ccc:.4f}'],
+    ['MAE micro (old)',       f'{mae_micro_old:.4f}'],
+    ['MAE macro (old)',       f'{mae_macro_old:.4f}' if mae_macro_old is not None else '—'],
+    ['N samples',             str(len(labels))],
+    ['N classes',             str(num_classes)],
   ]
   tbl = ax_tbl.table(
     cellText=rows_data, colLabels=['Metric', 'Value'],
@@ -2349,6 +2584,86 @@ def plot_embedding_reconstruction_per_class(metrics_df, out_dir,
   print(f'Saved: {path}')
 
 
+def plot_embedding_norm_cosine_per_class(new_emb, old_emb, labels, out_dir,
+                                         run_label: str = ''):
+  """
+  2×2 box-plot figure showing L2 norm and pairwise cosine similarity per class
+  for both the projected (new) and old model embeddings.
+
+  Layout:
+    Row 0, Col 0: L2 norm per class — projected embeddings
+    Row 0, Col 1: L2 norm per class — old embeddings
+    Row 1, Col 0: Pairwise cosine similarity per class — projected embeddings
+    Row 1, Col 1: Pairwise cosine similarity per class — old embeddings
+
+  Cosine similarity is computed over all unique intra-class pairs, giving a
+  sense of how cohesive each class is in the embedding space.
+
+  Args:
+    new_emb   (np.ndarray): Shape (N, D), float32 projected model embeddings.
+    old_emb   (np.ndarray): Shape (N, D), float32 old model embeddings.
+    labels    (np.ndarray): Shape (N,), float ground-truth class labels.
+    out_dir   (str): Output directory.
+    run_label (str): Optional run identity string appended to the suptitle.
+  """
+  suffix     = f' | {run_label}' if run_label else ''
+  labels_int = np.round(labels).astype(int)
+  classes    = sorted(int(c) for c in np.unique(labels_int))
+  x          = np.arange(len(classes))
+
+  # --- collect per-class arrays for each metric + model ---
+  def _l2_per_class(emb):
+    norms = np.linalg.norm(emb, axis=1)
+    return {cls: norms[labels_int == cls] for cls in classes}
+
+  l2_new  = _l2_per_class(new_emb)
+  l2_old  = _l2_per_class(old_emb)
+  cos_new = _pairwise_cosine_sim_per_class(new_emb, labels_int)
+  cos_old = _pairwise_cosine_sim_per_class(old_emb, labels_int)
+
+  fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+  fig.suptitle(f'Embedding L2 norm & cosine similarity per class{suffix}',
+               fontsize=13, fontweight='bold')
+
+  specs = [
+    (axes[0, 0], l2_new,  'L2 norm', 'Projected',      '#4C72B0'),
+    (axes[0, 1], l2_old,  'L2 norm', 'Old model',       '#DD8452'),
+    (axes[1, 0], cos_new, 'Cosine similarity (intra-class)', 'Projected', '#4C72B0'),
+    (axes[1, 1], cos_old, 'Cosine similarity (intra-class)', 'Old model',  '#DD8452'),
+  ]
+
+  for ax, per_class_dict, ylabel, model_label, color in specs:
+    box_data = []
+    for cls in classes:
+      arr = np.asarray(per_class_dict.get(cls, [np.nan]), dtype=np.float64)
+      box_data.append(arr if arr.size > 0 else np.array([np.nan]))
+    face_rgba      = list(mcolors.to_rgba(color))
+    face_rgba[3]   = 0.5
+    bp = ax.boxplot(
+      box_data, positions=x, widths=0.5, patch_artist=True,
+      showfliers=True,
+      flierprops=dict(marker='o', markersize=2, alpha=0.4,
+                      markerfacecolor=color, markeredgecolor='none'),
+      medianprops=dict(color='#222222', linewidth=1.5),
+      whiskerprops=dict(linewidth=1.0), capprops=dict(linewidth=1.0),
+    )
+    for patch in bp['boxes']:
+      patch.set_facecolor(face_rgba)
+      patch.set_edgecolor(color)
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(c) for c in classes], rotation=45, ha='right', fontsize=8)
+    ax.set_xlabel('Class', fontsize=9)
+    ax.set_ylabel(ylabel, fontsize=9)
+    ax.set_title(f'{ylabel} — {model_label}', fontsize=10, fontweight='bold')
+    ax.grid(axis='y', alpha=0.3)
+
+  fig.tight_layout()
+  path = os.path.join(out_dir, 'embedding_norm_cosine_per_class.png')
+  fig.savefig(path, dpi=150, bbox_inches='tight')
+  plt.close(fig)
+  print(f'Saved: {path}')
+
+
 def log_embedding_reconstruction(data, fmt, pkl_path, out_dir, run_label=''):
   """
   Compare projected (reconstructed) vs real new-model embeddings.
@@ -2728,7 +3043,14 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
     ccc = concordance_ccc(labels, new_preds)
     summary_row['mae'] = mae
     summary_row['ccc'] = ccc
-  print(f'Global metrics — MAE: {mae:.4f}  CCC: {ccc:.4f}')
+
+  mae_micro_new, mae_macro_new = _compute_global_mae(new_preds, labels)
+  mae_micro_old, mae_macro_old = _compute_global_mae(old_preds, labels)
+  summary_row['mae_micro']     = mae_micro_new
+  summary_row['mae_macro']     = mae_macro_new
+  summary_row['mae_micro_old'] = mae_micro_old
+  summary_row['mae_macro_old'] = mae_macro_old
+  print(f'Global metrics — MAE micro: {mae_micro_new:.4f}  MAE macro: {mae_macro_new:.4f}  CCC: {ccc:.4f}')
 
   plot_predictions_histogram(new_preds, old_preds, labels, out_dir, run_label=run_label)
   plot_mae_per_class(new_preds, old_preds, labels, out_dir, run_label=run_label)
@@ -2744,9 +3066,20 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
     plot_anchor_weights(weights, out_dir, run_label=run_label)
   except Exception as exc:
     print(f'[WARN] Failed to plot anchor weights: {exc}')
+  try:
+    plot_weight_rank_distribution(weights, out_dir, run_label=run_label)
+  except Exception as exc:
+    print(f'[WARN] Failed to plot weight rank distribution: {exc}')
   plot_prediction_scatter(new_preds, old_preds, labels, out_dir, run_label=run_label)
   plot_prediction_by_class_boxplot(new_preds, old_preds, labels, out_dir, run_label=run_label)
-  plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir, run_label=run_label)
+  new_emb = np.asarray(new_t['embeddings'], dtype=np.float32)
+  old_emb = np.asarray(old_t['embeddings'], dtype=np.float32)
+  try:
+    plot_embedding_norm_cosine_per_class(new_emb, old_emb, labels, out_dir, run_label=run_label)
+  except Exception as exc:
+    print(f'[WARN] Failed to plot embedding norm/cosine: {exc}')
+  plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
+                 run_label=run_label, mae_macro=mae_macro_new, mae_macro_old=mae_macro_old)
 
   plot_projector_diagnostics(_extract_linear_bundle(data), out_dir, run_label=run_label)
 
@@ -2763,6 +3096,16 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
       out_dir,
       run_label=run_label,
     )
+    try:
+      plot_anchor_norm_comparison(
+        data['old_model_anchors_embeddings']['embeddings'],
+        data['new_model_anchors_embeddings']['embeddings'],
+        data['old_model_anchors_embeddings']['labels'],
+        out_dir,
+        run_label=run_label,
+      )
+    except Exception as exc:
+      print(f'[WARN] Failed to plot anchor norm comparison: {exc}')
 
   _write_summary_csv(summary_row, out_dir)
   print(f'Done. All logs in {out_dir}')
