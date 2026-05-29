@@ -22,6 +22,7 @@ Pipeline:
 """
 import argparse
 import copy
+import hashlib
 import itertools
 import os
 import pickle
@@ -83,11 +84,11 @@ LINEAR_PROJECTOR_CONFIG = {
   'batch_size':           64,
   'optimizer':            'adamw',   # 'adam' | 'adamw' | 'sgd'
   'weight_decay':         1e-4,
-  'epochs':               300,
+  'epochs':               90,
   'normalize_embeddings': True,
   'loss':                 'mse',     # 'mse' | 'mae' | 'cosine'
   # (train, val, test). The projector trains on ALL K anchors, so the train
-  # entry is unused; val/test are a subject-disjoint split of the new model's
+  # entry is unused; val/test are splits of the new model's
   # val.csv sized by these fractions of the val.csv row count (test absorbs
   # the remainder so every val.csv row is used).
   'split_ratios':         (0.0, 0.50, 0.50),
@@ -100,9 +101,11 @@ _FEATURES_MAP = {
   ('DFER',     'UNBC'):   'UNBC/video/features/DFER/spatial_pooled_features_UNBC_B_last143_stride16_interpol',
   ('DFER',     'BIOVID'): 'partA/video/features/DFER/spatial_pooled_features_Biovid_B_last143_stride16_interpol',
   ('DFER',     'AGEDB'):  'AgeDB/features/DFER/all_pooled_features_age',
-  ('VIDEOMAE', 'AGEDB'):  'AgeDB/features/VideoMaev2_S/all_pooled_features_age',
+  ('DFER',     'MORPH'):  'MORPH_2/features/DFER/all_pooled_features_MORPH',
   ('VIDEOMAE', 'UNBC'):   'UNBC/video/features/VideoMaev2_S/spatial_pooled_features_UNBC_B_last143_stride16_interpol',
   ('VIDEOMAE', 'BIOVID'): 'partA/video/features/VideoMaev2_S/spatial_pooled_features_Biovid_B_last143_stride16_interpol',
+  ('VIDEOMAE', 'AGEDB'):  'AgeDB/features/VideoMaev2_S/all_pooled_features_age',
+  ('VIDEOMAE', 'MORPH'):  'MORPH_2/features/VideoMaev2_S/all_pooled_features_MORPH',
 }
 
 
@@ -1698,7 +1701,7 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
   return mae
 
 
-def run_optuna(args):
+def run_optuna(args, out_root=None):
   """
   Run an Optuna hyperparameter search over cross-space projection parameters.
 
@@ -1706,7 +1709,10 @@ def run_optuna(args):
   so only the cheap projection + classification ops run per trial.
 
   Args:
-    args (argparse.Namespace): Parsed CLI args. Hyper args are lists; model paths are strings.
+    args     (argparse.Namespace): Parsed CLI args. Hyper args are lists; model paths are strings.
+    out_root (str | None):         Base directory for the output tree. Defaults to the current
+                                   working directory when None, so callers can route outputs
+                                   without changing cwd.
 
   Returns:
     str: Path to the output directory containing study results.
@@ -1736,8 +1742,12 @@ def run_optuna(args):
     + _proj_suffix
   )
   tag_prefix = f'{args.run_tag}_' if args.run_tag else ''
+  if len(f'search_{tag_prefix}{args_tag}_{uid}') > 200:
+    _hash = hashlib.md5(args_tag.encode()).hexdigest()[:16]
+    args_tag = f'{args_tag[:60]}_{_hash}'
+  base = out_root if out_root is not None else os.getcwd()
   out_dir = os.path.join(
-    os.getcwd(), 'Cross_projection', f'search_{tag_prefix}{args_tag}_{uid}',
+    base, 'Cross_projection', f'search_{tag_prefix}{args_tag}_{uid}',
   )
   precomputed_dir = os.path.join(out_dir, 'precomputed')
   os.makedirs(precomputed_dir, exist_ok=True)
@@ -1875,15 +1885,18 @@ def run_optuna(args):
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def cross_space_projection(args):
+def cross_space_projection(args, out_root=None):
   """
   Full cross-space projection pipeline.
 
   Args:
-    args (argparse.Namespace): Parsed CLI arguments with fields:
+    args     (argparse.Namespace): Parsed CLI arguments with fields:
       new_model_pth, old_model_pth, num_anchors, anchor_selection_type,
       csv_anchor_selection, old_model_csv, interpolation_similarity,
       weighting_method, rbf_sigma.
+    out_root (str | None):         Base directory for the output tree. Defaults to the current
+                                   working directory when None, so callers can route outputs
+                                   without changing cwd.
 
   Returns:
     str: Path to the saved results .pkl file.
@@ -1906,7 +1919,8 @@ def cross_space_projection(args):
     + _proj_tag
   )
   tag_prefix = f'{args.run_tag}_' if args.run_tag else ''
-  out_dir = os.path.join(os.getcwd(), 'Cross_projection', f'cross_space_projection_{tag_prefix}{args_tag}_{uid}')
+  base = out_root if out_root is not None else os.getcwd()
+  out_dir = os.path.join(base, 'Cross_projection', f'cross_space_projection_{tag_prefix}{args_tag}_{uid}')
   os.makedirs(out_dir, exist_ok=True)
   print(f'[cross_space_projection] Output: {out_dir}')
 
@@ -2178,7 +2192,7 @@ if __name__ == '__main__':
                            'semi-orthogonal map on the same anchor pairs (no SGD). For both '
                            "'linear' and 'procrustes', weighting_method must be 'none' and "
                            'rbf_sigma is ignored.')
-  parser.add_argument('--weighting_method', type=str, nargs='+', default=['none'],
+  parser.add_argument('--weighting_method', type=str, nargs='+', default=['rbf'],
                       choices=['rbf', 'none'],
                       help="Method to convert distances to interpolation weights. "
                            "'rbf' = exp(-d^2/(2 sigma^2)) softmax. "

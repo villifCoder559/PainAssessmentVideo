@@ -2017,7 +2017,7 @@ def _resolve_new_model_pth(data, fmt, pkl_path):
   return None
 
 
-def _resolve_new_features_path(data, fmt, new_model_pth):
+def _resolve_new_features_path(data, fmt, new_model_pth, pkl_path=None):
   """
   Find the new model's safetensors feature folder for the diagnostic's bulk
   head-only extraction.
@@ -2031,6 +2031,9 @@ def _resolve_new_features_path(data, fmt, new_model_pth):
     fmt            (str):  'grid' or 'standalone'.
     new_model_pth  (str | None): Path to new model checkpoint (used in grid
       fallback when new_model_config isn't in the pkl).
+    pkl_path       (str | None): Path to the loaded trial pkl. In grid mode the
+      search root (which holds best_config.txt) is derived from it as
+      os.path.dirname(os.path.dirname(pkl_path)).
 
   Returns:
     str | None: Absolute path to the features folder for the new model on
@@ -2063,8 +2066,7 @@ def _resolve_new_features_path(data, fmt, new_model_pth):
     old_model_pth = data.get('config_cross_space_projection', {}).get('old_model_pth')
     if old_model_pth is None:
       # Try parsing search root's best_config.txt
-      search_root = os.path.dirname(os.path.dirname(
-        data.get('_pkl_path') or ''))  # populated by caller when available
+      search_root = os.path.dirname(os.path.dirname(pkl_path)) if pkl_path else ''
       cfg_txt = os.path.join(search_root, 'best_config.txt') if search_root else ''
       old_model_pth = None
       if cfg_txt and os.path.isfile(cfg_txt):
@@ -2171,7 +2173,23 @@ def _fetch_real_embeddings_via_pipeline(data, fmt, pkl_path, target_ids,
   from cross_space_projection import _build_model, _extract_embeddings, _load_config
   new_config   = _load_config(new_model_pth)
   new_model    = _build_model(new_config)
-  features_override = _resolve_new_features_path(data, fmt, new_model_pth)
+  features_override = _resolve_new_features_path(data, fmt, new_model_pth, pkl_path=pkl_path)
+
+  # Cross-domain guard: when the override is unresolved the extractor falls back
+  # to the new model's NATIVE features folder. With a foreign (old-domain) CSV
+  # those rows point at sample ids that do not exist there (e.g. AgeDB ids under
+  # a MORPH folder), failing mid-DataLoader with a confusing "File missing".
+  # Probe the first row against the native folder and skip cleanly if absent.
+  if features_override is None:
+    native = new_config['model_advanced_params']['features_folder_saving_path']
+    first = df_sub.iloc[0]
+    probe = os.path.join(native, str(first['subject_name']),
+                         f"{first['sample_name']}.safetensors")
+    if not os.path.exists(probe):
+      print(f'[emb_recon] cannot resolve new-model features for the old domain; '
+            f'native path {native!r} does not contain the requested samples '
+            f'(probe missing: {probe}) — skipping head-only extraction.')
+      return {}
 
   print(f'[emb_recon] extracting real embeddings for {len(df_sub)} samples '
         f'(features_override={features_override})')
