@@ -454,9 +454,13 @@ def _compute_weights(z, anchors, sim_type, sigma):
   Args:
     z        (np.ndarray): Query embeddings,  shape (N, D).
     anchors  (np.ndarray): Anchor embeddings, shape (K, D).
-    sim_type (str): Distance metric — 'cos', 'l1', 'l2', or 'l_inf'.
+    sim_type (str): Distance metric — 'cos', 'l1', 'l2', 'l_inf', or 'geodesic'.
                     For 'cos', distance is `1 - |cos_sim|` in [0, 1] (so
                     opposite directions are treated as also similar).
+                    For 'geodesic', a k-NN graph (k=5, Euclidean edges) is built
+                    over anchor embeddings; all-pairs shortest paths are computed,
+                    then each query is connected via its k nearest anchors.
+                    Disconnected pairs fall back to direct L2.
     sigma    (float): Standard deviation for RBF kernel: exp(-d²/(2σ²)).
 
   Returns:
@@ -467,6 +471,43 @@ def _compute_weights(z, anchors, sim_type, sigma):
     a_n = anchors / (np.linalg.norm(anchors, axis=1, keepdims=True) + 1e-8)
     sim = z_n @ a_n.T                         # (N, K), range [-1, 1]
     d = 1.0 - np.abs(sim)                     # cosine distance in [0, 1]
+  elif sim_type == 'geodesic':
+    from scipy.spatial.distance import cdist
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import shortest_path
+
+    _GEO_K = 5
+    K = anchors.shape[0]
+    k = min(_GEO_K, K - 1)
+
+    # Build symmetric k-NN graph on anchors (Euclidean edge weights)
+    anchor_d = cdist(anchors, anchors, metric='euclidean')  # (K, K)
+    graph = np.full((K, K), np.inf)
+    np.fill_diagonal(graph, 0.0)
+    for i in range(K):
+      nn_idx = np.argsort(anchor_d[i])[1:k + 1]
+      for j in nn_idx:
+        graph[i, j] = anchor_d[i, j]
+        graph[j, i] = anchor_d[j, i]
+
+    # All-pairs shortest path on anchor graph
+    geo_anchors = shortest_path(csr_matrix(graph), method='D', directed=False)  # (K, K)
+
+    # Extend geodesic to queries: connect each query to its k nearest anchors
+    d_direct = cdist(z, anchors, metric='euclidean')          # (N, K)
+    N = z.shape[0]
+    d_geo = np.full((N, K), np.inf)
+    for i in range(N):
+      knn_idx = np.argsort(d_direct[i])[:k]
+      candidates = d_direct[i, knn_idx][:, None] + geo_anchors[knn_idx, :]  # (k, K)
+      d_geo[i] = candidates.min(axis=0)
+
+    # Fall back to direct L2 for unreachable anchors (disconnected components)
+    inf_mask = ~np.isfinite(d_geo)
+    if inf_mask.any():
+      d_geo[inf_mask] = d_direct[inf_mask]
+
+    d = d_geo
   else:
     from scipy.spatial.distance import cdist
     if sim_type == 'l_inf':
@@ -2183,9 +2224,13 @@ if __name__ == '__main__':
   parser.add_argument('--old_model_csv', type=str, nargs='+', required=True,
                       help='Split(s) to project (train/val/test/all/exc_train/exc_val/exc_test) — old model domain')
   parser.add_argument('--interpolation_similarity', type=str, nargs='+', default=['cos'],
-                      choices=['cos', 'l1', 'l2', 'l_inf', 'linear', 'procrustes'],
+                      choices=['cos', 'l1', 'l2', 'l_inf', 'linear', 'procrustes', 'geodesic'],
                       help='Distance metric(s) for weight computation. '
                            "'cos' uses cosine distance d = 1 - |cos_sim| in [0, 1]. "
+                           "'geodesic' builds a k-NN graph (k=5, Euclidean edges) over anchor "
+                           'embeddings, runs all-pairs shortest path (scipy.sparse.csgraph), '
+                           'then extends to queries via their k nearest anchors; disconnected '
+                           'pairs fall back to direct L2. '
                            "'linear' trains a learned nn.Linear(D_old, D_new) projector on the "
                            'anchor pairs (subject-disjoint split, see LINEAR_PROJECTOR_CONFIG); '
                            "'procrustes' fits a closed-form centered + isotropically scaled "
