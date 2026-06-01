@@ -23,6 +23,7 @@ import torch
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
 
 MAX_SUBJECTS_FOR_PLOT = 40
+MAX_CLASSES_FOR_CONFUSION_MATRIX = 20
 
 
 def _auto_y_lim(values_list, base_y_lim, margin=1.1):
@@ -407,6 +408,12 @@ def plot_grouped_confusion_matrix(data, run_output_folder, test_id, additional_i
       splits.append(('TEST', sum_test))
 
     n_splits = len(splits)
+
+    n_classes = splits[0][1].shape[0]
+    if n_classes > MAX_CLASSES_FOR_CONFUSION_MATRIX:
+      print(f'[skip] grouped confusion matrix for {test_id}/{k_fold}: '
+            f'C={n_classes} > {MAX_CLASSES_FOR_CONFUSION_MATRIX}')
+      continue
 
     # Raw counts figure
     fig_counts, axs_counts = plt.subplots(n_splits, 1, figsize=(6, 5 * n_splits))
@@ -1711,6 +1718,15 @@ def plot_confusion_matrices(data, root_output_folder, test_id, additional_info='
     
     best_epoch_idx =  dict_sub_fold['train_val']['best_model_idx']
     dict_train_conf_matrix = dict_sub_fold['train_val']['train_confusion_matricies']
+
+    _first_cm = next(iter(dict_train_conf_matrix.values()), None)
+    if _first_cm is not None:
+      n_classes = _first_cm.confmat.shape[0] if hasattr(_first_cm, 'confmat') else _first_cm.shape[0]
+      if n_classes > MAX_CLASSES_FOR_CONFUSION_MATRIX:
+        print(f'[skip] confusion matrix for {test_id}/{key}: '
+              f'C={n_classes} > {MAX_CLASSES_FOR_CONFUSION_MATRIX}')
+        continue
+
     dict_val_conf_matrix = dict_sub_fold['train_val'].get('val_confusion_matricies', None)
     dict_test_conf_matrix = None
       
