@@ -41,7 +41,7 @@ def get_custom_ds(data):
   return custom_ds
 
 
-def plot_reducted_embeddings(reduced_embeddings, labels, output_folder, save_plot=True,v_max=None,v_min=None, title="t-SNE Visualization", group_by="pain",cmap='viridis', output_path=None,ax = None, reduction_name="t-SNE"):
+def plot_reducted_embeddings(reduced_embeddings, labels, output_folder, save_plot=True,v_max=None,v_min=None, title="t-SNE Visualization", group_by="pain",cmap='viridis', output_path=None,ax = None, reduction_name="t-SNE", show_colorbar=True):
   if ax is None:
     fig,ax = plt.subplots(figsize=(12, 8))
   else:
@@ -71,12 +71,12 @@ def plot_reducted_embeddings(reduced_embeddings, labels, output_folder, save_plo
   if len(unique_labels) <= 20:  # Only show legend if not too many labels
     ax.legend(title=group_by)
   # if colormap is continuous, add colorbar
-  # if group_by == 'labels':
-  #   norm = plt.Normalize(vmin=v_min if v_min is not None else np.min(labels), vmax=v_max if v_max is not None else np.max(labels))
-  #   sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-  #   sm.set_array([])
-  #   cbar = plt.colorbar(sm, ax=ax)
-  #   cbar.set_label(group_by)
+  if group_by == 'labels' and show_colorbar:
+    norm = plt.Normalize(vmin=v_min if v_min is not None else np.min(labels), vmax=v_max if v_max is not None else np.max(labels))
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = plt.colorbar(sm, ax=ax)
+    cbar.set_label(group_by)
   ax.set_xlabel(f"{reduction_name} Dimension 1")
   ax.set_ylabel(f"{reduction_name} Dimension 2")
   ax.set_title(title)
@@ -421,8 +421,15 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
                               save_plot=False,
                               cmap=cmap_lbl,
                               ax=axes[1],
-                              reduction_name=reduction_title)
-    
+                              reduction_name=reduction_title,
+                              show_colorbar=False)
+
+    norm_lbl = plt.Normalize(vmin=np.min(labels_lbl), vmax=np.max(labels_lbl))
+    sm_lbl = plt.cm.ScalarMappable(cmap=cmap_lbl, norm=norm_lbl)
+    sm_lbl.set_array([])
+    cbar = fig.colorbar(sm_lbl, ax=axes[1], fraction=0.046, pad=0.04)
+    cbar.set_label("labels")
+
     plt.tight_layout()
     if save_plot:
       os.makedirs(log_path_folder, exist_ok=True)
@@ -503,7 +510,7 @@ def run_tsne_and_plot(pkl_file, group_by, cmap,
 def main():
   parser = argparse.ArgumentParser(description="Plot t-SNE or UMAP from embeddings in a pickle file from log_cross_attention_from_model.py")
   parser.add_argument("--pkl_file", type=str, required=True, help="Path to the pickle file containing embeddings and labels.")
-  parser.add_argument("--group_by", type=str, choices=["labels", "subjects", "all"], default="labels", help="Group visualization by labels or subjects.")
+  parser.add_argument("--group_by", type=str, choices=["labels", "subjects", "all"], default="all", help="Group visualization by labels or subjects.")
   parser.add_argument("--cmap", type=str, default=None, help="Colormap for the plot.") # jet, tab20, viridis, etc
   parser.add_argument("--reduction_method", type=str, choices=["tsne", "umap"], default="umap", help="Dimensionality reduction method to use.")
   parser.add_argument("--top_n_subjects", type=int, default=None, help="Number of subjects with the most samples to plot. If not specified, all subjects are plotted.")
