@@ -55,6 +55,15 @@ from custom.tools import concordance_ccc, plot_confusion_matrix
 from new_plot_tsne_post_head import plot_reducted_embeddings
 
 
+# ── split-impact UMAP config ──────────────────────────────────────────────────
+# Which new-model split is overlaid with the projected embeddings to judge whether
+# the projected points fall inside the distribution of the embeddings actually used
+# for training/validation/testing. Hard-coded here on purpose.
+SPLIT_TO_COMPARE     = 'train'   # 'train' | 'val' | 'test'
+SPLIT_SUBSAMPLE_FRAC = 0.8       # 0..1 — fraction of the split set kept before UMAP
+SPLIT_SUBSAMPLE_SEED = 42        # reproducible subsample of the split set
+
+
 # ── internal helpers ─────────────────────────────────────────────────────────
 
 def _load_pkl(pkl_path):
@@ -435,6 +444,7 @@ def _collect_summary_row(data, pkl_path):
     'csv_anchor_selection':     p['csv_anchor_selection'],
     'old_model_csv':            p['old_model_csv'],
     'interpolation_similarity': p['interpolation_similarity'],
+    'mlp_activation':           p.get('mlp_activation'),
     'weighting_method':         p['weighting_method'],
     'temperature':              p.get('temperature'),
     'rbf_sigma':                p['rbf_sigma'],
@@ -449,21 +459,21 @@ def _collect_summary_row(data, pkl_path):
 
 def _extract_linear_bundle(data):
   """
-  Return the closed-form-projector training bundle from a pkl dict, if present.
+  Return the projector training bundle from a pkl dict, if present.
 
-  Both interpolation_similarity='linear' and 'procrustes' write their bundle under
-  the same 'linear_projector' key (historical naming kept for log/plot compat); a
-  'kind' field inside the bundle disambiguates them. The bundle is absent for
-  runs where no projector was trained: num_anchors in {0, -1} or
-  interpolation_similarity not in {'linear', 'procrustes'}.
+  interpolation_similarity='linear', 'mlp' and 'procrustes' all write their bundle
+  under the same 'linear_projector' key (historical naming kept for log/plot
+  compat); a 'kind' field inside the bundle disambiguates them. The bundle is
+  absent for runs where no projector was trained: num_anchors in {0, -1} or
+  interpolation_similarity not in {'linear', 'mlp', 'procrustes'}.
 
   Args:
     data (dict): Deserialized pkl contents.
 
   Returns:
     dict | None: The bundle with keys 'config', 'norm_stats', 'best_epoch',
-      'best_val_mse', 'ckpt_path', 'metrics', 'splits', 'kind' ('linear' or
-      'procrustes'), and optionally 'procrustes_params'. Returns None if the
+      'best_val_mse', 'ckpt_path', 'metrics', 'splits', 'kind' ('linear', 'mlp'
+      or 'procrustes'), and optionally 'procrustes_params'. Returns None if the
       key is absent.
   """
   return data.get('linear_projector')
@@ -483,7 +493,7 @@ def plot_predictions_histogram(new_preds, old_preds, labels, out_dir,
   Args:
     new_preds  (np.ndarray): Shape (N,), projected model float predictions.
     old_preds  (np.ndarray): Shape (N,), old model float predictions.
-    labels     (np.ndarray): Shape (N,), ground-truth pain labels.
+    labels     (np.ndarray): Shape (N,), ground-truth labels.
     out_dir    (str): Directory where the plot is saved (ignored when axes provided).
     run_label  (str): Optional run identity string appended to plot titles.
     axes       (array-like[Axes] | None): Two pre-existing axes for dashboard
@@ -535,7 +545,7 @@ def plot_predictions_histogram(new_preds, old_preds, labels, out_dir,
     for val in (label_lo, label_hi):
       ax.axvline(val, linestyle=':', color='#555555', linewidth=1.5)
 
-    ax.set_xlabel('Pain level')
+    ax.set_xlabel('Labels')
     ax.set_ylabel('Count')
     ax.set_title(f'Prediction distribution — {name}{suffix}')
     ax.set_xlim(lo - step, hi + step)
@@ -583,7 +593,7 @@ def plot_mae_per_class(new_preds, old_preds, labels, out_dir, run_label: str = '
   ]:
     fig, ax = plt.subplots(figsize=(14, 5))
     _draw_mae_bar(ax, groups, vals, 'MAE', f'MAE per pain class — {name}{suffix}', color)
-    ax.set_xlabel('Pain level')
+    ax.set_xlabel('Labels')
     plt.tight_layout()
     bar_path = os.path.join(out_dir, f'{prefix}_bar.png')
     fig.savefig(bar_path, dpi=150)
@@ -595,7 +605,7 @@ def plot_mae_per_class(new_preds, old_preds, labels, out_dir, run_label: str = '
       ax, groups, raw_errors, 'MAE', color,
       title=f'MAE per pain class — {name}{suffix}',
     )
-    ax.set_xlabel('Pain level')
+    ax.set_xlabel('Labels')
     plt.tight_layout()
     box_path = os.path.join(out_dir, f'{prefix}_box.png')
     fig.savefig(box_path, dpi=150)
@@ -636,7 +646,7 @@ def plot_mae_improvement_per_class(new_preds, old_preds, labels, out_dir,
     fig, ax = plt.subplots(figsize=(14, 5))
 
   _draw_mae_improvement_bar(
-    ax, groups, diffs, 'Pain level',
+    ax, groups, diffs, 'Labels',
     f'MAE improvement per pain class (old - new){suffix}',
   )
 
@@ -775,7 +785,7 @@ def plot_umap(embeddings, labels, sample_ids, subject_map, out_dir, run_label: s
 
   Args:
     embeddings  (np.ndarray): Shape (N, D), projected embedding matrix.
-    labels      (np.ndarray): Shape (N,), ground-truth pain labels.
+    labels      (np.ndarray): Shape (N,), ground-truth labels.
     sample_ids  (np.ndarray): Shape (N,), int sample IDs.
     subject_map (dict[int, int]): Mapping from sample_id to subject_id.
     out_dir     (str): Output directory.
@@ -794,8 +804,8 @@ def plot_umap(embeddings, labels, sample_ids, subject_map, out_dir, run_label: s
     reduced[:, 0], reduced[:, 1], c=labels,
     cmap='jet', vmin=v_min, vmax=v_max, s=10, alpha=0.7,
   )
-  plt.colorbar(sc, ax=axes[0], label='Pain level')
-  axes[0].set_title(f'UMAP — projected embeddings (by pain label){suffix}')
+  plt.colorbar(sc, ax=axes[0], label='Labels')
+  axes[0].set_title(f'UMAP — projected embeddings (by label){suffix}')
   axes[0].set_xlabel('UMAP 1')
   axes[0].set_ylabel('UMAP 2')
   plot_reducted_embeddings(
@@ -805,6 +815,112 @@ def plot_umap(embeddings, labels, sample_ids, subject_map, out_dir, run_label: s
   )
   plt.tight_layout()
   path = os.path.join(out_dir, 'umap_all.png')
+  fig.savefig(path, dpi=150)
+  plt.close(fig)
+  print(f'Saved: {path}')
+
+
+def plot_umap_split_impact(projected_emb, projected_labels, split_emb, split_labels,
+                           split_name, out_dir, run_label: str = ''):
+  """
+  Overlay the projected embeddings on the new model's real <split> embeddings in UMAP.
+
+  Three panels, all colored by label (jet):
+    1. UMAP fit on BOTH (split + projected), all points shown. Projected points use a
+       distinct marker ('x') from the split points ('o') so the overlap/impact is visible.
+    2. UMAP fit on BOTH, but only the projected points are drawn.
+    3. UMAP fit on the split set alone.
+
+  The split set arrives already subsampled (the rows are subsampled to SPLIT_SUBSAMPLE_FRAC
+  before extraction in _load_split_embeddings); this function does no further subsampling.
+
+  Args:
+    projected_emb    (np.ndarray): Shape (P, D), projected new-model embeddings.
+    projected_labels (np.ndarray): Shape (P,),  labels of the projected samples.
+    split_emb        (np.ndarray): Shape (S, D), real new-model embeddings of the split.
+    split_labels     (np.ndarray): Shape (S,),  labels of the split samples.
+    split_name       (str): Split identity ('train'/'val'/'test'), used in titles/filename.
+    out_dir          (str): Output directory.
+    run_label        (str): Optional run identity string appended to plot titles.
+  """
+  projected_emb = np.asarray(projected_emb, dtype=np.float32)
+  split_sub     = np.asarray(split_emb,     dtype=np.float32)
+  projected_labels = np.asarray(projected_labels, dtype=np.float32).reshape(-1)
+  split_lab        = np.asarray(split_labels,     dtype=np.float32).reshape(-1)
+
+  if projected_emb.shape[1] != split_sub.shape[1]:
+    print(f'[WARN] split-impact UMAP: dim mismatch projected={projected_emb.shape[1]} '
+          f'vs {split_name}={split_sub.shape[1]} — skipped.')
+    return
+
+  # UMAP needs more samples than its default neighborhood; guard tiny splits.
+  if split_sub.shape[0] < 5:
+    print(f'[WARN] split-impact UMAP: only {split_sub.shape[0]} {split_name} points '
+          f'— too few; skipped.')
+    return
+
+  print(f'Computing split-impact UMAP ({split_name}: {split_sub.shape[0]} pts, '
+        f'projected: {projected_emb.shape[0]} pts)...')
+
+  # --- Fit UMAP on the joint set and on the split alone ---
+  combined = np.vstack([split_sub, projected_emb])
+  is_proj  = np.zeros(combined.shape[0], dtype=bool)
+  is_proj[split_sub.shape[0]:] = True
+  reduced_both  = _compute_umap(combined)
+  reduced_split = _compute_umap(split_sub)
+
+  all_labels   = np.concatenate([split_lab, projected_labels])
+  v_min, v_max = float(all_labels.min()), float(all_labels.max())
+  suffix = f' | {run_label}' if run_label else ''
+  frac_note = f'split subsample={SPLIT_SUBSAMPLE_FRAC:g}'
+
+  fig, axes = plt.subplots(1, 3, figsize=(30, 8))
+
+  # Panel 1: fit on both, all points, marker distinguishes group.
+  axes[0].scatter(
+    reduced_both[~is_proj, 0], reduced_both[~is_proj, 1], c=split_lab,
+    cmap='jet', vmin=v_min, vmax=v_max, s=12, alpha=0.7, marker='o',
+    label=f'{split_name} (real)',
+  )
+  sc0 = axes[0].scatter(
+    reduced_both[is_proj, 0], reduced_both[is_proj, 1], c=projected_labels,
+    cmap='jet', vmin=v_min, vmax=v_max, s=28, alpha=0.8, marker='x',
+    label='projected',
+  )
+  plt.colorbar(sc0, ax=axes[0], label='Labels')
+  axes[0].legend(loc='best', framealpha=0.9)
+  axes[0].set_title(
+    f'UMAP fit on BOTH (projected + {split_name}) — all points\n'
+    f'colored by label · {frac_note}{suffix}'
+  )
+
+  # Panel 2: fit on both, projected points only.
+  sc1 = axes[1].scatter(
+    reduced_both[is_proj, 0], reduced_both[is_proj, 1], c=projected_labels,
+    cmap='jet', vmin=v_min, vmax=v_max, s=20, alpha=0.8, marker='x',
+  )
+  plt.colorbar(sc1, ax=axes[1], label='Labels')
+  axes[1].set_title(
+    f'UMAP fit on BOTH (projected + {split_name}) — projected only\n'
+    f'colored by label · {frac_note}{suffix}'
+  )
+
+  # Panel 3: fit on the split alone.
+  sc2 = axes[2].scatter(
+    reduced_split[:, 0], reduced_split[:, 1], c=split_lab,
+    cmap='jet', vmin=v_min, vmax=v_max, s=12, alpha=0.7, marker='o',
+  )
+  plt.colorbar(sc2, ax=axes[2], label='Labels')
+  axes[2].set_title(
+    f'UMAP fit on {split_name} only\n'
+    f'colored by label · {frac_note}{suffix}'
+  )
+
+  for ax in axes:
+    ax.set_xlabel('UMAP 1')
+    ax.set_ylabel('UMAP 2')
+  plt.tight_layout()
+  path = os.path.join(out_dir, f'umap_split_impact_{split_name}.png')
   fig.savefig(path, dpi=150)
   plt.close(fig)
   print(f'Saved: {path}')
@@ -917,7 +1033,7 @@ def plot_weight_rank_distribution(weights, out_dir, run_label: str = '', top_n: 
 
 def plot_anchor_umap(old_anchors_emb, new_anchors_emb, anchor_labels, out_dir, run_label: str = ''):
   """
-  Side-by-side UMAP of old and new anchor embeddings, colored by pain label.
+  Side-by-side UMAP of old and new anchor embeddings, colored by label.
 
   Each embedding set is reduced independently (dimensions differ), so they share
   the same color scale but not the same coordinate space.
@@ -925,7 +1041,7 @@ def plot_anchor_umap(old_anchors_emb, new_anchors_emb, anchor_labels, out_dir, r
   Args:
     old_anchors_emb (np.ndarray): Shape (K, D_old), old model anchor embeddings.
     new_anchors_emb (np.ndarray): Shape (K, D_new), new model anchor embeddings.
-    anchor_labels   (np.ndarray): Shape (K,), pain labels for anchors.
+    anchor_labels   (np.ndarray): Shape (K,), labels for anchors.
     out_dir         (str): Output directory.
     run_label       (str): Optional run identity string appended to plot titles.
   """
@@ -945,7 +1061,7 @@ def plot_anchor_umap(old_anchors_emb, new_anchors_emb, anchor_labels, out_dir, r
       cmap='jet', vmin=v_min, vmax=v_max, s=60, alpha=0.85,
       edgecolors='black', linewidths=0.4,
     )
-    plt.colorbar(sc, ax=ax, label='Pain level')
+    plt.colorbar(sc, ax=ax, label='Labels')
     ax.set_title(title)
     ax.set_xlabel('UMAP 1')
     ax.set_ylabel('UMAP 2')
@@ -976,7 +1092,7 @@ def plot_anchor_norm_comparison(old_anchors_emb, new_anchors_emb, anchor_labels,
   Args:
     old_anchors_emb (np.ndarray): Shape (K, D_old), old model anchor embeddings.
     new_anchors_emb (np.ndarray): Shape (K, D_new), new model anchor embeddings.
-    anchor_labels   (np.ndarray): Shape (K,), pain label per anchor.
+    anchor_labels   (np.ndarray): Shape (K,), label per anchor.
     out_dir         (str): Output directory.
     run_label       (str): Optional run identity string appended to plot titles.
   """
@@ -1015,7 +1131,7 @@ def plot_anchor_norm_comparison(old_anchors_emb, new_anchors_emb, anchor_labels,
     c=labels, cmap='jet', vmin=v_min, vmax=v_max,
     s=12, alpha=0.5, edgecolors='none',
   )
-  plt.colorbar(sc, ax=ax, label='Pain level')
+  plt.colorbar(sc, ax=ax, label='Labels')
   lo = float(min(old_norm.min(), new_norm.min()))
   hi = float(max(old_norm.max(), new_norm.max()))
   ax.plot([lo, hi], [lo, hi], '--', color='black', linewidth=0.9, alpha=0.7, label='y = x')
@@ -1072,7 +1188,7 @@ def plot_prediction_scatter(new_preds, old_preds, labels, out_dir,
   Args:
     new_preds  (np.ndarray): Shape (N,), projected model float predictions.
     old_preds  (np.ndarray): Shape (N,), old model float predictions.
-    labels     (np.ndarray): Shape (N,), ground-truth pain labels.
+    labels     (np.ndarray): Shape (N,), ground-truth labels.
     out_dir    (str): Directory where the plot is saved (ignored when axes provided).
     run_label  (str): Optional run identity string appended to plot titles.
     axes       (array-like[Axes] | None): Two pre-existing axes for dashboard
@@ -1128,7 +1244,7 @@ def plot_prediction_by_class_boxplot(new_preds, old_preds, labels, out_dir, run_
   Args:
     new_preds  (np.ndarray): Shape (N,), projected model float predictions.
     old_preds  (np.ndarray): Shape (N,), old model float predictions.
-    labels     (np.ndarray): Shape (N,), ground-truth pain labels.
+    labels     (np.ndarray): Shape (N,), ground-truth labels.
     out_dir    (str): Output directory.
     run_label  (str): Optional run identity string appended to plot titles.
   """
@@ -1304,10 +1420,12 @@ def _format_projector_config_text(linear_bundle):
     header = '── PROCRUSTES (closed form) ──'
     cfg_keys = ('normalize_embeddings', 'split_ratios', 'device')
   else:
-    header = '── LINEAR_PROJECTOR_CONFIG ──'
+    header = '── MLP_PROJECTOR_CONFIG ──' if kind == 'mlp' else '── LINEAR_PROJECTOR_CONFIG ──'
     cfg_keys = ('lr', 'batch_size', 'optimizer', 'weight_decay', 'epochs',
                 'normalize_embeddings', 'loss', 'split_ratios', 'device',
                 'num_workers')
+    if kind == 'mlp':
+      cfg_keys = ('mlp_activation',) + cfg_keys
   rows = [header]
   for k in cfg_keys:
     if k in cfg:
@@ -1983,7 +2101,7 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
   Args:
     new_preds     (np.ndarray): Shape (N,), projected model float predictions.
     old_preds     (np.ndarray): Shape (N,), old model float predictions.
-    labels        (np.ndarray): Shape (N,), ground-truth pain labels.
+    labels        (np.ndarray): Shape (N,), ground-truth labels.
     num_classes   (int): Number of distinct pain classes.
     mae           (float): Micro-averaged MAE for the projected model.
     ccc           (float): Global CCC for the projected model.
@@ -2029,7 +2147,7 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
     groups, new_vals, new_raw,
     'MAE', f'MAE per class — Projected{suffix}', 'darkorange',
   )
-  fig.axes[-1].set_xlabel('Pain level', fontsize=8)
+  fig.axes[-1].set_xlabel('Labels', fontsize=8)
 
   # ── Row 0, Col 2: prediction scatter (nested 1×2) ───────────────────────────
   inner_scatter = gridspec.GridSpecFromSubplotSpec(
@@ -2216,6 +2334,93 @@ def _fetch_real_embeddings_from_linear(linear_bundle, target_ids):
       if sid_int in target_set and sid_int not in out:
         out[sid_int] = vec
   return out
+
+
+def _load_split_embeddings(data, fmt, pkl_path, split_name, out_dir):
+  """
+  Get the NEW MODEL's real embeddings + labels for one of its own splits.
+
+  The split is the new model's actual ``<split>.csv`` (train/val/test) resolved
+  relative to the new-model checkpoint — NOT the projector's splits stored in the
+  pkl (those are the anchors / val.csv subsets, a different set). To keep cost
+  bounded the CSV rows are randomly subsampled to SPLIT_SUBSAMPLE_FRAC *before*
+  extraction, then real embeddings are produced by head-only inference using the
+  new model's NATIVE features folder. Results are cached to a safetensors file so
+  re-runs skip the (expensive) extraction.
+
+  Args:
+    data       (dict): Deserialized pkl contents.
+    fmt        (str):  'grid' or 'standalone'.
+    pkl_path   (str):  Path to the loaded pkl (used by grid resolution).
+    split_name (str):  'train', 'val', or 'test'.
+    out_dir    (str):  Directory for the safetensors cache and the temp CSV.
+
+  Returns:
+    tuple[np.ndarray, np.ndarray] | None: (embeddings (S, D) float32, labels (S,)
+      float32) for the subsampled split, or None when it cannot be produced.
+  """
+  from safetensors.numpy import load_file as st_load, save_file as st_save
+
+  cache_path = os.path.join(
+    out_dir, f'split_impact_emb_{split_name}_f{SPLIT_SUBSAMPLE_FRAC:g}.safetensors')
+  if os.path.isfile(cache_path):
+    try:
+      cached = st_load(cache_path)
+      emb    = np.asarray(cached['embeddings'], dtype=np.float32)
+      labels = np.asarray(cached['labels'],     dtype=np.float32).reshape(-1)
+      print(f'[split-impact] loaded cached {split_name!r} embeddings '
+            f'({emb.shape[0]} samples) from {cache_path}')
+      return emb, labels
+    except Exception as exc:
+      print(f'[split-impact] cache read failed ({exc}); re-extracting.')
+
+  try:
+    from cross_space_projection import (
+      _build_model, _extract_embeddings, _load_config, _resolve_split_csv,
+    )
+    new_model_pth = _resolve_new_model_pth(data, fmt, pkl_path)
+    if new_model_pth is None:
+      print(f'[split-impact] no new-model checkpoint resolvable — cannot extract '
+            f'{split_name!r}.')
+      return None
+    csv_path = _resolve_split_csv(new_model_pth, split_name)
+    if not os.path.isfile(csv_path):
+      print(f'[split-impact] split CSV not found: {csv_path} — cannot extract '
+            f'{split_name!r}.')
+      return None
+
+    # --- Subsample CSV rows BEFORE extraction to manage cost ---
+    df = pd.read_csv(csv_path, sep='\t',
+                     dtype={'sample_name': str, 'subject_name': str})
+    if SPLIT_SUBSAMPLE_FRAC < 1.0:
+      df = df.sample(frac=SPLIT_SUBSAMPLE_FRAC, random_state=SPLIT_SUBSAMPLE_SEED)
+    if len(df) < 5:
+      print(f'[split-impact] only {len(df)} {split_name!r} rows after subsampling '
+            f'(frac={SPLIT_SUBSAMPLE_FRAC}) — too few; skipped.')
+      return None
+    temp_csv = os.path.join(out_dir, f'_split_impact_{split_name}_sub.csv')
+    df.to_csv(temp_csv, sep='\t', index=False)
+
+    config_model = _load_config(new_model_pth)
+    model        = _build_model(config_model)
+    print(f'[split-impact] extracting real {split_name!r} embeddings for {len(df)} '
+          f'subsampled rows from {csv_path}')
+    raw = _extract_embeddings(model, new_model_pth, temp_csv, config_model)  # native features
+    emb    = np.asarray(raw['embeddings'], dtype=np.float32)
+    labels = np.asarray(raw['labels'],     dtype=np.float32).reshape(-1)
+    if emb.size == 0:
+      return None
+
+    try:
+      st_save({'embeddings': emb, 'labels': labels,
+               'sample_ids': np.asarray(raw['sample_ids'], dtype=np.int64)}, cache_path)
+      print(f'[split-impact] cached {split_name!r} embeddings → {cache_path}')
+    except Exception as exc:
+      print(f'[split-impact] cache write failed ({exc}); continuing.')
+    return emb, labels
+  except Exception as exc:
+    print(f'[split-impact] extraction of {split_name!r} failed: {exc}')
+    return None
 
 
 def _resolve_new_model_pth(data, fmt, pkl_path):
@@ -2548,7 +2753,7 @@ def plot_embedding_reconstruction_per_class(metrics_df, out_dir,
   """
   2×2 per-class box-plot figure for L1, L2, cos_sim and cos_dist.
 
-  Samples are grouped by their rounded ground-truth pain label. Reuses
+  Samples are grouped by their rounded ground-truth label. Reuses
   `_draw_mae_box` for the box rendering so styling matches the existing
   per-class diagnostics.
 
@@ -2573,7 +2778,7 @@ def plot_embedding_reconstruction_per_class(metrics_df, out_dir,
       ax, classes, raw_by_class, col, '#4C72B0',
       title=f'{title} per pain class  (mean={mean_v:.4f})',
     )
-    ax.set_xlabel('Pain level')
+    ax.set_xlabel('Labels')
 
   fig.suptitle(f'Embedding reconstruction per class — split={split_name}{suffix}',
                fontsize=13, fontweight='bold')
@@ -3062,6 +3267,19 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
   else:
     print(f'Skipped confusion matrix: num_classes={num_classes} > 15')
   plot_umap(new_t['embeddings'], labels, sample_ids, subject_map, out_dir, run_label=run_label)
+  try:
+    split_data = _load_split_embeddings(data, fmt, pkl_path, SPLIT_TO_COMPARE, out_dir)
+    if split_data is not None:
+      s_emb, s_lab = split_data
+      plot_umap_split_impact(
+        np.asarray(new_t['embeddings'], dtype=np.float32), labels,
+        s_emb, s_lab, SPLIT_TO_COMPARE, out_dir, run_label=run_label,
+      )
+    else:
+      print(f'[WARN] split-impact UMAP: could not load {SPLIT_TO_COMPARE!r} '
+            f'embeddings — skipped.')
+  except Exception as exc:
+    print(f'[WARN] split-impact UMAP failed: {exc}')
   try:
     plot_anchor_weights(weights, out_dir, run_label=run_label)
   except Exception as exc:
