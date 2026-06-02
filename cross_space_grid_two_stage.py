@@ -26,8 +26,24 @@ from cross_space_logs import generate_logs, generate_logs_search
 
 
 _INTERP_ANCHOR_WEIGHTED = ('cos', 'l1', 'l2', 'l_inf')
-_INTERP_CLOSED_FORM     = ('linear', 'procrustes')
+_INTERP_CLOSED_FORM     = ('linear', 'mlp', 'procrustes', 'linear_close')
 _ANCHOR_FREE_SIZES      = (0, -1)
+
+
+def _projector_key(interp, mlp_activation):
+  """
+  Cache/dedup key for a projector trial — mirrors
+  cross_space_projection._projector_key so 'mlp' activations stay distinct while
+  'linear'/'procrustes'/'linear_close' collapse across the (irrelevant) activation axis.
+
+  Args:
+    interp         (str): interpolation_similarity value.
+    mlp_activation (str): Activation name; only consulted when interp == 'mlp'.
+
+  Returns:
+    str: 'mlp_<activation>' when interp == 'mlp', else interp unchanged.
+  """
+  return f'mlp_{mlp_activation}' if interp == 'mlp' else interp
 
 
 def _parse_args():
@@ -48,7 +64,10 @@ def _parse_args():
                  choices=['random', 'balance_class_random',
                           'balance_subject_random', 'balance_class_subject'])
   p.add_argument('--interpolation_similarity', type=str, nargs='+', default=['cos'],
-                 choices=['cos', 'l1', 'l2', 'l_inf', 'linear', 'procrustes'])
+                 choices=['cos', 'l1', 'l2', 'l_inf', 'linear', 'mlp', 'procrustes', 'linear_close'])
+  p.add_argument('--mlp_activation', type=str, nargs='+', default=['gelu'],
+                 choices=['gelu', 'relu', 'silu', 'leaky_relu'],
+                 help="Activation(s) for the 'mlp' projector; sweepable, ignored for non-mlp.")
   p.add_argument('--weighting_method', type=str, nargs='+', default=['rbf'],
                  choices=['rbf', 'none'])
   p.add_argument('--rbf_sigma', type=float, nargs='+', default=[1.0])
@@ -118,8 +137,10 @@ def _effective_config(combo):
   if na in _ANCHOR_FREE_SIZES:
     return ('NA', na, combo['old_model_csv'])
   if interp in _INTERP_CLOSED_FORM:
+    # mlp_activation only matters for 'mlp'; _projector_key collapses it otherwise.
     return ('CF', combo['csv_anchor_selection'], na,
-            combo['anchor_selection_type'], combo['old_model_csv'], interp)
+            combo['anchor_selection_type'], combo['old_model_csv'],
+            _projector_key(interp, combo.get('mlp_activation')))
   return ('AW', combo['csv_anchor_selection'], na,
           combo['anchor_selection_type'], combo['old_model_csv'],
           interp, combo['weighting_method'], combo['rbf_sigma'])
@@ -147,6 +168,7 @@ def _expand_effective_grid(args):
     ('csv_anchor_selection',     ['train']),
     ('old_model_csv',            ['val']),
     ('interpolation_similarity', args.interpolation_similarity),
+    ('mlp_activation',           args.mlp_activation),
     ('weighting_method',         args.weighting_method),
     ('rbf_sigma',                args.rbf_sigma),
   ]
@@ -235,6 +257,7 @@ def _run_stage_val(args, stage_val_dir, valid):
     csv_anchor_selection     = ['train'],
     old_model_csv            = ['val'],
     interpolation_similarity = _axis_union(valid, 'interpolation_similarity'),
+    mlp_activation           = _axis_union(valid, 'mlp_activation'),
     weighting_method         = _axis_union(valid, 'weighting_method'),
     rbf_sigma                = _axis_union(valid, 'rbf_sigma'),
     n_trials                 = None,
@@ -270,12 +293,13 @@ def _pick_top_k(summary_csv, k):
     'csv_anchor_selection':     str(r['csv_anchor_selection']),
     'old_model_csv':            str(r['old_model_csv']),
     'interpolation_similarity': str(r['interpolation_similarity']),
+    'mlp_activation':           str(r.get('mlp_activation', 'gelu')),
     'weighting_method':         str(r['weighting_method']),
     'rbf_sigma':                float(r['rbf_sigma']),
   }), axis=1)
   df = df.drop_duplicates(subset='_effective_key', keep='first').head(k).reset_index(drop=True)
   return df[['num_anchors', 'anchor_selection_type', 'interpolation_similarity',
-             'weighting_method', 'rbf_sigma', 'mae', 'ccc']]
+             'mlp_activation', 'weighting_method', 'rbf_sigma', 'mae', 'ccc']]
 
 
 def _run_stage_test(args, top_k_df, stage_test_dir):
@@ -303,6 +327,7 @@ def _run_stage_test(args, top_k_df, stage_test_dir):
       csv_anchor_selection     = 'train',
       old_model_csv            = 'test',
       interpolation_similarity = str(row['interpolation_similarity']),
+      mlp_activation           = str(row['mlp_activation']),
       weighting_method         = str(row['weighting_method']),
       rbf_sigma                = float(row['rbf_sigma']),
       run_tag                  = f'{base_tag}_top{i + 1}',
@@ -337,6 +362,7 @@ def _write_summary_test(test_pkls, out_csv):
       'csv_anchor_selection':    cfg['csv_anchor_selection'],
       'old_model_csv':           cfg['old_model_csv'],
       'interpolation_similarity': cfg['interpolation_similarity'],
+      'mlp_activation':          cfg.get('mlp_activation'),
       'weighting_method':        cfg['weighting_method'],
       'rbf_sigma':               cfg['rbf_sigma'],
       'mae':                     m['mae'],

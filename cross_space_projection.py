@@ -46,19 +46,47 @@ _SEED = 42
 _ZERO_ANCHOR_KEY    = (None,  0, None)  # anchor_cache sentinel for the num_anchors=0 identity case
 _NEG_ONE_ANCHOR_KEY = (None, -1, None)  # anchor_cache sentinel for num_anchors=-1 oracle case
 
+# interpolation_similarity values that train/fit a projector mapping old→new space
+# (as opposed to the anchor-weighted distance metrics cos/l1/l2/l_inf/geodesic).
+# All require weighting_method='none' and num_anchors > 0.
+_PROJECTOR_KINDS = ('linear', 'mlp', 'procrustes', 'linear_close')
+
+
+def _projector_key(interp, mlp_activation):
+  """
+  Build the cache/folder key identifying a trained projector bundle.
+
+  The 'mlp' kind trains one projector per activation, so its key embeds the
+  activation; 'linear', 'procrustes' and 'linear_close' have no activation and
+  key on the bare interp name (preserving backward-compatible cache keys and
+  folder names).
+
+  Args:
+    interp         (str): interpolation_similarity value (a member of _PROJECTOR_KINDS).
+    mlp_activation (str | None): Activation name; only consulted when interp == 'mlp'.
+
+  Returns:
+    str: 'mlp_<activation>' when interp == 'mlp', else interp unchanged.
+  """
+  return f'mlp_{mlp_activation}' if interp == 'mlp' else interp
+
 
 def _projector_tag(kind: str) -> str:
   """
   Build a short folder-name tag from the active LINEAR_PROJECTOR_CONFIG.
 
   Args:
-    kind (str): 'linear' or 'procrustes'. Procrustes ignores the
-      optimizer/lr/bs/wd/epochs/loss fields (closed-form solution), so the
-      tag for procrustes only carries normalize_embeddings + split_ratios.
+    kind (str): 'linear', 'mlp', 'procrustes' or 'linear_close'. Procrustes and
+      linear_close ignore the optimizer/lr/bs/wd/epochs/loss fields (closed-form
+      solutions), so their tag only carries normalize_embeddings + split_ratios.
+      'mlp' shares the trained-projector recipe with 'linear' but is prefixed
+      'mlp_' (the swept activation is recorded separately in the run tag).
 
   Returns:
     str: Compact string like 'lr0.0001_bs64_adamw_wd0.0001_ep100_normT_mse_sp70-10-20'
-         for kind='linear', or 'proc_normT_sp0-50-50' for kind='procrustes'.
+         for kind='linear', the same prefixed with 'mlp_' for kind='mlp',
+         'proc_normT_sp0-50-50' for kind='procrustes', or
+         'linclose_rc1e-06_normT_sp0-50-50' for kind='linear_close'.
   """
   cfg = LINEAR_PROJECTOR_CONFIG
   sr  = cfg['split_ratios']
@@ -66,7 +94,9 @@ def _projector_tag(kind: str) -> str:
   norm = 'T' if cfg['normalize_embeddings'] else 'F'
   if kind == 'procrustes':
     return f"proc_norm{norm}_sp{sp}"
-  return (
+  if kind == 'linear_close':
+    return f"linclose_rc{cfg['closed_form_rcond']}_norm{norm}_sp{sp}"
+  recipe = (
     f"lr{cfg['lr']}"
     f"_bs{cfg['batch_size']}"
     f"_{cfg['optimizer']}"
@@ -76,6 +106,7 @@ def _projector_tag(kind: str) -> str:
     f"_{cfg['loss']}"
     f"_sp{sp}"
   )
+  return f"mlp_{recipe}" if kind == 'mlp' else recipe
 
 # Hyperparameters for the learned linear projector (interpolation_similarity='linear').
 # Edit values here to change the training recipe; no CLI flag is exposed.
@@ -83,10 +114,16 @@ LINEAR_PROJECTOR_CONFIG = {
   'lr':                   1e-4,
   'batch_size':           64,
   'optimizer':            'adamw',   # 'adam' | 'adamw' | 'sgd'
-  'weight_decay':         1e-4,
-  'epochs':               90,
+  'weight_decay':         0,
+  'epochs':               150,
   'normalize_embeddings': True,
   'loss':                 'mse',     # 'mse' | 'mae' | 'cosine'
+  # Closed-form OLS solve (interpolation_similarity='linear_close' only): singular
+  # values of the centered anchor matrix below closed_form_rcond * max(sv) are
+  # truncated (truncated-SVD least squares), bounding weight magnitude when the
+  # anchors are ill-conditioned (small num_anchors relative to D_old, or collinear
+  # features). Ignored by all other kinds.
+  'closed_form_rcond':    1e-6,
   # (train, val, test). The projector trains on ALL K anchors, so the train
   # entry is unused; val/test are splits of the new model's
   # val.csv sized by these fractions of the val.csv row count (test absorbs
@@ -598,6 +635,46 @@ def _apply_norm(X, mean, std):
   return ((X - mean) / std).astype(np.float32)
 
 
+_ACTIVATIONS = {
+  'gelu':       torch.nn.GELU,
+  'relu':       torch.nn.ReLU,
+  'silu':       torch.nn.SiLU,
+  'leaky_relu': torch.nn.LeakyReLU,
+}
+
+
+def _build_projector_network(d_old, d_new, kind, activation):
+  """
+  Build the projector network mapping old-space embeddings (D_old) to new-space (D_new).
+
+  Args:
+    d_old      (int): Input (old model) embedding dimension.
+    d_new      (int): Output (new model) embedding dimension.
+    kind       (str): 'linear' → single nn.Linear(D_old, D_new);
+                      'mlp'    → Linear(D_old, D_new) → activation → Linear(D_new, D_new),
+                      a strict generalization of the linear projector (layer 1 is the
+                      linear map, followed by a nonlinear refinement in the target space).
+    activation (str | None): Activation name (a key of _ACTIVATIONS); only used for 'mlp'.
+
+  Returns:
+    torch.nn.Module: The projector network (output is unconstrained real-valued).
+
+  Raises:
+    ValueError: If kind is unknown or activation (for 'mlp') is not in _ACTIVATIONS.
+  """
+  if kind == 'linear':
+    return torch.nn.Linear(d_old, d_new)
+  if kind == 'mlp':
+    if activation not in _ACTIVATIONS:
+      raise ValueError(f'Unknown mlp activation: {activation!r} (choices: {list(_ACTIVATIONS)})')
+    return torch.nn.Sequential(
+      torch.nn.Linear(d_old, d_new),
+      _ACTIVATIONS[activation](),
+      torch.nn.Linear(d_new, d_new),
+    )
+  raise ValueError(f'Unknown projector network kind: {kind!r}')
+
+
 def _build_projector_optimizer(params, cfg):
   """
   Build an optimizer for the linear projector according to LINEAR_PROJECTOR_CONFIG.
@@ -754,9 +831,14 @@ def _extract_linear_val_pool(
   return {'old': old_emb, 'new': new_aligned, 'df': df_val, 'csv': val_csv}
 
 
-def _train_linear_projector(old_anchors, new_anchors, df_anch, val_pool, projector_dir, anchor_key_tag):
+def _train_linear_projector(old_anchors, new_anchors, df_anch, val_pool, projector_dir,
+                            anchor_key_tag, kind='linear', activation='gelu'):
   """
-  Train a learned linear projector mapping old anchor embeddings to new anchor embeddings.
+  Train a learned projector mapping old anchor embeddings to new anchor embeddings.
+
+  Handles both the 'linear' projector (single nn.Linear) and the 'mlp' projector
+  (Linear→activation→Linear); the network is built via _build_projector_network and
+  the rest of the training loop is shared.
 
   The projector is fit on *all* K anchor pairs selected from --csv_anchor_selection
   (the new-model domain). Its validation and test sets are a subject-disjoint split
@@ -781,6 +863,8 @@ def _train_linear_projector(old_anchors, new_anchors, df_anch, val_pool, project
                           split_training_stage/{train,val,test}.csv,
                           best_projector_{best_epoch}.pt.
     anchor_key_tag (str): Short slug used in log lines.
+    kind           (str): 'linear' or 'mlp' (selects the projector network).
+    activation     (str): Activation name for the 'mlp' network (ignored for 'linear').
 
   Returns:
     dict: keys 'projector', 'norm_stats', 'splits', 'metrics', 'best_epoch',
@@ -790,6 +874,7 @@ def _train_linear_projector(old_anchors, new_anchors, df_anch, val_pool, project
   """
   from torch.utils.data import DataLoader, TensorDataset
   cfg = copy.deepcopy(LINEAR_PROJECTOR_CONFIG)
+  cfg['mlp_activation'] = activation  # record which activation was used (None-effect for 'linear')
   device = torch.device(cfg['device'])
 
   os.makedirs(projector_dir, exist_ok=True)
@@ -887,7 +972,7 @@ def _train_linear_projector(old_anchors, new_anchors, df_anch, val_pool, project
 
   d_old = split_arrays['train']['old'].shape[1]
   d_new = split_arrays['train']['new'].shape[1]
-  projector = torch.nn.Linear(d_old, d_new).to(device)
+  projector = _build_projector_network(d_old, d_new, kind, activation).to(device)
   optimizer = _build_projector_optimizer(projector.parameters(), cfg)
   loss_fn = _projector_loss_fn(cfg['loss'])
 
@@ -981,7 +1066,7 @@ def _train_linear_projector(old_anchors, new_anchors, df_anch, val_pool, project
   torch.save(best_state_dict, ckpt_path)
 
   # --- Project each split's embeddings using the best (now-loaded) projector ---
-  projector_cpu = torch.nn.Linear(d_old, d_new)
+  projector_cpu = _build_projector_network(d_old, d_new, kind, activation)
   projector_cpu.load_state_dict(best_state_dict)
   projector_cpu.eval()
 
@@ -1016,7 +1101,7 @@ def _train_linear_projector(old_anchors, new_anchors, df_anch, val_pool, project
     'ckpt_path':            ckpt_path,
     'config':               cfg,
     'split_mode':           split_mode,
-    'kind':                 'linear',
+    'kind':                 kind,
   }
 
 
@@ -1042,6 +1127,46 @@ def _apply_linear_projector(projector, norm_stats, old_embeddings):
   if norm_stats is not None:
     pred = (pred * norm_stats['new_std']) + norm_stats['new_mean']
   return pred.astype(np.float32)
+
+
+def _assert_linear_ckpt_matches_formula(weight, bias, x_norm, y_formula,
+                                        kind, anchor_key_tag, rtol=1e-4):
+  """
+  Verify a saved nn.Linear (weight, bias) reproduces the closed-form affine map.
+
+  Evaluates the nn.Linear map Y = x_norm @ weight.T + bias in float64 (so the
+  check is deterministic and independent of GPU/TF32/backend float32 rounding)
+  and compares it to the raw closed-form prediction y_formula with a scale-aware
+  (relative) tolerance. This guards against real coding errors (wrong transpose /
+  wrong bias formula) without false-failing on benign float32 differences. Both
+  inputs derive from the same float32 closed-form solution, so the relative error
+  is ~1e-6 in practice; rtol=1e-4 leaves headroom while still tripping on a
+  genuine bug (which produces order-1+ relative error).
+
+  Args:
+    weight         (np.ndarray): nn.Linear weight, shape (D_new, D_old).
+    bias           (np.ndarray): nn.Linear bias, shape (D_new,).
+    x_norm         (np.ndarray): Input embeddings (normalized space), shape (N, D_old).
+    y_formula      (np.ndarray): Raw closed-form prediction, shape (N, D_new).
+    kind           (str):        'procrustes' | 'linear_close' (for the message).
+    anchor_key_tag (str):        Short slug for the message.
+    rtol           (float):      Relative tolerance on the max abs error.
+
+  Raises:
+    AssertionError: If the nn.Linear map and the formula disagree beyond rtol.
+  """
+  y_ref = np.asarray(y_formula, dtype=np.float64)
+  if y_ref.size == 0:
+    return
+  x64 = np.asarray(x_norm, dtype=np.float64)
+  y_lin = x64 @ np.asarray(weight, dtype=np.float64).T + np.asarray(bias, dtype=np.float64)
+  max_abs = float(np.max(np.abs(y_lin - y_ref)))
+  scale = float(np.max(np.abs(y_ref)))
+  rel = max_abs / scale if scale > 0 else max_abs
+  assert rel < rtol, (
+    f"[{kind}:{anchor_key_tag}] nn.Linear ckpt diverges from raw {kind} "
+    f"formula (max abs err={max_abs:.3e}, rel err={rel:.3e}, rtol={rtol})"
+  )
 
 
 # ---------------------------------------------------------------------------
@@ -1235,18 +1360,17 @@ def _train_procrustes_projector(old_anchors, new_anchors, df_anch, val_pool, pro
     projector.bias.copy_(torch.from_numpy(sol['bias']))
   projector.eval()
 
-  # Numerical equivalence check on training anchors (normalized space)
-  with torch.no_grad():
-    x_tr = torch.from_numpy(split_arrays['train']['old_norm']).to(device)
-    y_pred = projector(x_tr).cpu().numpy()
-  y_ref = (
-    sol['scale'] * (split_arrays['train']['old_norm'] - sol['mu_A']) @ sol['R']
-    + sol['mu_B']
-  ).astype(np.float32)
-  max_err = float(np.max(np.abs(y_pred - y_ref))) if y_pred.size else 0.0
-  assert max_err < 1e-3, (
-    f"[procrustes:{anchor_key_tag}] nn.Linear ckpt diverges from raw "
-    f"Procrustes formula (max abs err={max_err:.3e})"
+  # Numerical equivalence check on training anchors (normalized space): the saved
+  # weight/bias must encode Y_hat = s * (X - mu_A) @ R + mu_B. Done in float64 so it
+  # is deterministic and not tripped by GPU/TF32 float32 rounding (see
+  # _assert_linear_ckpt_matches_formula).
+  y_formula = (
+    sol['scale'] * (split_arrays['train']['old_norm'].astype(np.float64) - sol['mu_A'])
+    @ sol['R'] + sol['mu_B']
+  )
+  _assert_linear_ckpt_matches_formula(
+    sol['weight'], sol['bias'], split_arrays['train']['old_norm'],
+    y_formula, 'procrustes', anchor_key_tag,
   )
 
   # --- Single-shot metrics on train/val/test ---
@@ -1321,6 +1445,284 @@ def _train_procrustes_projector(old_anchors, new_anchors, df_anch, val_pool, pro
       'scale':  sol['scale'],
       'R':      sol['R'],
       'sigma':  sol['sigma'],
+    },
+  }
+
+
+# ---------------------------------------------------------------------------
+# Closed-form linear projector helpers (interpolation_similarity='linear_close')
+# ---------------------------------------------------------------------------
+
+def _fit_linear_closed_form(A, B, rcond=None):
+  """
+  Closed-form Ordinary Least Squares (OLS) fit of an affine map A -> B.
+
+  Finds (W, b) minimizing the same Frobenius MSE that interpolation_similarity=
+  'linear' descends by SGD, ||A @ W.T + b - B||_F^2, but in closed form. This is
+  multivariate linear regression with an intercept. Using the center-then-solve
+  form:
+
+    1. mu_A = A.mean(0),  mu_B = B.mean(0)
+    2. A_c = A - mu_A,    B_c = B - mu_B
+    3. Wt = lstsq(A_c, B_c)        shape (D_old, D_new); = pinv(A_c) @ B_c, the
+       minimum-norm solution when K < D_old (under-determined, small num_anchors).
+    4. Y_hat = (A - mu_A) @ Wt + mu_B = A @ Wt + (mu_B - mu_A @ Wt)
+    5. Equivalent nn.Linear: weight = Wt.T, bias = mu_B - mu_A @ Wt
+       so that Y_hat = A @ weight.T + bias.
+
+  This is the exact global minimizer of the pure MSE objective (no ridge/weight-
+  decay term), solved via np.linalg.lstsq (SVD-based pseudo-inverse) for numerical
+  stability over the normal equations. The solve runs in float64 and the result is
+  cast back to float32. The rcond argument truncates small singular values of A_c
+  (truncated-SVD least squares), which bounds the weight magnitude when A_c is
+  ill-conditioned (small K relative to D_old, or collinear features) — still exact
+  OLS on the retained well-conditioned subspace.
+
+  Args:
+    A     (np.ndarray):    Source anchors, shape (K, D_old).
+    B     (np.ndarray):    Target anchors, shape (K, D_new).
+    rcond (float | None):  Singular-value cutoff passed to np.linalg.lstsq
+                           (relative to the largest singular value). None uses
+                           NumPy's machine-precision default.
+
+  Returns:
+    dict with keys:
+      'mu_A'   (np.ndarray): Shape (D_old,).
+      'mu_B'   (np.ndarray): Shape (D_new,).
+      'Wt'     (np.ndarray): Shape (D_old, D_new), the centered-space weight.
+      'weight' (np.ndarray): Shape (D_new, D_old), nn.Linear weight.
+      'bias'   (np.ndarray): Shape (D_new,),       nn.Linear bias.
+      'rank'   (int):        Effective rank of A_c after rcond truncation.
+  """
+  A = np.asarray(A, dtype=np.float64)
+  B = np.asarray(B, dtype=np.float64)
+  mu_A = A.mean(axis=0)
+  mu_B = B.mean(axis=0)
+  A_c = A - mu_A
+  B_c = B - mu_B
+  Wt, _residuals, rank, _sv = np.linalg.lstsq(A_c, B_c, rcond=rcond)  # (D_old, D_new)
+  weight = Wt.T.astype(np.float32)                 # (D_new, D_old)
+  bias   = (mu_B - mu_A @ Wt).astype(np.float32)   # (D_new,)
+  return {
+    'mu_A':   mu_A.astype(np.float32),
+    'mu_B':   mu_B.astype(np.float32),
+    'Wt':     Wt.astype(np.float32),
+    'weight': weight,
+    'bias':   bias,
+    'rank':   int(rank),
+  }
+
+
+def _train_linear_closed_projector(old_anchors, new_anchors, df_anch, val_pool, projector_dir, anchor_key_tag):
+  """
+  Closed-form OLS linear projector that mirrors _train_procrustes_projector.
+
+  Produces the same kind of nn.Linear(D_old, D_new) map as interpolation_
+  similarity='linear', but via the closed-form least-squares solution on all K
+  anchor pairs (no SGD, no epochs). To keep the returned bundle drop-in
+  compatible with _train_linear_projector (so cross_space_logs.py plots work
+  unchanged), metrics['train'] and metrics['val'] each carry a single 1-epoch
+  entry, best_epoch=1, and the projector is saved as an nn.Linear state_dict
+  whose forward exactly reproduces Y_hat = (X - mu_A) @ Wt + mu_B (in normalized
+  space when normalize_embeddings is on).
+
+  Args:
+    old_anchors    (dict): Output of _extract_embeddings on old model.
+    new_anchors    (dict): Output of _extract_embeddings on new model, aligned.
+    df_anch        (pd.DataFrame): Anchor table with sample_id/subject_id/class_id.
+    val_pool       (dict): Output of _extract_linear_val_pool.
+    projector_dir  (str):  Output directory.
+    anchor_key_tag (str):  Short slug used in log lines.
+
+  Returns:
+    dict: Same shape as _train_linear_projector's return, plus:
+      'kind'               ('linear_close')
+      'closed_form_params' ({'mu_old', 'mu_new', 'rank'})
+  """
+  cfg = copy.deepcopy(LINEAR_PROJECTOR_CONFIG)
+  device = torch.device(cfg['device'])
+
+  os.makedirs(projector_dir, exist_ok=True)
+  splits_dir = os.path.join(projector_dir, 'split_training_stage')
+  os.makedirs(splits_dir, exist_ok=True)
+
+  df_anch_aligned = _align_df_to_sample_ids(df_anch, old_anchors['sample_ids'], 'anchor df')
+  val_df_aligned  = _align_df_to_sample_ids(
+    val_pool['df'], val_pool['old']['sample_ids'], 'val.csv df',
+  )
+
+  anchor_sids = set(old_anchors['sample_ids'].astype(np.int64).tolist())
+  val_sids    = set(val_pool['old']['sample_ids'].astype(np.int64).tolist())
+  overlap = anchor_sids & val_sids
+  if overlap:
+    raise ValueError(
+      f"[linear_close:{anchor_key_tag}] {len(overlap)} anchor sample_id(s) also appear "
+      f"in the new model's val.csv: {sorted(overlap)[:10]}"
+      f"{' ...' if len(overlap) > 10 else ''}. Pick a --csv_anchor_selection split "
+      f"disjoint from 'val' (e.g. 'train')."
+    )
+
+  M = len(val_pool['old']['embeddings'])
+  n_val = round(cfg['split_ratios'][1] * M)
+  if n_val < 1 or n_val >= M:
+    raise ValueError(
+      f"[linear_close:{anchor_key_tag}] cannot build a val/test split from val.csv: "
+      f"n_val={n_val} (val.csv rows={M}, split_ratios={cfg['split_ratios']})."
+    )
+  idx_va, idx_te = _make_subject_disjoint_subsets(val_df_aligned, n_val, _SEED)
+
+  split_arrays = {
+    'train': {
+      'old':         old_anchors['embeddings'].astype(np.float32),
+      'new':         new_anchors['embeddings'].astype(np.float32),
+      'sample_ids':  old_anchors['sample_ids'].astype(np.int64),
+      'subject_ids': df_anch_aligned['subject_id'].to_numpy(),
+      'labels':      old_anchors['labels'].astype(np.float32),
+    },
+  }
+  for name, idx in (('val', idx_va), ('test', idx_te)):
+    split_arrays[name] = {
+      'old':         val_pool['old']['embeddings'][idx].astype(np.float32),
+      'new':         val_pool['new']['embeddings'][idx].astype(np.float32),
+      'sample_ids':  val_pool['old']['sample_ids'][idx].astype(np.int64),
+      'subject_ids': val_df_aligned['subject_id'].to_numpy()[idx],
+      'labels':      val_pool['old']['labels'][idx].astype(np.float32),
+    }
+
+  splits_df = {
+    'train': df_anch_aligned.reset_index(drop=True),
+    'val':   val_df_aligned.iloc[idx_va].reset_index(drop=True),
+    'test':  val_df_aligned.iloc[idx_te].reset_index(drop=True),
+  }
+  split_mode = 'anchors_train/valcsv_eval'
+
+  print(f"  [linear_close:{anchor_key_tag}] [{split_mode}] "
+        f"train={len(split_arrays['train']['old'])} (all anchors, closed-form fit)  "
+        f"val={len(idx_va)} test={len(idx_te)} (subject-disjoint subsets of val.csv, {M} rows)")
+  print(f"  [linear_close:{anchor_key_tag}] unique subjects per split — "
+        f"train={splits_df['train']['subject_id'].nunique()} "
+        f"val={splits_df['val']['subject_id'].nunique()} "
+        f"test={splits_df['test']['subject_id'].nunique()}")
+
+  split_csv_paths = {}
+  for name, sdf in splits_df.items():
+    p = os.path.join(splits_dir, f'{name}.csv')
+    sdf.to_csv(p, index=False, sep='\t')
+    split_csv_paths[name] = p
+
+  norm_stats = None
+  if cfg['normalize_embeddings']:
+    old_mean, old_std = _compute_norm_stats(split_arrays['train']['old'])
+    new_mean, new_std = _compute_norm_stats(split_arrays['train']['new'])
+    norm_stats = {
+      'old_mean': old_mean, 'old_std': old_std,
+      'new_mean': new_mean, 'new_std': new_std,
+    }
+    for name in ('train', 'val', 'test'):
+      split_arrays[name]['old_norm'] = _apply_norm(split_arrays[name]['old'], old_mean, old_std)
+      split_arrays[name]['new_norm'] = _apply_norm(split_arrays[name]['new'], new_mean, new_std)
+  else:
+    for name in ('train', 'val', 'test'):
+      split_arrays[name]['old_norm'] = split_arrays[name]['old']
+      split_arrays[name]['new_norm'] = split_arrays[name]['new']
+
+  # --- Closed-form OLS fit in (normalized) anchor space ---
+  sol = _fit_linear_closed_form(
+    split_arrays['train']['old_norm'],
+    split_arrays['train']['new_norm'],
+    rcond=cfg['closed_form_rcond'],
+  )
+  d_old = split_arrays['train']['old'].shape[1]
+  d_new = split_arrays['train']['new'].shape[1]
+  projector = torch.nn.Linear(d_old, d_new).to(device)
+  with torch.no_grad():
+    projector.weight.copy_(torch.from_numpy(sol['weight']))
+    projector.bias.copy_(torch.from_numpy(sol['bias']))
+  projector.eval()
+
+  # Numerical equivalence check on training anchors (normalized space): the saved
+  # weight/bias must encode Y_hat = (X - mu_A) @ Wt + mu_B. Done in float64 so it
+  # is deterministic and not tripped by GPU/TF32 float32 rounding (see
+  # _assert_linear_ckpt_matches_formula).
+  y_formula = (
+    (split_arrays['train']['old_norm'].astype(np.float64) - sol['mu_A']) @ sol['Wt']
+    + sol['mu_B']
+  )
+  _assert_linear_ckpt_matches_formula(
+    sol['weight'], sol['bias'], split_arrays['train']['old_norm'],
+    y_formula, 'linear_close', anchor_key_tag,
+  )
+
+  # --- Single-shot metrics on train/val/test ---
+  def _eval(name):
+    with torch.no_grad():
+      pred = projector(torch.from_numpy(split_arrays[name]['old_norm']).to(device))
+      tgt  = torch.from_numpy(split_arrays[name]['new_norm']).to(device)
+      mse, mae, cos = _eval_projector_batch_metrics(pred, tgt)
+    return {'mse': mse, 'mae': mae, 'cos': cos}
+
+  tr_m = _eval('train')
+  va_m = _eval('val')
+  te_m = _eval('test')
+
+  metrics = {
+    'train': [{'epoch': 1, **tr_m}],
+    'val':   [{'epoch': 1, **va_m}],
+    'test':  te_m,
+  }
+  best_epoch = 1
+  sel_key, _, _ = _projector_selection_rule(cfg['loss'])
+  best_val_metric = va_m[sel_key]
+  best_val_mse = va_m['mse']
+  print(f"  [linear_close:{anchor_key_tag}] closed-form OLS rank={sol['rank']}  "
+        f"weight.shape={tuple(sol['weight'].shape)}  best_epoch=1  "
+        f"val {sel_key.upper()}={best_val_metric:.6f}")
+  print(f"  [linear_close:{anchor_key_tag}] test — MSE: {te_m['mse']:.6f}  "
+        f"MAE: {te_m['mae']:.6f}  cos: {te_m['cos']:.6f}")
+
+  ckpt_path = os.path.join(projector_dir, f'best_projector_{best_epoch}.pt')
+  torch.save(projector.state_dict(), ckpt_path)
+
+  projector_cpu = torch.nn.Linear(d_old, d_new)
+  projector_cpu.load_state_dict(projector.state_dict())
+  projector_cpu.eval()
+
+  splits_out = {}
+  for name in ('train', 'val', 'test'):
+    with torch.no_grad():
+      pred_norm = projector_cpu(
+        torch.from_numpy(split_arrays[name]['old_norm'])
+      ).numpy().astype(np.float32)
+    if norm_stats is not None:
+      pred = (pred_norm * norm_stats['new_std']) + norm_stats['new_mean']
+    else:
+      pred = pred_norm
+    splits_out[name] = {
+      'df_path':     split_csv_paths[name],
+      'projected':   pred.astype(np.float32),
+      'target':      split_arrays[name]['new'].astype(np.float32),
+      'sample_ids':  split_arrays[name]['sample_ids'].astype(np.int64),
+      'subject_ids': split_arrays[name]['subject_ids'],
+      'labels':      split_arrays[name]['labels'].astype(np.float32),
+    }
+
+  return {
+    'projector':            projector_cpu,
+    'norm_stats':           norm_stats,
+    'splits':               splits_out,
+    'metrics':              metrics,
+    'best_epoch':           best_epoch,
+    'best_val_mse':         float(best_val_mse),
+    'best_val_metric':      float(best_val_metric),
+    'best_val_metric_name': sel_key,
+    'ckpt_path':            ckpt_path,
+    'config':               cfg,
+    'split_mode':           split_mode,
+    'kind':                 'linear_close',
+    'closed_form_params': {
+      'mu_old': sol['mu_A'],
+      'mu_new': sol['mu_B'],
+      'rank':   sol['rank'],
     },
   }
 
@@ -1469,6 +1871,7 @@ def _build_search_space(args):
     'csv_anchor_selection':     args.csv_anchor_selection,
     'old_model_csv':            args.old_model_csv,
     'interpolation_similarity': args.interpolation_similarity,
+    'mlp_activation':           args.mlp_activation,
     'weighting_method':         args.weighting_method,
     'rbf_sigma':                args.rbf_sigma,
   }
@@ -1516,10 +1919,19 @@ def _precompute_embeddings(
     print(f'  WARNING: old backbone ({old_backbone}) differs from new backbone ({new_backbone}) — proceeding anyway')
   anchor_domain_features_for_old = _get_features_path(old_features_path, new_dataset)
 
-  # --- val.csv pool for closed-form projectors (linear/procrustes), extracted once ---
-  closed_form_kinds = [k for k in ('linear', 'procrustes') if k in args.interpolation_similarity]
+  # --- val.csv pool for projector modes (linear/mlp/procrustes), extracted once ---
+  # Each (kind, activation) spec trains its own projector; 'mlp' expands over the
+  # swept activations, 'linear'/'procrustes' carry activation=None.
+  projector_specs = []
+  for k in _PROJECTOR_KINDS:
+    if k not in args.interpolation_similarity:
+      continue
+    if k == 'mlp':
+      projector_specs.extend((k, act) for act in args.mlp_activation)
+    else:
+      projector_specs.append((k, None))
   projector_val_pool = None
-  if closed_form_kinds:
+  if projector_specs:
     projector_val_pool = _extract_linear_val_pool(
       old_model, new_model, old_model_pth, new_model_pth,
       old_config, new_config, new_features_path, anchor_domain_features_for_old,
@@ -1563,12 +1975,12 @@ def _precompute_embeddings(
       'anchors_df': df_anch,
       'projectors': {},
     }
-    for kind in closed_form_kinds:
+    for kind, activation in projector_specs:
+      pkey = _projector_key(kind, activation)
       projector_dir = os.path.join(
-        precomputed_dir, f'{kind}_projector', f'{csv_sel}_{num_anch}_{sel_type}',
+        precomputed_dir, f'{pkey}_projector', f'{csv_sel}_{num_anch}_{sel_type}',
       )
-      trainer = _train_linear_projector if kind == 'linear' else _train_procrustes_projector
-      anchor_cache[key]['projectors'][kind] = trainer(
+      common = dict(
         old_anchors=old_anch,
         new_anchors=new_aligned,
         df_anch=df_anch,
@@ -1576,6 +1988,13 @@ def _precompute_embeddings(
         projector_dir=projector_dir,
         anchor_key_tag=f'{csv_sel}_{num_anch}_{sel_type}',
       )
+      if kind == 'procrustes':
+        bundle = _train_procrustes_projector(**common)
+      elif kind == 'linear_close':
+        bundle = _train_linear_closed_projector(**common)
+      else:
+        bundle = _train_linear_projector(**common, kind=kind, activation=activation)
+      anchor_cache[key]['projectors'][pkey] = bundle
 
   if 0 in args.num_anchors:
     anchor_cache[_ZERO_ANCHOR_KEY] = {'old': None, 'new': None, 'anchors_csv': None}
@@ -1664,16 +2083,17 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
     )
     old_model_anchors         = anchor_cache[anchor_key]['old']
     new_model_anchors_aligned = anchor_cache[anchor_key]['new']
-    if trial_params['interpolation_similarity'] in ('linear', 'procrustes'):
+    if trial_params['interpolation_similarity'] in _PROJECTOR_KINDS:
       kind = trial_params['interpolation_similarity']
-      bundle = anchor_cache[anchor_key]['projectors'][kind]
+      pkey = _projector_key(kind, trial_params.get('mlp_activation'))
+      bundle = anchor_cache[anchor_key]['projectors'][pkey]
       projected = _apply_linear_projector(
         bundle['projector'], bundle['norm_stats'],
         old_model_tensors['embeddings'],
       )
       weights = np.zeros((len(projected), 0), dtype=np.float32)
       print(f"  [trial {trial_number}] interpolation_similarity={kind} → "
-            f"applying {kind} projector (best_epoch={bundle['best_epoch']})")
+            f"applying {pkey} projector (best_epoch={bundle['best_epoch']})")
     else:
       weights = _compute_weights(
         z=old_model_tensors['embeddings'],
@@ -1715,7 +2135,7 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
     'old_model_tensors': old_model_tensors,
     'metrics': {'mae': mae, 'ccc': ccc},
   }
-  if (trial_params['interpolation_similarity'] in ('linear', 'procrustes')
+  if (trial_params['interpolation_similarity'] in _PROJECTOR_KINDS
       and trial_params['num_anchors'] not in (0, -1)):
     anchor_key = (
       trial_params['csv_anchor_selection'],
@@ -1723,7 +2143,8 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
       trial_params['anchor_selection_type'],
     )
     kind = trial_params['interpolation_similarity']
-    bundle = anchor_cache[anchor_key]['projectors'][kind]
+    pkey = _projector_key(kind, trial_params.get('mlp_activation'))
+    bundle = anchor_cache[anchor_key]['projectors'][pkey]
     trial_result['linear_projector'] = {
       'config':               bundle['config'],
       'norm_stats':           bundle['norm_stats'],
@@ -1736,6 +2157,7 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
       'splits':               bundle['splits'],
       'kind':                 bundle.get('kind', kind),
       'procrustes_params':    bundle.get('procrustes_params'),
+      'closed_form_params':   bundle.get('closed_form_params'),
     }
   with open(os.path.join(trial_dir, 'results.pkl'), 'wb') as f:
     pickle.dump(trial_result, f)
@@ -1768,10 +2190,13 @@ def run_optuna(args, out_root=None):
     return '-'.join(str(v) for v in vals)
 
   _proj_suffix_parts = []
-  for _k in ('linear', 'procrustes'):
+  for _k in _PROJECTOR_KINDS:
     if _k in args.interpolation_similarity:
       _proj_suffix_parts.append(_projector_tag(_k))
   _proj_suffix = ('_' + '_'.join(_proj_suffix_parts)) if _proj_suffix_parts else ''
+  _act_suffix = (
+    f'_act{_fmt(args.mlp_activation)}' if 'mlp' in args.interpolation_similarity else ''
+  )
   args_tag = (
     f'K{_fmt(args.num_anchors)}'
     f'_{_fmt(args.anchor_selection_type)}'
@@ -1781,6 +2206,7 @@ def run_optuna(args, out_root=None):
     f'_{_fmt(args.weighting_method)}'
     f'_s{_fmt(args.rbf_sigma)}'
     + _proj_suffix
+    + _act_suffix
   )
   tag_prefix = f'{args.run_tag}_' if args.run_tag else ''
   if len(f'search_{tag_prefix}{args_tag}_{uid}') > 200:
@@ -1816,8 +2242,8 @@ def run_optuna(args, out_root=None):
   # output per old_model_csv, so only the first trial per split actually runs.
   _zero_anchor_mae_cache:    dict = {}
   _neg_one_anchor_mae_cache: dict = {}
-  # Cache for closed-form projectors (linear/procrustes): output is determined by
-  # (anchor_key, old_model_csv, interp_sim); weighting_method/rbf_sigma are ignored.
+  # Cache for projector modes (linear/mlp/procrustes): output is determined by
+  # (anchor_key, old_model_csv, projector_key); weighting_method/rbf_sigma are ignored.
   _closed_form_mae_cache:    dict = {}
 
   def objective(trial):
@@ -1827,11 +2253,12 @@ def run_optuna(args, out_root=None):
       'csv_anchor_selection':     trial.suggest_categorical('csv_anchor_selection',     args.csv_anchor_selection),
       'old_model_csv':            trial.suggest_categorical('old_model_csv',            args.old_model_csv),
       'interpolation_similarity': trial.suggest_categorical('interpolation_similarity', args.interpolation_similarity),
+      'mlp_activation':           trial.suggest_categorical('mlp_activation',            args.mlp_activation),
       'weighting_method':         trial.suggest_categorical('weighting_method',         args.weighting_method),
       'rbf_sigma':                trial.suggest_categorical('rbf_sigma',               args.rbf_sigma),
     }
     # Reject nonsensical combos: anchor-weighted similarities need rbf weighting,
-    # closed-form similarities need 'none' (already auto-enforced at argparse for
+    # projector similarities need 'none' (already auto-enforced at argparse for
     # pure sweeps, but mixed sweeps may still surface invalid pairs).
     interp = params['interpolation_similarity']
     wm     = params['weighting_method']
@@ -1839,9 +2266,15 @@ def run_optuna(args, out_root=None):
       raise optuna.TrialPruned(
         f"invalid combo: interpolation_similarity={interp!r} requires weighting_method='rbf'"
       )
-    if interp in ('linear', 'procrustes') and wm != 'none':
+    if interp in _PROJECTOR_KINDS and wm != 'none':
       raise optuna.TrialPruned(
         f"invalid combo: interpolation_similarity={interp!r} requires weighting_method='none'"
+      )
+    # mlp_activation only affects 'mlp'; collapse the axis for every other interp so it
+    # does not multiply unrelated trials (only the first activation value is canonical).
+    if interp != 'mlp' and params['mlp_activation'] != args.mlp_activation[0]:
+      raise optuna.TrialPruned(
+        f"mlp_activation={params['mlp_activation']!r} irrelevant for interp={interp!r}"
       )
     if params['num_anchors'] == 0:
       old_csv = params['old_model_csv']
@@ -1853,20 +2286,22 @@ def run_optuna(args, out_root=None):
       if old_csv in _neg_one_anchor_mae_cache:
         print(f'  [trial {trial.number}] num_anchors=-1, old_model_csv={old_csv!r} — reusing cached result')
         return _neg_one_anchor_mae_cache[old_csv]
-    if interp in ('linear', 'procrustes') and params['num_anchors'] not in (0, -1):
+    if interp in _PROJECTOR_KINDS and params['num_anchors'] not in (0, -1):
       cf_key = (
         params['csv_anchor_selection'], params['num_anchors'],
-        params['anchor_selection_type'], params['old_model_csv'], interp,
+        params['anchor_selection_type'], params['old_model_csv'],
+        _projector_key(interp, params['mlp_activation']),
       )
       if cf_key in _closed_form_mae_cache:
         print(f'  [trial {trial.number}] interpolation_similarity={interp}, '
               f'key={cf_key} — reusing cached result')
         return _closed_form_mae_cache[cf_key]
-    _proj_tag_t = (
-      f'_{_projector_tag(interp)}'
-      if interp in ('linear', 'procrustes')
-      else f'_{params["weighting_method"]}_s{params["rbf_sigma"]}'
-    )
+    if interp in _PROJECTOR_KINDS:
+      _proj_tag_t = f'_{_projector_tag(interp)}'
+      if interp == 'mlp':
+        _proj_tag_t += f'_{params["mlp_activation"]}'
+    else:
+      _proj_tag_t = f'_{params["weighting_method"]}_s{params["rbf_sigma"]}'
     trial_tag = (
       f'K{params["num_anchors"]}'
       f'_{params["anchor_selection_type"]}'
@@ -1881,10 +2316,11 @@ def run_optuna(args, out_root=None):
       _zero_anchor_mae_cache[params['old_model_csv']] = mae
     if params['num_anchors'] == -1:
       _neg_one_anchor_mae_cache[params['old_model_csv']] = mae
-    if interp in ('linear', 'procrustes') and params['num_anchors'] not in (0, -1):
+    if interp in _PROJECTOR_KINDS and params['num_anchors'] not in (0, -1):
       cf_key = (
         params['csv_anchor_selection'], params['num_anchors'],
-        params['anchor_selection_type'], params['old_model_csv'], interp,
+        params['anchor_selection_type'], params['old_model_csv'],
+        _projector_key(interp, params['mlp_activation']),
       )
       _closed_form_mae_cache[cf_key] = mae
     return mae
@@ -1946,11 +2382,12 @@ def cross_space_projection(args, out_root=None):
   random.seed(_SEED)
 
   uid = int(time.time())
-  _proj_tag = (
-    f'_{_projector_tag(args.interpolation_similarity)}'
-    if args.interpolation_similarity in ('linear', 'procrustes')
-    else f'_{args.weighting_method}_s{args.rbf_sigma}'
-  )
+  if args.interpolation_similarity in _PROJECTOR_KINDS:
+    _proj_tag = f'_{_projector_tag(args.interpolation_similarity)}'
+    if args.interpolation_similarity == 'mlp':
+      _proj_tag += f'_{args.mlp_activation}'
+  else:
+    _proj_tag = f'_{args.weighting_method}_s{args.rbf_sigma}'
   args_tag = (
     f'K{args.num_anchors}'
     f'_{args.anchor_selection_type}'
@@ -1978,7 +2415,7 @@ def cross_space_projection(args, out_root=None):
 
   old_model = _build_model(old_config)
   new_model = _build_model(new_config)
-  linear_bundle = None  # populated only when interpolation_similarity == 'linear'
+  linear_bundle = None  # populated only for projector modes (linear/mlp/procrustes)
 
   # --- Step 3: Build old model projection dataset ---
   raw_old_csvs = _resolve_old_model_csvs(args.old_model_pth, args.old_model_csv)
@@ -2076,16 +2513,16 @@ def cross_space_projection(args, out_root=None):
     # --- Step 5: Align anchor embeddings by sample_id ---
     new_model_anchors_aligned = _align_by_sample_id(old_model_anchors, new_model_anchors)
 
-    if args.interpolation_similarity in ('linear', 'procrustes'):
-      # --- Step 6 (closed-form projector): fit on all anchors; val/test from val.csv ---
+    if args.interpolation_similarity in _PROJECTOR_KINDS:
+      # --- Step 6 (projector): fit on all anchors; val/test from val.csv ---
       kind = args.interpolation_similarity
-      projector_dir = os.path.join(out_dir, f'{kind}_projector')
+      activation = args.mlp_activation if kind == 'mlp' else None
+      projector_dir = os.path.join(out_dir, f'{_projector_key(kind, activation)}_projector')
       projector_val_pool = _extract_linear_val_pool(
         old_model, new_model, args.old_model_pth, args.new_model_pth,
         old_config, new_config, new_features_path, anchor_domain_features_for_old,
       )
-      trainer = _train_linear_projector if kind == 'linear' else _train_procrustes_projector
-      linear_bundle = trainer(  # noqa: F841 — also persisted into dict_res below
+      common = dict(  # noqa: F841 — bundle also persisted into dict_res below
         old_anchors=old_model_anchors,
         new_anchors=new_model_anchors_aligned,
         val_pool=projector_val_pool,
@@ -2093,6 +2530,12 @@ def cross_space_projection(args, out_root=None):
         projector_dir=projector_dir,
         anchor_key_tag='single',
       )
+      if kind == 'procrustes':
+        linear_bundle = _train_procrustes_projector(**common)
+      elif kind == 'linear_close':
+        linear_bundle = _train_linear_closed_projector(**common)
+      else:
+        linear_bundle = _train_linear_projector(**common, kind=kind, activation=activation)
       projected = _apply_linear_projector(
         linear_bundle['projector'], linear_bundle['norm_stats'],
         old_model_tensors['embeddings'],
@@ -2152,6 +2595,7 @@ def cross_space_projection(args, out_root=None):
     'csv_anchor_selection':    args.csv_anchor_selection,
     'old_model_csv':           args.old_model_csv,
     'interpolation_similarity': args.interpolation_similarity,
+    'mlp_activation':          args.mlp_activation,
     'weighting_method':        args.weighting_method,
     'rbf_sigma':               args.rbf_sigma,
     'uid':                     uid,
@@ -2186,6 +2630,7 @@ def cross_space_projection(args, out_root=None):
       'splits':               linear_bundle['splits'],
       'kind':                 linear_bundle.get('kind', args.interpolation_similarity),
       'procrustes_params':    linear_bundle.get('procrustes_params'),
+      'closed_form_params':   linear_bundle.get('closed_form_params'),
     }
 
   out_pkl = os.path.join(out_dir, f'results_{uid}.pkl')
@@ -2224,7 +2669,7 @@ if __name__ == '__main__':
   parser.add_argument('--old_model_csv', type=str, nargs='+', required=True,
                       help='Split(s) to project (train/val/test/all/exc_train/exc_val/exc_test) — old model domain')
   parser.add_argument('--interpolation_similarity', type=str, nargs='+', default=['cos'],
-                      choices=['cos', 'l1', 'l2', 'l_inf', 'linear', 'procrustes', 'geodesic'],
+                      choices=['cos', 'l1', 'l2', 'l_inf', 'linear', 'mlp', 'procrustes', 'linear_close', 'geodesic'],
                       help='Distance metric(s) for weight computation. '
                            "'cos' uses cosine distance d = 1 - |cos_sim| in [0, 1]. "
                            "'geodesic' builds a k-NN graph (k=5, Euclidean edges) over anchor "
@@ -2233,16 +2678,26 @@ if __name__ == '__main__':
                            'pairs fall back to direct L2. '
                            "'linear' trains a learned nn.Linear(D_old, D_new) projector on the "
                            'anchor pairs (subject-disjoint split, see LINEAR_PROJECTOR_CONFIG); '
+                           "'mlp' trains Linear(D_old, D_new)->activation->Linear(D_new, D_new) "
+                           '(same training recipe; activation set via --mlp_activation); '
                            "'procrustes' fits a closed-form centered + isotropically scaled "
-                           'semi-orthogonal map on the same anchor pairs (no SGD). For both '
-                           "'linear' and 'procrustes', weighting_method must be 'none' and "
-                           'rbf_sigma is ignored.')
+                           'semi-orthogonal map on the same anchor pairs (no SGD); '
+                           "'linear_close' fits the same nn.Linear(D_old, D_new) as 'linear' "
+                           'but via the closed-form OLS (least-squares) solution instead of SGD '
+                           '(exact minimizer of the pure MSE loss, no weight decay). For '
+                           "'linear', 'mlp', 'procrustes' and 'linear_close', weighting_method "
+                           "must be 'none' and rbf_sigma is ignored.")
+  parser.add_argument('--mlp_activation', type=str, nargs='+', default=['gelu'],
+                      choices=['gelu', 'relu', 'silu', 'leaky_relu'],
+                      help="Activation(s) for the 'mlp' projector "
+                           '(Linear(D_old,D_new)->act->Linear(D_new,D_new)). Sweepable: each '
+                           'value becomes a separate Optuna trial. Ignored for non-mlp interps.')
   parser.add_argument('--weighting_method', type=str, nargs='+', default=['rbf'],
                       choices=['rbf', 'none'],
                       help="Method to convert distances to interpolation weights. "
                            "'rbf' = exp(-d^2/(2 sigma^2)) softmax. "
                            "'none' = no weighting (mandatory and auto-defaulted for "
-                           "interpolation_similarity in {linear, procrustes}, which produce "
+                           "interpolation_similarity in {linear, mlp, procrustes}, which produce "
                            'projected embeddings directly).')
   parser.add_argument('--rbf_sigma', type=float, nargs='+', default=[1.0],
                       help='Sigma value(s) for RBF kernel: exp(-d²/(2σ²))')
@@ -2257,12 +2712,12 @@ if __name__ == '__main__':
                       help='Optional label prepended to the output folder name for easy identification')
 
   args = parser.parse_args()
-  _closed_form_in_sweep = {'linear', 'procrustes'} & set(args.interpolation_similarity)
+  _closed_form_in_sweep = set(_PROJECTOR_KINDS) & set(args.interpolation_similarity)
   _anchor_weighted_in_sweep = {'cos', 'l1', 'l2', 'l_inf'} & set(args.interpolation_similarity)
   if _closed_form_in_sweep and set(args.num_anchors) <= {0, -1}:
     parser.error(
       f"interpolation_similarity={sorted(_closed_form_in_sweep)} requires at least one "
-      f"--num_anchors > 0 (closed-form modes fit on anchor pairs; num_anchors=0/-1 use no anchors)"
+      f"--num_anchors > 0 (projector modes fit on anchor pairs; num_anchors=0/-1 use no anchors)"
     )
   # weighting_method normalization:
   #   - pure closed-form sweep: silently force ['none']
@@ -2278,12 +2733,12 @@ if __name__ == '__main__':
       parser.error(
         f"interpolation_similarity={sorted(_anchor_weighted_in_sweep)} requires "
         f"--weighting_method='rbf' (got {args.weighting_method!r}). 'none' is only valid "
-        f"for linear/procrustes."
+        f"for linear/mlp/procrustes/linear_close."
       )
   _hyper_lists = [
     args.num_anchors, args.anchor_selection_type, args.csv_anchor_selection,
-    args.old_model_csv, args.interpolation_similarity, args.weighting_method,
-    args.rbf_sigma,
+    args.old_model_csv, args.interpolation_similarity, args.mlp_activation,
+    args.weighting_method, args.rbf_sigma,
   ]
   use_optuna = any(len(v) > 1 for v in _hyper_lists) or (args.n_trials is not None and args.n_trials > 1)
 
