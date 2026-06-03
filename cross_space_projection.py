@@ -24,6 +24,7 @@ import argparse
 import copy
 import hashlib
 import itertools
+import json
 import os
 import pickle
 import random
@@ -131,6 +132,39 @@ LINEAR_PROJECTOR_CONFIG = {
   'split_ratios':         (0.0, 0.50, 0.50),
   'device':               'cuda',
   'num_workers':          4,
+}
+
+# Hyperparameters for the post-projection refinement stage (see
+# _refine_projector_and_linear). After the projector is trained, this second stage
+# jointly fine-tunes BOTH the projector (old→new map) and a COPY of the new model's
+# head.linear so that source-domain (old model / "model B") accuracy improves while
+# the new model's own-domain accuracy is preserved. Edit values here; no CLI flag is
+# exposed (mirrors LINEAR_PROJECTOR_CONFIG). Refinement only runs when a projector
+# bundle exists (interpolation_similarity in _PROJECTOR_KINDS and num_anchors > 0).
+#
+# Loss = lambda_B * reg(linear(proj(emb_B)),     labels_B)        # improve source (model B)
+#      + lambda_A * reg(linear(new_anchor_emb),  anchor_labels)   # preserve new-domain (model A)
+# where emb_B are old-model embeddings on the old model's `refine_split` split,
+# new_anchor_emb are the REAL new-model anchor embeddings (D_new), reg() is `loss`,
+# and predictions are compared in the real (denormalized) label scale.
+REFINEMENT_CONFIG = {
+  'enabled':            False,    # default off; toggle per-run via the --refinement CLI flag
+  'lr_projector':       1e-4,     # learning rate for the projector params
+  'lr_linear':          1e-5,     # smaller → change the linear layer only slightly
+  'lambda_B':           1.0,      # weight of the source (model B) label term
+  'lambda_A':           1.0,      # weight of the new-anchor preserve term
+  'optimizer':          'adamw',  # 'adam' | 'adamw' | 'sgd'
+  'weight_decay':       0,
+  'epochs':             100,
+  'loss':               'mse',    # reg(): 'mse' | 'mae' | 'huber'
+  'batch_size':         64,
+  'refine_split':       'train',  # old-model split providing emb_B (model B training set)
+  'refine_val_split':   'val',    # old-model held-out split for the per-epoch source validation
+  'refine_val_min_keep_frac': 0.1,  # if < this fraction of a val set survives leakage exclusion,
+                                    # that term is dropped and selection falls back to train loss
+  'new_eval_split':     'val',   # new-model split for the preserve eval (val fallback)
+  'device':             'cuda',
+  'report_after_refinement': True,  # headline MAE/CCC + saved preds reflect the refined model
 }
 
 # (backbone_key, dataset_key) → pre-extracted features folder path
@@ -291,6 +325,31 @@ def _resolve_split_csv_strict(model_pth, split_name):
   p = os.path.join(*Path(model_pth).parts[:-1], f'{split_name}.csv')
   if not os.path.exists(p):
     raise FileNotFoundError(f'Split CSV not found (strict): {p}')
+  return p
+
+
+def _resolve_test_csv_strict(model_pth):
+  """
+  Resolve the 'test' split CSV using the same lookup as _resolve_split_csv (one
+  level above the checkpoint's fold-sub directory), but raise if test.csv is
+  absent instead of silently falling back to val.csv.
+
+  The cross-val checkpoint lives in a k*_cross_val_sub_* directory that holds only
+  train.csv / val.csv; test.csv sits one level up in the k*_cross_val directory —
+  hence parts[:-2] rather than the parts[:-1] used by _resolve_split_csv_strict.
+
+  Args:
+    model_pth (str): Path to model checkpoint file.
+
+  Returns:
+    str: Absolute path to test.csv.
+
+  Raises:
+    FileNotFoundError: If the expected test.csv does not exist (no val fallback).
+  """
+  p = os.path.join(*Path(model_pth).parts[:-2], 'test.csv')
+  if not os.path.exists(p):
+    raise FileNotFoundError(f'New-model test.csv not found (strict, no val fallback): {p}')
   return p
 
 
@@ -1129,6 +1188,668 @@ def _apply_linear_projector(projector, norm_stats, old_embeddings):
   return pred.astype(np.float32)
 
 
+# ---------------------------------------------------------------------------
+# Post-projection refinement (REFINEMENT_CONFIG)
+# ---------------------------------------------------------------------------
+
+def _mae_micro_macro(preds, labels):
+  """
+  Compute micro- and macro-averaged MAE (mirrors cross_space_logs._compute_global_mae,
+  re-implemented locally to avoid importing the heavy plotting module).
+
+  Args:
+    preds  (np.ndarray): Shape (N,) or (N, 1), predictions in the real label scale.
+    labels (np.ndarray): Shape (N,), float ground-truth labels.
+
+  Returns:
+    tuple[float, float]: (micro_mae, macro_mae). micro = mean |pred-label| over all
+      samples; macro = mean of per-rounded-class MAEs (each class weighted equally).
+  """
+  preds  = np.asarray(preds,  dtype=np.float32).reshape(-1)
+  labels = np.asarray(labels, dtype=np.float32).reshape(-1)
+  micro  = float(np.mean(np.abs(preds - labels)))
+  labels_int = np.round(labels).astype(int)
+  per_class  = [
+    float(np.mean(np.abs(preds[labels_int == c] - labels[labels_int == c])))
+    for c in np.unique(labels_int)
+  ]
+  macro = float(np.mean(per_class))
+  return micro, macro
+
+
+def _refine_reg_loss_fn(name):
+  """
+  Resolve the refinement regression-loss name to a callable (pred, target) → scalar.
+
+  Args:
+    name (str): 'mse' | 'mae' | 'huber'.
+
+  Returns:
+    Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+
+  Raises:
+    ValueError: If name is unknown.
+  """
+  import torch.nn.functional as F
+  if name == 'mse':
+    return F.mse_loss
+  if name == 'mae':
+    return F.l1_loss
+  if name == 'huber':
+    return F.smooth_l1_loss
+  raise ValueError(f'Unknown refinement reg loss: {name!r}')
+
+
+def _build_refinement_optimizer(projector, linear, cfg):
+  """
+  Build a two-param-group optimizer for the refinement stage so the projector and the
+  linear layer get separate learning rates (cfg['lr_projector'], cfg['lr_linear']).
+
+  Args:
+    projector (torch.nn.Module): The projector being refined.
+    linear    (torch.nn.Module): The (copied) new-model head.linear being refined.
+    cfg       (dict): REFINEMENT_CONFIG.
+
+  Returns:
+    torch.optim.Optimizer
+
+  Raises:
+    ValueError: If cfg['optimizer'] is unknown.
+  """
+  groups = [
+    {'params': list(projector.parameters()), 'lr': cfg['lr_projector']},
+    {'params': list(linear.parameters()),    'lr': cfg['lr_linear']},
+  ]
+  name = cfg['optimizer'].lower()
+  if name == 'adam':
+    return torch.optim.Adam(groups, weight_decay=cfg['weight_decay'])
+  if name == 'adamw':
+    return torch.optim.AdamW(groups, weight_decay=cfg['weight_decay'])
+  if name == 'sgd':
+    return torch.optim.SGD(groups, weight_decay=cfg['weight_decay'])
+  raise ValueError(f"Unknown refinement optimizer: {cfg['optimizer']!r}")
+
+
+def _norm_tensors(norm_stats, device):
+  """
+  Pack projector normalization stats as no-grad float tensors on `device`.
+
+  Args:
+    norm_stats (dict | None): {'old_mean','old_std','new_mean','new_std'} or None.
+    device     (torch.device): Target device.
+
+  Returns:
+    dict | None: Same keys with torch.Tensor values, or None when norm_stats is None
+      (projector trained without normalization).
+  """
+  if norm_stats is None:
+    return None
+  return {k: torch.as_tensor(v, dtype=torch.float32, device=device)
+          for k, v in norm_stats.items()}
+
+
+def _project_to_new_raw(projector, x_old, nt):
+  """
+  Differentiably map raw old-space embeddings to raw new-space embeddings via the
+  projector, applying its fixed input normalization and output un-normalization (so the
+  result is in the same raw space the new model's head.linear expects).
+
+  Args:
+    projector (torch.nn.Module): Projector mapping normalized old → normalized new.
+    x_old     (torch.Tensor): Raw old-model embeddings, shape (B, D_old).
+    nt        (dict | None): Output of _norm_tensors; None = no normalization.
+
+  Returns:
+    torch.Tensor: Raw new-space embeddings, shape (B, D_new).
+  """
+  x = (x_old - nt['old_mean']) / nt['old_std'] if nt is not None else x_old
+  y = projector(x)
+  if nt is not None:
+    y = y * nt['new_std'] + nt['new_mean']
+  return y
+
+
+def _linear_preds(emb, linear, label_denorm):
+  """
+  Classify raw new-space embeddings with `linear` and return per-sample predictions.
+
+  Args:
+    emb          (np.ndarray): Shape (N, D_new), raw new-space embeddings.
+    linear       (torch.nn.Module): Classifier (new model's head.linear, possibly refined).
+    label_denorm (float): Multiplier mapping normalized logits to the real label scale.
+
+  Returns:
+    np.ndarray: Shape (N,), predictions in the real label scale.
+  """
+  device = next(linear.parameters()).device
+  with torch.no_grad():
+    logits = linear(torch.as_tensor(emb, dtype=torch.float32, device=device)).cpu().numpy()
+  preds = (logits.squeeze(-1) if logits.ndim > 1 else logits) * label_denorm
+  return np.asarray(preds, dtype=np.float32).reshape(-1)
+
+
+def _eval_linear_mae(emb, linear, labels, label_denorm):
+  """
+  Classify raw new-space embeddings with `linear` and return (micro, macro) MAE.
+
+  Args:
+    emb          (np.ndarray): Shape (N, D_new), raw new-space embeddings.
+    linear       (torch.nn.Module): Classifier (new model's head.linear, possibly refined).
+    labels       (np.ndarray): Shape (N,), real-scale ground-truth labels.
+    label_denorm (float): Multiplier mapping normalized logits to the real label scale.
+
+  Returns:
+    tuple[float, float]: (micro_mae, macro_mae).
+  """
+  return _mae_micro_macro(_linear_preds(emb, linear, label_denorm), labels)
+
+
+def _eval_proj_mae(old_emb, projector, norm_stats, linear, labels, label_denorm):
+  """
+  Project old-space embeddings then classify with `linear`; return (micro, macro) MAE.
+
+  Args:
+    old_emb      (np.ndarray): Shape (N, D_old), raw old-model embeddings.
+    projector    (torch.nn.Module): Old→new projector.
+    norm_stats   (dict | None): Projector normalization stats.
+    linear       (torch.nn.Module): Classifier (new model's head.linear, possibly refined).
+    labels       (np.ndarray): Shape (N,), real-scale ground-truth labels.
+    label_denorm (float): Multiplier mapping normalized logits to the real label scale.
+
+  Returns:
+    tuple[float, float]: (micro_mae, macro_mae).
+  """
+  projected = _apply_linear_projector(projector, norm_stats, old_emb)
+  return _eval_linear_mae(projected, linear, labels, label_denorm)
+
+
+def _guard_heldout_val(val_set, train_sample_ids, name, min_keep_frac):
+  """
+  Verify a validation set is disjoint from a training set (by sample_id) and, if not,
+  drop the overlapping rows so the survivors form a genuinely held-out subset.
+
+  Overlap is detected the same way as the anchor/val.csv check (_train_linear_projector):
+  by intersecting integer sample_ids. This catches the realistic leakage cases — model B's
+  val split sharing rows with its train split, or the new model's preserve-eval split sharing
+  rows with the anchors used as the preservation training signal.
+
+  Args:
+    val_set          (dict): Validation embeddings dict with keys 'embeddings' (N, D),
+                             'labels' (N,), 'sample_ids' (N,) (output of _extract_embeddings).
+    train_sample_ids (np.ndarray): Sample ids used for training that the val set must not contain.
+    name             (str): Short identifier for the check (used in the report and logs).
+    min_keep_frac    (float): If the surviving fraction after exclusion is below this, the val
+                             set is judged unusable and None is returned (status 'invalid').
+
+  Returns:
+    tuple[dict | None, dict]: (clean_val_set, report). clean_val_set is the original set when
+      there is no overlap ('ok'), a row-filtered copy when overlap is removed and enough remain
+      ('excluded'), or None when too few survive ('invalid'). report is a JSON-serializable dict
+      describing the check (name, sizes, overlap/kept counts and fractions, status, and a capped
+      list of overlapping sample_ids).
+  """
+  val_sids   = np.asarray(val_set['sample_ids']).astype(np.int64)
+  train_sids = set(np.asarray(train_sample_ids).astype(np.int64).tolist())
+  val_size   = int(val_sids.shape[0])
+  keep_mask  = ~np.isin(val_sids, np.asarray(sorted(train_sids), dtype=np.int64))
+  kept_count = int(keep_mask.sum())
+  overlap_count = val_size - kept_count
+  overlap_sids  = sorted(set(val_sids[~keep_mask].tolist()))
+  kept_frac     = (kept_count / val_size) if val_size > 0 else 0.0
+
+  report = {
+    'name':               name,
+    'val_size':           val_size,
+    'overlap_count':      overlap_count,
+    'overlap_frac':       (overlap_count / val_size) if val_size > 0 else 0.0,
+    'kept_count':         kept_count,
+    'kept_frac':          kept_frac,
+    'overlap_sample_ids': overlap_sids[:100],  # capped to keep the report small
+  }
+
+  if overlap_count == 0:
+    report['status'] = 'ok'
+    return val_set, report
+  if kept_frac < min_keep_frac:
+    report['status'] = 'invalid'
+    return None, report
+
+  report['status'] = 'excluded'
+  clean = dict(val_set)
+  for k in ('embeddings', 'labels', 'sample_ids'):
+    if k in clean:
+      clean[k] = np.asarray(clean[k])[keep_mask]
+  return clean, report
+
+
+def _write_leakage_report(refine_dir, tag, checks, selection_used, min_keep_frac):
+  """
+  Write a validation-leakage report (JSON + human-readable TXT) into the experiment folder,
+  but only when at least one check is not 'ok' — so the mere presence of the file flags that a
+  held-out validation set was not respected during refinement.
+
+  Args:
+    refine_dir     (str): Refinement output directory (the files are written here).
+    tag            (str): Short slug identifying this refinement run.
+    checks         (list[dict]): Per-check report dicts from _guard_heldout_val.
+    selection_used (str): Which selection criterion the run ended up using
+                          ('balanced_val' or 'train_loss').
+    min_keep_frac  (float): Threshold below which an excluded set is judged invalid.
+
+  Returns:
+    bool: True if a report was written (a leak existed), False otherwise.
+  """
+  if all(c.get('status') == 'ok' for c in checks):
+    return False
+
+  payload = {
+    'tag':            tag,
+    'min_keep_frac':  min_keep_frac,
+    'selection_used': selection_used,
+    'checks':         checks,
+  }
+  json_path = os.path.join(refine_dir, 'validation_leakage_report.json')
+  txt_path  = os.path.join(refine_dir, 'validation_leakage_report.txt')
+  with open(json_path, 'w') as f:
+    json.dump(payload, f, indent=2)
+
+  lines = [
+    'VALIDATION LEAKAGE REPORT',
+    f'  tag:            {tag}',
+    f'  selection_used: {selection_used}',
+    f'  min_keep_frac:  {min_keep_frac}',
+    '',
+  ]
+  for c in checks:
+    lines.append(f"  [{c['status'].upper()}] {c['name']}")
+    lines.append(f"      val_size={c['val_size']}  overlap={c['overlap_count']} "
+                 f"({c['overlap_frac']:.1%})  kept={c['kept_count']} ({c['kept_frac']:.1%})")
+    if c['overlap_sample_ids']:
+      shown = ', '.join(str(s) for s in c['overlap_sample_ids'])
+      more  = ' ...' if c['overlap_count'] > len(c['overlap_sample_ids']) else ''
+      lines.append(f"      overlapping sample_ids: {shown}{more}")
+  with open(txt_path, 'w') as f:
+    f.write('\n'.join(lines) + '\n')
+
+  print(f"  [refine:LEAKAGE] {tag}: validation set(s) not held out — report written to "
+        f"{json_path} (selection_used={selection_used})")
+  for c in checks:
+    if c['status'] != 'ok':
+      print(f"    - {c['name']}: {c['status']} (overlap {c['overlap_count']}/{c['val_size']})")
+  return True
+
+
+def _refine_projector_and_linear(projector, norm_stats, head_linear,
+                                 emb_B, labels_B, new_anchor_emb, anchor_labels,
+                                 old_anchor_emb, label_denorm, refine_dir, tag, cfg=None,
+                                 emb_B_val=None, labels_B_val=None,
+                                 new_eval_emb=None, new_eval_labels=None):
+  """
+  Second-stage refinement: jointly fine-tune the projector and a COPY of the new model's
+  head.linear so source-domain (model B) accuracy improves while the new model's own-domain
+  accuracy is preserved.
+
+  Loss (per batch, real label scale):
+    lambda_B * reg(linear(proj(emb_B)),    labels_B)        # improve source (model B)
+  + lambda_A * reg(linear(new_anchor_emb), anchor_labels)   # preserve new-domain (model A)
+
+  The originals are never mutated: "before" snapshots are deepcopies, and the trainable
+  "after" copies are separate deepcopies.
+
+  Epoch selection: when held-out validation sets are supplied (emb_B_val + new_eval_emb), the
+  epoch with the lowest BALANCED validation loss (lambda_B * val_B + lambda_A * val_A, the same
+  weighted objective as training but on held-out data) is restored. When they are omitted (the
+  backward-compatible path), the epoch with the lowest total TRAINING loss is restored instead.
+  All epochs are always run (no early stopping).
+
+  Args:
+    projector      (torch.nn.Module): Trained projector (old→new), used as the start point.
+    norm_stats     (dict | None): Projector normalization stats ({'old_mean',...} or None).
+    head_linear    (torch.nn.Module): The new model's original head.linear (copied, not mutated).
+    emb_B          (np.ndarray): Shape (N_B, D_old), old-model embeddings on the model B
+                                 training split (raw).
+    labels_B       (np.ndarray): Shape (N_B,), real-scale labels for emb_B.
+    new_anchor_emb (np.ndarray): Shape (K, D_new), REAL new-model anchor embeddings (raw).
+    anchor_labels  (np.ndarray): Shape (K,), real-scale anchor labels.
+    old_anchor_emb (np.ndarray): Shape (K, D_old), old-model anchor embeddings (for the
+                                 projector embedding-MSE drift metric only).
+    label_denorm   (float): Multiplier mapping normalized logits to the real label scale.
+    refine_dir     (str): Directory for the 4 checkpoints + refinement_metrics.csv.
+    tag            (str): Short slug used in log lines / progress bar.
+    cfg            (dict | None): REFINEMENT_CONFIG override (defaults to the module global).
+    emb_B_val      (np.ndarray | None): Shape (Nv, D_old), held-out old-model embeddings for the
+                                 source (B) validation term. None disables validation selection.
+    labels_B_val   (np.ndarray | None): Shape (Nv,), real-scale labels for emb_B_val.
+    new_eval_emb   (np.ndarray | None): Shape (Mv, D_new), held-out new-model embeddings for the
+                                 preserve (A) validation term. None disables validation selection.
+    new_eval_labels(np.ndarray | None): Shape (Mv,), real-scale labels for new_eval_emb.
+
+  Returns:
+    dict: keys 'projector_before', 'projector_after', 'linear_before', 'linear_after'
+      (cpu nn.Modules), 'metrics' (per-epoch list), 'best_epoch', 'best_val_total' (None when
+      train-loss selection was used), 'selection_used' ('balanced_val' | 'train_loss'),
+      'proj_anchor_loss_before', 'proj_anchor_loss_after', 'ckpt_paths', 'config', 'tag'.
+  """
+  import torch.nn.functional as F
+  from torch.utils.data import DataLoader, TensorDataset
+  cfg = copy.deepcopy(REFINEMENT_CONFIG if cfg is None else cfg)
+  device = torch.device(cfg['device'])
+  os.makedirs(refine_dir, exist_ok=True)
+
+  # Frozen "before" snapshots (deepcopies; the originals stay untouched).
+  projector_before = copy.deepcopy(projector).to('cpu').eval()
+  linear_before    = copy.deepcopy(head_linear).to('cpu').eval()
+
+  # Trainable "after" copies on device.
+  projector_after = copy.deepcopy(projector).to(device).train()
+  linear_after    = copy.deepcopy(head_linear).to(device).train()
+
+  nt        = _norm_tensors(norm_stats, device)
+  reg       = _refine_reg_loss_fn(cfg['loss'])
+  optimizer = _build_refinement_optimizer(projector_after, linear_after, cfg)
+
+  # Anchor preserve tensors (real new-model embeddings → linear → labels).
+  new_anchor_t = torch.as_tensor(new_anchor_emb, dtype=torch.float32, device=device)
+  anchor_lab_t = torch.as_tensor(np.asarray(anchor_labels, np.float32).reshape(-1),
+                                 dtype=torch.float32, device=device)
+
+  # Source (model B) loader: raw old-model embeddings + labels, preloaded to device.
+  emb_B_t = torch.as_tensor(emb_B, dtype=torch.float32, device=device)
+  labB_t  = torch.as_tensor(np.asarray(labels_B, np.float32).reshape(-1),
+                            dtype=torch.float32, device=device)
+  loader  = DataLoader(TensorDataset(emb_B_t, labB_t), batch_size=cfg['batch_size'],
+                       shuffle=True, num_workers=0, pin_memory=False)
+
+  def _pred_real(linear, emb):
+    out = linear(emb)
+    out = out.squeeze(-1) if out.dim() > 1 else out
+    return out * label_denorm
+
+  def _proj_anchor_loss(proj):
+    # Projector embedding-MSE in normalized space (matches the projector's own loss).
+    dev = next(proj.parameters()).device
+    xo  = torch.as_tensor(old_anchor_emb, dtype=torch.float32, device=dev)
+    yn  = torch.as_tensor(new_anchor_emb, dtype=torch.float32, device=dev)
+    if norm_stats is not None:
+      xo = (xo - torch.as_tensor(norm_stats['old_mean'], dtype=torch.float32, device=dev)) \
+              / torch.as_tensor(norm_stats['old_std'], dtype=torch.float32, device=dev)
+      yn = (yn - torch.as_tensor(norm_stats['new_mean'], dtype=torch.float32, device=dev)) \
+              / torch.as_tensor(norm_stats['new_std'], dtype=torch.float32, device=dev)
+    with torch.no_grad():
+      pred = proj(xo)
+    return float(F.mse_loss(pred, yn).item())
+
+  proj_anchor_loss_before = _proj_anchor_loss(projector_before)
+
+  lam_b, lam_a = cfg['lambda_B'], cfg['lambda_A']
+
+  # Held-out validation tensors (None → train-loss selection, backward compatible).
+  has_val = emb_B_val is not None and new_eval_emb is not None
+  if has_val:
+    emb_B_val_t  = torch.as_tensor(emb_B_val, dtype=torch.float32, device=device)
+    labB_val_t   = torch.as_tensor(np.asarray(labels_B_val, np.float32).reshape(-1),
+                                   dtype=torch.float32, device=device)
+    new_eval_t   = torch.as_tensor(new_eval_emb, dtype=torch.float32, device=device)
+    new_eval_lab_t = torch.as_tensor(np.asarray(new_eval_labels, np.float32).reshape(-1),
+                                     dtype=torch.float32, device=device)
+
+  def _validate():
+    # Per-epoch held-out evaluation mirroring the two training terms.
+    projector_after.eval(); linear_after.eval()
+    with torch.no_grad():
+      proj_val = _project_to_new_raw(projector_after, emb_B_val_t, nt)
+      val_B    = float(reg(_pred_real(linear_after, proj_val), labB_val_t).item())
+      val_A    = float(reg(_pred_real(linear_after, new_eval_t), new_eval_lab_t).item())
+    val_mae_micro_B, val_mae_macro_B = _eval_proj_mae(
+      emb_B_val, projector_after, norm_stats, linear_after, labels_B_val, label_denorm)
+    val_mae_micro_A, val_mae_macro_A = _eval_linear_mae(
+      new_eval_emb, linear_after, new_eval_labels, label_denorm)
+    return {
+      'val_B': val_B, 'val_A': val_A, 'val_total': lam_b * val_B + lam_a * val_A,
+      'val_mae_micro_B': val_mae_micro_B, 'val_mae_macro_B': val_mae_macro_B,
+      'val_mae_micro_A': val_mae_micro_A, 'val_mae_macro_A': val_mae_macro_A,
+    }
+
+  selection_used = 'balanced_val' if has_val else 'train_loss'
+  metrics, best_score, best_epoch = [], float('inf'), -1
+  best_val_total = None
+  best_proj_sd = best_lin_sd = None
+
+  for epoch in tqdm.tqdm(range(1, cfg['epochs'] + 1), desc=f'Refinement ({tag})'):
+    projector_after.train(); linear_after.train()
+    sums = {'total': 0.0, 'B': 0.0, 'A': 0.0}
+    n_batches = 0
+    for xb, yb in loader:
+      proj_raw = _project_to_new_raw(projector_after, xb, nt)
+      loss_b   = reg(_pred_real(linear_after, proj_raw), yb)
+      loss_a   = reg(_pred_real(linear_after, new_anchor_t), anchor_lab_t)
+      loss     = lam_b * loss_b + lam_a * loss_a
+      optimizer.zero_grad(set_to_none=True)
+      loss.backward()
+      optimizer.step()
+      sums['total'] += float(loss.item())
+      sums['B']     += float(loss_b.item())
+      sums['A']     += float(loss_a.item())
+      n_batches += 1
+    n = max(n_batches, 1)
+    row = {'epoch': epoch, 'loss_total': sums['total'] / n,
+           'loss_B': sums['B'] / n, 'loss_A': sums['A'] / n}
+    # Selection score: balanced held-out val loss when available, else train total loss.
+    if has_val:
+      row.update(_validate())
+      score = row['val_total']
+    else:
+      score = row['loss_total']
+    metrics.append(row)
+    if score < best_score:
+      best_score = score
+      best_epoch = epoch
+      best_val_total = row['val_total'] if has_val else None
+      best_proj_sd = {k: v.detach().cpu().clone() for k, v in projector_after.state_dict().items()}
+      best_lin_sd  = {k: v.detach().cpu().clone() for k, v in linear_after.state_dict().items()}
+
+  if best_proj_sd is not None:
+    projector_after.load_state_dict(best_proj_sd)
+    linear_after.load_state_dict(best_lin_sd)
+  projector_after.eval(); linear_after.eval()
+  proj_anchor_loss_after = _proj_anchor_loss(projector_after)
+
+  if has_val:
+    sel_str = f"val_total={best_val_total:.6f} (balanced_val)"
+  else:
+    sel_str = f"train_total={best_score:.6f} (train_loss)"
+  print(f"  [refine:{tag}] best epoch {best_epoch}  {sel_str}  "
+        f"proj_anchor_loss {proj_anchor_loss_before:.6f} → {proj_anchor_loss_after:.6f}")
+
+  projector_after_cpu = projector_after.to('cpu').eval()
+  linear_after_cpu    = linear_after.to('cpu').eval()
+  ckpt_paths = {
+    'projector_before': os.path.join(refine_dir, 'projector_before.pt'),
+    'projector_after':  os.path.join(refine_dir, 'projector_after.pt'),
+    'linear_before':    os.path.join(refine_dir, 'linear_before.pt'),
+    'linear_after':     os.path.join(refine_dir, 'linear_after.pt'),
+  }
+  torch.save(projector_before.state_dict(),    ckpt_paths['projector_before'])
+  torch.save(projector_after_cpu.state_dict(), ckpt_paths['projector_after'])
+  torch.save(linear_before.state_dict(),       ckpt_paths['linear_before'])
+  torch.save(linear_after_cpu.state_dict(),    ckpt_paths['linear_after'])
+  pd.DataFrame(metrics).to_csv(os.path.join(refine_dir, 'refinement_metrics.csv'), index=False)
+
+  return {
+    'projector_before': projector_before,
+    'projector_after':  projector_after_cpu,
+    'linear_before':    linear_before,
+    'linear_after':     linear_after_cpu,
+    'metrics':          metrics,
+    'best_epoch':       best_epoch,
+    'best_val_total':   best_val_total,
+    'selection_used':   selection_used,
+    'proj_anchor_loss_before': proj_anchor_loss_before,
+    'proj_anchor_loss_after':  proj_anchor_loss_after,
+    'ckpt_paths':       ckpt_paths,
+    'config':           cfg,
+    'tag':              tag,
+  }
+
+
+def _run_refinement_stage(old_model, new_model, old_model_pth, new_model_pth,
+                          old_config, new_config, old_features_path,
+                          old_model_anchors, new_model_anchors_aligned, projector_bundle,
+                          old_model_tensors, old_model_csv, label_denorm, refine_dir, tag,
+                          emb_B=None, new_eval=None, new_test=None, emb_B_val=None):
+  """
+  Orchestrate the refinement stage end to end: extract the model-B training embeddings
+  and the new-model evaluation embeddings (unless supplied pre-computed), run
+  _refine_projector_and_linear, and assemble the before/after metric block.
+
+  Args:
+    old_model, new_model         (Model_Advanced): Source and target models.
+    old_model_pth, new_model_pth (str): Their checkpoints.
+    old_config, new_config       (dict): Their k_fold_results configs.
+    old_features_path            (str): Old model features folder (for restoring state_shift).
+    old_model_anchors            (dict): _extract_embeddings output for old anchors
+                                         (keys 'embeddings' (K,D_old), 'labels').
+    new_model_anchors_aligned    (dict): Aligned new anchors (keys 'embeddings' (K,D_new)).
+    projector_bundle             (dict): Output of a _train_*_projector (keys 'projector',
+                                         'norm_stats', ...).
+    old_model_tensors            (dict): Old embeddings on `old_model_csv` (the eval split).
+    old_model_csv                (str): The split name being projected/evaluated.
+    label_denorm                 (float): Logit→real-label multiplier.
+    refine_dir                   (str): Output directory for checkpoints + logs.
+    tag                          (str): Short slug for logs.
+    emb_B  (dict | None): Pre-extracted model-B (old train) embeddings {'embeddings','labels'};
+                          extracted here on old model's `refine_split` when None.
+    new_eval (dict | None): Pre-extracted new-model eval embeddings {'embeddings','labels'};
+                            extracted here on new model's `new_eval_split` when None.
+    new_test (dict | None): Pre-extracted new-model TEST split embeddings
+                            {'embeddings','labels','sample_ids'}; when None it is extracted here
+                            via _resolve_test_csv_strict (raises if test.csv is missing — no val
+                            fallback). Used only for the per-class before/after refinement diagnostic.
+    emb_B_val (dict | None): Pre-extracted model-B held-out embeddings {'embeddings','labels',
+                            'sample_ids'} on old model's `refine_val_split`; extracted here when None.
+                            Used (after a leakage guard) for the per-epoch source validation term.
+
+  Returns:
+    dict: 'refine_bundle' (the _refine_projector_and_linear output), a flat 'metrics' dict ready
+      to merge into the results pkl / summary.csv, and 'new_test_eval' — per-sample test-split
+      predictions before/after refinement for the per-class improvement plot.
+  """
+  cfg = REFINEMENT_CONFIG
+  os.makedirs(refine_dir, exist_ok=True)
+
+  # --- model-B training embeddings (old model, old domain, refine_split) ---
+  if emb_B is None:
+    b_csv = _resolve_split_csv(old_model_pth, cfg['refine_split'])
+    assert os.path.isfile(b_csv), f'Refinement model-B split CSV not found: {b_csv}'
+    helper.set_step_shift(old_features_path)
+    emb_B = _extract_embeddings(old_model, old_model_pth, b_csv, old_config)
+
+  # --- model-B held-out validation embeddings (old model, refine_val_split) ---
+  if emb_B_val is None:
+    bv_csv = _resolve_split_csv(old_model_pth, cfg['refine_val_split'])
+    assert os.path.isfile(bv_csv), f'Refinement model-B val split CSV not found: {bv_csv}'
+    helper.set_step_shift(old_features_path)
+    emb_B_val = _extract_embeddings(old_model, old_model_pth, bv_csv, old_config)
+
+  # --- new-model evaluation embeddings (new model, its own new_eval_split) ---
+  if new_eval is None:
+    e_csv = _resolve_split_csv(new_model_pth, cfg['new_eval_split'])
+    assert os.path.isfile(e_csv), f'Refinement new-eval split CSV not found: {e_csv}'
+    new_eval = _extract_embeddings(new_model, new_model_pth, e_csv, new_config)
+
+  # --- new-model TEST split embeddings (for the per-class before/after diagnostic). The test
+  #     split is required: no val fallback, so a missing test.csv raises instead of silently
+  #     comparing against val. ---
+  if new_test is None:
+    t_csv = _resolve_test_csv_strict(new_model_pth)
+    new_test = _extract_embeddings(new_model, new_model_pth, t_csv, new_config)
+
+  # --- Held-out validation guard: the source-val split must be disjoint from emb_B (train),
+  #     and the preserve-val split (new_eval) must be disjoint from the anchors (the term-A
+  #     training signal). Overlap rows are auto-excluded; if too few survive the term is dropped
+  #     and selection falls back to train loss. A report is written only when a leak exists. ---
+  src_val,  rep_src  = _guard_heldout_val(
+    emb_B_val, emb_B['sample_ids'], 'source_val (B val vs train)', cfg['refine_val_min_keep_frac'])
+  prsv_val, rep_prsv = _guard_heldout_val(
+    new_eval, old_model_anchors['sample_ids'], 'preserve_val (new_eval vs anchors)',
+    cfg['refine_val_min_keep_frac'])
+  use_val = src_val is not None and prsv_val is not None
+  selection_used = 'balanced_val' if use_val else 'train_loss'
+  _write_leakage_report(refine_dir, tag, [rep_src, rep_prsv], selection_used,
+                        cfg['refine_val_min_keep_frac'])
+
+  projector  = projector_bundle['projector']
+  norm_stats = projector_bundle['norm_stats']
+  head_linear = new_model.head.linear
+
+  refine = _refine_projector_and_linear(
+    projector=projector, norm_stats=norm_stats, head_linear=head_linear,
+    emb_B=emb_B['embeddings'], labels_B=emb_B['labels'],
+    new_anchor_emb=new_model_anchors_aligned['embeddings'],
+    anchor_labels=old_model_anchors['labels'],
+    old_anchor_emb=old_model_anchors['embeddings'],
+    label_denorm=label_denorm, refine_dir=refine_dir, tag=tag,
+    emb_B_val=(src_val['embeddings'] if use_val else None),
+    labels_B_val=(src_val['labels'] if use_val else None),
+    new_eval_emb=(prsv_val['embeddings'] if use_val else None),
+    new_eval_labels=(prsv_val['labels'] if use_val else None),
+  )
+
+  # --- before/after metrics ---
+  # The new-model preserve eval + projector-drift loss depend only on the bundle (not on
+  # old_model_csv). The old-on-csv metrics depend on the projected split, so they are
+  # skipped here (left NaN) when old_model_tensors is None — the Optuna path fills them
+  # per-trial via _eval_proj_mae against the stored refine bundle.
+  if old_model_tensors is not None:
+    old_emb = old_model_tensors['embeddings']
+    old_lab = old_model_tensors['labels']
+    mae_old_micro_b, mae_old_macro_b = _eval_proj_mae(
+      old_emb, refine['projector_before'], norm_stats, refine['linear_before'], old_lab, label_denorm)
+    mae_old_micro_a, mae_old_macro_a = _eval_proj_mae(
+      old_emb, refine['projector_after'], norm_stats, refine['linear_after'], old_lab, label_denorm)
+  else:
+    mae_old_micro_b = mae_old_macro_b = mae_old_micro_a = mae_old_macro_a = float('nan')
+  mae_new_micro_b, mae_new_macro_b = _eval_linear_mae(
+    new_eval['embeddings'], refine['linear_before'], new_eval['labels'], label_denorm)
+  mae_new_micro_a, mae_new_macro_a = _eval_linear_mae(
+    new_eval['embeddings'], refine['linear_after'], new_eval['labels'], label_denorm)
+
+  # --- per-sample new-model test-split predictions (no projector: the test set is already in the
+  #     new space) for the per-class before/after-refinement improvement plot. ---
+  new_test_eval = {
+    'split':        'test',
+    'labels':       new_test['labels'].astype(np.float32),
+    'sample_ids':   new_test['sample_ids'].astype(np.int64),
+    'preds_before': _linear_preds(new_test['embeddings'], refine['linear_before'], label_denorm),
+    'preds_after':  _linear_preds(new_test['embeddings'], refine['linear_after'], label_denorm),
+  }
+
+  metrics = {
+    'refine_enabled':            True,
+    'refine_best_epoch':         refine['best_epoch'],
+    'refine_best_val_total':     refine['best_val_total'],
+    'refine_val_selection':      refine['selection_used'],
+    'proj_anchor_loss_before':   refine['proj_anchor_loss_before'],
+    'proj_anchor_loss_after':    refine['proj_anchor_loss_after'],
+    'mae_micro_old_oncsv_before': mae_old_micro_b,
+    'mae_macro_old_oncsv_before': mae_old_macro_b,
+    'mae_micro_old_oncsv_after':  mae_old_micro_a,
+    'mae_macro_old_oncsv_after':  mae_old_macro_a,
+    'mae_micro_new_test_before':  mae_new_micro_b,
+    'mae_macro_new_test_before':  mae_new_macro_b,
+    'mae_micro_new_test_after':   mae_new_micro_a,
+    'mae_macro_new_test_after':   mae_new_macro_a,
+    'refine_old_model_csv':       old_model_csv,
+    'refine_new_eval_split':      cfg['new_eval_split'],
+    'projector_before_pth':       refine['ckpt_paths']['projector_before'],
+    'projector_after_pth':        refine['ckpt_paths']['projector_after'],
+    'linear_before_pth':          refine['ckpt_paths']['linear_before'],
+    'linear_after_pth':           refine['ckpt_paths']['linear_after'],
+  }
+  return {'refine_bundle': refine, 'metrics': metrics, 'emb_B': emb_B, 'emb_B_val': emb_B_val,
+          'new_eval': new_eval, 'new_test_eval': new_test_eval}
+
+
 def _assert_linear_ckpt_matches_formula(weight, bias, x_norm, y_formula,
                                         kind, anchor_key_tag, rtol=1e-4):
   """
@@ -1937,6 +2658,34 @@ def _precompute_embeddings(
       old_config, new_config, new_features_path, anchor_domain_features_for_old,
     )
 
+  # --- Refinement-stage inputs (model-B train embeddings + new-model eval embeddings),
+  #     extracted once and shared across every projector bundle ---
+  refine_emb_B = refine_emb_B_val = refine_new_eval = refine_new_test = None
+  refine_label_denorm = 1.0
+  if REFINEMENT_CONFIG['enabled'] and projector_specs:
+    _nl = bool(new_config['config'].get('normalize_labels', 0))
+    _ml = new_config['config'].get('max_label', None)
+    refine_label_denorm = float(_ml) if _nl and _ml else 1.0
+    b_csv = _resolve_split_csv(old_model_pth, REFINEMENT_CONFIG['refine_split'])
+    assert os.path.isfile(b_csv), f'Refinement model-B split CSV not found: {b_csv}'
+    helper.set_step_shift(old_features_path)
+    refine_emb_B = _extract_embeddings(old_model, old_model_pth, b_csv, old_config)
+    bv_csv = _resolve_split_csv(old_model_pth, REFINEMENT_CONFIG['refine_val_split'])
+    assert os.path.isfile(bv_csv), f'Refinement model-B val split CSV not found: {bv_csv}'
+    helper.set_step_shift(old_features_path)
+    refine_emb_B_val = _extract_embeddings(old_model, old_model_pth, bv_csv, old_config)
+    e_csv = _resolve_split_csv(new_model_pth, REFINEMENT_CONFIG['new_eval_split'])
+    assert os.path.isfile(e_csv), f'Refinement new-eval split CSV not found: {e_csv}'
+    refine_new_eval = _extract_embeddings(new_model, new_model_pth, e_csv, new_config)
+    # New-model TEST split for the per-class before/after diagnostic (strict: no val fallback).
+    t_csv = _resolve_test_csv_strict(new_model_pth)
+    refine_new_test = _extract_embeddings(new_model, new_model_pth, t_csv, new_config)
+    print(f"[precompute] refinement inputs: "
+          f"emb_B({REFINEMENT_CONFIG['refine_split']})={refine_emb_B['embeddings'].shape}  "
+          f"emb_B_val({REFINEMENT_CONFIG['refine_val_split']})={refine_emb_B_val['embeddings'].shape}  "
+          f"new_eval({REFINEMENT_CONFIG['new_eval_split']})={refine_new_eval['embeddings'].shape}  "
+          f"new_test(test)={refine_new_test['embeddings'].shape}")
+
   # --- Anchor embeddings (one extraction per unique combo) ---
   anchor_combos = list(itertools.product(
     args.csv_anchor_selection, args.num_anchors, args.anchor_selection_type,
@@ -1994,6 +2743,22 @@ def _precompute_embeddings(
         bundle = _train_linear_closed_projector(**common)
       else:
         bundle = _train_linear_projector(**common, kind=kind, activation=activation)
+      # Per-bundle refinement (shared across old_model_csv splits; the per-split
+      # old-on-csv before/after metrics are filled in _run_trial). Deep-copies
+      # new_model.head.linear internally, so the shared head is never mutated.
+      if REFINEMENT_CONFIG['enabled'] and refine_emb_B is not None:
+        bundle['refinement'] = _run_refinement_stage(
+          old_model=old_model, new_model=new_model,
+          old_model_pth=old_model_pth, new_model_pth=new_model_pth,
+          old_config=old_config, new_config=new_config, old_features_path=old_features_path,
+          old_model_anchors=old_anch, new_model_anchors_aligned=new_aligned,
+          projector_bundle=bundle, old_model_tensors=None, old_model_csv=None,
+          label_denorm=refine_label_denorm,
+          refine_dir=os.path.join(projector_dir, 'refinement'),
+          tag=f'{csv_sel}_{num_anch}_{sel_type}_{pkey}',
+          emb_B=refine_emb_B, new_eval=refine_new_eval, new_test=refine_new_test,
+          emb_B_val=refine_emb_B_val,
+        )
       anchor_cache[key]['projectors'][pkey] = bundle
 
   if 0 in args.num_anchors:
@@ -2059,6 +2824,7 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
     float: MAE for this trial.
   """
   old_model_tensors = tensor_cache[trial_params['old_model_csv']]['old_tensors']
+  classify_linear = new_model.head.linear  # overridden below when refinement is applied
 
   if trial_params['num_anchors'] == 0:
     d_old = old_model_tensors['embeddings'].shape[1]
@@ -2087,13 +2853,20 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
       kind = trial_params['interpolation_similarity']
       pkey = _projector_key(kind, trial_params.get('mlp_activation'))
       bundle = anchor_cache[anchor_key]['projectors'][pkey]
+      _refine = bundle.get('refinement')
+      _use_refined = (REFINEMENT_CONFIG['enabled'] and _refine is not None
+                      and REFINEMENT_CONFIG['report_after_refinement'])
+      _proj_module = (_refine['refine_bundle']['projector_after'] if _use_refined
+                      else bundle['projector'])
       projected = _apply_linear_projector(
-        bundle['projector'], bundle['norm_stats'],
-        old_model_tensors['embeddings'],
+        _proj_module, bundle['norm_stats'], old_model_tensors['embeddings'],
       )
+      if _use_refined:
+        classify_linear = _refine['refine_bundle']['linear_after']
       weights = np.zeros((len(projected), 0), dtype=np.float32)
       print(f"  [trial {trial_number}] interpolation_similarity={kind} → "
-            f"applying {pkey} projector (best_epoch={bundle['best_epoch']})")
+            f"applying {pkey} projector (best_epoch={bundle['best_epoch']})"
+            f"{' + refinement' if _use_refined else ''}")
     else:
       weights = _compute_weights(
         z=old_model_tensors['embeddings'],
@@ -2108,9 +2881,10 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
   label_denorm = float(max_label) if normalize_labels and max_label else 1.0
 
   new_model.head.eval()
-  device = next(new_model.head.linear.parameters()).device
+  classify_linear.eval()
+  device = next(classify_linear.parameters()).device
   with torch.no_grad():
-    logits = new_model.head.linear(
+    logits = classify_linear(
       torch.tensor(projected, dtype=torch.float32).to(device)
     ).cpu()
   predictions = (logits.numpy() * label_denorm).astype(np.float32)
@@ -2159,6 +2933,26 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
       'procrustes_params':    bundle.get('procrustes_params'),
       'closed_form_params':   bundle.get('closed_form_params'),
     }
+    refine = bundle.get('refinement')
+    if refine is not None:
+      # Per-bundle metrics (new-test + projector-drift loss + ckpts) were computed once
+      # in precompute; fill the per-split old-on-csv before/after here for this trial.
+      rb = refine['refine_bundle']
+      ns = bundle['norm_stats']
+      old_emb, old_lab = old_model_tensors['embeddings'], old_model_tensors['labels']
+      mi_b, ma_b = _eval_proj_mae(old_emb, rb['projector_before'], ns, rb['linear_before'], old_lab, label_denorm)
+      mi_a, ma_a = _eval_proj_mae(old_emb, rb['projector_after'],  ns, rb['linear_after'],  old_lab, label_denorm)
+      trial_result['refinement'] = {
+        **refine['metrics'],
+        'mae_micro_old_oncsv_before': mi_b,
+        'mae_macro_old_oncsv_before': ma_b,
+        'mae_micro_old_oncsv_after':  mi_a,
+        'mae_macro_old_oncsv_after':  ma_a,
+        'refine_old_model_csv':       trial_params['old_model_csv'],
+        'config':                     rb['config'],
+        'per_epoch_metrics':          rb['metrics'],
+        'new_test_eval':              refine.get('new_test_eval'),
+      }
   with open(os.path.join(trial_dir, 'results.pkl'), 'wb') as f:
     pickle.dump(trial_result, f)
   return mae
@@ -2568,10 +3362,41 @@ def cross_space_projection(args, out_root=None):
   max_label = new_config['config'].get('max_label', None)
   label_denorm = float(max_label) if normalize_labels and max_label else 1.0
 
+  # --- Step 8a: Optional post-projection refinement (projector + a copy of head.linear) ---
+  refine_result = None
+  classify_linear = new_model.head.linear
+  if (REFINEMENT_CONFIG['enabled'] and linear_bundle is not None
+      and args.num_anchors not in (0, -1)):
+    _act = args.mlp_activation if args.interpolation_similarity == 'mlp' else None
+    refine_dir = os.path.join(
+      out_dir, f'{_projector_key(args.interpolation_similarity, _act)}_projector', 'refinement')
+    print(f'[cross_space_projection] Refinement stage → {refine_dir}')
+    refine_result = _run_refinement_stage(
+      old_model=old_model, new_model=new_model,
+      old_model_pth=args.old_model_pth, new_model_pth=args.new_model_pth,
+      old_config=old_config, new_config=new_config, old_features_path=old_features_path,
+      old_model_anchors=old_model_anchors, new_model_anchors_aligned=new_model_anchors_aligned,
+      projector_bundle=linear_bundle, old_model_tensors=old_model_tensors,
+      old_model_csv=args.old_model_csv, label_denorm=label_denorm,
+      refine_dir=refine_dir, tag='single',
+    )
+    rm = refine_result['metrics']
+    print(f"  refinement old-on-{args.old_model_csv} MAE micro: "
+          f"{rm['mae_micro_old_oncsv_before']:.4f} → {rm['mae_micro_old_oncsv_after']:.4f}  |  "
+          f"new-on-{REFINEMENT_CONFIG['new_eval_split']} MAE micro: "
+          f"{rm['mae_micro_new_test_before']:.4f} → {rm['mae_micro_new_test_after']:.4f}")
+    if REFINEMENT_CONFIG['report_after_refinement']:
+      projected = _apply_linear_projector(
+        refine_result['refine_bundle']['projector_after'],
+        linear_bundle['norm_stats'], old_model_tensors['embeddings'])
+      new_model_tensors['embeddings'] = projected
+      classify_linear = refine_result['refine_bundle']['linear_after']
+
   new_model.head.eval()
-  device = next(new_model.head.linear.parameters()).device
+  classify_linear.eval()
+  device = next(classify_linear.parameters()).device
   with torch.no_grad():
-    logits = new_model.head.linear(
+    logits = classify_linear(
       torch.tensor(projected, dtype=torch.float32).to(device)
     ).cpu()
   predictions = (logits.numpy() * label_denorm).astype(np.float32)
@@ -2632,6 +3457,16 @@ def cross_space_projection(args, out_root=None):
       'procrustes_params':    linear_bundle.get('procrustes_params'),
       'closed_form_params':   linear_bundle.get('closed_form_params'),
     }
+  if refine_result is not None:
+    dict_res['refinement'] = {
+      **refine_result['metrics'],
+      'config':             refine_result['refine_bundle']['config'],
+      'per_epoch_metrics':  refine_result['refine_bundle']['metrics'],
+      'new_test_eval':      refine_result.get('new_test_eval'),
+    }
+    # Self-contained before/after summary alongside the pkl.
+    pd.DataFrame([refine_result['metrics']]).to_csv(
+      os.path.join(out_dir, 'refinement_summary.csv'), index=False)
 
   out_pkl = os.path.join(out_dir, f'results_{uid}.pkl')
   pkl_bytes = pickle.dumps(dict_res)
@@ -2710,8 +3545,15 @@ if __name__ == '__main__':
                       help='Optuna sampler (tpe, random, grid). Default is grid')
   parser.add_argument('--run_tag', type=str, default=None,
                       help='Optional label prepended to the output folder name for easy identification')
+  parser.add_argument('--refinement', type=int, choices=[0, 1],
+                      default=int(REFINEMENT_CONFIG['enabled']),
+                      help='Enable (1) / disable (0) the post-projection refinement stage that '
+                           'jointly fine-tunes the projector + a copy of the new model head.linear '
+                           '(see REFINEMENT_CONFIG). Default off. Only applies to projector kinds '
+                           '(linear/mlp/procrustes/linear_close) with num_anchors>0.')
 
   args = parser.parse_args()
+  REFINEMENT_CONFIG['enabled'] = bool(args.refinement)
   _closed_form_in_sweep = set(_PROJECTOR_KINDS) & set(args.interpolation_similarity)
   _anchor_weighted_in_sweep = {'cos', 'l1', 'l2', 'l_inf'} & set(args.interpolation_similarity)
   if _closed_form_in_sweep and set(args.num_anchors) <= {0, -1}:
