@@ -290,7 +290,11 @@ def plot_error_per_class(
 
   # Titles and labels
   ax.set_xlabel('Class')
-  ax.set_title(f'{criterion} per Class {title}'.strip())
+  title_str = f'{criterion} per Class {title}'.strip()
+  if mae_per_class is not None:
+    macro_mae = float(np.nanmean(mae_per_class))
+    title_str = f'{title_str} | Macro MAE: {macro_mae:.2f}'
+  ax.set_title(title_str)
   ax.set_xticks(indices)
   ax.set_xticklabels([str(x) for x in unique_classes], rotation=0)
 
