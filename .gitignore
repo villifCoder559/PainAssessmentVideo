@@ -165,3 +165,5 @@ BIOVID_*/*
 UNBC_*/*
 vjepa2/pretrained_pth/*
 MORPH2_*
+AgeDB_FULL_DATA_*
+age_distribution_comparison*
