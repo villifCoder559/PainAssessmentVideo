@@ -75,6 +75,11 @@ def _parse_args():
                  help='Number of top val trials to re-run on test (default: 5).')
   p.add_argument('--run_tag', type=str, default=None,
                  help='Optional label embedded in the parent output directory.')
+  p.add_argument('--refinement', type=int, choices=[0, 1],
+                 default=int(csp.REFINEMENT_CONFIG['enabled']),
+                 help='Enable (1) / disable (0) the post-projection refinement stage (see '
+                      'cross_space_projection.REFINEMENT_CONFIG). Default off. Propagates to both '
+                      'Stage-1 (run_optuna) and Stage-2 (cross_space_projection) runs.')
   return p.parse_args()
 
 
@@ -378,6 +383,8 @@ def main():
   Orchestrate the two-stage grid search end-to-end.
   """
   args = _parse_args()
+  # Propagate the refinement toggle to the shared pipeline global read by both stages.
+  csp.REFINEMENT_CONFIG['enabled'] = bool(args.refinement)
 
   valid, redundant, invalid = _expand_effective_grid(args)
   _dry_run_report(valid, redundant, invalid)
