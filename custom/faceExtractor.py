@@ -14,6 +14,8 @@ import time
 import numpy as np
 import cv2
 from scipy.signal import medfilt
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import tqdm
 import custom.tools as tools
@@ -640,7 +642,15 @@ class FaceExtractor:
     print(f'shift_x: {shift_x}, shift_y: {shift_y}')
     return shift_x,shift_y
   
-  def frontalized_video(self,video_path,ref_landmarks,interpolation_mod_chunk=None,only_landmarks_crop=False,align_before_front=False,log_path=None,time_logs=False,extra_landmark_smoothing=None):
+  def frontalized_video(self,video_path,ref_landmarks,interpolation_mod_chunk=None,only_landmarks_crop=False,align_before_front=False,log_path=None,time_logs=False,extra_landmark_smoothing=None,plot_debug=False,plot_every=30,plot_output_dir=None):
+    """
+    Frontalize every detected frame of a video and return the frontalized frames/landmarks.
+
+    Args (debug-plotting related only):
+      plot_debug:      If True, save a 2x2 debug figure every plot_every frames (frontalization path only).
+      plot_every:      Interval between debug figures, in frames. Only used when plot_debug is True.
+      plot_output_dir: Directory where debug PNGs are written. Falls back to 'z_debug_frontalization'.
+    """
 
     def validate_frame_detection(list_to_validate):
       miss_detection = False
@@ -721,6 +731,15 @@ class FaceExtractor:
                                         bottom_right_corner=bottom_right_corner,
                                         landmarks=frontalized_landmarks,
                                         )
+            if plot_debug and (count % plot_every == 0):
+              video_name = os.path.splitext(os.path.basename(video_path))[0]
+              save_path = os.path.join(plot_output_dir or 'z_debug_frontalization',
+                                       f'{video_name}_frame{count}.png')
+              self.plot_frontalization_debug(orig_frame=frame,
+                                             frontalized_img=frontalized_img_SVD,
+                                             original_landmarks=landmarks,
+                                             frontalized_landmarks=frontalized_landmarks,
+                                             save_path=save_path)
             list_frontalized_img.append(frontalized_img_SVD)
             list_frontalized_landmarks.append(frontalized_landmarks)
         else:
@@ -1062,7 +1081,53 @@ class FaceExtractor:
 
     return img,top_left_corner,bottom_right_corner
     # return img
-      
+
+  def plot_frontalization_debug(self, orig_frame, frontalized_img, original_landmarks, frontalized_landmarks, save_path):
+    """
+    Save a 2x2 debug figure summarizing one frame of the frontalization process.
+
+    Args:
+      orig_frame:            Original RGB frame before frontalization. Shape: (H, W, 3).
+      frontalized_img:       Final cropped frontalized image. Shape: (H', W', 3).
+      original_landmarks:    Detected landmarks before frontalization. Shape: (N, 2) or (N, 3), normalized.
+      frontalized_landmarks: Landmarks after the rigid frontalization transform. Shape: (N, 2) or (N, 3), normalized.
+      save_path:             Full path (including .png filename) where the figure is written.
+
+    Returns:
+      None. Writes the figure to save_path as a side effect.
+    """
+    def _mesh_crop(landmarks):
+      mesh, top_left, bottom_right = self.plot_landmarks_triangulation(
+        image=np.zeros_like(orig_frame), landmarks=np.asarray(landmarks), padding=10)
+      # corners can go negative (min - padding); clamp so numpy slicing does not wrap
+      top_left = (max(0, int(top_left[0])), max(0, int(top_left[1])))
+      bottom_right = (max(0, int(bottom_right[0])), max(0, int(bottom_right[1])))
+      return mesh[top_left[1]:bottom_right[1], top_left[0]:bottom_right[0]]
+
+    mesh_before = _mesh_crop(original_landmarks)
+    mesh_after = _mesh_crop(frontalized_landmarks)
+
+    fig, ax = plt.subplots(2, 2, figsize=(12, 12))
+    ax[0, 0].set_title('Landmarks before frontalization')
+    ax[0, 0].imshow(mesh_before)
+    ax[0, 1].set_title('Landmarks after frontalization')
+    ax[0, 1].imshow(mesh_after)
+    ax[1, 0].set_title('Original image')
+    ax[1, 0].imshow(orig_frame)
+    ax[1, 1].set_title('Frontalized image')
+    ax[1, 1].imshow(frontalized_img)
+    for a in ax.ravel():
+      a.axis('off')
+
+    save_dir = os.path.dirname(save_path)
+    if save_dir:
+      os.makedirs(save_dir, exist_ok=True)
+    # thight layout to avoid cutting off titles
+    plt.tight_layout()
+    fig.savefig(save_path)
+    plt.close(fig)
+    print(f'Saved frontalization debug figure in {save_path}')
+
 
 class LandmarkSmoother:
   def __init__(self, method="kalman", window_size=5):
