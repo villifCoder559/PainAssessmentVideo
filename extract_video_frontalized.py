@@ -94,7 +94,10 @@ def process_one_video(video_path):
         only_landmarks_crop=worker_config['only_oval'],
         align_before_front=worker_config.get('align_before_front', False),
         interpolation_mod_chunk=worker_config.get('interpolation_mod_chunk'),
-        extra_landmark_smoothing=None
+        extra_landmark_smoothing=None,
+        plot_debug=worker_config.get('plot_flag', False),
+        plot_every=worker_config.get('plot_every', 30),
+        plot_output_dir=worker_config.get('plot_output_dir')
       )
   except Exception as e:
     print(f'Error processing video {video_path}: {repr(e)}')
@@ -170,7 +173,9 @@ def prepare_video_list(csv_path, video_folder_path, list_target_video, from_, to
 def main(generate_video, csv_path, path_folder_output, list_target_video,
          path_ref_landmarks, global_path, from_, to_, interpolation_mod_chunk,
          video_folder_path, align_before_front, log_error_path=None,
-         only_oval=False, workers=4, face_confidence=0.1):
+         only_oval=False, workers=4, face_confidence=0.1,
+         plot_flag=False, plot_every=30, plot_output_dir=None,
+         single_video_path=None):
 
   csv_path = os.path.expanduser(csv_path)
   path_folder_output = os.path.expanduser(path_folder_output)
@@ -178,8 +183,11 @@ def main(generate_video, csv_path, path_folder_output, list_target_video,
     log_error_path = os.path.join(path_folder_output, 'frontalize_errors.log')
 
   ref_landmarks = load_reference_landmarks(path_ref_landmarks)
-  list_video_path = prepare_video_list(csv_path, video_folder_path,
-                                       list_target_video, from_, to_)
+  if single_video_path is not None:
+    list_video_path = [os.path.expanduser(single_video_path)]
+  else:
+    list_video_path = prepare_video_list(csv_path, video_folder_path,
+                                         list_target_video, from_, to_)
 
   if len(list_video_path) == 0:
     print("No videos to process. Exiting.")
@@ -198,7 +206,10 @@ def main(generate_video, csv_path, path_folder_output, list_target_video,
     'align_before_front': align_before_front,
     'interpolation_mod_chunk': interpolation_mod_chunk,
     'global_path': global_path,
-    'face_confidence': face_confidence
+    'face_confidence': face_confidence,
+    'plot_flag': plot_flag,
+    'plot_every': plot_every,
+    'plot_output_dir': plot_output_dir if plot_output_dir is not None else os.path.join(path_folder_output, 'debug_plots')
   }
 
   Path(path_folder_output).mkdir(parents=True, exist_ok=True)
@@ -271,6 +282,14 @@ if __name__ == '__main__':
                       help='Number of worker processes for parallel execution')
   parser.add_argument('--face_confidence', type=float, default=0.1,
                       help='Minimum confidence for face detection/tracking')
+  parser.add_argument('--plot_flag', action='store_true',
+                      help='Save a 2x2 frontalization debug figure every --plot_every frames (frontalization path only)')
+  parser.add_argument('--plot_every', type=int, default=30,
+                      help='Interval (in frames) between debug figures when --plot_flag is set')
+  parser.add_argument('--plot_output_dir', type=str, default=None,
+                      help='Directory for debug PNGs. Defaults to <pfo>/debug_plots')
+  parser.add_argument('--video_path', type=str, default=None,
+                      help='Process a single explicit video path, bypassing the --csv/--vfp/--ltv lookup')
   args = parser.parse_args()
 
   if args.ltv and args.ltv[0].endswith('.txt'):
@@ -310,4 +329,8 @@ if __name__ == '__main__':
        interpolation_mod_chunk=interp,
        video_folder_path=args.vfp,
        face_confidence=args.face_confidence,
+       plot_flag=args.plot_flag,
+       plot_every=args.plot_every,
+       plot_output_dir=args.plot_output_dir,
+       single_video_path=args.video_path,
        workers=args.workers)
