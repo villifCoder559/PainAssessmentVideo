@@ -6,6 +6,8 @@
 #   ./multiple_feature_extraction.sh 0 5 --dataset unbc --model DFER shift
 #   ./multiple_feature_extraction.sh 0 5 --dataset biovid --model S all
 #   ./multiple_feature_extraction.sh 0 5 --dataset biovid --model VJEPA2_1 all
+#   ./multiple_feature_extraction.sh 0 5 --dataset biovid --model G all
+#   ./multiple_feature_extraction.sh 0 5 --dataset biovid --model G --prefix my_feats_G --emb_red none shift
 
 # same saving_folder_path is managed in extract_feature.py to avoid overwriting features
 # when multiple augmentations are applied together (adds $int_id to the path)
@@ -13,14 +15,18 @@ GPU_ID=$1
 N_RUNS=$2
 shift 2
 
-# Parse named flags --dataset and --model; remaining args are configs
+# Parse named flags --dataset, --model, --prefix, --emb_red; remaining args are configs
 DATASET="biovid"
 MODEL="S"
+PREFIX_OVERRIDE=""
+EMB_RED_OVERRIDE=""
 CONFIGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dataset) DATASET="$2"; shift 2 ;;
-    --model)   MODEL="$2";   shift 2 ;;
+    --dataset) DATASET="$2";          shift 2 ;;
+    --model)   MODEL="$2";            shift 2 ;;
+    --prefix)  PREFIX_OVERRIDE="$2";  shift 2 ;;
+    --emb_red) EMB_RED_OVERRIDE="$2"; shift 2 ;;
     *)         CONFIGS+=("$1"); shift ;;
   esac
 done
@@ -57,13 +63,22 @@ case "$DATASET" in
     ;;
 esac
 
+# Apply optional CLI overrides for prefix / embedding reduction
+if [ -n "$PREFIX_OVERRIDE" ]; then
+  SAVING_NAME_PREFIX="$PREFIX_OVERRIDE"
+fi
+if [ -n "$EMB_RED_OVERRIDE" ]; then
+  EMB_RED="$EMB_RED_OVERRIDE"
+fi
+
 # Derive model-specific identifiers
 case "$MODEL" in
   S)        MODEL_FOLDER="VideoMaev2_S"; MODEL_TYPE_ARG="S"          ;;
+  G)        MODEL_FOLDER="VideoMaev2_G"; MODEL_TYPE_ARG="G"          ;;
   DFER)     MODEL_FOLDER="DFER";         MODEL_TYPE_ARG="DFER"       ;;
   VJEPA2_1) MODEL_FOLDER="VJEPA2_1_B";   MODEL_TYPE_ARG="vjepa2_1_B" ;;
   *)
-    echo "Unknown model: $MODEL (valid: S, DFER, VJEPA2_1)"
+    echo "Unknown model: $MODEL (valid: S, G, DFER, VJEPA2_1)"
     exit 1
     ;;
 esac
