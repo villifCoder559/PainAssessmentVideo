@@ -24,6 +24,12 @@ Plots generated:
                                       (green=refinement lowered error; refinement runs only)
   8d. mae_improvement_per_class_refined_vs_projected.png — projected_mae - refined_mae per class
   8e. mae_improvement_per_class_refined_vs_old.png       — old_mae - refined_mae per class
+  8f. mae_improvement_per_class_combined.png — 1x3 panel combining all three source-split
+                                      per-class improvements: (old - projected_before),
+                                      (projected_before - projected_after), and
+                                      (old - projected_after). Panel 1 fills the previously
+                                      missing old-vs-before-refinement comparison
+                                      (refinement runs only)
   4.  confusion_matrix_projected.png — projected model rounded predictions vs ground truth
                                       (skipped when num_classes > 15)
   5.  umap_all_projected.png / umap_all_refined.png — 1×2 UMAP: colored by label and by subject
@@ -94,6 +100,86 @@ def _load_pkl(pkl_path):
   """
   with open(pkl_path, 'rb') as f:
     return pickle.load(f)
+
+
+def _rebase_path(p, saved_root, actual_root):
+  """
+  Rewrite a single path so a path stored under saved_root points under actual_root.
+
+  Used to repair the absolute paths a standalone pkl embeds at creation time after
+  its run folder has been moved. Paths that are not located under saved_root (e.g.
+  external model checkpoints / feature folders) are returned unchanged, since
+  moving the run folder does not move those.
+
+  Args:
+    p           (str): The stored path to rewrite.
+    saved_root  (str): The out_dir recorded in the pkl at creation time.
+    actual_root (str): The directory the pkl is actually loaded from.
+
+  Returns:
+    str: The rebased path if p == saved_root or p is under saved_root; otherwise p
+      unchanged.
+  """
+  ap     = os.path.abspath(p)
+  asaved = os.path.abspath(saved_root)
+  if ap == asaved:
+    return actual_root
+  if ap.startswith(asaved + os.sep):
+    return os.path.join(actual_root, os.path.relpath(ap, asaved))
+  return p
+
+
+def _rebase_standalone_paths(data, pkl_path):
+  """
+  Repair stale out_dir-relative paths in a moved standalone pkl, in memory.
+
+  A standalone pkl is saved inside its run's out_dir as results_<uid>.pkl and
+  embeds absolute paths (out_dir, old_tensors_csv_path, anchors_csv_path, the
+  linear-projector ckpt_path, the refinement *_pth keys) captured at creation
+  time. When the run folder is moved those paths break. This rebases every such
+  path so it points at the directory the pkl was actually loaded from, leaving
+  external paths (model checkpoints, feature folders) untouched. The pkl on disk
+  is never rewritten. Grid-format pkls (which resolve paths from pkl_path) and
+  unmoved standalone pkls are left unchanged.
+
+  Args:
+    data     (dict): Deserialized pkl contents (mutated in place when rebased).
+    pkl_path (str):  Path the pkl was loaded from; its directory is the ground-
+      truth out_dir.
+
+  Returns:
+    dict: The (possibly mutated) data dict.
+  """
+  if _detect_format(data) != 'standalone':
+    return data
+  cfg   = data.get('config_cross_space_projection') or {}
+  saved = cfg.get('out_dir')
+  if not saved:
+    return data
+  actual = os.path.dirname(os.path.abspath(pkl_path))
+  if os.path.abspath(saved) == actual:
+    return data
+
+  print(f'[cross_space_logs] pkl moved: rebasing paths {saved} -> {actual}')
+  # Rebase against the original `saved` root for every key. cfg['out_dir'] is
+  # rewritten last so the other keys still resolve against the original root.
+  targets = [
+    (cfg,  'old_tensors_csv_path'),
+    (cfg,  'anchors_csv_path'),
+    (data, 'old_tensors_csv_path'),
+    (data, 'anchors_csv_path'),
+    (data.get('linear_projector') or {}, 'ckpt_path'),
+    (data.get('refinement') or {}, 'projector_before_pth'),
+    (data.get('refinement') or {}, 'projector_after_pth'),
+    (data.get('refinement') or {}, 'linear_before_pth'),
+    (data.get('refinement') or {}, 'linear_after_pth'),
+    (cfg,  'out_dir'),
+  ]
+  for container, key in targets:
+    val = container.get(key)
+    if isinstance(val, str) and val:
+      container[key] = _rebase_path(val, saved, actual)
+  return data
 
 
 def _get_subject_map(csv_path):
@@ -182,6 +268,24 @@ def _compute_global_mae(preds, labels):
   per_class = _mae_per_group(preds, labels, labels_int)
   macro = float(np.mean([v[0] for v in per_class.values()]))
   return micro, macro
+
+
+def _improvement(a, b):
+  """
+  Improvement from value a to value b for a lower-is-better metric (MAE).
+
+  Args:
+    a (float): Baseline metric value (the earlier stage).
+    b (float): Later-stage metric value.
+
+  Returns:
+    tuple[float, float]: (abs_delta, pct_delta) where
+      abs_delta = a - b  (positive => error reduced => improvement),
+      pct_delta = (a - b) / a * 100  (NaN when a is 0 or non-finite).
+  """
+  d = a - b
+  pct = (d / a * 100.0) if (np.isfinite(a) and a != 0) else float('nan')
+  return d, pct
 
 
 def _single_bar(ax, groups, vals, ylabel, title, color):
@@ -478,6 +582,37 @@ def _refinement_columns(data):
   return out
 
 
+# Swept projector / refinement recipe fields surfaced into summary.csv as lp_* / ref_*
+# columns (from data['linear_projector']['config'] / data['refinement']['config']), so
+# a recipe sweep is comparable at a glance. Absent blocks → None (stable schema).
+_LP_SUMMARY_FIELDS = (
+  'lr', 'batch_size', 'optimizer', 'weight_decay', 'epochs', 'normalize_embeddings', 'loss',
+)
+_REF_SUMMARY_FIELDS = (
+  'lr_projector', 'lr_linear', 'lambda_B', 'lambda_A', 'optimizer',
+  'weight_decay', 'epochs', 'loss', 'batch_size',
+)
+
+
+def _recipe_columns(data):
+  """
+  Extract the swept projector / refinement recipe fields as flat lp_* / ref_* columns.
+
+  Args:
+    data (dict): Deserialized pkl contents (may lack the 'linear_projector' /
+      'refinement' blocks for non-projector / non-refinement runs).
+
+  Returns:
+    dict: One 'lp_<field>' per _LP_SUMMARY_FIELDS and one 'ref_<field>' per
+      _REF_SUMMARY_FIELDS; None where the corresponding block/field is absent.
+  """
+  lp  = (data.get('linear_projector') or {}).get('config') or {}
+  ref = (data.get('refinement') or {}).get('config') or {}
+  out = {f'lp_{f}':  lp.get(f)  for f in _LP_SUMMARY_FIELDS}
+  out.update({f'ref_{f}': ref.get(f) for f in _REF_SUMMARY_FIELDS})
+  return out
+
+
 def _collect_summary_row(data, pkl_path):
   """
   Extract hyperparameters and metrics from a grid-format pkl into a flat dict.
@@ -487,7 +622,9 @@ def _collect_summary_row(data, pkl_path):
     pkl_path (str):  Path to the pkl file (unused, kept for signature consistency).
 
   Returns:
-    dict: Flat row with trial_number, 8 hyperparams, mae, ccc, plus refinement columns.
+    dict: Flat row with trial_number, 8 hyperparams, mae, ccc, refinement columns,
+      the clear before/after comparison block (srctest_* / newtest_*), and the
+      pairwise improvement deltas (srctest_*_delta_*/_pct_*, newtest_*_delta_*/_pct_*).
   """
   p     = data['trial_params']
   m     = data['metrics']
@@ -509,6 +646,8 @@ def _collect_summary_row(data, pkl_path):
     'weighting_method':         p['weighting_method'],
     'temperature':              p.get('temperature'),
     'rbf_sigma':                p['rbf_sigma'],
+    'projector_config':         p.get('projector_config'),
+    'refinement_config':        p.get('refinement_config'),
     'mae':                      m['mae'],
     'ccc':                      m['ccc'],
     'mae_micro':                mae_micro_new,
@@ -517,6 +656,56 @@ def _collect_summary_row(data, pkl_path):
     'mae_macro_old':            mae_macro_old,
   }
   row.update(_refinement_columns(data))
+  row.update(_recipe_columns(data))
+
+  # ── Clear, grouped before/after refinement comparison columns ──
+  # These restate the existing (obscurely-named) refinement metrics under
+  # self-documenting names so the three-stage comparison reads at a glance.
+  # 'srctest_*' is the projected source/old split (= --old_model_csv; run it as
+  # 'test'); 'newtest_*' is the new (target) model's own test split.
+  ref = data.get('refinement') or {}
+  nan = float('nan')
+  # Source/projected split stage values: old (old model on its own split) / before
+  # (projection with the original head) / after (projection with the refined head/
+  # projector). Per metric we also emit the three pairwise improvement deltas
+  # (old-before, old-after, before-after) and their relative % (see _improvement):
+  # positive => MAE went down => improvement.
+  src = {
+    'micro': (mae_micro_old, ref.get('mae_micro_old_oncsv_before', nan),
+              ref.get('mae_micro_old_oncsv_after', nan)),
+    'macro': (mae_macro_old, ref.get('mae_macro_old_oncsv_before', nan),
+              ref.get('mae_macro_old_oncsv_after', nan)),
+  }
+  for m, (old_v, bef_v, aft_v) in src.items():
+    row[f'srctest_mae_{m}_old']    = old_v
+    row[f'srctest_mae_{m}_before'] = bef_v
+    row[f'srctest_mae_{m}_after']  = aft_v
+    for tag, a, b in (('old_before',   old_v, bef_v),
+                      ('old_after',    old_v, aft_v),
+                      ('before_after', bef_v, aft_v)):
+      d, pct = _improvement(a, b)
+      row[f'srctest_mae_{m}_delta_{tag}'] = d
+      row[f'srctest_mae_{m}_pct_{tag}']   = pct
+
+  # New (target) model's own test split: before (native new model) / after (refined
+  # head). No "old" stage here (no old model on the target test). Computed from the
+  # per-sample predictions in new_test_eval (real label scale, see _linear_preds);
+  # the before->after delta is the refinement preserve check on the real test set.
+  nte = ref.get('new_test_eval')
+  if nte:
+    lbl_nt = np.asarray(nte['labels'],       dtype=np.float32)
+    pre_b  = np.asarray(nte['preds_before'], dtype=np.float32).reshape(-1)
+    pre_a  = np.asarray(nte['preds_after'],  dtype=np.float32).reshape(-1)
+    nb_micro, nb_macro = _compute_global_mae(pre_b, lbl_nt)
+    na_micro, na_macro = _compute_global_mae(pre_a, lbl_nt)
+  else:
+    nb_micro = nb_macro = na_micro = na_macro = nan
+  for m, bef_v, aft_v in (('micro', nb_micro, na_micro), ('macro', nb_macro, na_macro)):
+    row[f'newtest_mae_{m}_before'] = bef_v
+    row[f'newtest_mae_{m}_after']  = aft_v
+    d, pct = _improvement(bef_v, aft_v)
+    row[f'newtest_mae_{m}_delta_before_after'] = d
+    row[f'newtest_mae_{m}_pct_before_after']   = pct
   return row
 
 
@@ -3067,13 +3256,19 @@ def _refinement_predictions(data, old_emb):
   """
   Recompute pre-refinement and after-refinement predictions on the source samples.
 
-  Both are rebuilt from the four refinement checkpoints (projector/linear ×
-  before/after) so the result is correct regardless of REFINEMENT_CONFIG's
-  report_after_refinement (which may already have overwritten new_model_tensors).
+  Both are rebuilt from the refinement checkpoints (projector + linear × before/after)
+  so the result is correct regardless of REFINEMENT_CONFIG's report_after_refinement
+  (which may already have overwritten new_model_tensors).
+
+  In projector_linear mode (--refinement 2) the projector is refined too, so each
+  stage uses its own projector_{before,after}_pth. In linear_only mode (--refinement 1)
+  the projection is frozen and projector_{before,after}_pth are None; both stages then
+  reuse the trained projector from the 'linear_projector' bundle (its 'ckpt_path').
 
   Args:
-    data    (dict): Deserialized pkl. Needs a 'refinement' block with the four
-      '*_pth' checkpoint paths and a 'linear_projector' bundle.
+    data    (dict): Deserialized pkl. Needs a 'refinement' block with the
+      linear_{before,after}_pth checkpoints (and, for --refinement 2, the
+      projector_{before,after}_pth checkpoints) plus a 'linear_projector' bundle.
     old_emb (np.ndarray): Raw old-model source embeddings. Shape (N, D_old).
 
   Returns:
@@ -3084,16 +3279,28 @@ def _refinement_predictions(data, old_emb):
   ref = data.get('refinement')
   if not ref:
     return None  # non-refinement run
-  needed = ('projector_before_pth', 'projector_after_pth',
-            'linear_before_pth', 'linear_after_pth')
-  paths = {k: ref.get(k) for k in needed}
-  missing = [k for k, p in paths.items() if not p or not os.path.isfile(p)]
-  if missing:
-    print(f'[WARN] after-refinement MAE-per-class: missing checkpoint(s) {missing} — skipped.')
-    return None
   bundle = _extract_linear_bundle(data)
   if bundle is None:
     print('[WARN] after-refinement MAE-per-class: no linear_projector bundle in pkl — skipped.')
+    return None
+
+  # Linear (regressor) checkpoints are written for both refinement modes; the
+  # projector checkpoints exist only in projector_linear mode. In linear_only mode
+  # the projector is frozen, so fall back to the bundle's trained projector for both
+  # stages (before == after projection; only the linear head differs).
+  linear_before = ref.get('linear_before_pth')
+  linear_after  = ref.get('linear_after_pth')
+  proj_before   = ref.get('projector_before_pth') or bundle.get('ckpt_path')
+  proj_after    = ref.get('projector_after_pth')  or bundle.get('ckpt_path')
+  required = {
+    'linear_before_pth':   linear_before,
+    'linear_after_pth':    linear_after,
+    'projector(before)':   proj_before,
+    'projector(after)':    proj_after,
+  }
+  missing = [k for k, p in required.items() if not p or not os.path.isfile(p)]
+  if missing:
+    print(f'[WARN] after-refinement MAE-per-class: missing checkpoint(s) {missing} — skipped.')
     return None
 
   try:
@@ -3111,10 +3318,10 @@ def _refinement_predictions(data, old_emb):
     denorm = _label_denorm(data)
 
     before_preds = _predict_with_ckpts(
-      old_emb, paths['projector_before_pth'], paths['linear_before_pth'],
+      old_emb, proj_before, linear_before,
       norm_stats, d_old, d_new, kind, activation, denorm)
     after_preds = _predict_with_ckpts(
-      old_emb, paths['projector_after_pth'], paths['linear_after_pth'],
+      old_emb, proj_after, linear_after,
       norm_stats, d_old, d_new, kind, activation, denorm)
     return before_preds, after_preds
   except Exception as exc:
@@ -3128,11 +3335,14 @@ def plot_refinement_mae_per_class(after_preds, before_preds, old_preds, labels,
   Per-class MAE diagnostics for the refined model, mirroring plot_mae_per_class /
   plot_mae_improvement_per_class.
 
-  Writes four PNGs:
+  Writes five PNGs:
     - mae_per_class_refined_bar.png / _box.png: refined-model MAE per class.
     - mae_improvement_per_class_refined_vs_projected.png: projected − refined.
     - mae_improvement_per_class_refined_vs_old.png: old model − refined.
-  Positive improvement bars (green) mean the refined model lowered the error.
+    - mae_improvement_per_class_combined.png: 1×3 panel with all three source-split
+      improvements — (old − before), (before − after), (old − after). Panel 1 is the
+      old-vs-before-refinement comparison not emitted as its own standalone PNG.
+  Positive improvement bars (green) mean the later stage lowered the error.
 
   Args:
     after_preds  (np.ndarray): Shape (N,), refined (after-refinement) predictions.
@@ -3197,6 +3407,30 @@ def plot_refinement_mae_per_class(after_preds, before_preds, old_preds, labels,
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f'Saved: {path}')
+
+  # Combined 1×3 panel — all three source-split per-class improvements on a shared
+  # x-axis. Panel 1 (old − before) is the comparison that has no standalone PNG.
+  combined_groups = sorted(set(old_mae) | set(before_mae) | set(after_mae))
+  panels = (
+    (old_mae,    before_mae,
+     'MAE improvement per pain class (old − projected before refinement)'),
+    (before_mae, after_mae,
+     'MAE improvement per pain class (projected before − after refinement)'),
+    (old_mae,    after_mae,
+     'MAE improvement per pain class (old − refined)'),
+  )
+  fig, axes = plt.subplots(1, 3, figsize=(28, 5))
+  for ax, (base_mae, later_mae, title) in zip(axes, panels):
+    diffs = [
+      base_mae.get(g, (float('nan'), 0))[0] - later_mae.get(g, (float('nan'), 0))[0]
+      for g in combined_groups
+    ]
+    _draw_mae_improvement_bar(ax, combined_groups, diffs, 'Labels', f'{title}{suffix}')
+  plt.tight_layout()
+  path = os.path.join(out_dir, 'mae_improvement_per_class_combined.png')
+  fig.savefig(path, dpi=150)
+  plt.close(fig)
+  print(f'Saved: {path}')
 
 
 def _resolve_new_model_pth(data, fmt, pkl_path):
@@ -3957,6 +4191,7 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
     return generate_logs_search(pkl_path, plot_only_top_k=plot_only_top_k), None
 
   data = _load_pkl(pkl_path)
+  data = _rebase_standalone_paths(data, pkl_path)
   fmt  = _detect_format(data)
 
   if only_projector_plots:
@@ -4032,6 +4267,7 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
   summary_row['mae_micro_old'] = mae_micro_old
   summary_row['mae_macro_old'] = mae_macro_old
   summary_row.update(_refinement_columns(data))
+  summary_row.update(_recipe_columns(data))
   print(f'Global metrics — MAE micro: {mae_micro_new:.4f}  MAE macro: {mae_macro_new:.4f}  CCC: {ccc:.4f}')
 
   plot_predictions_histogram(new_preds, old_preds, labels, out_dir, run_label=run_label)
@@ -4183,7 +4419,7 @@ if __name__ == '__main__':
     ),
   )
   parser.add_argument(
-    '--plot_only_top_k', type=int, default=3,
+    '--plot_only_top_k', type=int, default=5,
     help=(
       'When pkl_path is a folder, generate diagnostic plots only for the '
       'top K trials ranked by MAE ascending. Metrics are still collected '
