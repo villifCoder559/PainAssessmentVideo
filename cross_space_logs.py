@@ -71,6 +71,10 @@ Multi-mode refinement (--refinement 3, pkl key 'refinements'):
   MAE table + grouped per-class old−refined improvement bars). Single-mode runs
   (--refinement 1/2) keep the legacy unsuffixed filenames and the combined dashboard.png.
   Grid sweeps treat refine_mode as a sweep axis → mae_by_refine_mode.png at the search level.
+  Training-recipe sweeps additionally emit mae_by_<recipe>_per_interp.png at the search level
+  (one file per swept projector lp_* / refinement ref_* hyperparameter — lr, batch_size,
+  optimizer, weight_decay, epochs, normalize_embeddings, loss — with one MAE bar row per
+  interpolation_similarity value).
 
 Usage:
   python3 cross_space_logs.py --pkl_path <path>
@@ -290,6 +294,44 @@ def _compute_global_mae(preds, labels):
   per_class = _mae_per_group(preds, labels, labels_int)
   macro = float(np.mean([v[0] for v in per_class.values()]))
   return micro, macro
+
+
+def _round_clamp_like_training(preds, num_classes: int):
+  """
+  Round predictions half-away-from-zero and clamp to [0, num_classes - 1].
+
+  Reproduces exactly the post-processing the training/test loop applies before it
+  computes `test_l1_error` (head.py: copysign/floor rounding to avoid IEEE banker's
+  rounding, then a clamp to the valid class range). Use this so cross-space MAE can be
+  compared like-for-like against the training-pipeline `test_l1_error`.
+
+  Args:
+    preds       (np.ndarray): Float predictions in the real label scale, shape (N,) or (N, 1).
+    num_classes (int):        Number of classes; upper clamp bound is num_classes - 1
+      (equals the training clamp bound unique_val_classes.max() since
+      num_classes = int(round(labels).max()) + 1).
+
+  Returns:
+    np.ndarray: Rounded+clamped predictions, shape (N,), dtype float32.
+  """
+  arr     = np.asarray(preds, dtype=np.float32).squeeze()
+  rounded = np.copysign(np.floor(np.abs(arr) + 0.5), arr)   # avoid banker's rounding
+  return np.clip(rounded, 0, num_classes - 1).astype(np.float32)
+
+
+def _compute_rounded_mae(preds, labels, num_classes: int):
+  """
+  Micro- and macro-averaged MAE after rounding+clamping preds like the training test loop.
+
+  Args:
+    preds       (np.ndarray): Shape (N,), float predictions in the real label scale.
+    labels      (np.ndarray): Shape (N,), float ground-truth labels.
+    num_classes (int):        Number of classes (see _round_clamp_like_training).
+
+  Returns:
+    tuple[float, float]: (micro_mae, macro_mae) computed on the rounded+clamped preds.
+  """
+  return _compute_global_mae(_round_clamp_like_training(preds, num_classes), labels)
 
 
 def _improvement(a, b):
@@ -722,14 +764,24 @@ def _collect_summary_row(data, pkl_path):
     pre_a  = np.asarray(nte['preds_after'],  dtype=np.float32).reshape(-1)
     nb_micro, nb_macro = _compute_global_mae(pre_b, lbl_nt)
     na_micro, na_macro = _compute_global_mae(pre_a, lbl_nt)
+    # Rounded+clamped siblings (match the training `test_l1_error` definition). This new-model
+    # own-test split is the most direct analog of summary.csv's all_test_l1_error.
+    nt_classes = int(np.round(lbl_nt).max()) + 1
+    nb_micro_r, nb_macro_r = _compute_rounded_mae(pre_b, lbl_nt, nt_classes)
+    na_micro_r, na_macro_r = _compute_rounded_mae(pre_a, lbl_nt, nt_classes)
   else:
     nb_micro = nb_macro = na_micro = na_macro = nan
-  for m, bef_v, aft_v in (('micro', nb_micro, na_micro), ('macro', nb_macro, na_macro)):
+    nb_micro_r = nb_macro_r = na_micro_r = na_macro_r = nan
+  for m, bef_v, aft_v, bef_r, aft_r in (
+      ('micro', nb_micro, na_micro, nb_micro_r, na_micro_r),
+      ('macro', nb_macro, na_macro, nb_macro_r, na_macro_r)):
     row[f'newtest_mae_{m}_before'] = bef_v
     row[f'newtest_mae_{m}_after']  = aft_v
     d, pct = _improvement(bef_v, aft_v)
     row[f'newtest_mae_{m}_delta_before_after'] = d
     row[f'newtest_mae_{m}_pct_before_after']   = pct
+    row[f'newtest_mae_{m}_before_rounded'] = bef_r
+    row[f'newtest_mae_{m}_after_rounded']  = aft_r
   return row
 
 
@@ -2081,6 +2133,36 @@ def _refine_to_float(v):
     return float('nan')
 
 
+def _newtest_preserve_mae(block, which):
+  """
+  Preserve MAE on the new model's TEST split for the 'before'/'after' refinement stage.
+
+  Recomputes (micro, macro) from the per-sample predictions in block['new_test_eval'] (the
+  new model's own TEST split) so the value matches summary.csv's
+  newtest_mae_{micro,macro}_{which} columns. The stored mae_{micro,macro}_new_test_{which}
+  scalars carry the same name but are computed on new_eval_split (default 'val'); they are
+  used only as a fallback when new_test_eval is unavailable (e.g. older pkls).
+
+  Args:
+    block: A refinement block (pkl 'refinement' or 'refinements'[mode]). dict.
+    which: Refinement stage, 'before' or 'after'. str.
+
+  Returns:
+    tuple[float, float]: (micro_mae, macro_mae) on the test split, or the stored val-split
+      scalars / NaNs when new_test_eval is missing.
+  """
+  nte = (block or {}).get('new_test_eval') or {}
+  preds = nte.get(f'preds_{which}')
+  lbls  = nte.get('labels')
+  if preds is not None and lbls is not None:
+    preds = np.asarray(preds, dtype=np.float32).reshape(-1)
+    lbls  = np.asarray(lbls,  dtype=np.float32).reshape(-1)
+    if preds.size and preds.size == lbls.size:
+      return _compute_global_mae(preds, lbls)
+  return (_refine_to_float(block.get(f'mae_micro_new_test_{which}')),
+          _refine_to_float(block.get(f'mae_macro_new_test_{which}')))
+
+
 def _refinement_curve_arrays(per_epoch):
   """
   Convert the refinement per-epoch metric list into per-key numpy arrays.
@@ -2165,13 +2247,17 @@ def _format_refinement_config_text(refine_block):
 
   rows.append('')
   rows.append('── MAE (before → after) ──')
-  for label, kb, ka in (
-    ('old_oncsv micro', 'mae_micro_old_oncsv_before', 'mae_micro_old_oncsv_after'),
-    ('old_oncsv macro', 'mae_macro_old_oncsv_before', 'mae_macro_old_oncsv_after'),
-    ('new_test  micro', 'mae_micro_new_test_before',  'mae_micro_new_test_after'),
-    ('new_test  macro', 'mae_macro_new_test_before',  'mae_macro_new_test_after'),
+  # new_test rows recomputed on the new model's TEST split (new_test_eval), matching
+  # summary.csv's newtest_mae_* (the stored mae_*_new_test_* scalars are on the val split).
+  nt_b = _newtest_preserve_mae(refine_block, 'before')
+  nt_a = _newtest_preserve_mae(refine_block, 'after')
+  for label, vb, va in (
+    ('old_oncsv micro', refine_block.get('mae_micro_old_oncsv_before'), refine_block.get('mae_micro_old_oncsv_after')),
+    ('old_oncsv macro', refine_block.get('mae_macro_old_oncsv_before'), refine_block.get('mae_macro_old_oncsv_after')),
+    ('new_test  micro', nt_b[0], nt_a[0]),
+    ('new_test  macro', nt_b[1], nt_a[1]),
   ):
-    rows.append(f'{label:<16s} {_f(refine_block.get(kb))} → {_f(refine_block.get(ka))}')
+    rows.append(f'{label:<16s} {_f(vb)} → {_f(va)}')
 
   return '\n'.join(rows)
 
@@ -2331,16 +2417,20 @@ def plot_refinement_before_after(refine_block, out_dir, run_label: str = '',
     out_dir      (str):  Directory in which to write the PNG.
     run_label    (str):  Suptitle suffix identifying the run.
   """
+  # new-test groups: recompute on the new model's TEST split (new_test_eval) so the bars
+  # match summary.csv's newtest_mae_* rather than the val-split stored scalars.
+  nt_b = _newtest_preserve_mae(refine_block, 'before')
+  nt_a = _newtest_preserve_mae(refine_block, 'after')
   mae_groups = (
-    ('old-csv\nmicro',  'mae_micro_old_oncsv_before', 'mae_micro_old_oncsv_after'),
-    ('old-csv\nmacro',  'mae_macro_old_oncsv_before', 'mae_macro_old_oncsv_after'),
-    ('new-test\nmicro', 'mae_micro_new_test_before',  'mae_micro_new_test_after'),
-    ('new-test\nmacro', 'mae_macro_new_test_before',  'mae_macro_new_test_after'),
+    ('old-csv\nmicro',  refine_block.get('mae_micro_old_oncsv_before'), refine_block.get('mae_micro_old_oncsv_after')),
+    ('old-csv\nmacro',  refine_block.get('mae_macro_old_oncsv_before'), refine_block.get('mae_macro_old_oncsv_after')),
+    ('new-test\nmicro', nt_b[0], nt_a[0]),
+    ('new-test\nmacro', nt_b[1], nt_a[1]),
   )
   labels, before_vals, after_vals = [], [], []
-  for lab, kb, ka in mae_groups:
-    b = _refine_to_float(refine_block.get(kb))
-    a = _refine_to_float(refine_block.get(ka))
+  for lab, vb, va in mae_groups:
+    b = _refine_to_float(vb)
+    a = _refine_to_float(va)
     if not (np.isfinite(b) or np.isfinite(a)):
       print(f'[WARN] refinement before/after: {lab.replace(chr(10), " ")} both NaN — skipping group.')
       continue
@@ -2486,6 +2576,70 @@ def plot_refinement_diagnostics(refine_block, out_dir, run_label: str = '', file
 
 # ── search-level summary plots ────────────────────────────────────────────────
 
+def _annotate_bar_counts(ax, x, counts, y_top):
+  """
+  Print the per-bar trial count ('n=NN') near the base inside each bar.
+
+  The label is placed just above the x-axis (well inside a typical MAE bar) in
+  white bold so it reads on the steelblue fill and never collides with the mean
+  value printed at the bar tip.
+
+  Args:
+    ax     (matplotlib.axes.Axes): Axes the bars were drawn on.
+    x      (np.ndarray): Shape (G,), x positions of the bars (one per count).
+    counts (array-like[int]): Number of trials aggregated into each bar (same order as x).
+    y_top  (float): Shared upper y-limit; the label sits at a small fraction of it
+      above the axis so it falls inside the bar near its base.
+  """
+  y = y_top * 0.025
+  for xi, n in zip(x, counts):
+    ax.text(xi, y, f'n={int(n)}', ha='center', va='bottom',
+            fontsize=7, color='white', fontweight='bold')
+
+
+def _draw_mae_summary_bar(ax, vals, means, yerr_lo, yerr_hi, y_top, xlabel, title,
+                          counts=None):
+  """
+  Draw a mean-MAE bar chart with min/max whiskers into a single pre-existing axes.
+
+  Renders the recurring search-summary block: one steelblue bar per value, a
+  black [min, max] error whisker per bar, the mean printed at each bar tip, and a
+  shared y-axis top so multiple such axes are directly comparable. When counts are
+  supplied the per-bar trial count is also printed inside each bar near its base.
+
+  Args:
+    ax      (matplotlib.axes.Axes): Axes to draw on.
+    vals    (list): Group labels for the x-axis (one per bar).
+    means   (np.ndarray): Shape (G,), mean MAE per value (bar heights).
+    yerr_lo (np.ndarray): Shape (G,), mean - min per value (lower whisker length).
+    yerr_hi (np.ndarray): Shape (G,), max - mean per value (upper whisker length).
+    y_top   (float): Fixed upper y-limit shared across plots for comparability.
+    xlabel  (str): X-axis label.
+    title   (str): Plot title.
+    counts  (array-like[int] | None): Number of trials per bar (same order as vals).
+      When provided, 'n=NN' is annotated near the base of each bar.
+  """
+  x    = np.arange(len(vals))
+  bars = ax.bar(x, means, color='steelblue', alpha=0.85)
+  ax.errorbar(x, means, yerr=[yerr_lo, yerr_hi],
+              fmt='none', color='black', capsize=5, linewidth=1.5)
+  for bar in bars:
+    ax.text(
+      bar.get_x() + bar.get_width() / 2,
+      bar.get_height() + y_top * 0.01,
+      f'{bar.get_height():.3f}',
+      ha='center', va='bottom', fontsize=8,
+    )
+  ax.set_ylim(0, y_top)
+  ax.set_xticks(x)
+  ax.set_xticklabels([str(v) for v in vals], rotation=30, ha='right')
+  ax.set_xlabel(xlabel)
+  ax.set_ylabel('MAE')
+  ax.set_title(title)
+  if counts is not None:
+    _annotate_bar_counts(ax, x, counts, y_top)
+
+
 def plot_hyperparam_mae_summary(df, out_dir):
   """
   For each hyperparameter with ≥ 2 distinct values, write mae_by_<param>.png.
@@ -2512,7 +2666,7 @@ def plot_hyperparam_mae_summary(df, out_dir):
   for col in active:
     grp = (
       df.groupby(col)['mae']
-      .agg(mean='mean', lo='min', hi='max')
+      .agg(mean='mean', lo='min', hi='max', n='count')
       .reset_index()
       .sort_values(col)
     )
@@ -2533,6 +2687,7 @@ def plot_hyperparam_mae_summary(df, out_dir):
         f'{bar.get_height():.3f}',
         ha='center', va='bottom', fontsize=8,
       )
+    _annotate_bar_counts(ax, x, grp['n'].to_numpy(), y_top)
     ax.set_ylim(0, y_top)
     ax.set_xticks(x)
     ax.set_xticklabels([str(v) for v in vals], rotation=30, ha='right')
@@ -2711,6 +2866,92 @@ def plot_scale_interp_heatmap(df, out_dir):
     print(f'Saved: {path}')
 
 
+def plot_anchor_interp_heatmap(df, out_dir):
+  """
+  Write one PNG showing how MAE varies jointly with anchor_selection_type and
+  interpolation_similarity.
+
+  Mirrors plot_scale_interp_heatmap but uses the categorical anchor_selection_type
+  column on the y-axis (in the slot a scale parameter like rbf_sigma would occupy).
+  Layout: rows = weighting_method, cols = num_anchors. Inside each subplot:
+  x-axis = interpolation_similarity, y-axis = anchor_selection_type. Cell colour
+  encodes mean MAE (mean over every other swept param, including rbf_sigma /
+  temperature); empty combinations are shown as white. Skipped when
+  anchor_selection_type has < 2 distinct values (nothing to compare).
+
+  Args:
+    df      (pd.DataFrame): Summary DataFrame with trial metrics and hyperparams.
+    out_dir (str): Directory to write the plot into.
+  """
+  base_needed = {'interpolation_similarity', 'weighting_method', 'num_anchors',
+                 'anchor_selection_type', 'mae'}
+  if not base_needed.issubset(df.columns):
+    return
+  if df['anchor_selection_type'].nunique() < 2:
+    return
+
+  vmin = float(df['mae'].min())
+  vmax = float(df['mae'].max())
+
+  wm_vals   = sorted(df['weighting_method'].unique())
+  anc_vals  = sorted(df['num_anchors'].unique())
+  is_vals   = sorted(df['interpolation_similarity'].unique())
+  asel_vals = sorted(df['anchor_selection_type'].unique())
+
+  n_rows, n_cols = len(wm_vals), len(anc_vals)
+
+  cell_w = max(5, len(is_vals)   * 0.9 + 1.5)
+  cell_h = max(4, len(asel_vals) * 0.6 + 1.5)
+  fig, axes = plt.subplots(n_rows, n_cols,
+                           figsize=(n_cols * cell_w, n_rows * cell_h),
+                           squeeze=False)
+
+  im_ref = None
+  for ri, wm in enumerate(wm_vals):
+    for ci, anc in enumerate(anc_vals):
+      ax = axes[ri][ci]
+      subset = df[(df['weighting_method'] == wm) & (df['num_anchors'] == anc)]
+      pivot = (
+        subset.groupby(['anchor_selection_type', 'interpolation_similarity'])['mae']
+        .mean()
+        .unstack('interpolation_similarity')
+        .reindex(index=asel_vals, columns=is_vals)
+      )
+      data = pivot.to_numpy(dtype=float)
+
+      im = ax.imshow(data, aspect='auto', cmap='RdYlGn_r', vmin=vmin, vmax=vmax,
+                     origin='lower')
+      im_ref = im
+
+      ax.set_xticks(range(len(is_vals)))
+      ax.set_xticklabels(is_vals, rotation=45, ha='right')
+      ax.set_yticks(range(len(asel_vals)))
+      ax.set_yticklabels([str(v) for v in asel_vals])
+      ax.set_xlabel('interpolation_similarity')
+      ax.set_ylabel('anchor_selection_type')
+      ax.set_title(f'weighting={wm} / num_anchors={anc}')
+
+      for r in range(len(asel_vals)):
+        for c in range(len(is_vals)):
+          val = data[r, c]
+          if not np.isnan(val):
+            ax.text(c, r, f'{val:.3f}', ha='center', va='center',
+                    fontsize=7, color='black')
+
+  if im_ref is not None:
+    fig.colorbar(im_ref, ax=axes, label='MAE', shrink=0.6)
+
+  plt.suptitle(
+    'MAE heatmap: anchor_selection_type × interpolation_similarity\n'
+    '(rows = weighting_method, cols = num_anchors)',
+    fontsize=11,
+  )
+  path = os.path.join(out_dir, 'heatmap_anchor_selection_type_interpolation_similarity.png')
+  fig.savefig(path, dpi=150, bbox_inches='tight')
+  plt.close(fig)
+  print(f'Saved: {path}')
+
+
 def plot_mae_anchors_per_interp_sim(df, out_dir):
   """
   For each distinct interpolation_similarity value, write one bar-chart PNG
@@ -2753,7 +2994,7 @@ def plot_mae_anchors_per_interp_sim(df, out_dir):
 
       grp = (
         subset.groupby('num_anchors')['mae']
-        .agg(mean='mean', lo='min', hi='max')
+        .agg(mean='mean', lo='min', hi='max', n='count')
         .reset_index()
         .sort_values('num_anchors')
       )
@@ -2773,6 +3014,7 @@ def plot_mae_anchors_per_interp_sim(df, out_dir):
           f'{bar.get_height():.3f}',
           ha='center', va='bottom', fontsize=8,
         )
+      _annotate_bar_counts(ax, x, grp['n'].to_numpy(), y_top)
       ax.set_ylim(0, y_top)
       ax.set_xticks(x)
       ax.set_xticklabels([str(v) for v in vals])
@@ -2786,6 +3028,106 @@ def plot_mae_anchors_per_interp_sim(df, out_dir):
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f'Saved: {path}')
+
+
+def plot_recipe_mae_per_interp_sim(df, out_dir):
+  """
+  For each swept training-recipe hyperparameter, write one bar-chart PNG showing
+  MAE as a function of that hyperparameter, faceted by interpolation_similarity.
+
+  Covers both the projector recipe (lp_* columns, e.g. lp_lr, lp_batch_size,
+  lp_optimizer, lp_weight_decay, lp_epochs, lp_normalize_embeddings, lp_loss) and
+  the refinement recipe (ref_* columns). Only columns present in df with >= 2
+  distinct non-null values are plotted, so a sweep that touched only the projector
+  recipe emits only lp_* files (and vice-versa). One subplot row per
+  interpolation_similarity value (mlp / linear / procrustes / ...) gives a complete
+  view of each recipe knob for each interpolation choice. Bar height = mean MAE;
+  error whiskers span [min, max]. Y-axis top is fixed to df['mae'].max() * 1.05
+  across all subplots and files so every PNG shares the same scale.
+
+  Interpolation values with no rows for a given column (e.g. procrustes trains no
+  projector, so its lp_* fields are all None) are dropped from that file's rows.
+
+  Args:
+    df      (pd.DataFrame): Summary DataFrame with trial metrics, the lp_*/ref_*
+      recipe columns and an interpolation_similarity column.
+    out_dir (str): Directory to write the plots into.
+  """
+  if df.empty or 'mae' not in df.columns or 'interpolation_similarity' not in df.columns:
+    return
+
+  recipe_cols = (
+    [f'lp_{f}'  for f in _LP_SUMMARY_FIELDS] +
+    [f'ref_{f}' for f in _REF_SUMMARY_FIELDS]
+  )
+  active = [c for c in recipe_cols if c in df.columns and df[c].nunique(dropna=True) >= 2]
+  if not active:
+    return
+
+  is_vals = sorted(df['interpolation_similarity'].dropna().unique())
+  y_top   = float(df['mae'].max()) * 1.05
+
+  for col in active:
+    sub_all        = df[df[col].notna()]
+    interp_present = [iv for iv in is_vals
+                      if not sub_all[sub_all['interpolation_similarity'] == iv].empty]
+    if not interp_present:
+      continue
+
+    n_vals    = sub_all[col].nunique()
+    n_rows    = len(interp_present)
+    fig, axes = plt.subplots(
+      n_rows, 1,
+      figsize=(max(8, n_vals * 1.2), 5 * n_rows),
+      squeeze=False,
+    )
+
+    for ri, iv in enumerate(interp_present):
+      ax     = axes[ri][0]
+      subset = sub_all[sub_all['interpolation_similarity'] == iv]
+      grp = (
+        subset.groupby(col)['mae']
+        .agg(mean='mean', lo='min', hi='max', n='count')
+        .reset_index()
+        .sort_values(col)
+      )
+      vals    = grp[col].tolist()
+      means   = grp['mean'].to_numpy()
+      yerr_lo = (grp['mean'] - grp['lo']).to_numpy()
+      yerr_hi = (grp['hi']   - grp['mean']).to_numpy()
+      _draw_mae_summary_bar(
+        ax, vals, means, yerr_lo, yerr_hi, y_top,
+        xlabel=col, title=f'interp_sim={iv}', counts=grp['n'].to_numpy(),
+      )
+
+    plt.tight_layout()
+    path = os.path.join(out_dir, f'mae_by_{col}_per_interp.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'Saved: {path}')
+
+
+def _emit_summary_plots(df, out_dir):
+  """
+  Run the full set of search-level summary plots for df into out_dir.
+
+  Single source of truth for which summary plots are produced, shared by the
+  per-folder search_summary/ emitter (generate_search_summary_plots) and the
+  cross-folder global_summary/ block (generate_logs_multi) so both always emit
+  the identical plot set — including the recipe MAE plots and any plot added
+  here later. Creating the directory is the caller's responsibility.
+
+  Args:
+    df      (pd.DataFrame): Summary DataFrame (all trials) with metrics,
+      hyperparameter and lp_*/ref_* recipe columns.
+    out_dir (str): Existing directory to write the plots into.
+  """
+  plot_hyperparam_mae_summary(df, out_dir)
+  plot_temperature_anchors_heatmap(df, out_dir)
+  plot_scale_interp_heatmap(df, out_dir)
+  plot_anchor_interp_heatmap(df, out_dir)
+  plot_mae_anchors_per_interp_sim(df, out_dir)
+  plot_recipe_mae_per_interp_sim(df, out_dir)
 
 
 def generate_search_summary_plots(df, search_dir):
@@ -2802,10 +3144,7 @@ def generate_search_summary_plots(df, search_dir):
   summary_dir = os.path.join(search_dir, 'search_summary')
   os.makedirs(summary_dir, exist_ok=True)
   print(f'[cross_space_logs] Writing search summary plots to {summary_dir}')
-  plot_hyperparam_mae_summary(df, summary_dir)
-  plot_temperature_anchors_heatmap(df, summary_dir)
-  plot_scale_interp_heatmap(df, summary_dir)
-  plot_mae_anchors_per_interp_sim(df, summary_dir)
+  _emit_summary_plots(df, summary_dir)
   return summary_dir
 
 
@@ -2975,6 +3314,12 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
   rows_data.append(['MAE micro / macro (projected)', f'{_pair(src_projected[0])} / {_pair(src_projected[1])}'])
   if src_refined is not None:
     rows_data.append(['MAE micro / macro (refined)', f'{_pair(src_refined[0])} / {_pair(src_refined[1])}'])
+  # Rounded+clamped MAE (matches the training `test_l1_error` definition) shown alongside
+  # the continuous values for direct comparison against summary.csv all_test_l1_error.
+  old_r = _compute_rounded_mae(old_preds, labels, num_classes)
+  new_r = _compute_rounded_mae(new_preds, labels, num_classes)
+  rows_data.append(['MAE micro / macro rounded (old)',       f'{_pair(old_r[0])} / {_pair(old_r[1])}'])
+  rows_data.append(['MAE micro / macro rounded (projected)', f'{_pair(new_r[0])} / {_pair(new_r[1])}'])
   # Preserve (new-model-on-test) MAE before vs after refinement, when available.
   pre_b = stages.get('preserve_before')
   pre_a = stages.get('preserve_after')
@@ -3075,8 +3420,7 @@ def plot_refinement_modes_comparison(refine_items, refine_preds_by_mode, old_pre
   # take it from the first block that carries it.
   pb_micro = pb_macro = float('nan')
   for _m, _blk in refine_items:
-    _v = (_refine_to_float(_blk.get('mae_micro_new_test_before')),
-          _refine_to_float(_blk.get('mae_macro_new_test_before')))
+    _v = _newtest_preserve_mae(_blk, 'before')
     if any(np.isfinite(x) for x in _v):
       pb_micro, pb_macro = _v
       break
@@ -3085,8 +3429,7 @@ def plot_refinement_modes_comparison(refine_items, refine_preds_by_mode, old_pre
     rp = refine_preds_by_mode.get(_mode)
     src_micro, src_macro = (_compute_global_mae(np.asarray(rp[1]).reshape(-1), labels)
                             if rp is not None else (float('nan'), float('nan')))
-    pa = (_refine_to_float(_blk.get('mae_micro_new_test_after')),
-          _refine_to_float(_blk.get('mae_macro_new_test_after')))
+    pa = _newtest_preserve_mae(_blk, 'after')
     rows.append([f'refined: {_mode}', _fmt(src_micro), _fmt(src_macro), _fmt(pa[0]), _fmt(pa[1])])
 
   # --- grouped per-class improvement (old − refined) per mode ---
@@ -3717,13 +4060,44 @@ def plot_refinement_mae_per_class(after_preds, before_preds, old_preds, labels,
   print(f'Saved: {path}')
 
 
+def _new_model_pth_from_config(config_path, search_root):
+  """
+  Read new_model_pth from a cross_space_projection --config YAML.
+
+  Recovers the new-model checkpoint for grid searches launched via `--config <yaml>`
+  (whose best_config.txt script_cmd carries no explicit --new_model_pth token). The
+  YAML path recorded in script_cmd is relative to the launch CWD (repo root); it is
+  also tried relative to the search root as a fallback for moved run folders.
+
+  Args:
+    config_path (str): The --config value parsed from best_config.txt's script_cmd.
+    search_root (str): The grid-search root dir (fallback base for config_path).
+
+  Returns:
+    str | None: The YAML's new_model_pth, or None when the YAML/key is missing.
+  """
+  import yaml
+  for candidate in (config_path, os.path.join(search_root, config_path)):
+    if candidate and os.path.isfile(candidate):
+      try:
+        with open(candidate) as f:
+          ycfg = yaml.safe_load(f) or {}
+        return ycfg.get('new_model_pth')
+      except Exception as exc:
+        print(f'[cross_space_logs] failed to read new_model_pth from {candidate}: {exc}')
+        return None
+  return None
+
+
 def _resolve_new_model_pth(data, fmt, pkl_path):
   """
   Best-effort lookup of the path to the new model's checkpoint.
 
   Standalone pkls store it under config_cross_space_projection. Grid trial
   pkls do not — for those we parse the search root's best_config.txt to
-  recover --new_model_pth from the saved script_cmd line.
+  recover --new_model_pth from the saved script_cmd line. Searches launched from
+  a YAML (--config <yaml>) carry no --new_model_pth token, so as a fallback the
+  referenced YAML's top-level new_model_pth key is read instead.
 
   Args:
     data     (dict): Deserialized pkl contents.
@@ -3740,6 +4114,7 @@ def _resolve_new_model_pth(data, fmt, pkl_path):
   cfg_txt = os.path.join(search_root, 'best_config.txt')
   if not os.path.isfile(cfg_txt):
     return None
+  config_path = None
   with open(cfg_txt) as f:
     for line in f:
       if not line.startswith('script_cmd:'):
@@ -3748,6 +4123,12 @@ def _resolve_new_model_pth(data, fmt, pkl_path):
       for i, tok in enumerate(tokens):
         if tok == '--new_model_pth' and i + 1 < len(tokens):
           return tokens[i + 1]
+        if tok == '--config' and i + 1 < len(tokens):
+          config_path = tokens[i + 1]
+  # Grid searches launched from a YAML (--config) carry no --new_model_pth token;
+  # recover it from the YAML's top-level new_model_pth key.
+  if config_path:
+    return _new_model_pth_from_config(config_path, search_root)
   return None
 
 
@@ -4365,7 +4746,7 @@ def generate_logs_search(search_dir, plot_only_top_k=None):
 
 # ── multi-folder entry point ─────────────────────────────────────────────────
 
-def generate_logs_multi(search_dirs, plot_only_top_k=None):
+def generate_logs_multi(search_dirs, plot_only_top_k=None, top_k_scope='global'):
   """
   Process multiple grid-search root folders in a single pass.
 
@@ -4373,15 +4754,21 @@ def generate_logs_multi(search_dirs, plot_only_top_k=None):
   per-folder search_summary/ plots) and then writes a cross-folder global summary
   into a global_summary/ subdirectory inside every input folder.
 
-  When plot_only_top_k is set, the top-K limit is applied globally across all
-  folders combined: only the K trials with the lowest MAE — regardless of which
-  folder they belong to — receive per-trial diagnostic plots.
+  When plot_only_top_k is set, top_k_scope controls how the limit is applied:
+    'global'   — rank all trials from every folder together and plot only the K
+                 trials with the lowest MAE overall (a folder may get 0 plots).
+    'per_path' — rank trials within each input folder independently and plot up
+                 to K per folder, so every folder receives its own best trials.
+  In both scopes, summary CSVs and global plots still cover all trials.
 
   Args:
     search_dirs     (list[str]): Paths to grid-search root folders to process.
     plot_only_top_k (int | None): If set, generate per-trial plots only for the
-      K trials with the lowest MAE across all folders. Summary CSVs and global
+      K best trials by MAE (scope set by top_k_scope). Summary CSVs and global
       plots still cover all trials. If None, plots every trial.
+    top_k_scope     (str): 'global' (default) ranks across all folders combined;
+      'per_path' applies the top-K limit within each folder. Ignored when
+      plot_only_top_k is None.
 
   Returns:
     list[str]: List of search_dir paths processed.
@@ -4418,9 +4805,20 @@ def generate_logs_multi(search_dirs, plot_only_top_k=None):
 
   # Phase 2: determine which trials to plot
   if plot_only_top_k is not None:
-    k = min(plot_only_top_k, len(global_df))
-    plot_paths = set(global_df.head(k)['_pkl_path'])
-    print(f'[cross_space_logs] Plotting top {k} trial(s) by MAE (global ranking)...')
+    if top_k_scope == 'per_path':
+      # global_df is sorted by MAE ascending, so head(k) per folder keeps ranking.
+      plot_paths = set()
+      for search_dir in search_dirs:
+        folder_df = global_df[global_df['_search_dir'] == search_dir]
+        if folder_df.empty:
+          continue
+        k = min(plot_only_top_k, len(folder_df))
+        plot_paths.update(folder_df.head(k)['_pkl_path'])
+        print(f'[cross_space_logs] Plotting top {k} trial(s) by MAE for {search_dir}...')
+    else:
+      k = min(plot_only_top_k, len(global_df))
+      plot_paths = set(global_df.head(k)['_pkl_path'])
+      print(f'[cross_space_logs] Plotting top {k} trial(s) by MAE (global ranking)...')
   else:
     plot_paths = set(global_df['_pkl_path'])
 
@@ -4452,10 +4850,7 @@ def generate_logs_multi(search_dirs, plot_only_top_k=None):
     clean_global_df.to_csv(csv_path, index=False)
     print(f'Saved global summary: {csv_path}')
     print(f'[cross_space_logs] Writing global summary plots to {global_out_dir}')
-    plot_hyperparam_mae_summary(clean_global_df, global_out_dir)
-    plot_temperature_anchors_heatmap(clean_global_df, global_out_dir)
-    plot_scale_interp_heatmap(clean_global_df, global_out_dir)
-    plot_mae_anchors_per_interp_sim(clean_global_df, global_out_dir)
+    _emit_summary_plots(clean_global_df, global_out_dir)
 
   return search_dirs
 
@@ -4567,9 +4962,19 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
   summary_row['mae_macro']     = mae_macro_new
   summary_row['mae_micro_old'] = mae_micro_old
   summary_row['mae_macro_old'] = mae_macro_old
+  # Rounded+clamped siblings: same predictions/split, but post-processed like the training
+  # test loop (head.py) so they reproduce the pipeline's `test_l1_error` for direct comparison.
+  mae_micro_new_r, mae_macro_new_r = _compute_rounded_mae(new_preds, labels, num_classes)
+  mae_micro_old_r, mae_macro_old_r = _compute_rounded_mae(old_preds, labels, num_classes)
+  summary_row['mae_micro_rounded']     = mae_micro_new_r
+  summary_row['mae_macro_rounded']     = mae_macro_new_r
+  summary_row['mae_micro_old_rounded'] = mae_micro_old_r
+  summary_row['mae_macro_old_rounded'] = mae_macro_old_r
   summary_row.update(_refinement_columns(data))
   summary_row.update(_recipe_columns(data))
   print(f'Global metrics — MAE micro: {mae_micro_new:.4f}  MAE macro: {mae_macro_new:.4f}  CCC: {ccc:.4f}')
+  print(f'Global metrics (rounded+clamped) — MAE micro: {mae_micro_new_r:.4f}  '
+        f'MAE macro: {mae_macro_new_r:.4f}')
 
   # ── Resolve the refinement stage(s) up front ────────────────────────────────
   # --refinement 3 writes several blocks under 'refinements' (keyed by mode); 1/2 write a
@@ -4744,9 +5149,8 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
   }
 
   def _preserve_pair(block, which):
-    """(micro, macro) preserve MAE for 'before'/'after' from a refinement block, or None if both NaN."""
-    pr = (_refine_to_float(block.get(f'mae_micro_new_test_{which}')),
-          _refine_to_float(block.get(f'mae_macro_new_test_{which}')))
+    """(micro, macro) preserve MAE for 'before'/'after' on the new model's TEST split, or None if both NaN."""
+    pr = _newtest_preserve_mae(block, which)
     return pr if any(np.isfinite(v) for v in pr) else None
 
   def _stages_for(mode, block):
@@ -4867,6 +5271,15 @@ if __name__ == '__main__':
     ),
   )
   parser.add_argument(
+    '--top_k_scope', type=str, choices=['global', 'per_path'], default='global',
+    help=(
+      'Scope of --plot_only_top_k when multiple pkl_path folders are given. '
+      "'global' (default) ranks all trials across folders together and plots "
+      "the K best overall; 'per_path' plots up to K best trials within each "
+      'folder. Ignored for a single pkl_path.'
+    ),
+  )
+  parser.add_argument(
     '--only_projector_plots', action='store_true', default=False,
     help=(
       'Emit only the linear-projector training-diagnostic plots and skip '
@@ -4880,7 +5293,11 @@ if __name__ == '__main__':
       for p in args.pkl_path:
         generate_logs(p, only_projector_plots=True)
     else:
-      generate_logs_multi(args.pkl_path, plot_only_top_k=args.plot_only_top_k)
+      generate_logs_multi(
+        args.pkl_path,
+        plot_only_top_k=args.plot_only_top_k,
+        top_k_scope=args.top_k_scope,
+      )
   else:
     generate_logs(
       args.pkl_path[0],
