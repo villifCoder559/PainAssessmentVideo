@@ -586,10 +586,23 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
             
         dict_to_string = dict_to_string.replace('criterion_dict',f"{type(data['config']['criterion']).__name__}")
         # add test_id in dict_to_string
+        def get_y_lim_loss_and_step():
+          if 'unbc' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower():
+            if 'opi' in "".join(data['config']['path_csv_dataset']).lower():
+              return 2, 0.25
+            else:
+              return 14.1, 2
+          elif 'parta' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower():
+            return 2.5, 0.25
+          elif 'agedb' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower():
+            return 14.1, 2
+          elif 'morph' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower():
+            return 14.1, 2
+          else:
+            return 14.1, 2
+        y_lim_loss, step_lim = get_y_lim_loss_and_step()
         dict_to_string += f'\nTest ID: {test_id}'
         dict_to_string += f'\nfold_subfold: {key.split("_")[0]}_{key.split("_")[-1]}'
-        y_lim_loss = 2.5 if 'parta' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower() else 16
-        step_lim = 0.25 if 'parta' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower() else 2
         if isinstance(data['config']['criterion'],torch.nn.MSELoss):
           y_lim_loss = 15.1
           step_lim = 3
