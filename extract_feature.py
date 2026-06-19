@@ -336,8 +336,14 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
     backbone_model = VitImageBackbone()
     stride_window = 1
     clip_length = 1
+    # Images use a single still frame; default the extension to .jpg unless explicitly overridden.
+    if video_extension == '.mp4':
+      video_extension = '.jpg'
   else:
     raise ValueError('Backbone type must be video or image')
+  # Image backbones expose a backbone-specific normalization (ViT mean/std); video backbones do not.
+  image_mean = getattr(backbone_model, 'image_mean', None)
+  image_std = getattr(backbone_model, 'image_std', None)
   video_labels = None
   if from_ is not None or to_ is not None:
     video_labels = pd.read_csv(path_labels,sep='\t')
@@ -373,6 +379,9 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
                 stride_inside_window=stride_inside_window,
                 quadrant=quadrant,
                 preprocess_crop_detection=preprocess_crop_detection,
+                backbone_type=backbone_type,
+                image_mean=image_mean,
+                image_std=image_std,
                 saving_folder_path_extracted_video=None)
   
   config_dict = {
