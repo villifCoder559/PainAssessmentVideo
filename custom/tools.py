@@ -1457,7 +1457,11 @@ def generate_video_from_list_frame(list_frame,path_video_output,fps=25,resize=No
 
   if not os.path.exists(os.path.dirname(path_video_output)) and os.path.dirname(path_video_output) != '':
     os.makedirs(os.path.dirname(path_video_output))
-    
+  # force the video to be a .mp4 file
+  ext = os.path.splitext(path_video_output)[-1]
+  if len(ext) == 0 or ext.lower() != '.mp4':
+    path_video_output = os.path.splitext(path_video_output)[0] + '.mp4'
+    print(f'Warning: Output video path does not have .mp4 extension, changing to {path_video_output}')  
   heights = [frame.shape[0] for frame in list_frame]
   widths  = [frame.shape[1] for frame in list_frame]
 
