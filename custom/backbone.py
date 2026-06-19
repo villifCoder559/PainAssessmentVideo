@@ -17,7 +17,7 @@ from VideoMAEv2.models.modeling_finetune import (
 )
 from MAE_DFER import modeling_pretrain as dfer_modeling  
 from VideoMAEv2.models.modeling_pretrain import pretrain_videomae_giant_patch14_224, pretrain_videomae_base_patch16_224,pretrain_videomae_small_patch16_224
-from transformers import ViTFeatureExtractor, ViTModel
+from transformers import ViTFeatureExtractor, ViTImageProcessor, ViTModel
 from custom.helper import MODEL_TYPE, ModelTypeEntry
 import custom.helper as helper
 import torch.nn as nn
@@ -514,17 +514,41 @@ class VitImageBackbone(BackboneBase):
     """
     super().__init__()
     
-    # Load model and feature extractor
+    # Load model and image processor
     print(f"Loading ViT model: {model_name}")
     self.model = ViTModel.from_pretrained(model_name)
-    self.feature_extractor = ViTFeatureExtractor.from_pretrained(model_name)
+    self.image_processor = ViTImageProcessor.from_pretrained(model_name)
     self.model_type = MODEL_TYPE.ViT_image
-    
+
+    # Preprocessing constants from the ViT image processor (e.g. mean/std = 0.5 for this model,
+    # which differs from the ImageNet stats used for the video backbones).
+    self.image_mean = list(self.image_processor.image_mean)
+    self.image_std = list(self.image_processor.image_std)
+
     # Get patch size for spatial dimension calculations
     self.patch_size = 16  # Default for standard ViT models
-    self.img_size = 224   # Default image size
+    self.img_size = self._resolve_img_size(self.image_processor.size)  # 224
     self.out_spatial_size = self.img_size // self.patch_size  # 14
     self.embed_dim = self.model.config.hidden_size
+
+  @staticmethod
+  def _resolve_img_size(size, default=224):
+    """
+    Extract a single integer spatial size from a ViTImageProcessor `size` field.
+
+    Args:
+      size:    The processor's `size` attribute. May be an int, or a dict with
+               keys {'height','width'} or {'shortest_edge'}.
+      default: Fallback size used when `size` cannot be interpreted. Shape: int.
+
+    Returns:
+      int: The spatial size (height == width assumed) the processor resizes to.
+    """
+    if isinstance(size, int):
+      return size
+    if isinstance(size, dict):
+      return int(size.get('height', size.get('shortest_edge', default)))
+    return default
   
   @torch.no_grad()
   def forward_features(self, x: torch.Tensor) -> torch.Tensor:
