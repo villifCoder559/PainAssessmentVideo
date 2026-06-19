@@ -81,23 +81,29 @@ def _set_global_seed(seed):
 _PROJECTOR_KINDS = ('linear', 'mlp', 'procrustes', 'linear_close')
 
 
-def _projector_key(interp, mlp_activation):
+def _projector_key(interp, mlp_activation, mlp_num_layers=1):
   """
   Build the cache/folder key identifying a trained projector bundle.
 
-  The 'mlp' kind trains one projector per activation, so its key embeds the
-  activation; 'linear', 'procrustes' and 'linear_close' have no activation and
-  key on the bare interp name (preserving backward-compatible cache keys and
-  folder names).
+  The 'mlp' kind trains one projector per (activation, depth), so its key embeds
+  the activation and — only when the depth is non-default — the layer count;
+  'linear', 'procrustes' and 'linear_close' have no activation/depth and key on
+  the bare interp name. The depth suffix is omitted for mlp_num_layers == 1
+  (the default), preserving backward-compatible cache keys and folder names for
+  every existing single-layer mlp run.
 
   Args:
     interp         (str): interpolation_similarity value (a member of _PROJECTOR_KINDS).
     mlp_activation (str | None): Activation name; only consulted when interp == 'mlp'.
+    mlp_num_layers (int): Depth of the 'mlp' projector; only consulted when interp == 'mlp'.
 
   Returns:
-    str: 'mlp_<activation>' when interp == 'mlp', else interp unchanged.
+    str: 'mlp_<activation>' when interp == 'mlp' and depth == 1, 'mlp_<activation>_L<n>'
+         when interp == 'mlp' and depth == n != 1, else interp unchanged.
   """
-  return f'mlp_{mlp_activation}' if interp == 'mlp' else interp
+  if interp != 'mlp':
+    return interp
+  return f'mlp_{mlp_activation}' if mlp_num_layers == 1 else f'mlp_{mlp_activation}_L{mlp_num_layers}'
 
 
 def _projector_tag(kind: str, cfg=None) -> str:
@@ -361,25 +367,26 @@ def _projector_recipe_id(cfg) -> str:
   )
 
 
-def _projector_bundle_key(kind, activation, cfg) -> str:
+def _projector_bundle_key(kind, activation, cfg, num_layers=1) -> str:
   """
   Build the per-recipe key under which a trained projector bundle is cached in
   anchor_cache[...]['projectors'].
 
-  Combines the kind/activation base key (_projector_key) with _projector_tag,
+  Combines the kind/activation/depth base key (_projector_key) with _projector_tag,
   which already collapses the SGD-only fields for procrustes/linear_close — so
   redundant closed-form recipes share one bundle while every distinct
-  linear/mlp recipe gets its own.
+  linear/mlp recipe (and mlp depth) gets its own.
 
   Args:
     kind       (str): Projector kind (a member of _PROJECTOR_KINDS).
     activation (str | None): mlp activation (only meaningful for kind='mlp').
     cfg        (dict): The projector recipe.
+    num_layers (int): mlp depth (only meaningful for kind='mlp'; default 1).
 
   Returns:
     str: e.g. 'linear__lr0.0001_bs64_adamw_wd0_ep150_normT_mse_sp0-50-50'.
   """
-  return f"{_projector_key(kind, activation)}__{_projector_tag(kind, cfg)}"
+  return f"{_projector_key(kind, activation, num_layers)}__{_projector_tag(kind, cfg)}"
 
 
 def _refinement_tag(cfg) -> str:
@@ -945,7 +952,7 @@ _ACTIVATIONS = {
 }
 
 
-def _build_projector_network(d_old, d_new, kind, activation):
+def _build_projector_network(d_old, d_new, kind, activation, num_layers=1):
   """
   Build the projector network mapping old-space embeddings (D_old) to new-space (D_new).
 
@@ -953,27 +960,36 @@ def _build_projector_network(d_old, d_new, kind, activation):
     d_old      (int): Input (old model) embedding dimension.
     d_new      (int): Output (new model) embedding dimension.
     kind       (str): 'linear' → single nn.Linear(D_old, D_new);
-                      'mlp'    → Linear(D_old, D_new) → activation → Linear(D_new, D_new),
-                      a strict generalization of the linear projector (layer 1 is the
-                      linear map, followed by a nonlinear refinement in the target space).
+                      'mlp'    → Linear(D_old, D_new) followed by num_layers blocks of
+                      activation → Linear(D_new, D_new). With num_layers=1 this is
+                      Linear(D_old,D_new) → act → Linear(D_new,D_new), a strict
+                      generalization of the linear projector (layer 1 is the linear map,
+                      followed by a nonlinear refinement in the target space). Each
+                      additional layer appends one more act → Linear(D_new,D_new) block;
+                      there is no trailing activation after the final Linear.
     activation (str | None): Activation name (a key of _ACTIVATIONS); only used for 'mlp'.
+    num_layers (int): Depth of the 'mlp' projector (>= 1; ignored for 'linear'). 1 is the
+                      default (Linear→act→Linear); n appends n blocks of act→Linear total.
 
   Returns:
     torch.nn.Module: The projector network (output is unconstrained real-valued).
 
   Raises:
-    ValueError: If kind is unknown or activation (for 'mlp') is not in _ACTIVATIONS.
+    ValueError: If kind is unknown, activation (for 'mlp') is not in _ACTIVATIONS, or
+      num_layers < 1.
   """
   if kind == 'linear':
     return torch.nn.Linear(d_old, d_new)
   if kind == 'mlp':
     if activation not in _ACTIVATIONS:
       raise ValueError(f'Unknown mlp activation: {activation!r} (choices: {list(_ACTIVATIONS)})')
-    return torch.nn.Sequential(
-      torch.nn.Linear(d_old, d_new),
-      _ACTIVATIONS[activation](),
-      torch.nn.Linear(d_new, d_new),
-    )
+    if num_layers < 1:
+      raise ValueError(f'mlp num_layers must be >= 1, got {num_layers!r}')
+    act = _ACTIVATIONS[activation]
+    layers = [torch.nn.Linear(d_old, d_new)]
+    for _ in range(num_layers):
+      layers += [act(), torch.nn.Linear(d_new, d_new)]
+    return torch.nn.Sequential(*layers)
   raise ValueError(f'Unknown projector network kind: {kind!r}')
 
 
@@ -1134,7 +1150,8 @@ def _extract_linear_val_pool(
 
 
 def _train_linear_projector(old_anchors, new_anchors, df_anch, val_pool, projector_dir,
-                            anchor_key_tag, kind='linear', activation='gelu', cfg=None):
+                            anchor_key_tag, kind='linear', activation='gelu', num_layers=1,
+                            cfg=None):
   """
   Train a learned projector mapping old anchor embeddings to new anchor embeddings.
 
@@ -1167,6 +1184,7 @@ def _train_linear_projector(old_anchors, new_anchors, df_anch, val_pool, project
     anchor_key_tag (str): Short slug used in log lines.
     kind           (str): 'linear' or 'mlp' (selects the projector network).
     activation     (str): Activation name for the 'mlp' network (ignored for 'linear').
+    num_layers     (int): Depth of the 'mlp' network (ignored for 'linear'; default 1).
     cfg            (dict | None): Projector recipe (LINEAR_PROJECTOR_CONFIG-shaped).
                            Defaults to the module-global LINEAR_PROJECTOR_CONFIG.
 
@@ -1179,6 +1197,7 @@ def _train_linear_projector(old_anchors, new_anchors, df_anch, val_pool, project
   from torch.utils.data import DataLoader, TensorDataset
   cfg = copy.deepcopy(LINEAR_PROJECTOR_CONFIG if cfg is None else cfg)
   cfg['mlp_activation'] = activation  # record which activation was used (None-effect for 'linear')
+  cfg['mlp_num_layers'] = num_layers  # record the mlp depth used (None-effect for 'linear')
   device = torch.device(cfg['device'])
 
   os.makedirs(projector_dir, exist_ok=True)
@@ -1276,7 +1295,7 @@ def _train_linear_projector(old_anchors, new_anchors, df_anch, val_pool, project
 
   d_old = split_arrays['train']['old'].shape[1]
   d_new = split_arrays['train']['new'].shape[1]
-  projector = _build_projector_network(d_old, d_new, kind, activation).to(device)
+  projector = _build_projector_network(d_old, d_new, kind, activation, num_layers).to(device)
   optimizer = _build_projector_optimizer(projector.parameters(), cfg)
   loss_fn = _projector_loss_fn(cfg['loss'])
 
@@ -1370,7 +1389,7 @@ def _train_linear_projector(old_anchors, new_anchors, df_anch, val_pool, project
   torch.save(best_state_dict, ckpt_path)
 
   # --- Project each split's embeddings using the best (now-loaded) projector ---
-  projector_cpu = _build_projector_network(d_old, d_new, kind, activation)
+  projector_cpu = _build_projector_network(d_old, d_new, kind, activation, num_layers)
   projector_cpu.load_state_dict(best_state_dict)
   projector_cpu.eval()
 
@@ -3004,6 +3023,7 @@ def _build_search_space(args):
     'old_model_csv':            args.old_model_csv,
     'interpolation_similarity': args.interpolation_similarity,
     'mlp_activation':           args.mlp_activation,
+    'mlp_num_layers':           args.mlp_num_layers,
     'weighting_method':         args.weighting_method,
     'rbf_sigma':                args.rbf_sigma,
     'projector_config':         list(proj_map),
@@ -3061,27 +3081,29 @@ def _precompute_embeddings(
   multi_ref_recipe  = len(refinement_recipes) > 1
 
   # --- val.csv pool for projector modes (linear/mlp/procrustes), extracted once ---
-  # Each (kind, activation, recipe) spec trains its own projector; 'mlp' expands over
-  # the swept activations, 'linear'/'procrustes' carry activation=None, and every
-  # projector recipe adds a variant — deduped by bundle key so procrustes/linear_close
-  # (which ignore the SGD fields) don't retrain for recipes that collapse to the same tag.
+  # Each (kind, activation, num_layers, recipe) spec trains its own projector; 'mlp'
+  # expands over the swept activations × depths, 'linear'/'procrustes' carry
+  # activation=None/num_layers=1, and every projector recipe adds a variant — deduped by
+  # bundle key so procrustes/linear_close (which ignore the SGD fields) don't retrain for
+  # recipes that collapse to the same tag.
   base_projector_specs = []
   for k in _PROJECTOR_KINDS:
     if k not in args.interpolation_similarity:
       continue
     if k == 'mlp':
-      base_projector_specs.extend((k, act) for act in args.mlp_activation)
+      base_projector_specs.extend(
+        (k, act, nl) for act in args.mlp_activation for nl in args.mlp_num_layers)
     else:
-      base_projector_specs.append((k, None))
-  projector_specs = []   # list of (kind, activation, recipe, bundle_key)
+      base_projector_specs.append((k, None, 1))
+  projector_specs = []   # list of (kind, activation, num_layers, recipe, bundle_key)
   _seen_bundle_keys = set()
-  for kind, activation in base_projector_specs:
+  for kind, activation, num_layers in base_projector_specs:
     for recipe in projector_recipes:
-      bkey = _projector_bundle_key(kind, activation, recipe)
+      bkey = _projector_bundle_key(kind, activation, recipe, num_layers)
       if bkey in _seen_bundle_keys:
         continue
       _seen_bundle_keys.add(bkey)
-      projector_specs.append((kind, activation, recipe, bkey))
+      projector_specs.append((kind, activation, num_layers, recipe, bkey))
   projector_val_pool = None
   if projector_specs:
     projector_val_pool = _extract_linear_val_pool(
@@ -3166,8 +3188,8 @@ def _precompute_embeddings(
       'projectors': {},
       'refine_distance': {},  # (sim_type, rbf_sigma, mode, refine_tag) → linear_only refinement (distance metrics)
     }
-    for kind, activation, recipe, bkey in projector_specs:
-      pkey = _projector_key(kind, activation)
+    for kind, activation, num_layers, recipe, bkey in projector_specs:
+      pkey = _projector_key(kind, activation, num_layers)
       projector_dir = os.path.join(
         precomputed_dir, f'{pkey}_projector', f'{csv_sel}_{num_anch}_{sel_type}',
       )
@@ -3189,7 +3211,8 @@ def _precompute_embeddings(
       elif kind == 'linear_close':
         bundle = _train_linear_closed_projector(**common, cfg=recipe)
       else:
-        bundle = _train_linear_projector(**common, kind=kind, activation=activation, cfg=recipe)
+        bundle = _train_linear_projector(**common, kind=kind, activation=activation,
+                                         num_layers=num_layers, cfg=recipe)
       # Per-bundle refinement: one per (mode, swept refinement recipe), shared across
       # old_model_csv splits (the per-split old-on-csv before/after metrics are filled in
       # _run_trial). _run_refinement_stage deep-copies new_model.head.linear, so the shared
@@ -3344,7 +3367,8 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
     new_model_anchors_aligned = anchor_cache[anchor_key]['new']
     if trial_params['interpolation_similarity'] in _PROJECTOR_KINDS:
       kind = trial_params['interpolation_similarity']
-      bkey = _projector_bundle_key(kind, trial_params.get('mlp_activation'), _proj_recipe)
+      bkey = _projector_bundle_key(kind, trial_params.get('mlp_activation'), _proj_recipe,
+                                 trial_params.get('mlp_num_layers', 1))
       bundle = anchor_cache[anchor_key]['projectors'][bkey]
       _refine = bundle.get('refinements', {}).get((_rmode, _ref_tag))
       _use_refined = (REFINEMENT_CONFIG['enabled'] and _refine is not None
@@ -3422,7 +3446,8 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
       trial_params['anchor_selection_type'],
     )
     kind = trial_params['interpolation_similarity']
-    bkey = _projector_bundle_key(kind, trial_params.get('mlp_activation'), _proj_recipe)
+    bkey = _projector_bundle_key(kind, trial_params.get('mlp_activation'), _proj_recipe,
+                                 trial_params.get('mlp_num_layers', 1))
     bundle = anchor_cache[anchor_key]['projectors'][bkey]
     trial_result['linear_projector'] = {
       'config':               bundle['config'],
@@ -3539,6 +3564,10 @@ def run_optuna(args, out_root=None):
   _act_suffix = (
     f'_act{_fmt(args.mlp_activation)}' if 'mlp' in args.interpolation_similarity else ''
   )
+  # Depth axis suffix: only when 'mlp' is swept and at least one non-default depth is requested
+  # (keeps run-folder names byte-identical for existing single-layer mlp configs).
+  if 'mlp' in args.interpolation_similarity and any(nl != 1 for nl in args.mlp_num_layers):
+    _act_suffix += f'_L{_fmt(args.mlp_num_layers)}'
   _recipe_suffix = ''
   if multi_proj_recipe:
     _recipe_suffix += f'_proj{len(proj_ids)}'
@@ -3603,6 +3632,7 @@ def run_optuna(args, out_root=None):
       'old_model_csv':            trial.suggest_categorical('old_model_csv',            args.old_model_csv),
       'interpolation_similarity': trial.suggest_categorical('interpolation_similarity', args.interpolation_similarity),
       'mlp_activation':           trial.suggest_categorical('mlp_activation',            args.mlp_activation),
+      'mlp_num_layers':           trial.suggest_categorical('mlp_num_layers',            args.mlp_num_layers),
       'weighting_method':         trial.suggest_categorical('weighting_method',         args.weighting_method),
       'rbf_sigma':                trial.suggest_categorical('rbf_sigma',               args.rbf_sigma),
       'projector_config':         trial.suggest_categorical('projector_config',         proj_ids),
@@ -3628,6 +3658,12 @@ def run_optuna(args, out_root=None):
       raise optuna.TrialPruned(
         f"mlp_activation={params['mlp_activation']!r} irrelevant for interp={interp!r}"
       )
+    # mlp_num_layers only affects 'mlp'; collapse the axis for every other interp so it
+    # does not multiply unrelated trials (only the first depth value is canonical).
+    if interp != 'mlp' and params['mlp_num_layers'] != args.mlp_num_layers[0]:
+      raise optuna.TrialPruned(
+        f"mlp_num_layers={params['mlp_num_layers']!r} irrelevant for interp={interp!r}"
+      )
     # projector_config only affects a trained-projector trial. Collapse it everywhere
     # else, and (within projector kinds) collapse recipes that map to the same bundle
     # key — procrustes/linear_close ignore the SGD fields, so those recipes are identical.
@@ -3639,9 +3675,10 @@ def run_optuna(args, out_root=None):
         )
     else:
       _act = params['mlp_activation']
-      _this_bkey = _projector_bundle_key(interp, _act, proj_map[params['projector_config']])
+      _nl  = params['mlp_num_layers']
+      _this_bkey = _projector_bundle_key(interp, _act, proj_map[params['projector_config']], _nl)
       _canon = next(pid for pid in proj_ids
-                    if _projector_bundle_key(interp, _act, proj_map[pid]) == _this_bkey)
+                    if _projector_bundle_key(interp, _act, proj_map[pid], _nl) == _this_bkey)
       if params['projector_config'] != _canon:
         raise optuna.TrialPruned(
           f"projector_config={params['projector_config']!r} collapses to {_canon!r} for interp={interp!r}"
@@ -3682,7 +3719,8 @@ def run_optuna(args, out_root=None):
       cf_key = (
         params['csv_anchor_selection'], params['num_anchors'],
         params['anchor_selection_type'], params['old_model_csv'],
-        _projector_bundle_key(interp, params['mlp_activation'], proj_map[params['projector_config']]),
+        _projector_bundle_key(interp, params['mlp_activation'],
+                              proj_map[params['projector_config']], params['mlp_num_layers']),
         params['refinement_config'], params['refine_mode'],
       )
       if cf_key in _closed_form_mae_cache:
@@ -3693,6 +3731,8 @@ def run_optuna(args, out_root=None):
       _proj_tag_t = f'_{_projector_tag(interp, proj_map[params["projector_config"]])}'
       if interp == 'mlp':
         _proj_tag_t += f'_{params["mlp_activation"]}'
+        if params['mlp_num_layers'] != 1:
+          _proj_tag_t += f'_L{params["mlp_num_layers"]}'
     else:
       _proj_tag_t = f'_{params["weighting_method"]}_s{params["rbf_sigma"]}'
     if multi_ref_recipe and REFINEMENT_CONFIG['enabled']:
@@ -3721,7 +3761,8 @@ def run_optuna(args, out_root=None):
       cf_key = (
         params['csv_anchor_selection'], params['num_anchors'],
         params['anchor_selection_type'], params['old_model_csv'],
-        _projector_bundle_key(interp, params['mlp_activation'], proj_map[params['projector_config']]),
+        _projector_bundle_key(interp, params['mlp_activation'],
+                              proj_map[params['projector_config']], params['mlp_num_layers']),
         params['refinement_config'], params['refine_mode'],
       )
       _closed_form_mae_cache[cf_key] = mae
@@ -3754,11 +3795,11 @@ def run_optuna(args, out_root=None):
     if _k not in args.interpolation_similarity:
       continue
     if _k == 'mlp':
-      _base_specs.extend((_k, a) for a in args.mlp_activation)
+      _base_specs.extend((_k, a, nl) for a in args.mlp_activation for nl in args.mlp_num_layers)
     else:
-      _base_specs.append((_k, None))
-  _proj_bundles = {_projector_bundle_key(k, a, proj_map[pid])
-                   for (k, a) in _base_specs for pid in proj_ids}
+      _base_specs.append((_k, None, 1))
+  _proj_bundles = {_projector_bundle_key(k, a, proj_map[pid], nl)
+                   for (k, a, nl) in _base_specs for pid in proj_ids}
   n_proj_trainings = len(_anchor_combos) * len(_proj_bundles)
   n_ref_trainings = 0
   if REFINEMENT_CONFIG['enabled']:
@@ -3830,6 +3871,8 @@ def cross_space_projection(args, out_root=None):
     _proj_tag = f'_{_projector_tag(args.interpolation_similarity, _proj_recipe)}'
     if args.interpolation_similarity == 'mlp':
       _proj_tag += f'_{args.mlp_activation}'
+      if args.mlp_num_layers != 1:
+        _proj_tag += f'_L{args.mlp_num_layers}'
   else:
     _proj_tag = f'_{args.weighting_method}_s{args.rbf_sigma}'
   args_tag = (
@@ -3961,7 +4004,8 @@ def cross_space_projection(args, out_root=None):
       # --- Step 6 (projector): fit on all anchors; val/test from val.csv ---
       kind = args.interpolation_similarity
       activation = args.mlp_activation if kind == 'mlp' else None
-      projector_dir = os.path.join(out_dir, f'{_projector_key(kind, activation)}_projector')
+      num_layers = args.mlp_num_layers if kind == 'mlp' else 1
+      projector_dir = os.path.join(out_dir, f'{_projector_key(kind, activation, num_layers)}_projector')
       projector_val_pool = _extract_linear_val_pool(
         old_model, new_model, args.old_model_pth, args.new_model_pth,
         old_config, new_config, new_features_path, anchor_domain_features_for_old,
@@ -3979,7 +4023,8 @@ def cross_space_projection(args, out_root=None):
       elif kind == 'linear_close':
         linear_bundle = _train_linear_closed_projector(**common, cfg=_proj_recipe)
       else:
-        linear_bundle = _train_linear_projector(**common, kind=kind, activation=activation, cfg=_proj_recipe)
+        linear_bundle = _train_linear_projector(**common, kind=kind, activation=activation,
+                                                 num_layers=num_layers, cfg=_proj_recipe)
       projected = _apply_linear_projector(
         linear_bundle['projector'], linear_bundle['norm_stats'],
         old_model_tensors['embeddings'],
@@ -4025,9 +4070,10 @@ def cross_space_projection(args, out_root=None):
   if _modes:
     _is_projector_kind = args.interpolation_similarity in _PROJECTOR_KINDS
     _act = args.mlp_activation if args.interpolation_similarity == 'mlp' else None
+    _nl  = args.mlp_num_layers if args.interpolation_similarity == 'mlp' else 1
     if _is_projector_kind:
       _refine_base = os.path.join(
-        out_dir, f'{_projector_key(args.interpolation_similarity, _act)}_projector', 'refinement')
+        out_dir, f'{_projector_key(args.interpolation_similarity, _act, _nl)}_projector', 'refinement')
     else:
       _refine_base = os.path.join(
         out_dir, f'refinement_{args.interpolation_similarity}_{args.weighting_method}_s{args.rbf_sigma}')
@@ -4097,6 +4143,7 @@ def cross_space_projection(args, out_root=None):
     'old_model_csv':           args.old_model_csv,
     'interpolation_similarity': args.interpolation_similarity,
     'mlp_activation':          args.mlp_activation,
+    'mlp_num_layers':          args.mlp_num_layers,
     'weighting_method':        args.weighting_method,
     'rbf_sigma':               args.rbf_sigma,
     'uid':                     uid,
@@ -4176,13 +4223,13 @@ def cross_space_projection(args, out_root=None):
 _ALLOWED_YAML_KEYS = {
   'new_model_pth', 'old_model_pth', 'num_anchors', 'anchor_selection_type',
   'csv_anchor_selection', 'old_model_csv', 'interpolation_similarity', 'mlp_activation',
-  'weighting_method', 'rbf_sigma', 'n_trials', 'optuna_sampler', 'run_tag', 'refinement',
-  'seed', 'linear_projector', 'refinement_config',
+  'mlp_num_layers', 'weighting_method', 'rbf_sigma', 'n_trials', 'optuna_sampler',
+  'run_tag', 'refinement', 'seed', 'linear_projector', 'refinement_config',
 }
 # YAML keys forwarded to argparse: list (nargs='+') axes vs scalar/string options.
 _YAML_LIST_ARGS = (
   'num_anchors', 'anchor_selection_type', 'csv_anchor_selection', 'old_model_csv',
-  'interpolation_similarity', 'mlp_activation', 'weighting_method', 'rbf_sigma',
+  'interpolation_similarity', 'mlp_activation', 'mlp_num_layers', 'weighting_method', 'rbf_sigma',
 )
 _YAML_SCALAR_ARGS = ('new_model_pth', 'old_model_pth', 'run_tag', 'optuna_sampler',
                      'n_trials', 'refinement', 'seed')
@@ -4275,6 +4322,12 @@ if __name__ == '__main__':
                       help="Activation(s) for the 'mlp' projector "
                            '(Linear(D_old,D_new)->act->Linear(D_new,D_new)). Sweepable: each '
                            'value becomes a separate Optuna trial. Ignored for non-mlp interps.')
+  parser.add_argument('--mlp_num_layers', type=int, nargs='+', default=[1],
+                      help="Depth(s) of the 'mlp' projector. 1 (default) = "
+                           'Linear(D_old,D_new)->act->Linear(D_new,D_new) (current behavior); '
+                           'each +1 appends one more act->Linear(D_new,D_new) block (same '
+                           'activation, no trailing activation). Sweepable: each value becomes a '
+                           'separate Optuna trial. Ignored for non-mlp interps.')
   parser.add_argument('--weighting_method', type=str, nargs='+', default=['rbf'],
                       choices=['rbf', 'none'],
                       help="Method to convert distances to interpolation weights. "
@@ -4375,7 +4428,7 @@ if __name__ == '__main__':
   _hyper_lists = [
     args.num_anchors, args.anchor_selection_type, args.csv_anchor_selection,
     args.old_model_csv, args.interpolation_similarity, args.mlp_activation,
-    args.weighting_method, args.rbf_sigma,
+    args.mlp_num_layers, args.weighting_method, args.rbf_sigma,
   ]
   use_optuna = (
     any(len(v) > 1 for v in _hyper_lists)
