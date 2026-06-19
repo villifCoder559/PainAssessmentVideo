@@ -1207,7 +1207,7 @@ if __name__ == '__main__':
   parser.add_argument('--mlp_num_hidden_layers', type=int, nargs='*', default=[2], help='Number of hidden layers in MLP_custom (used when custom_mlp=1).')
   parser.add_argument('--use_batch_norm', type=int, nargs='*', default=[0], help='Use batch normalization (instead of LayerNorm) in AttentiveHeadJEPA.')
 
-  parser.add_argument('--type_head', type=int, nargs='*', default=[0], help='Type of head. 0: only finale liner, 1: MLP + linear')
+  parser.add_argument('--type_head', type=int, nargs='*', default=[0], help='Type of head. 0: only finale liner, 1: MLP + linear, -1: MLP + linear without pooler (mean-pooled tokens)')
   parser.add_argument('--pos_enc', type=int, nargs='*', default=[0], help='Use positional encoding.')
   parser.add_argument('--nr_blocks', type=int, nargs='*', default=[1], help='Number of blocks.')
   parser.add_argument('--cross_block_after_transformers', type=int, nargs='*', default=[0], help='Cross block after transformers.')
