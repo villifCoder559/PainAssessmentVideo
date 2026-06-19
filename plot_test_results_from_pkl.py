@@ -1076,7 +1076,7 @@ def plot_prediction_scatter(
   ax.set_ylim(lo, hi)
 
   ax.set_title('Predicted vs. Ground Truth' + title_suffix, fontsize=11, fontweight='bold')
-  ax.set_xlabel('True Class (VAS)', fontsize=9)
+  ax.set_xlabel('True Class', fontsize=9)
   ax.set_ylabel('Predicted Value', fontsize=9)
   ax.legend(fontsize=8)
   ax.grid(alpha=0.3)
