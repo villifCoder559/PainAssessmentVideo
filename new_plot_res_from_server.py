@@ -25,6 +25,10 @@ logging.getLogger('matplotlib').setLevel(logging.WARNING)
 MAX_SUBJECTS_FOR_PLOT = 40
 MAX_CLASSES_FOR_CONFUSION_MATRIX = 20
 
+# Hardcoded y-axis height for the FINAL grouped per-class loss plot.
+# If None, the y-axis auto-scales; if set, this exact value is used.
+GROUPED_LOSS_PER_CLASS_FINAL_YLIM = 35
+
 
 def _auto_y_lim(values_list, base_y_lim, margin=1.1):
   """
@@ -237,7 +241,10 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
     val_class_loss = grouped_losses['class_val_loss'] if 'class_val_loss' in grouped_losses else grouped_losses['class_test_loss']
     train_class_values = [train_class_loss[k] for k in sorted(train_class_loss.keys())]
     val_class_values = [val_class_loss[k] for k in sorted(val_class_loss.keys())]
-    y_lim_class = _auto_y_lim([train_class_values, val_class_values], y_lim)
+    if k_fold == 'final' and GROUPED_LOSS_PER_CLASS_FINAL_YLIM is not None:
+      y_lim_class = GROUPED_LOSS_PER_CLASS_FINAL_YLIM
+    else:
+      y_lim_class = _auto_y_lim([train_class_values, val_class_values], y_lim)
 
     tools.plot_error_per_class(mae_per_class=train_class_values,
                                unique_classes=sorted(train_class_loss.keys()),
