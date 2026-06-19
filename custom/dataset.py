@@ -75,6 +75,9 @@ class customDataset(torch.utils.data.Dataset):
       zoom=False,
       gaussian_smooth=False,
       framepermute=False,
+      backbone_type='video',
+      image_mean=None,
+      image_std=None,
       **kwargs
   ):
     """
@@ -140,6 +143,12 @@ class customDataset(torch.utils.data.Dataset):
     self.zoom = zoom
     self.gaussian_smooth = gaussian_smooth
     self.framepermute = framepermute
+
+    # Image backbones (e.g. ViT) read single images instead of videos and may require a
+    # backbone-specific normalization (defaults below match the video ImageNet stats).
+    self.is_image = backbone_type == 'image'
+    self.image_mean = image_mean if image_mean is not None else [0.485, 0.456, 0.406]
+    self.image_std = image_std if image_std is not None else [0.229, 0.224, 0.225]
 
     # if rotation is not None:
     #   warnings.warn('The rotation is not implemented yet')
@@ -245,7 +254,7 @@ class customDataset(torch.utils.data.Dataset):
     return tensors[frame_permutation], frame_permutation
   
   @staticmethod
-  def preprocess_images(tensors,crop_size=None,to_visualize=False,get_params=False,h_flip=False,color_jitter=False,rotation=False,spatial_shift=False,zoom=False,gaussian_smooth=False,gaussian_sigma_min=None,gaussian_sigma_max=None,gaussian_kernel_size=None,framepermute=False,framepermute_seed=None):
+  def preprocess_images(tensors,crop_size=None,to_visualize=False,get_params=False,h_flip=False,color_jitter=False,rotation=False,spatial_shift=False,zoom=False,gaussian_smooth=False,gaussian_sigma_min=None,gaussian_sigma_max=None,gaussian_kernel_size=None,framepermute=False,framepermute_seed=None,image_mean=None,image_std=None):
     """
     Preprocess a batch of image tensors.
 
@@ -265,6 +274,10 @@ class customDataset(torch.utils.data.Dataset):
       gaussian_kernel_size (int):       Fixed kernel size (must be odd). Required if gaussian_smooth=True.
       framepermute (bool):              Randomly permute frame order.
       framepermute_seed (int, optional): Seed for frame permutation reproducibility.
+      image_mean (list, optional):       Per-channel normalization mean. Defaults to ImageNet stats
+                                         ([0.485, 0.456, 0.406]) used by the video backbones.
+      image_std (list, optional):        Per-channel normalization std. Defaults to ImageNet stats
+                                         ([0.229, 0.224, 0.225]).
 
     Returns:
       torch.Tensor: Preprocessed tensor. Shape: (B, C, crop_H, crop_W).
@@ -279,9 +292,9 @@ class customDataset(torch.utils.data.Dataset):
     # crop_size = (224, 224)
     if not to_visualize and crop_size is None:
       crop_size = (224, 224)
-    rescale_factor = 1/255  
-    image_mean = [0.485, 0.456, 0.406]
-    image_std = [0.229, 0.224, 0.225]
+    rescale_factor = 1/255
+    image_mean = image_mean if image_mean is not None else [0.485, 0.456, 0.406]
+    image_std = image_std if image_std is not None else [0.229, 0.224, 0.225]
     
     transform = []
     params = {}
@@ -430,31 +443,36 @@ class customDataset(torch.utils.data.Dataset):
     else:
       video_path = os.path.join(self.path_dataset, subject_name, f"{sample_name}{self.video_extension}")
 
-    # Open video and get properties
     pid = os.getpid()
-    t_video_open = time.perf_counter()
-    container = cv2.VideoCapture(video_path)
-    tot_frames = int(container.get(cv2.CAP_PROP_FRAME_COUNT))
-    # Set frame dimensions based on preprocessing requirements
-    width_frames = int(container.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height_frames = int(container.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    helper.time_profile_dict[f'{pid}_video_open_time'] = helper.time_profile_dict.get(f'{pid}_video_open_time', 0) + (time.perf_counter() - t_video_open)
+    if self.is_image:
+      # Image backbone: read a single image as a 1-clip, 1-frame "video".
+      frames_list = self._read_image(video_path)  # [1, 1, H, W, C]
+      list_indices = torch.tensor([[0]], dtype=torch.int32)
+    else:
+      # Open video and get properties
+      t_video_open = time.perf_counter()
+      container = cv2.VideoCapture(video_path)
+      tot_frames = int(container.get(cv2.CAP_PROP_FRAME_COUNT))
+      # Set frame dimensions based on preprocessing requirements
+      width_frames = int(container.get(cv2.CAP_PROP_FRAME_WIDTH))
+      height_frames = int(container.get(cv2.CAP_PROP_FRAME_HEIGHT))
+      helper.time_profile_dict[f'{pid}_video_open_time'] = helper.time_profile_dict.get(f'{pid}_video_open_time', 0) + (time.perf_counter() - t_video_open)
 
-    if tot_frames == 0:
-      raise ValueError(f"Video {video_path} has no frames. Please check the video file.")
-    # Get frame indices based on sampling strategy
-    t_frame_sampling = time.perf_counter()
-    try:
-      list_indices = self.sample_frame_strategy(tot_frames)
-    except ValueError as e:
-      print(f"Error in sampling strategy for video {video_path}: {e}")
-      raise e
-    helper.time_profile_dict[f'{pid}_video_frame_sampling_time'] = helper.time_profile_dict.get(f'{pid}_video_frame_sampling_time', 0) + (time.perf_counter() - t_frame_sampling)
-    # Read and process frames
-    time_read_video = time.perf_counter()
-    frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames)
-    container.release()
-    helper.time_profile_dict[f'{pid}_read_video_time'] = helper.time_profile_dict.get(f'{pid}_read_video_time', 0) + (time.perf_counter() - time_read_video)
+      if tot_frames == 0:
+        raise ValueError(f"Video {video_path} has no frames. Please check the video file.")
+      # Get frame indices based on sampling strategy
+      t_frame_sampling = time.perf_counter()
+      try:
+        list_indices = self.sample_frame_strategy(tot_frames)
+      except ValueError as e:
+        print(f"Error in sampling strategy for video {video_path}: {e}")
+        raise e
+      helper.time_profile_dict[f'{pid}_video_frame_sampling_time'] = helper.time_profile_dict.get(f'{pid}_video_frame_sampling_time', 0) + (time.perf_counter() - t_frame_sampling)
+      # Read and process frames
+      time_read_video = time.perf_counter()
+      frames_list = self._read_video_cv2_and_process(container, list_indices, width_frames, height_frames)
+      container.release()
+      helper.time_profile_dict[f'{pid}_read_video_time'] = helper.time_profile_dict.get(f'{pid}_read_video_time', 0) + (time.perf_counter() - time_read_video)
 
     # Reshape frames for preprocessing
     nr_clips, nr_frames = frames_list.shape[:2]
@@ -476,7 +494,9 @@ class customDataset(torch.utils.data.Dataset):
                                                     gaussian_sigma_min=self.gaussian_sigma_min,
                                                     gaussian_sigma_max=self.gaussian_sigma_max,
                                                     gaussian_kernel_size=self.gaussian_kernel_size,
-                                                    framepermute=self.framepermute) # [B,C,H,W]
+                                                    framepermute=self.framepermute,
+                                                    image_mean=self.image_mean,
+                                                    image_std=self.image_std) # [B,C,H,W]
     else:
       # latent based augm. approaches are applied in _get_element function (at the end of file)
       t_augm_setup = time.perf_counter()
@@ -498,7 +518,9 @@ class customDataset(torch.utils.data.Dataset):
                                                     gaussian_smooth=gaussian_smooth,
                                                     gaussian_sigma_min=self.gaussian_sigma_min,
                                                     gaussian_sigma_max=self.gaussian_sigma_max,
-                                                    gaussian_kernel_size=self.gaussian_kernel_size)
+                                                    gaussian_kernel_size=self.gaussian_kernel_size,
+                                                    image_mean=self.image_mean,
+                                                    image_std=self.image_std)
     preprocessed_tensors = preprocessed_tensors.reshape(nr_clips, nr_frames, *preprocessed_tensors.shape[1:]) # [nr_clips, nr_frames, C, H, W]
     # if nr_clips == 1:
     #   preprocessed_tensors = preprocessed_tensors.unsqueeze(0) # in case of single frame
@@ -582,6 +604,31 @@ class customDataset(torch.utils.data.Dataset):
       #     'sample_id': sample_id    # int
       # }
   
+  def _read_image(self, image_path):
+    """
+    Read a single image as a one-clip, one-frame "video" tensor.
+
+    Mirrors the `[nr_clips, nr_frames, H, W, C]` uint8 contract of
+    `_read_video_cv2_and_process` so the rest of `__standard_getitem__` is shared with the
+    video path.
+
+    Args:
+      image_path (str): Path to the image file on disk.
+
+    Returns:
+      torch.Tensor: RGB image. Shape: (1, 1, H, W, C), dtype uint8.
+
+    Raises:
+      ValueError: If the image cannot be read.
+    """
+    frame = cv2.imread(image_path)  # BGR, [H, W, C]
+    if frame is None:
+      raise ValueError(f"Image {image_path} cannot be read. Please check the file.")
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    frame = torch.tensor(frame, dtype=torch.uint8)
+    # [H, W, C] -> [nr_clips=1, nr_frames=1, H, W, C]
+    return frame.unsqueeze(0).unsqueeze(0)
+
   def _read_video_cv2_and_process(self, container, list_indices, width_frames, height_frames):
     """
     Read and process video frames based on provided indices.
@@ -669,7 +716,7 @@ class customDataset(torch.utils.data.Dataset):
     path = np.concatenate([item['path'] for item in batch])
     subject_id = torch.cat([item['subject_id'] for item in batch], dim=0)
     sample_id = torch.cat([item['sample_id'] for item in batch], dim=0)
-    list_frames = torch.cat([item['frame_list'] for item in batch], dim=0).squeeze()
+    list_frames = torch.cat([item['frame_list'] for item in batch], dim=0).squeeze(0)
 
     return data, labels, subject_id, sample_id, path, list_frames
 
