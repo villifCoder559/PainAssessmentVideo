@@ -122,7 +122,7 @@ class FaceExtractor:
       list: List of facial landmarks.
     """
     detection_result_list = []
-    for frame, timestamp in frame_list:
+    for frame, timestamp in tqdm.tqdm(frame_list, desc="Extracting facial landmarks...", total=len(frame_list)):
       if frame is not None:
         detection_result = self.face_detector.detect_for_video(
           mp.Image(image_format=mp.ImageFormat.SRGB, data=frame), int(timestamp))
@@ -281,6 +281,8 @@ class FaceExtractor:
       raise IOError(f"Err: Unable to open video file: {path_video_input}")
     count = 0
     count_real_frames = 0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    pbar = tqdm.tqdm(total=total_frames if total_frames > 0 else None, desc="Reading video frames...")
     while cap.isOpened():
       ret, frame = cap.read()
       if not ret:
@@ -305,7 +307,9 @@ class FaceExtractor:
       timestamp_list.append((count/FPS) * 1000)
       count += 1
       count_real_frames += 1
+      pbar.update(1)
 
+    pbar.close()
     cap.release()
     if return_tuple:
       return list(zip(frame_list,timestamp_list))
@@ -707,7 +711,7 @@ class FaceExtractor:
           list_landmarks = extra_landmark_smoothing.smooth(list_landmarks)
         # start = time.time()
         if not only_landmarks_crop:
-          for count, (frame, landmarks) in enumerate(zip(list_frames, list_landmarks)):
+          for count, (frame, landmarks) in tqdm.tqdm(enumerate(zip(list_frames, list_landmarks)), total=len(list_frames), desc="Frontalizing frames..."):
             # print(f'Frontalizing frame {count}/{len(list_frames)}')
             rotation, translation = self.compute_rigid_transform(landmarks, ref_landmarks)
             frontalized_landmarks = self.apply_rigid_transform(rotation, translation, landmarks).T
@@ -743,7 +747,7 @@ class FaceExtractor:
             list_frontalized_img.append(frontalized_img_SVD)
             list_frontalized_landmarks.append(frontalized_landmarks)
         else:
-          for count, (frame, landmarks) in enumerate(zip(list_frames, list_landmarks)):
+          for count, (frame, landmarks) in tqdm.tqdm(enumerate(zip(list_frames, list_landmarks)), total=len(list_frames), desc="Cropping frames to face oval..."):
             frame,mask = self.extract_frame_oval_from_img(frame,landmarks)
             if frame.size == 0:
               print(f'Frame is empty after extracting face oval at count {count}')
