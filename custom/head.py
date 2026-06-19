@@ -1614,10 +1614,10 @@ class AttentiveHeadJEPA(BaseHead):
     if remove_head: # used for Supervised Contrastive Learning
       self.linear = nn.Identity()
       print('\n=== Removed classification head from AttentiveHeadJEPA ===\n')
-    elif type_head == 1:
-      # MLP followed by linear/coral layer
-      mlp = modules.MLP(in_features=embed_dim, 
-                         hidden_features=int(embed_dim * mlp_ratio), 
+    elif type_head in (1, -1):
+      # MLP followed by linear/coral layer (type_head == -1 additionally skips the pooler)
+      mlp = modules.MLP(in_features=embed_dim,
+                         hidden_features=int(embed_dim * mlp_ratio),
                          out_features=embed_dim,
                          act_layer=nn.GELU,
                          drop=0.0)
@@ -1626,7 +1626,12 @@ class AttentiveHeadJEPA(BaseHead):
       else:
         final_layer = nn.Linear(embed_dim, num_classes, bias=True)
       self.linear = nn.Sequential(mlp, final_layer)
-      print('\n=== Added MLP before the final layer in AttentiveHeadJEPA ===\n')
+      if type_head == -1:
+        # Skip the cross-attention pooler: features are mean-pooled over tokens in forward()
+        self.pooler = nn.Identity()
+        print('\n=== AttentiveHeadJEPA: MLP head without pooler (mean-pooled tokens) ===\n')
+      else:
+        print('\n=== Added MLP before the final layer in AttentiveHeadJEPA ===\n')
     elif type_head == 0:
       # type_head == 0 (actual behaviour)
       # Coral loss setup
@@ -1634,7 +1639,7 @@ class AttentiveHeadJEPA(BaseHead):
         self.linear = CoralLayer(embed_dim, num_classes)
       else:
         self.linear = nn.Linear(embed_dim, num_classes, bias=True)
-    else: 
+    else:
       raise NotImplementedError(f'Unknown type_head {type_head}')
     # Aggregator setup if num_queries > 1  
     if num_queries == 1:
@@ -1793,9 +1798,13 @@ class AttentiveHeadJEPA(BaseHead):
 
     # FORWARD PASS
     time_head = time.perf_counter()
-    x,xattn = self.pooler(x,key_padding_mask,helper.LOG_CROSS_ATTENTION['enable'])
-    x = x.squeeze(1) # # [B, num_queries=1, C] -> [B, C]
-    x = self.aggregator(x)
+    if isinstance(self.pooler, nn.Identity): # type_head == -1: no cross-attention pooler
+      xattn = None
+      x = x.mean(dim=1) # [B, seq_len, C] -> [B, C]
+    else:
+      x,xattn = self.pooler(x,key_padding_mask,helper.LOG_CROSS_ATTENTION['enable'])
+      x = x.squeeze(1) # # [B, num_queries=1, C] -> [B, C]
+      x = self.aggregator(x)
     helper.time_profile_dict[f'{pid}_head_forward_time'] = helper.time_profile_dict.get(f'{pid}_head_forward_time',0) + (time.perf_counter() - time_head)
     
     # LOG CROSS ATTENTION if enabled
@@ -1826,6 +1835,8 @@ class AttentiveHeadJEPA(BaseHead):
     
     
   def _init_weights(self):
+    if isinstance(self.pooler, nn.Identity): # type_head == -1: no pooler to initialize
+      return
     trunc_normal_(self.pooler.query_tokens, std=self.pooler.init_std)
     self.pooler.apply(self.pooler._init_weights)
     self.pooler._rescale_blocks()
