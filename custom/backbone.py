@@ -528,7 +528,13 @@ class VitImageBackbone(BackboneBase):
     # Get patch size for spatial dimension calculations
     self.patch_size = 16  # Default for standard ViT models
     self.img_size = self._resolve_img_size(self.image_processor.size)  # 224
-    self.out_spatial_size = self.img_size // self.patch_size  # 14
+    # forward_features returns only the CLS token, so the feature grid is a single
+    # 1x1x1 token (saved features are [B,1,1,1,embed_dim]). Expose the same
+    # frame_size/tubelet_size/out_spatial_size contract as VideoBackbone so the head
+    # grid formula in Model_Advanced (model.py:125/131) works without special-casing.
+    self.frame_size = 1
+    self.tubelet_size = 1
+    self.out_spatial_size = 1
     self.embed_dim = self.model.config.hidden_size
 
   @staticmethod
