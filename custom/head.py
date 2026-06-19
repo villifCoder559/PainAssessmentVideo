@@ -797,8 +797,8 @@ class BaseHead(nn.Module):
             else:
               predictions = torch.argmax(_outputs_for_log, dim=1).detach().cpu().reshape(-1)
           else:
-            predictions = torch.copysign(torch.floor(torch.abs(_outputs_for_log) + 0.5), _outputs_for_log).detach().cpu().float() # to avoid the banker's rounding implemented as IEEE standard
-            predictions = predictions.clamp(0, train_unique_classes.max().item())
+            # RAW continuous prediction (de-normalized, un-rounded) for the train regression metrics
+            predictions = _outputs_for_log.detach().cpu().float().reshape(-1)
 
           batch_y = _batch_y_for_log.detach().cpu()
           if batch_y.dim() > 1:
@@ -808,6 +808,9 @@ class BaseHead(nn.Module):
           list_train_ground_truths.append(batch_y.numpy())
 
           try:
+            # Round + clamp ONLY for the integer-class confusion matrix (regression branch only)
+            if not self.is_classification:
+              predictions = torch.copysign(torch.floor(torch.abs(predictions) + 0.5), predictions).clamp(0, train_unique_classes.max().item()) # to avoid the banker's rounding implemented as IEEE standard
             train_confusion_matrix.update(predictions, batch_y)
           except Exception as e:
             print(f"Error updating confusion matrix: {e}")
@@ -1376,8 +1379,9 @@ class BaseHead(nn.Module):
             else:
               predictions = torch.argmax(_outputs_for_log, dim=1).detach().cpu().reshape(-1)
           else:
-            predictions = torch.copysign(torch.floor(torch.abs(_outputs_for_log) + 0.5), _outputs_for_log).detach().cpu().float() # to avoid the banker's rounding implemented as IEEE standard
-            predictions = predictions.clamp(0, unique_val_classes.max().item())
+            # RAW continuous prediction (de-normalized, un-rounded) — used for the history
+            # dict and the regression metrics (Pearson/CCC/ICC/L1/RMSE).
+            predictions = _outputs_for_log.detach().cpu().float().reshape(-1)
 
           if history_val_sample_predictions is not None:
             tools.log_predictions_per_sample_(dict_log_sample=history_val_sample_predictions,
@@ -1390,6 +1394,10 @@ class BaseHead(nn.Module):
 
           list_val_epoch_predictions.append(predictions.numpy())
           list_val_ground_truths.append(batch_y.numpy())
+
+          # Round + clamp ONLY for the integer-class confusion matrix (regression branch only)
+          if not self.is_classification:
+            predictions = torch.copysign(torch.floor(torch.abs(predictions) + 0.5), predictions).clamp(0, unique_val_classes.max().item()) # to avoid the banker's rounding implemented as IEEE standard
 
           val_confusion_matricies.update(predictions, batch_y)
         count += 1
