@@ -175,7 +175,7 @@ def main(generate_video, csv_path, path_folder_output, list_target_video,
          video_folder_path, align_before_front, log_error_path=None,
          only_oval=False, workers=4, face_confidence=0.1,
          plot_flag=False, plot_every=30, plot_output_dir=None,
-         single_video_path=None):
+         single_video_path=None, explicit_video_paths=None):
 
   csv_path = os.path.expanduser(csv_path)
   path_folder_output = os.path.expanduser(path_folder_output)
@@ -183,8 +183,27 @@ def main(generate_video, csv_path, path_folder_output, list_target_video,
     log_error_path = os.path.join(path_folder_output, 'frontalize_errors.log')
 
   ref_landmarks = load_reference_landmarks(path_ref_landmarks)
+
+  # Collect explicit, full video paths from --video_path and/or a --ltv .txt file.
+  # These bypass the CSV/--vfp lookup and are used directly (per line for the txt).
+  explicit_paths = []
   if single_video_path is not None:
-    list_video_path = [os.path.expanduser(single_video_path)]
+    explicit_paths.append(os.path.expanduser(single_video_path))
+  if explicit_video_paths:
+    explicit_paths.extend(os.path.expanduser(p) for p in explicit_video_paths if p)
+
+  missing_paths = []
+  if explicit_paths:
+    list_video_path = []
+    for p in explicit_paths:
+      if os.path.exists(p):
+        list_video_path.append(p)
+      else:
+        missing_paths.append(p)
+    if missing_paths:
+      print(f'Skipping {len(missing_paths)} path(s) that do not exist:')
+      for p in missing_paths:
+        print(f'  MISSING: {p}')
   else:
     list_video_path = prepare_video_list(csv_path, video_folder_path,
                                          list_target_video, from_, to_)
@@ -238,6 +257,11 @@ def main(generate_video, csv_path, path_folder_output, list_target_video,
   pool.close()
   pool.join()
 
+  # include explicit paths that were skipped because they don't exist
+  for p in missing_paths:
+    errors += 1
+    error_records.append((p, 'file does not exist'))
+
   # write aggregated errors to log
   log_fullpath = os.path.join(log_error_path, f'frontalize_errors_{from_}_{to_}.log')
   os.makedirs(os.path.dirname(log_fullpath), exist_ok=True)
@@ -261,7 +285,7 @@ if __name__ == '__main__':
                       default=os.path.join('partA', 'starting_point', 'samples.csv'),
                       help='Path to csv file')
   parser.add_argument('--pfo', type=str,
-                      default=os.path.join('partA', 'video', 'video_frontalized'),
+                      default=os.path.join('video_frontalized'),
                       help='Path to folder video output')
   parser.add_argument('--ltv', type=str, default=None, nargs='+',
                       help='List of target video. Ex: video_name.txt ')
@@ -292,8 +316,10 @@ if __name__ == '__main__':
                       help='Process a single explicit video path, bypassing the --csv/--vfp/--ltv lookup')
   args = parser.parse_args()
 
+  ltv_explicit_paths = None
   if args.ltv and args.ltv[0].endswith('.txt'):
-    args.ltv = read_ltv(args.ltv[0])
+    ltv_explicit_paths = read_ltv(args.ltv[0])
+    args.ltv = None  # explicit full paths; do not go through the CSV lookup
 
   if args.g_path:
     os.chdir(GLOBAL_PATH.NAS_PATH)
@@ -333,4 +359,5 @@ if __name__ == '__main__':
        plot_every=args.plot_every,
        plot_output_dir=args.plot_output_dir,
        single_video_path=args.video_path,
+       explicit_video_paths=ltv_explicit_paths,
        workers=args.workers)
