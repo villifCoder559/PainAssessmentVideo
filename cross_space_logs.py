@@ -30,20 +30,38 @@ Plots generated:
   3a. mae_per_subject_old.png       — single bar: old model MAE per subject
   3b. mae_per_subject_projected.png — single bar: projected MAE per subject
   8a. mae_improvement_per_class_projected_vs_old.png   — bar: old_mae - projected_mae per class
+  8a'.mae_per_class_compare_projected_vs_old.png       — grouped 2-bar companion: old_mae
+                                      and projected_mae drawn side by side per class
   8b. mae_improvement_per_subject_projected_vs_old.png — bar: old_mae - projected_mae per subject
   8c. mae_improvement_per_class_newtest_refined_vs_original.png — bar: new-model test-set
                                       MAE_original - MAE_refined per class
                                       (green=refinement lowered error; refinement runs only)
+  8c'.mae_per_class_compare_newtest_refined_vs_original.png — grouped 2-bar companion:
+                                      before vs after MAE per class (refinement runs only)
   8d. mae_improvement_per_class_refined_vs_projected.png — projected_mae - refined_mae per class
+  8d'.mae_per_class_compare_refined_vs_projected.png    — grouped 2-bar companion:
+                                      projected vs refined MAE per class (refinement runs only)
   8e. mae_improvement_per_class_refined_vs_old.png       — old_mae - refined_mae per class
+  8e'.mae_per_class_compare_refined_vs_old.png          — grouped 2-bar companion:
+                                      old vs refined MAE per class (refinement runs only)
   8f. mae_improvement_per_class_combined.png — 1x3 panel combining all three source-split
                                       per-class improvements: (old - projected_before),
                                       (projected_before - projected_after), and
                                       (old - projected_after). Panel 1 fills the previously
                                       missing old-vs-before-refinement comparison
                                       (refinement runs only)
-  4.  confusion_matrix_projected.png — projected model rounded predictions vs ground truth
-                                      (skipped when num_classes > 15)
+  4.  Confusion matrices (rounded predictions vs ground truth; each skipped when its
+      num_classes > 15). Titles name the stage, dataset, and split:
+        confusion_matrix_old.png              — old-model dataset / source set: old model (original)
+        confusion_matrix_projected.png        — old-model dataset / source set: after projection
+        confusion_matrix_refined.png          — old-model dataset / source set: after refinement
+                                                (refinement runs only)
+        confusion_matrix_newtest_original.png — new-model dataset / held-out split: new model
+                                                (original, before refinement) (refinement runs only)
+        confusion_matrix_newtest_refined.png  — new-model dataset / held-out split: new model
+                                                (after refinement) (refinement runs only)
+        confusion_matrix_all_stages.png       — combined 2×3 comparison of all of the above
+                                                (stages absent for the run are blanked)
   5.  umap_all_projected.png / umap_all_refined.png — 1×2 UMAP: colored by label and by subject
   6.  anchor_weights.png            — weight entropy histogram + top-20 anchor usage
   7.  anchor_umap.png               — old vs new anchor embeddings in UMAP space
@@ -398,7 +416,7 @@ def _draw_mae_bar(ax, groups, vals, ylabel, title, color):
   bars = ax.bar(x, vals, color=color, alpha=0.85, edgecolor='white', linewidth=0.7)
   ax.set_xlim(*xlim)
   ax.set_xticks(x)
-  ax.set_xticklabels([str(g) for g in groups], rotation=45, ha='right')
+  ax.set_xticklabels([str(g) for g in groups], rotation=45, ha='center')
   ax.set_ylabel(ylabel)
   ax.set_title(title)
   ax.grid(axis='y', alpha=0.3)
@@ -452,11 +470,55 @@ def _draw_mae_improvement_bar(ax, groups, diffs, xlabel, title,
   ax.axhline(0.0, color='black', linestyle='-', linewidth=0.8, alpha=0.6)
   ax.set_xlim(*xlim)
   ax.set_xticks(x)
-  ax.set_xticklabels([str(g) for g in groups], rotation=45, ha='right')
+  ax.set_xticklabels([str(g) for g in groups], rotation=45, ha='center')
   ax.set_xlabel(xlabel)
   ax.set_ylabel(ylabel)
   ax.set_title(title)
   ax.grid(axis='y', alpha=0.3)
+
+
+def _draw_grouped_mae_bar(ax, groups, vals_a, vals_b, label_a, label_b,
+                          color_a, color_b, ylabel, title):
+  """
+  Draw a grouped (two-bar-per-group) MAE bar chart into a single pre-existing axes.
+
+  For each group two bars are drawn side by side so the two stages' MAE can be
+  compared directly — an alternative reading of the signed improvement bar chart
+  drawn by _draw_mae_improvement_bar. A bar with a non-finite height (a group
+  present in only one series) is skipped for its value label, matching how the
+  improvement helper skips NaN diffs.
+
+  Args:
+    ax      (matplotlib.axes.Axes): Axes to draw on.
+    groups  (list): Group labels for the x-axis (class ids).
+    vals_a  (list[float]): First-series mean MAE per group (the baseline stage).
+    vals_b  (list[float]): Second-series mean MAE per group (the later stage).
+    label_a (str): Legend label for the first series.
+    label_b (str): Legend label for the second series.
+    color_a (str): Bar fill colour for the first series.
+    color_b (str): Bar fill colour for the second series.
+    ylabel  (str): Y-axis label.
+    title   (str): Plot title.
+  """
+  x      = np.arange(len(groups))
+  width  = 0.4
+  margin = 0.6
+  xlim   = (x[0] - margin, x[-1] + margin) if len(x) > 0 else (-0.6, 0.6)
+
+  for xpos, vals, color, label in (
+    (x - width / 2, vals_a, color_a, label_a),
+    (x + width / 2, vals_b, color_b, label_b),
+  ):
+    bars = ax.bar(xpos, vals, width=width, color=color, alpha=0.85,
+                  edgecolor='white', linewidth=0.7, label=label)
+
+  ax.set_xlim(*xlim)
+  ax.set_xticks(x)
+  ax.set_xticklabels([str(g) for g in groups], rotation=45, ha='center')
+  ax.set_ylabel(ylabel)
+  ax.set_title(title)
+  ax.grid(axis='y', alpha=0.3)
+  ax.legend(fontsize=8)
 
 
 def _draw_mae_box(ax, groups, raw_by_group, ylabel, color, title=None):
@@ -990,6 +1052,22 @@ def plot_mae_improvement_per_class(new_preds, old_preds, labels, out_dir,
     plt.close(fig)
     print(f'Saved: {path}')
 
+    # Companion 2-bar comparison: old vs projected MAE side by side per class.
+    old_vals = [old_mae.get(g, (float('nan'), 0))[0] for g in groups]
+    new_vals = [new_mae.get(g, (float('nan'), 0))[0] for g in groups]
+    fig, ax = plt.subplots(figsize=(14, 5))
+    _draw_grouped_mae_bar(
+      ax, groups, old_vals, new_vals, 'Old model', 'Projected (new)',
+      'steelblue', 'darkorange', 'MAE',
+      f'MAE per pain class — old vs projected{suffix}',
+    )
+    ax.set_xlabel('Labels')
+    plt.tight_layout()
+    path = os.path.join(out_dir, 'mae_per_class_compare_projected_vs_old.png')
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f'Saved: {path}')
+
 
 def plot_mae_per_subject(new_preds, old_preds, labels, sample_ids, subject_map, out_dir,
                          run_label: str = '', new_name: str = 'Projected (new)',
@@ -1075,37 +1153,45 @@ def plot_mae_improvement_per_subject(new_preds, old_preds, labels, sample_ids,
 
 
 def plot_confusion_matrix_cross(new_preds, labels, out_dir, num_classes: int,
-                                run_label: str = '', ax=None):
+                                run_label: str = '', ax=None,
+                                title: str = 'Confusion matrix',
+                                out_filename: str = 'confusion_matrix_projected.png'):
   """
-  Confusion matrix of rounded projected predictions vs ground-truth labels.
+  Confusion matrix of rounded predictions vs ground-truth labels.
 
   Predictions are rounded to the nearest integer and clipped to [0, num_classes - 1].
 
   Args:
-    new_preds   (np.ndarray): Shape (N,), float projected predictions.
-    labels      (np.ndarray): Shape (N,), ground-truth float labels.
-    out_dir     (str): Output directory (ignored when ax is provided).
-    num_classes (int): Number of distinct pain classes inferred from the labels.
-    run_label   (str): Optional run identity string appended to plot titles.
-    ax          (matplotlib.axes.Axes | None): Pre-existing axes for dashboard
-                embedding. When None the plot is saved as confusion_matrix.png.
+    new_preds    (np.ndarray): Shape (N,), float predictions for the stage being plotted.
+    labels       (np.ndarray): Shape (N,), ground-truth float labels.
+    out_dir      (str): Output directory (ignored when ax is provided).
+    num_classes  (int): Number of distinct pain classes inferred from the labels.
+    run_label    (str): Optional run identity string appended to the title.
+    ax           (matplotlib.axes.Axes | None): Pre-existing axes for dashboard /
+                 combined-figure embedding. When None a standalone figure is saved.
+    title        (str): Title text (the pipeline stage / dataset / split). The run_label
+                 suffix is appended automatically. Defaults to the legacy 'Confusion matrix'.
+    out_filename (str): Basename of the saved PNG (ignored when ax is provided). Defaults to
+                 the legacy 'confusion_matrix_projected.png'.
   """
   preds_int  = torch.tensor(_round_preds(new_preds, num_classes),                                    dtype=torch.long)
   labels_int = torch.tensor(np.clip(np.round(labels), 0, num_classes - 1).astype(np.int64), dtype=torch.long)
   cm = MulticlassConfusionMatrix(num_classes=num_classes)
   cm.update(preds_int, labels_int)
   cm_arr = cm.compute().cpu().numpy()[:num_classes, :num_classes].astype(int)
-  suffix = f' | {run_label}' if run_label else ''
+  # run_label goes on its own line so the (already multi-line) stage/dataset/split title
+  # stays narrow enough to render without overlapping neighbouring panels.
+  suffix = f'\n{run_label}' if run_label else ''
 
   standalone = ax is None
   if standalone:
-    fig, ax = plt.subplots(figsize=(5, 4))
+    fig, ax = plt.subplots(figsize=(7, 5))
 
   sns.heatmap(
     cm_arr, annot=True, fmt='d', cmap='Blues', ax=ax,
     linewidths=0.5, linecolor='lightgray', annot_kws={'size': 7},
   )
-  ax.set_title(f'Confusion matrix{suffix}', fontsize=10, fontweight='bold')
+  ax.set_title(f'{title}{suffix}', fontsize=9, fontweight='bold')
   ax.set_xlabel('Predicted', fontsize=8)
   ax.set_ylabel('True', fontsize=8)
   ax.tick_params(axis='x', rotation=45, labelsize=7)
@@ -1113,10 +1199,73 @@ def plot_confusion_matrix_cross(new_preds, labels, out_dir, num_classes: int,
 
   if standalone:
     fig.tight_layout()
-    path = os.path.join(out_dir, 'confusion_matrix_projected.png')
+    path = os.path.join(out_dir, out_filename)
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f'Saved: {path}')
+
+
+def plot_confusion_matrices_combined(panels, out_dir, run_label: str = '',
+                                     out_filename: str = 'confusion_matrix_all_stages.png'):
+  """
+  Combined comparison figure of the pipeline-stage confusion matrices.
+
+  Lays out a 2x3 grid: row 0 holds the three old-model-dataset (source-set) stages
+  (original / after projection / after refinement) and row 1 holds the two
+  new-model-dataset stages (original / after refinement). Each present panel is drawn
+  by plot_confusion_matrix_cross with ax=. Panel titles are the short stage/dataset/split
+  strings (the run identity lives only in the figure suptitle, so per-panel titles stay
+  narrow); the separate per-stage PNGs carry the longer 'Confusion matrix — ...' titles.
+  Panels with no data (e.g. refinement stages on a non-refinement run) render a blanked
+  axis carrying the panel title plus a note, mirroring the dashboard's num_classes>15
+  fallback.
+
+  Args:
+    panels       (list[dict]): One dict per grid cell, in row-major order (length up to 6;
+      the unused row-1 third cell may be omitted). Each dict has:
+        'title'       (str): Short panel title (stage / dataset / split), no run identity.
+        'preds'       (np.ndarray | None): Shape (N,), predictions; None => blanked panel.
+        'labels'      (np.ndarray | None): Shape (N,), ground-truth labels.
+        'num_classes' (int | None):        Class count for this panel.
+        'note'        (str, optional):     Reason shown on a blanked panel.
+    out_dir      (str): Output directory.
+    run_label    (str): Optional run identity string shown in the figure suptitle.
+    out_filename (str): Basename of the saved PNG.
+  """
+  fig = plt.figure(figsize=(18, 11))
+  gs  = gridspec.GridSpec(2, 3, figure=fig, hspace=0.5, wspace=0.35)
+  positions = [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)]
+  suffix = f' | {run_label}' if run_label else ''
+
+  for panel, (r, c) in zip(panels, positions):
+    ax = fig.add_subplot(gs[r, c])
+    preds       = panel.get('preds')
+    labels      = panel.get('labels')
+    num_classes = panel.get('num_classes')
+    drawable = (
+      preds is not None and labels is not None
+      and num_classes is not None and num_classes <= 15
+    )
+    if drawable:
+      # run_label='' here: the per-panel title carries only the stage/dataset/split.
+      plot_confusion_matrix_cross(
+        preds, labels, out_dir, num_classes,
+        run_label='', ax=ax, title=panel['title'],
+      )
+    else:
+      note = panel.get('note', 'not available')
+      if num_classes is not None and num_classes > 15:
+        note = f'num_classes={num_classes} > 15'
+      ax.axis('off')
+      ax.set_title(panel['title'], fontsize=9, fontweight='bold')
+      ax.text(0.5, 0.5, f'({note})', ha='center', va='center', fontsize=10)
+
+  fig.suptitle(f'Confusion matrices across pipeline stages{suffix}',
+               fontsize=13, fontweight='bold')
+  path = os.path.join(out_dir, out_filename)
+  fig.savefig(path, dpi=150, bbox_inches='tight')
+  plt.close(fig)
+  print(f'Saved: {path}')
 
 
 def plot_umap(embeddings, labels, sample_ids, subject_map, out_dir, run_label: str = '',
@@ -1164,7 +1313,8 @@ def plot_umap(embeddings, labels, sample_ids, subject_map, out_dir, run_label: s
 
 
 def plot_umap_split_impact(projected_emb, projected_labels, split_emb, split_labels,
-                           split_name, out_dir, run_label: str = '', filename_suffix: str = ''):
+                           split_name, out_dir, run_label: str = '', filename_suffix: str = '',
+                           new_dataset: str = None, src_dataset: str = None):
   """
   Overlay the projected embeddings on the new model's real <split> embeddings in UMAP.
 
@@ -1187,7 +1337,14 @@ def plot_umap_split_impact(projected_emb, projected_labels, split_emb, split_lab
     run_label        (str): Optional run identity string appended to plot titles.
     filename_suffix  (str): Optional suffix appended to the PNG basename (before
       '.png'), e.g. '_refined' to distinguish the after-refinement variant.
+    new_dataset      (str | None): Resolved new/target dataset name (the real split's
+      dataset). Names the 'real' cloud so it is not misattributed to the source; None ⇒
+      generic 'new model'.
+    src_dataset      (str | None): Resolved old/source dataset name (the projected cloud's
+      origin). Names the 'projected' cloud; None ⇒ generic 'source'.
   """
+  new_ds_lbl = new_dataset or 'new model'
+  src_ds_lbl = src_dataset or 'source'
   projected_emb = np.asarray(projected_emb, dtype=np.float32)
   split_sub     = np.asarray(split_emb,     dtype=np.float32)
   projected_labels = np.asarray(projected_labels, dtype=np.float32).reshape(-1)
@@ -1225,17 +1382,17 @@ def plot_umap_split_impact(projected_emb, projected_labels, split_emb, split_lab
   axes[0].scatter(
     reduced_both[~is_proj, 0], reduced_both[~is_proj, 1], c=split_lab,
     cmap='jet', vmin=v_min, vmax=v_max, s=12, alpha=0.7, marker='o',
-    label=f'{split_name} (real)',
+    label=f'{split_name} (real, {new_ds_lbl})',
   )
   sc0 = axes[0].scatter(
     reduced_both[is_proj, 0], reduced_both[is_proj, 1], c=projected_labels,
     cmap='jet', vmin=v_min, vmax=v_max, s=28, alpha=0.8, marker='x',
-    label='projected',
+    label=f'projected ({src_ds_lbl})',
   )
   plt.colorbar(sc0, ax=axes[0], label='Labels')
   axes[0].legend(loc='best', framealpha=0.9)
   axes[0].set_title(
-    f'UMAP fit on BOTH (projected + {split_name}) — all points\n'
+    f'UMAP fit on BOTH (projected {src_ds_lbl} + {new_ds_lbl} {split_name}) — all points\n'
     f'colored by label · {frac_note}{suffix}'
   )
 
@@ -1246,7 +1403,7 @@ def plot_umap_split_impact(projected_emb, projected_labels, split_emb, split_lab
   )
   plt.colorbar(sc1, ax=axes[1], label='Labels')
   axes[1].set_title(
-    f'UMAP fit on BOTH (projected + {split_name}) — projected only\n'
+    f'UMAP fit on BOTH (projected {src_ds_lbl} + {new_ds_lbl} {split_name}) — projected only\n'
     f'colored by label · {frac_note}{suffix}'
   )
 
@@ -1257,7 +1414,7 @@ def plot_umap_split_impact(projected_emb, projected_labels, split_emb, split_lab
   )
   plt.colorbar(sc2, ax=axes[2], label='Labels')
   axes[2].set_title(
-    f'UMAP fit on {split_name} only\n'
+    f'UMAP fit on {new_ds_lbl} {split_name} only\n'
     f'colored by label · {frac_note}{suffix}'
   )
 
@@ -1570,7 +1727,7 @@ def plot_prediction_scatter(new_preds, old_preds, labels, out_dir,
     ax.text(0.04, 0.95, f'MAE={mae_val:.3f}\nCCC={ccc_val:.3f}',
             transform=ax.transAxes, va='top', fontsize=8,
             bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
-    ax.set_title(f'Predicted vs Ground Truth — {name}{suffix}', fontsize=10, fontweight='bold')
+    ax.set_title(f'Predicted vs Ground Truth — {name}\n{suffix}', fontsize=10, fontweight='bold')
     ax.set_xlabel('True label', fontsize=9)
     ax.set_ylabel('Predicted value', fontsize=9)
     ax.legend(fontsize=8)
@@ -2333,7 +2490,8 @@ def _plot_refine_val_mae_curve(ax, epochs, micro, macro, best_epoch, title):
 
 
 def plot_refinement_training_curves(refine_block, out_dir, run_label: str = '',
-                                    filename_suffix: str = ''):
+                                    filename_suffix: str = '',
+                                    src_dataset: str = None, new_dataset: str = None):
   """
   Render a 3×2 figure of the refinement per-epoch metrics.
 
@@ -2351,7 +2509,13 @@ def plot_refinement_training_curves(refine_block, out_dir, run_label: str = '',
     refine_block (dict): The pkl 'refinement' block; must carry 'per_epoch_metrics'.
     out_dir      (str):  Directory in which to write the PNG.
     run_label    (str):  Suptitle suffix identifying the run.
+    src_dataset  (str | None): Resolved old/source (model-B) dataset name, named on the
+      source-B panels; None ⇒ generic 'model B'.
+    new_dataset  (str | None): Resolved new/target (preserve-A) dataset name, named on the
+      preserve-A panels; None ⇒ generic 'new-model'.
   """
+  src_ds_lbl = src_dataset or 'model B'
+  new_ds_lbl = new_dataset or 'new-model'
   cur = _refinement_curve_arrays(refine_block.get('per_epoch_metrics'))
   if cur['epoch'].size == 0:
     print('[WARN] refinement training curves: empty per-epoch metrics — skipping.')
@@ -2368,7 +2532,7 @@ def plot_refinement_training_curves(refine_block, out_dir, run_label: str = '',
     ylabel='loss_total', title='Total loss  (λ_B·loss_B + λ_A·loss_A)', log_y=True, val_vals=vt)
   _plot_refine_loss_curve(
     axes[0, 1], cur['epoch'], cur['loss_B'], best_epoch,
-    ylabel='loss_B', title='Source term loss_B  (model B labels)', log_y=True, val_vals=vb)
+    ylabel='loss_B', title=f'Source term loss_B  ({src_ds_lbl} labels)', log_y=True, val_vals=vb)
   _plot_refine_loss_curve(
     axes[1, 0], cur['epoch'], cur['loss_A'], best_epoch,
     ylabel='loss_A', title='Preserve term loss_A  (new anchors)', log_y=True, val_vals=va)
@@ -2376,10 +2540,10 @@ def plot_refinement_training_curves(refine_block, out_dir, run_label: str = '',
   if has_val:
     _plot_refine_val_mae_curve(
       axes[1, 1], cur['epoch'], cur['val_mae_micro_B'], cur['val_mae_macro_B'],
-      best_epoch, title='Val MAE — source B (held-out model-B val)')
+      best_epoch, title=f'Val MAE — source B (held-out {src_ds_lbl} val)')
     _plot_refine_val_mae_curve(
       axes[2, 0], cur['epoch'], cur['val_mae_micro_A'], cur['val_mae_macro_A'],
-      best_epoch, title='Val MAE — preserve A (held-out new-model val)')
+      best_epoch, title=f'Val MAE — preserve A (held-out {new_ds_lbl} val)')
   else:
     for ax in (axes[1, 1], axes[2, 0]):
       ax.axis('off')
@@ -2402,7 +2566,8 @@ def plot_refinement_training_curves(refine_block, out_dir, run_label: str = '',
 
 
 def plot_refinement_before_after(refine_block, out_dir, run_label: str = '',
-                                 filename_suffix: str = ''):
+                                 filename_suffix: str = '',
+                                 src_dataset: str = None, new_dataset: str = None):
   """
   Render before-vs-after grouped bars showing the "improve B without hurting A"
   effect of refinement.
@@ -2416,16 +2581,22 @@ def plot_refinement_before_after(refine_block, out_dir, run_label: str = '',
     refine_block (dict): The pkl 'refinement' block.
     out_dir      (str):  Directory in which to write the PNG.
     run_label    (str):  Suptitle suffix identifying the run.
+    src_dataset  (str | None): Resolved old/source dataset name, named on the source-csv
+      bars; None ⇒ generic 'old'.
+    new_dataset  (str | None): Resolved new/target dataset name, named on the new-test bars;
+      None ⇒ generic 'new'.
   """
+  src_ds_lbl = src_dataset or 'old'
+  new_ds_lbl = new_dataset or 'new'
   # new-test groups: recompute on the new model's TEST split (new_test_eval) so the bars
   # match summary.csv's newtest_mae_* rather than the val-split stored scalars.
   nt_b = _newtest_preserve_mae(refine_block, 'before')
   nt_a = _newtest_preserve_mae(refine_block, 'after')
   mae_groups = (
-    ('old-csv\nmicro',  refine_block.get('mae_micro_old_oncsv_before'), refine_block.get('mae_micro_old_oncsv_after')),
-    ('old-csv\nmacro',  refine_block.get('mae_macro_old_oncsv_before'), refine_block.get('mae_macro_old_oncsv_after')),
-    ('new-test\nmicro', nt_b[0], nt_a[0]),
-    ('new-test\nmacro', nt_b[1], nt_a[1]),
+    (f'{src_ds_lbl}-csv\nmicro',  refine_block.get('mae_micro_old_oncsv_before'), refine_block.get('mae_micro_old_oncsv_after')),
+    (f'{src_ds_lbl}-csv\nmacro',  refine_block.get('mae_macro_old_oncsv_before'), refine_block.get('mae_macro_old_oncsv_after')),
+    (f'{new_ds_lbl}-test\nmicro', nt_b[0], nt_a[0]),
+    (f'{new_ds_lbl}-test\nmacro', nt_b[1], nt_a[1]),
   )
   labels, before_vals, after_vals = [], [], []
   for lab, vb, va in mae_groups:
@@ -2539,8 +2710,26 @@ def plot_refinement_newtest_mae_improvement_per_class(refine_block, out_dir, run
   plt.close(fig)
   print(f'Saved: {path}')
 
+  # Companion 2-bar comparison: before vs after MAE side by side per class.
+  before_vals = [before_mae.get(g, (float('nan'), 0))[0] for g in groups]
+  after_vals  = [after_mae.get(g, (float('nan'), 0))[0] for g in groups]
+  fig, ax = plt.subplots(figsize=(14, 5))
+  _draw_grouped_mae_bar(
+    ax, groups, before_vals, after_vals, 'Before refinement', 'After refinement',
+    '#E69F00', '#0072B2', 'MAE',
+    f'New-model {split}-set MAE per class — before vs after refinement{suffix}',
+  )
+  ax.set_xlabel('Labels')
+  plt.tight_layout()
+  path = os.path.join(out_dir, f'mae_per_class_compare_newtest_refined_vs_original{filename_suffix}.png')
+  fig.savefig(path, dpi=150)
+  plt.close(fig)
+  print(f'Saved: {path}')
 
-def plot_refinement_diagnostics(refine_block, out_dir, run_label: str = '', filename_suffix: str = ''):
+
+def plot_refinement_diagnostics(refine_block, out_dir, run_label: str = '', filename_suffix: str = '',
+                                newtest_run_label: str = None,
+                                src_dataset: str = None, new_dataset: str = None):
   """
   Convenience wrapper: emit all refinement-stage diagnostic plots.
 
@@ -2553,23 +2742,35 @@ def plot_refinement_diagnostics(refine_block, out_dir, run_label: str = '', file
     run_label    (str):         Suptitle suffix identifying the run.
     filename_suffix (str):      Optional per-mode PNG suffix (e.g. '_linear_only'),
       forwarded to every plot. Default '' ⇒ legacy filenames unchanged.
+    newtest_run_label (str | None): Run label used only for the new-model-test
+      per-class plot. The '*newtest*' plots are computed on the new model's own
+      test split, so they must carry the new model's dataset tag rather than the
+      source one in run_label. None ⇒ fall back to run_label.
+    src_dataset (str | None): Resolved old/source dataset name, forwarded to the
+      training-curves / before-after plots to name their source side. None ⇒ generic.
+    new_dataset (str | None): Resolved new/target dataset name, forwarded to name the
+      preserve / new-test side. None ⇒ generic.
   """
   if not refine_block or not refine_block.get('per_epoch_metrics'):
     print('[cross_space_logs] No refinement block in pkl — skipping refinement-training plots.')
     return
   try:
     plot_refinement_training_curves(refine_block, out_dir, run_label=run_label,
-                                    filename_suffix=filename_suffix)
+                                    filename_suffix=filename_suffix,
+                                    src_dataset=src_dataset, new_dataset=new_dataset)
   except Exception as exc:
     print(f'[WARN] refinement training curves failed: {exc}')
   try:
     plot_refinement_before_after(refine_block, out_dir, run_label=run_label,
-                                 filename_suffix=filename_suffix)
+                                 filename_suffix=filename_suffix,
+                                 src_dataset=src_dataset, new_dataset=new_dataset)
   except Exception as exc:
     print(f'[WARN] refinement before/after plot failed: {exc}')
   try:
-    plot_refinement_newtest_mae_improvement_per_class(refine_block, out_dir, run_label=run_label,
-                                                      filename_suffix=filename_suffix)
+    plot_refinement_newtest_mae_improvement_per_class(
+      refine_block, out_dir,
+      run_label=newtest_run_label if newtest_run_label is not None else run_label,
+      filename_suffix=filename_suffix)
   except Exception as exc:
     print(f'[WARN] refinement new-test per-class improvement plot failed: {exc}')
 
@@ -3151,7 +3352,8 @@ def generate_search_summary_plots(df, search_dir):
 def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
                    run_label: str = '', mae_macro=None, mae_macro_old=None,
                    mae_stages=None, filename_suffix: str = '',
-                   projected_stage_name: str = 'Projected'):
+                   projected_stage_name: str = 'Projected',
+                   src_dataset: str = None, new_dataset: str = None):
   """
   Combined dashboard PNG with all key diagnostic plots for a single run.
 
@@ -3185,6 +3387,10 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
     projected_stage_name (str): Stage label for the new-model panels (passed as
       new_preds). For refinement runs the caller passes the before-refinement stage
       so the panels match the standalone projected plots.
+    src_dataset (str | None): Resolved old/source dataset name, named on the source
+      (cross-domain) metrics-table section. None ⇒ generic wording.
+    new_dataset (str | None): Resolved new/target dataset name, named on the preserve
+      (new-model test) metrics-table section. None ⇒ generic wording.
   """
   suffix     = f' | {run_label}' if run_label else ''
   labels_int = np.round(labels).astype(int)
@@ -3309,7 +3515,8 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
   src_old       = stages.get('old',       (mae_micro_old, mae_macro_old))
   src_projected = stages.get('projected', (mae, mae_macro))
   src_refined   = stages.get('refined')
-  rows_data = [['── source (cross-domain) ──', '']]
+  src_section = f'── source (cross-domain: {src_dataset}) ──' if src_dataset else '── source (cross-domain) ──'
+  rows_data = [[src_section, '']]
   rows_data.append(['MAE micro / macro (old)',       f'{_pair(src_old[0])} / {_pair(src_old[1])}'])
   rows_data.append(['MAE micro / macro (projected)', f'{_pair(src_projected[0])} / {_pair(src_projected[1])}'])
   if src_refined is not None:
@@ -3324,7 +3531,9 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
   pre_b = stages.get('preserve_before')
   pre_a = stages.get('preserve_after')
   if pre_b is not None or pre_a is not None:
-    rows_data.append(['── preserve (new-model test) ──', ''])
+    preserve_section = (f'── preserve ({new_dataset} test) ──' if new_dataset
+                        else '── preserve (new-model test) ──')
+    rows_data.append([preserve_section, ''])
     if pre_b is not None:
       rows_data.append(['MAE micro / macro (before)', f'{_pair(pre_b[0])} / {_pair(pre_b[1])}'])
     if pre_a is not None:
@@ -3379,7 +3588,8 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
 
 
 def plot_refinement_modes_comparison(refine_items, refine_preds_by_mode, old_preds, labels,
-                                     base_stages, out_dir, run_label: str = ''):
+                                     base_stages, out_dir, run_label: str = '',
+                                     src_dataset: str = None, new_dataset: str = None):
   """
   Combined cross-mode comparison for a --refinement 3 run: one figure contrasting every
   refinement mode (linear_only / projector_linear) against the projected baseline.
@@ -3401,6 +3611,10 @@ def plot_refinement_modes_comparison(refine_items, refine_preds_by_mode, old_pre
     base_stages          (dict): {'old': (micro,macro), 'projected': (micro,macro)} baseline.
     out_dir              (str): Output directory.
     run_label            (str): Optional run identity string appended to the titles.
+    src_dataset          (str | None): Resolved old/source dataset name, named in the
+      'src MAE' table column headers. None ⇒ generic 'src'.
+    new_dataset          (str | None): Resolved new/target dataset name, named in the
+      'preserve' table column headers. None ⇒ generic 'preserve'.
   """
   old_preds  = np.asarray(old_preds, dtype=np.float32).reshape(-1)
   labels     = np.asarray(labels,    dtype=np.float32).reshape(-1)
@@ -3412,7 +3626,10 @@ def plot_refinement_modes_comparison(refine_items, refine_preds_by_mode, old_pre
     return f'{float(v):.4f}' if (v is not None and np.isfinite(float(v))) else '—'
 
   # --- metrics table: one row per stage ---
-  col_labels = ['Stage', 'src MAE micro', 'src MAE macro', 'preserve micro', 'preserve macro']
+  src_col = f'src MAE ({src_dataset})' if src_dataset else 'src MAE'
+  pre_col = f'preserve ({new_dataset})' if new_dataset else 'preserve'
+  col_labels = ['Stage', f'{src_col} micro', f'{src_col} macro',
+                f'{pre_col} micro', f'{pre_col} macro']
   o = base_stages.get('old',       (float('nan'), float('nan')))
   p = base_stages.get('projected', (float('nan'), float('nan')))
   rows = [['old', _fmt(o[0]), _fmt(o[1]), '—', '—']]
@@ -4016,11 +4233,18 @@ def plot_refinement_mae_per_class(after_preds, before_preds, old_preds, labels,
   print(f'Saved: {path}')
 
   # Plots B & C — improvement per class (baseline − after); positive = refined better.
-  for base_mae, fname, title in (
+  # Each comparison also emits a companion 2-bar plot (baseline vs refined side by side).
+  for base_mae, fname, title, cmp_fname, base_label, base_color, cmp_title in (
     (before_mae, f'mae_improvement_per_class_refined_vs_projected{filename_suffix}.png',
-     f'MAE improvement per pain class (projected − refined){suffix}'),
+     f'MAE improvement per pain class (projected − refined){suffix}',
+     f'mae_per_class_compare_refined_vs_projected{filename_suffix}.png',
+     'Projected (before)', 'darkorange',
+     f'MAE per pain class — projected vs refined{suffix}'),
     (old_mae, f'mae_improvement_per_class_refined_vs_old{filename_suffix}.png',
-     f'MAE improvement per pain class (old − refined){suffix}'),
+     f'MAE improvement per pain class (old − refined){suffix}',
+     f'mae_per_class_compare_refined_vs_old{filename_suffix}.png',
+     'Old model', '#E69F00',
+     f'MAE per pain class — old vs refined{suffix}'),
   ):
     imp_groups = sorted(set(base_mae) | set(after_mae))
     diffs = [
@@ -4031,6 +4255,20 @@ def plot_refinement_mae_per_class(after_preds, before_preds, old_preds, labels,
     _draw_mae_improvement_bar(ax, imp_groups, diffs, 'Labels', title)
     plt.tight_layout()
     path = os.path.join(out_dir, fname)
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f'Saved: {path}')
+
+    base_vals  = [base_mae.get(g,  (float('nan'), 0))[0] for g in imp_groups]
+    after_vals = [after_mae.get(g, (float('nan'), 0))[0] for g in imp_groups]
+    fig, ax = plt.subplots(figsize=(14, 5))
+    _draw_grouped_mae_bar(
+      ax, imp_groups, base_vals, after_vals, base_label, 'Refined (after)',
+      base_color, '#0072B2', 'MAE', cmp_title,
+    )
+    ax.set_xlabel('Labels')
+    plt.tight_layout()
+    path = os.path.join(out_dir, cmp_fname)
     fig.savefig(path, dpi=150)
     plt.close(fig)
     print(f'Saved: {path}')
@@ -4208,6 +4446,163 @@ def _resolve_new_features_path(data, fmt, new_model_pth, pkl_path=None):
   except ValueError as exc:
     print(f'[emb_recon] could not resolve new-model features for old domain: {exc}')
     return None
+
+
+def _resolve_old_model_pth(data, fmt, pkl_path):
+  """
+  Best-effort lookup of the path to the old/source model's checkpoint.
+
+  Mirrors _resolve_new_model_pth for the old model: standalone pkls store it under
+  config_cross_space_projection; grid trial pkls recover --old_model_pth from the
+  search root's best_config.txt script_cmd, falling back to the referenced
+  --config YAML's top-level old_model_pth key (searches launched from a YAML carry
+  no explicit --old_model_pth token).
+
+  Args:
+    data     (dict): Deserialized pkl contents.
+    fmt      (str):  'grid' or 'standalone'.
+    pkl_path (str):  Path to the loaded pkl (grid: walked up to the search root).
+
+  Returns:
+    str | None: Path to the old model checkpoint, or None if it cannot be resolved.
+  """
+  if fmt == 'standalone':
+    return (data.get('config_cross_space_projection') or {}).get('old_model_pth')
+  if not pkl_path:
+    return None
+  search_root = os.path.dirname(os.path.dirname(pkl_path))
+  cfg_txt = os.path.join(search_root, 'best_config.txt')
+  if not os.path.isfile(cfg_txt):
+    return None
+  config_path = None
+  with open(cfg_txt) as f:
+    for line in f:
+      if not line.startswith('script_cmd:'):
+        continue
+      tokens = line.split()
+      for i, tok in enumerate(tokens):
+        if tok == '--old_model_pth' and i + 1 < len(tokens):
+          return tokens[i + 1]
+        if tok == '--config' and i + 1 < len(tokens):
+          config_path = tokens[i + 1]
+  if config_path:
+    import yaml
+    for candidate in (config_path, os.path.join(search_root, config_path)):
+      if candidate and os.path.isfile(candidate):
+        try:
+          with open(candidate) as f:
+            return (yaml.safe_load(f) or {}).get('old_model_pth')
+        except Exception as exc:
+          print(f'[cross_space_logs] failed to read old_model_pth from {candidate}: {exc}')
+          return None
+  return None
+
+
+def _resolve_old_dataset(data, fmt, pkl_path):
+  """
+  Infer the old/source model's dataset name for use in plot titles.
+
+  Tries, in order, the most reliable path sources and returns the first that
+  _detect_dataset (cross_space_projection) maps to a known dataset keyword. Used
+  to annotate plot titles with the source dataset; never raises so a failure to
+  resolve simply drops the dataset name from the title.
+
+  Args:
+    data     (dict): Deserialized pkl contents.
+    fmt      (str):  'grid' or 'standalone'.
+    pkl_path (str):  Path the trial pkl was loaded from (grid: its grandparent is
+      the search root holding best_config.txt).
+
+  Returns:
+    str | None: Uppercase dataset name ('UNBC' | 'BIOVID' | 'AGEDB' | 'CAER' |
+      'MORPH') or None if no source path yields a known dataset keyword.
+  """
+  from cross_space_projection import _detect_dataset, _load_config
+
+  cfg        = data.get('config_cross_space_projection') or {}
+  candidates = []
+
+  # 1. Old model checkpoint path (its directory name encodes the dataset, e.g.
+  #    UNBC_OPI_.../...) and its native features folder.
+  old_model_pth = _resolve_old_model_pth(data, fmt, pkl_path)
+  if old_model_pth:
+    candidates.append(old_model_pth)
+    try:
+      candidates.append(
+        _load_config(old_model_pth)['model_advanced_params']['features_folder_saving_path'])
+    except Exception:
+      pass
+
+  # 2. Standalone pkls also carry the old model's resolved config inline.
+  if fmt == 'standalone':
+    feat = (data.get('old_model_config') or {}) \
+      .get('model_advanced_params', {}).get('features_folder_saving_path')
+    if feat:
+      candidates.append(feat)
+
+  # 3. Fallback: the label-CSV paths often contain a dataset keyword (e.g. partA/...).
+  for key in ('old_tensors_csv_path', 'anchors_csv_path'):
+    val = data.get(key) or cfg.get(key)
+    if val:
+      candidates.append(val)
+
+  for path in candidates:
+    try:
+      return _detect_dataset(path)
+    except ValueError:
+      continue
+  return None
+
+
+def _resolve_new_dataset(data, fmt, pkl_path):
+  """
+  Infer the new/target model's dataset name for use in plot titles.
+
+  Mirror of _resolve_old_dataset but for the new model: its own test split (the
+  '*newtest*' refinement plots) lives in the new model's native domain, so those
+  titles must name this dataset rather than the source one. Tries, in order, the
+  most reliable path sources and returns the first that _detect_dataset
+  (cross_space_projection) maps to a known dataset keyword. Never raises so a
+  failure to resolve simply drops the dataset name from the title.
+
+  Args:
+    data     (dict): Deserialized pkl contents.
+    fmt      (str):  'grid' or 'standalone'.
+    pkl_path (str):  Path the trial pkl was loaded from (grid: its grandparent is
+      the search root holding best_config.txt).
+
+  Returns:
+    str | None: Uppercase dataset name ('UNBC' | 'BIOVID' | 'AGEDB' | 'CAER' |
+      'MORPH') or None if no source path yields a known dataset keyword.
+  """
+  from cross_space_projection import _detect_dataset, _load_config
+
+  candidates = []
+
+  # 1. New model checkpoint path (its directory name encodes the dataset) and its
+  #    native features folder.
+  new_model_pth = _resolve_new_model_pth(data, fmt, pkl_path)
+  if new_model_pth:
+    candidates.append(new_model_pth)
+    try:
+      candidates.append(
+        _load_config(new_model_pth)['model_advanced_params']['features_folder_saving_path'])
+    except Exception:
+      pass
+
+  # 2. Standalone pkls also carry the new model's resolved config inline.
+  if fmt == 'standalone':
+    feat = (data.get('new_model_config') or {}) \
+      .get('model_advanced_params', {}).get('features_folder_saving_path')
+    if feat:
+      candidates.append(feat)
+
+  for path in candidates:
+    try:
+      return _detect_dataset(path)
+    except ValueError:
+      continue
+  return None
 
 
 def _fetch_real_embeddings_via_pipeline(data, fmt, pkl_path, target_ids,
@@ -4900,6 +5295,12 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
       run_label = f"UID: {cfg['uid']}"
     os.makedirs(out_dir, exist_ok=True)
     print(f'[cross_space_logs] (projector-only) Output: {out_dir}')
+    src_csv = (data['trial_params']['old_model_csv'] if fmt == 'grid'
+               else cfg.get('old_model_csv'))
+    src_dataset = _resolve_old_dataset(data, fmt, pkl_path)
+    src_tag = ' · '.join(str(p) for p in (src_dataset, src_csv) if p)
+    if src_tag:
+      run_label = f'{run_label}\n{src_tag}'
     plot_projector_diagnostics(_extract_linear_bundle(data), out_dir, run_label=run_label)
     return out_dir, None
 
@@ -4939,6 +5340,26 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
 
   os.makedirs(out_dir, exist_ok=True)
   print(f'[cross_space_logs] Output: {out_dir}')
+
+  # Source-set CSV name, surfaced into the confusion-matrix titles so the dataset is explicit.
+  src_csv = (data['trial_params']['old_model_csv'] if fmt == 'grid'
+             else cfg.get('old_model_csv'))
+
+  # Source dataset · split tag (e.g. 'BIOVID · test'), appended on its own title line to
+  # every per-run plot EXCEPT the confusion matrices (whose titles already carry it). The
+  # dataset name is best-effort; when unresolved the tag is the split alone.
+  src_dataset = _resolve_old_dataset(data, fmt, pkl_path)
+  src_tag     = ' · '.join(str(p) for p in (src_dataset, src_csv) if p)
+
+  def _with_src(lbl):
+    """Append the 'dataset · split' source tag on its own line below a run label."""
+    return f'{lbl}\n{src_tag}' if src_tag else lbl
+
+  # New/target model dataset name, used for the new-model-test plots ('*newtest*' +
+  # the new-model confusion matrices) whose data lives in the new space, not the
+  # source one. Best-effort; None ⇒ titles fall back to the generic 'new-model dataset'.
+  new_dataset     = _resolve_new_dataset(data, fmt, pkl_path)
+  new_dataset_lbl = new_dataset or 'new-model dataset'
 
   new_t      = data['new_model_tensors']
   old_t      = data['old_model_tensors']
@@ -5042,16 +5463,49 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
   proj_stage_name = 'Projected (before refinement)' if refine_items else 'Projected (new model)'
 
   # ── Projected (before-refinement) plots ─────────────────────────────────────
-  plot_predictions_histogram(proj_preds, old_preds, labels, out_dir, run_label=run_label)
-  plot_mae_per_class(proj_preds, old_preds, labels, out_dir, run_label=run_label)
-  plot_mae_per_subject(proj_preds, old_preds, labels, sample_ids, subject_map, out_dir, run_label=run_label)
-  plot_mae_improvement_per_class(proj_preds, old_preds, labels, out_dir, run_label=run_label)
-  plot_mae_improvement_per_subject(proj_preds, old_preds, labels, sample_ids, subject_map, out_dir, run_label=run_label)
+  plot_predictions_histogram(proj_preds, old_preds, labels, out_dir, run_label=_with_src(run_label))
+  plot_mae_per_class(proj_preds, old_preds, labels, out_dir, run_label=_with_src(run_label))
+  plot_mae_per_subject(proj_preds, old_preds, labels, sample_ids, subject_map, out_dir, run_label=_with_src(run_label))
+  plot_mae_improvement_per_class(proj_preds, old_preds, labels, out_dir, run_label=_with_src(run_label))
+  plot_mae_improvement_per_subject(proj_preds, old_preds, labels, sample_ids, subject_map, out_dir, run_label=_with_src(run_label))
+  # ── Confusion matrices (old-model dataset / source set) ─────────────────────
+  # Stage-explicit titles name the step, the dataset, and the split. Cases 1-2 here are
+  # mode-independent (the old model itself and the before-refinement projection on the
+  # full source set); the after-refinement matrix (case 3) and the new-model-dataset
+  # matrices (cases 4-5) are emitted per refinement mode in the loop below.
+  # Titles are two-line: line 1 = pipeline step, line 2 = dataset · split. The standalone
+  # PNGs use the full 'Confusion matrix — ...' titles (cm_*); the combined figure reuses the
+  # short stage/dataset/split panel titles (pt_*) since its suptitle already carries the run.
+  src_set_lbl   = f'{src_dataset or "old-model dataset"} · source set [{src_csv}]'
+  proj_step     = 'After projection (before refinement)' if refine_items else 'After projection (new model)'
+  cm_old_title  = f'Confusion matrix — Old model (original)\n{src_set_lbl}'
+  cm_proj_title = f'Confusion matrix — {proj_step}\n{src_set_lbl}'
+  cm_refined_title = f'Confusion matrix — After refinement\n{src_set_lbl}'
+  pt_old  = f'Old model (original)\n{src_set_lbl}'
+  pt_proj = f'{proj_step}\n{src_set_lbl}'
+  pt_ref  = f'After refinement\n{src_set_lbl}'
   if num_classes <= 15:
-    plot_confusion_matrix_cross(proj_preds, labels, out_dir, num_classes, run_label=run_label)
+    plot_confusion_matrix_cross(old_preds, labels, out_dir, num_classes, run_label=run_label,
+                                title=cm_old_title, out_filename='confusion_matrix_old.png')
+    plot_confusion_matrix_cross(proj_preds, labels, out_dir, num_classes, run_label=run_label,
+                                title=cm_proj_title)
   else:
     print(f'Skipped confusion matrix: num_classes={num_classes} > 15')
-  plot_umap(proj_emb, labels, sample_ids, subject_map, out_dir, run_label=run_label,
+
+  # No-refinement runs get the combined comparison figure here (cases 3-5 blanked).
+  if not refine_items:
+    panels = [
+      {'title': pt_old,  'preds': old_preds,  'labels': labels, 'num_classes': num_classes},
+      {'title': pt_proj, 'preds': proj_preds, 'labels': labels, 'num_classes': num_classes},
+      {'title': pt_ref,  'preds': None, 'labels': None, 'num_classes': None,
+       'note': 'no refinement stage'},
+      {'title': f'New model (original)\n{new_dataset_lbl}',
+       'preds': None, 'labels': None, 'num_classes': None, 'note': 'no refinement stage'},
+      {'title': f'New model (after refinement)\n{new_dataset_lbl}',
+       'preds': None, 'labels': None, 'num_classes': None, 'note': 'no refinement stage'},
+    ]
+    plot_confusion_matrices_combined(panels, out_dir, run_label=run_label)
+  plot_umap(proj_emb, labels, sample_ids, subject_map, out_dir, run_label=_with_src(run_label),
             filename_suffix='_projected')
   split_data = None
   try:
@@ -5060,8 +5514,9 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
       s_emb, s_lab = split_data
       plot_umap_split_impact(
         np.asarray(proj_emb, dtype=np.float32), labels,
-        s_emb, s_lab, SPLIT_TO_COMPARE, out_dir, run_label=run_label,
+        s_emb, s_lab, SPLIT_TO_COMPARE, out_dir, run_label=_with_src(run_label),
         filename_suffix='_projected',
+        new_dataset=new_dataset, src_dataset=src_dataset,
       )
     else:
       print(f'[WARN] split-impact UMAP: could not load {SPLIT_TO_COMPARE!r} '
@@ -5069,10 +5524,10 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
   except Exception as exc:
     print(f'[WARN] split-impact UMAP failed: {exc}')
 
-  plot_prediction_scatter(proj_preds, old_preds, labels, out_dir, run_label=run_label)
-  plot_prediction_by_class_boxplot(proj_preds, old_preds, labels, out_dir, run_label=run_label)
+  plot_prediction_scatter(proj_preds, old_preds, labels, out_dir, run_label=_with_src(run_label))
+  plot_prediction_by_class_boxplot(proj_preds, old_preds, labels, out_dir, run_label=_with_src(run_label))
   try:
-    plot_embedding_norm_cosine_per_class(proj_emb, old_emb_src, labels, out_dir, run_label=run_label)
+    plot_embedding_norm_cosine_per_class(proj_emb, old_emb_src, labels, out_dir, run_label=_with_src(run_label))
   except Exception as exc:
     print(f'[WARN] Failed to plot embedding norm/cosine: {exc}')
 
@@ -5081,23 +5536,25 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
   # keeps the legacy unsuffixed filenames; --refinement 3 appends a '_<mode>' suffix.
   for _mode, _block in refine_items:
     rl   = _ref_title(_mode)
+    rl_src = _with_src(rl)   # rl + source dataset·split line, for the non-CM plots
     msfx = _mode_sfx(_mode)
     refined_emb = refined_emb_by_mode.get(_mode)
     if refined_emb is not None:
       try:
         plot_umap(refined_emb, labels, sample_ids, subject_map, out_dir,
-                  run_label=rl, filename_suffix=f'_refined{msfx}')
+                  run_label=rl_src, filename_suffix=f'_refined{msfx}')
         if split_data is not None:
           s_emb, s_lab = split_data
           plot_umap_split_impact(refined_emb, labels, s_emb, s_lab, SPLIT_TO_COMPARE,
-                                 out_dir, run_label=rl, filename_suffix=f'_refined{msfx}')
+                                 out_dir, run_label=rl_src, filename_suffix=f'_refined{msfx}',
+                                 new_dataset=new_dataset, src_dataset=src_dataset)
         else:
           print(f'[WARN] after-refinement split-impact UMAP: {SPLIT_TO_COMPARE!r} split unavailable — skipped.')
       except Exception as exc:
         print(f'[WARN] after-refinement UMAP ({_mode or "refinement"}) failed: {exc}')
       try:
         plot_embedding_norm_cosine_per_class(
-          refined_emb, old_emb_src, labels, out_dir, run_label=rl,
+          refined_emb, old_emb_src, labels, out_dir, run_label=rl_src,
           new_stage_name='Refined (after refinement)',
           out_filename=f'embedding_norm_cosine_per_class_refined_vs_old{msfx}.png')
       except Exception as exc:
@@ -5108,36 +5565,88 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
       before_preds, after_preds = _rp
       try:
         plot_refinement_mae_per_class(after_preds, before_preds, old_preds, labels, out_dir,
-                                      run_label=rl, filename_suffix=msfx)
+                                      run_label=rl_src, filename_suffix=msfx)
       except Exception as exc:
         print(f'[WARN] after-refinement MAE-per-class ({_mode or "refinement"}) failed: {exc}')
       # Refined-variant prediction-level plots mirroring the projected ones above.
       try:
         plot_predictions_histogram(
-          after_preds, old_preds, labels, out_dir, run_label=rl,
+          after_preds, old_preds, labels, out_dir, run_label=rl_src,
           new_name='Refined (after refinement)',
           out_filename=f'predictions_histogram_refined_vs_old{msfx}.png')
         plot_prediction_scatter(
-          after_preds, old_preds, labels, out_dir, run_label=rl,
+          after_preds, old_preds, labels, out_dir, run_label=rl_src,
           new_name='Refined (after refinement)',
           out_filename=f'prediction_scatter_refined_vs_old{msfx}.png')
         plot_prediction_by_class_boxplot(
-          after_preds, old_preds, labels, out_dir, run_label=rl,
+          after_preds, old_preds, labels, out_dir, run_label=rl_src,
           new_name='Refined (after refinement)',
           out_filename=f'prediction_by_class_boxplot_refined_vs_old{msfx}.png')
         plot_mae_per_subject(
-          after_preds, old_preds, labels, sample_ids, subject_map, out_dir, run_label=rl,
+          after_preds, old_preds, labels, sample_ids, subject_map, out_dir, run_label=rl_src,
           new_name='Refined (after refinement)',
           new_filename=f'mae_per_subject_refined{msfx}.png', emit_old=False)
       except Exception as exc:
         print(f'[WARN] refined prediction-level plots ({_mode or "refinement"}) failed: {exc}')
 
+    # ── Confusion matrices: after-refinement source (case 3) + new-model dataset
+    #    original/refined (cases 4-5), plus a per-mode combined comparison figure that
+    #    also carries the mode-independent old/projected source matrices built above.
+    src_after = _rp[1] if _rp is not None else None
+    if src_after is not None and num_classes <= 15:
+      plot_confusion_matrix_cross(
+        src_after, labels, out_dir, num_classes, run_label=rl,
+        title=cm_refined_title, out_filename=f'confusion_matrix_refined{msfx}.png')
+
+    nte = (_block or {}).get('new_test_eval')
+    nt_labels = nt_preds_before = nt_preds_after = None
+    nt_classes = None
+    cm_nt_orig_title = f'Confusion matrix — New model (original)\n{new_dataset_lbl}'
+    cm_nt_ref_title  = f'Confusion matrix — New model (after refinement)\n{new_dataset_lbl}'
+    pt_nt_orig = f'New model (original)\n{new_dataset_lbl}'
+    pt_nt_ref  = f'New model (after refinement)\n{new_dataset_lbl}'
+    if nte:
+      nt_labels       = np.asarray(nte['labels'],       dtype=np.float32).reshape(-1)
+      nt_preds_before = np.asarray(nte['preds_before'], dtype=np.float32).reshape(-1)
+      nt_preds_after  = np.asarray(nte['preds_after'],  dtype=np.float32).reshape(-1)
+      nt_classes      = int(np.round(nt_labels).max()) + 1
+      new_set_lbl     = f"{new_dataset_lbl} · {nte.get('split', 'test')} split"
+      cm_nt_orig_title = f'Confusion matrix — New model (original)\n{new_set_lbl}'
+      cm_nt_ref_title  = f'Confusion matrix — New model (after refinement)\n{new_set_lbl}'
+      pt_nt_orig = f'New model (original)\n{new_set_lbl}'
+      pt_nt_ref  = f'New model (after refinement)\n{new_set_lbl}'
+      if nt_classes <= 15:
+        # 'original' = the unrefined new model, so use the base run_label (not rl, which
+        # carries the contradictory '| after refinement' tag used by the after-stage plots).
+        plot_confusion_matrix_cross(
+          nt_preds_before, nt_labels, out_dir, nt_classes, run_label=run_label,
+          title=cm_nt_orig_title, out_filename=f'confusion_matrix_newtest_original{msfx}.png')
+        plot_confusion_matrix_cross(
+          nt_preds_after, nt_labels, out_dir, nt_classes, run_label=rl,
+          title=cm_nt_ref_title, out_filename=f'confusion_matrix_newtest_refined{msfx}.png')
+      else:
+        print(f'Skipped new-model confusion matrices: num_classes={nt_classes} > 15')
+
+    panels = [
+      {'title': pt_old,     'preds': old_preds,  'labels': labels, 'num_classes': num_classes},
+      {'title': pt_proj,    'preds': proj_preds, 'labels': labels, 'num_classes': num_classes},
+      {'title': pt_ref,     'preds': src_after,  'labels': labels, 'num_classes': num_classes,
+       'note': 'refinement predictions unavailable'},
+      {'title': pt_nt_orig, 'preds': nt_preds_before, 'labels': nt_labels,
+       'num_classes': nt_classes, 'note': 'no new_test_eval block'},
+      {'title': pt_nt_ref,  'preds': nt_preds_after,  'labels': nt_labels,
+       'num_classes': nt_classes, 'note': 'no new_test_eval block'},
+    ]
+    plot_confusion_matrices_combined(
+      panels, out_dir, run_label=rl,
+      out_filename=f'confusion_matrix_all_stages{msfx}.png')
+
   try:
-    plot_anchor_weights(weights, out_dir, run_label=run_label)
+    plot_anchor_weights(weights, out_dir, run_label=_with_src(run_label))
   except Exception as exc:
     print(f'[WARN] Failed to plot anchor weights: {exc}')
   try:
-    plot_weight_rank_distribution(weights, out_dir, run_label=run_label)
+    plot_weight_rank_distribution(weights, out_dir, run_label=_with_src(run_label))
   except Exception as exc:
     print(f'[WARN] Failed to plot weight rank distribution: {exc}')
   # Per-stage MAE block for the dashboard metrics table: source Old/Projected/Refined plus
@@ -5174,39 +5683,50 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
   if multi_refine:
     # Base dashboard stays projected-only; one dashboard per mode + a combined comparison.
     plot_dashboard(proj_preds, old_preds, labels, num_classes, mae_micro_proj, ccc_proj, out_dir,
-                   run_label=run_label, mae_macro=mae_macro_proj, mae_macro_old=mae_macro_old,
-                   mae_stages=base_stages, projected_stage_name=proj_stage_name)
+                   run_label=_with_src(run_label), mae_macro=mae_macro_proj, mae_macro_old=mae_macro_old,
+                   mae_stages=base_stages, projected_stage_name=proj_stage_name,
+                   src_dataset=src_dataset, new_dataset=new_dataset)
     for _mode, _block in refine_items:
       plot_dashboard(proj_preds, old_preds, labels, num_classes, mae_micro_proj, ccc_proj, out_dir,
-                     run_label=f'{run_label} | {_mode}', mae_macro=mae_macro_proj,
+                     run_label=_with_src(f'{run_label} | {_mode}'), mae_macro=mae_macro_proj,
                      mae_macro_old=mae_macro_old, mae_stages=_stages_for(_mode, _block),
-                     filename_suffix=f'_{_mode}', projected_stage_name=proj_stage_name)
+                     filename_suffix=f'_{_mode}', projected_stage_name=proj_stage_name,
+                     src_dataset=src_dataset, new_dataset=new_dataset)
     try:
       plot_refinement_modes_comparison(refine_items, refine_preds_by_mode, old_preds, labels,
-                                       base_stages, out_dir, run_label=run_label)
+                                       base_stages, out_dir, run_label=_with_src(run_label),
+                                       src_dataset=src_dataset, new_dataset=new_dataset)
     except Exception as exc:
       print(f'[WARN] refinement modes comparison failed: {exc}')
   else:
     # Single mode (or none): the one dashboard carries the refined row (legacy behavior).
     stages = _stages_for(*refine_items[0]) if refine_items else base_stages
     plot_dashboard(proj_preds, old_preds, labels, num_classes, mae_micro_proj, ccc_proj, out_dir,
-                   run_label=run_label, mae_macro=mae_macro_proj, mae_macro_old=mae_macro_old,
-                   mae_stages=stages, projected_stage_name=proj_stage_name)
+                   run_label=_with_src(run_label), mae_macro=mae_macro_proj, mae_macro_old=mae_macro_old,
+                   mae_stages=stages, projected_stage_name=proj_stage_name,
+                   src_dataset=src_dataset, new_dataset=new_dataset)
 
-  plot_projector_diagnostics(_extract_linear_bundle(data), out_dir, run_label=run_label)
+  plot_projector_diagnostics(_extract_linear_bundle(data), out_dir, run_label=_with_src(run_label))
 
   for _mode, _block in refine_items:
+    base_rl = f'{run_label} | {_mode}' if multi_refine else run_label
+    # The '*newtest*' per-class plot is computed on the new model's own test split,
+    # so it carries the new-model 'dataset · split' tag instead of the source one.
+    nt_split    = ((_block or {}).get('new_test_eval') or {}).get('split', 'test')
+    newtest_tag = f'{new_dataset_lbl} · {nt_split} split'
     plot_refinement_diagnostics(
       _block, out_dir,
-      run_label=(f'{run_label} | {_mode}' if multi_refine else run_label),
+      run_label=_with_src(base_rl),
       filename_suffix=_mode_sfx(_mode),
+      newtest_run_label=f'{base_rl}\n{newtest_tag}',
+      src_dataset=src_dataset, new_dataset=new_dataset,
     )
 
   # Embedding reconstruction (projected vs real new-model embeddings). The projected
   # stage is the before-refinement projection; refinement runs additionally get one
   # after-refinement variant per mode. Stage tags keep the CSV/PNG names distinct.
   try:
-    log_embedding_reconstruction(data, fmt, pkl_path, out_dir, run_label=run_label,
+    log_embedding_reconstruction(data, fmt, pkl_path, out_dir, run_label=_with_src(run_label),
                                  projected_override=proj_emb,
                                  stage_tag=('_projected' if refine_items else ''))
   except Exception as exc:
@@ -5216,7 +5736,7 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
     if refined_emb is None:
       continue
     try:
-      log_embedding_reconstruction(data, fmt, pkl_path, out_dir, run_label=_ref_title(_mode),
+      log_embedding_reconstruction(data, fmt, pkl_path, out_dir, run_label=_with_src(_ref_title(_mode)),
                                    projected_override=refined_emb,
                                    stage_tag=f'_refined{_mode_sfx(_mode)}')
     except Exception as exc:
@@ -5228,7 +5748,7 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
       data['new_model_anchors_embeddings']['embeddings'],
       data['old_model_anchors_embeddings']['labels'],
       out_dir,
-      run_label=run_label,
+      run_label=_with_src(run_label),
     )
     try:
       plot_anchor_norm_comparison(
@@ -5236,7 +5756,7 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
         data['new_model_anchors_embeddings']['embeddings'],
         data['old_model_anchors_embeddings']['labels'],
         out_dir,
-        run_label=run_label,
+        run_label=_with_src(run_label),
       )
     except Exception as exc:
       print(f'[WARN] Failed to plot anchor norm comparison: {exc}')
