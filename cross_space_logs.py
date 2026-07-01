@@ -97,6 +97,7 @@ Multi-mode refinement (--refinement 3, pkl key 'refinements'):
 Usage:
   python3 cross_space_logs.py --pkl_path <path>
   python3 cross_space_logs.py --pkl_path <folder> --plot_only_top_k 5
+  python3 cross_space_logs.py --pkl_path <folder> --plot_trials 3 7 12
 """
 import argparse
 import glob
@@ -144,6 +145,28 @@ def _load_pkl(pkl_path):
   """
   with open(pkl_path, 'rb') as f:
     return pickle.load(f)
+
+
+def _trial_number_from_pkl_path(pkl_path):
+  """
+  Parse the Optuna trial number from a grid-search results.pkl path.
+
+  Relies on the cross_space_projection.py layout where each trial lives in a
+  directory named 'trial{number:04d}_{tag}'. Reads only the path string; does
+  not open the pkl.
+
+  Args:
+    pkl_path (str): Path to a .../trialNNNN_<tag>/results.pkl file.
+
+  Returns:
+    int | None: The parsed trial number, or None if the parent directory name
+      does not match the 'trialNNNN_' convention.
+  """
+  name = os.path.basename(os.path.dirname(pkl_path))
+  if not name.startswith('trial') or '_' not in name:
+    return None
+  head = name[len('trial'):name.index('_')]
+  return int(head) if head.isdigit() else None
 
 
 def _rebase_path(p, saved_root, actual_root):
@@ -647,8 +670,20 @@ def _write_summary_csv(row, out_dir):
     row     (dict): Flat dict of hyperparameters and metrics.
     out_dir (str):  Directory to write the CSV into.
   """
+  _write_summary_rows([row], out_dir)
+
+
+def _write_summary_rows(rows, out_dir):
+  """
+  Write one-or-more summary rows into out_dir/summary.csv.
+
+  Args:
+    rows    (list[dict]): Flat rows of hyperparameters and metrics (one per refinement mode
+      for a --refinement 3 run; a single row otherwise).
+    out_dir (str):        Directory to write the CSV into.
+  """
   path = os.path.join(out_dir, 'summary.csv')
-  pd.DataFrame([row]).to_csv(path, index=False)
+  pd.DataFrame(rows).to_csv(path, index=False)
   print(f'Saved: {path}')
 
 
@@ -682,18 +717,47 @@ _REFINEMENT_SUMMARY_KEYS = (
 )
 
 
-def _refinement_columns(data):
+def _refine_items(data):
+  """
+  Resolve a pkl's refinement stage(s) into a uniform (mode, block) list.
+
+  --refinement 3 stores several blocks under the plural 'refinements' key (one per
+  mode: linear_only / projector_linear); --refinement 1/2 store a single block under
+  'refinement'. This mirrors the plotting path's idiom so summary-row builders can be
+  mode-aware without caring which schema a pkl uses.
+
+  Args:
+    data (dict): Deserialized pkl contents.
+
+  Returns:
+    list[tuple[str, dict]]: [(mode, block), ...]. The plural blocks are keyed by mode;
+      the singular block's mode is read from its 'refine_mode' field ('' if absent).
+      Empty list when the pkl has no refinement stage.
+  """
+  multi = data.get('refinements')
+  if multi:
+    return list(multi.items())
+  single = data.get('refinement')
+  if single:
+    return [(single.get('refine_mode') or '', single)]
+  return []
+
+
+def _refinement_columns(data, refine_block=None):
   """
   Extract the flat refinement-stage columns from a pkl dict for summary.csv.
 
   Args:
-    data (dict): Deserialized pkl contents (may or may not have a 'refinement' block).
+    data         (dict): Deserialized pkl contents (may or may not have a 'refinement' block).
+    refine_block (dict | None): A specific per-mode refinement block (one entry of the
+      plural 'refinements') to read instead of the singular data['refinement']. When None,
+      falls back to data.get('refinement') (backward-compatible for grid/single-mode pkls).
 
   Returns:
     dict: One entry per _REFINEMENT_SUMMARY_KEYS. With no refinement block,
       'refine_enabled' is False and numeric/path fields default to NaN/None.
   """
-  ref = data.get('refinement') or {}
+  ref = (refine_block if refine_block is not None else data.get('refinement')) or {}
   out = {}
   for k in _REFINEMENT_SUMMARY_KEYS:
     if k in ref:
@@ -720,37 +784,107 @@ _REF_SUMMARY_FIELDS = (
 )
 
 
-def _recipe_columns(data):
+def _recipe_columns(data, refine_block=None):
   """
   Extract the swept projector / refinement recipe fields as flat lp_* / ref_* columns.
 
   Args:
-    data (dict): Deserialized pkl contents (may lack the 'linear_projector' /
+    data         (dict): Deserialized pkl contents (may lack the 'linear_projector' /
       'refinement' blocks for non-projector / non-refinement runs).
+    refine_block (dict | None): A specific per-mode refinement block to read the ref_*
+      recipe from instead of the singular data['refinement']. When None, falls back to
+      data.get('refinement'). The lp_* recipe always comes from data['linear_projector']
+      (the projector is shared across refinement modes).
 
   Returns:
     dict: One 'lp_<field>' per _LP_SUMMARY_FIELDS and one 'ref_<field>' per
       _REF_SUMMARY_FIELDS; None where the corresponding block/field is absent.
   """
   lp  = (data.get('linear_projector') or {}).get('config') or {}
-  ref = (data.get('refinement') or {}).get('config') or {}
+  ref = ((refine_block if refine_block is not None else data.get('refinement')) or {}).get('config') or {}
   out = {f'lp_{f}':  lp.get(f)  for f in _LP_SUMMARY_FIELDS}
   out.update({f'ref_{f}': ref.get(f) for f in _REF_SUMMARY_FIELDS})
   return out
 
 
-def _collect_summary_row(data, pkl_path):
+def _best_epoch_columns(data, refine_block=None):
+  """
+  Best-epoch-vs-configured-epochs columns for every trained stage.
+
+  Lets a sweep show at a glance whether each stage's epoch budget is enough: a
+  fraction near 1.0 means the best (val-selected) checkpoint was at the end of
+  training, i.e. the stage was still improving when epochs ran out. The projector
+  (1st stage) best epoch is read from data['linear_projector']; the totals
+  (lp_epochs / ref_epochs) and refine_best_epoch already come from _recipe_columns /
+  _refinement_columns, so the fractions are consistent with those columns. Closed-form
+  projectors (procrustes / closed_form, best_epoch=1) make the projector fraction
+  meaningless — it is still emitted; the 'kind'/interpolation_similarity columns
+  disambiguate.
+
+  Args:
+    data         (dict): Deserialized pkl contents.
+    refine_block (dict | None): A specific per-mode refinement block to read
+      refine_best_epoch / config.epochs from instead of the singular data['refinement'].
+      When None, falls back to data.get('refinement'). The projector (1st stage) always
+      comes from data['linear_projector'].
+
+  Returns:
+    dict: lp_best_epoch (int | None), lp_best_epoch_frac (float),
+      refine_best_epoch_frac (float). Fraction is NaN where the stage is absent,
+      the total is missing/0, or best_epoch <= 0.
+  """
+  nan = float('nan')
+
+  def _frac(best, total):
+    """Return best/total, or NaN when either is missing/0 or best <= 0."""
+    if best is None or total in (None, 0) or best <= 0:
+      return nan
+    try:
+      return float(best) / float(total)
+    except (TypeError, ZeroDivisionError):
+      return nan
+
+  lp  = data.get('linear_projector') or {}
+  ref = (refine_block if refine_block is not None else data.get('refinement')) or {}
+  lp_best  = lp.get('best_epoch')
+  lp_tot   = (lp.get('config') or {}).get('epochs')
+  ref_best = ref.get('refine_best_epoch')
+  ref_tot  = (ref.get('config') or {}).get('epochs')
+  return {
+    'lp_best_epoch':          lp_best,
+    'lp_best_epoch_frac':     _frac(lp_best, lp_tot),
+    'refine_best_epoch_frac': _frac(ref_best, ref_tot),
+  }
+
+
+def _collect_summary_row(data, pkl_path, refine_block=None, refine_mode=None):
   """
   Extract hyperparameters and metrics from a grid-format pkl into a flat dict.
 
   Args:
-    data     (dict): Grid-format pkl contents (must have trial_params and metrics).
-    pkl_path (str):  Path to the pkl file (unused, kept for signature consistency).
+    data         (dict): Grid-format pkl contents (must have trial_params and metrics).
+    pkl_path     (str):  Path to the pkl file (unused, kept for signature consistency).
+    refine_block (dict | None): A specific per-mode refinement block (one entry of the
+      plural 'refinements') to source every refinement column from, instead of the
+      singular data['refinement']. When None, falls back to data.get('refinement') — the
+      backward-compatible path for grid / single-mode (--refinement 1/2) pkls. Callers
+      that iterate the modes of a --refinement 3 pkl pass one block per row (see
+      _collect_summary_rows).
+    refine_mode  (str | None): Mode label for the 'refine_mode' column when refine_block
+      is supplied; falls back to trial_params['refine_mode'] when None.
 
   Returns:
-    dict: Flat row with trial_number, 8 hyperparams, mae, ccc, refinement columns,
-      the clear before/after comparison block (srctest_* / newtest_*), and the
-      pairwise improvement deltas (srctest_*_delta_*/_pct_*, newtest_*_delta_*/_pct_*).
+    dict: Flat row with trial_number, seed (the run's RNG seed, None for pkls saved
+      before seed was persisted), the trial hyperparams (including the mlp axes
+      mlp_activation / mlp_num_layers), mae, ccc, refinement columns, the per-stage
+      best-epoch-vs-budget columns (lp_best_epoch, lp_best_epoch_frac,
+      refine_best_epoch_frac — a fraction near 1.0 flags too few epochs),
+      the clear before/after comparison block (srctest_* / newtest_*), the pairwise
+      improvement deltas (srctest_*_delta_*/_pct_*, newtest_*_delta_*/_pct_*), and the
+      merged general_mae_* block summarizing per-step (before/after) improvement vs
+      the original models, averaged equally across both splits (per-metric
+      general_mae_{micro,macro}_{delta,pct}_{before,after}) and across both
+      splits + micro/macro (grand general_mae_{delta,pct}_{before,after}).
   """
   p     = data['trial_params']
   m     = data['metrics']
@@ -763,18 +897,20 @@ def _collect_summary_row(data, pkl_path):
   mae_micro_old, mae_macro_old = _compute_global_mae(old_preds, lbl)
   row = {
     'trial_number':             data['trial_number'],
+    'seed':                     data.get('seed'),
     'num_anchors':              p['num_anchors'],
     'anchor_selection_type':    p['anchor_selection_type'],
     'csv_anchor_selection':     p['csv_anchor_selection'],
     'old_model_csv':            p['old_model_csv'],
     'interpolation_similarity': p['interpolation_similarity'],
     'mlp_activation':           p.get('mlp_activation'),
+    'mlp_num_layers':           p.get('mlp_num_layers'),
     'weighting_method':         p['weighting_method'],
     'temperature':              p.get('temperature'),
     'rbf_sigma':                p['rbf_sigma'],
     'projector_config':         p.get('projector_config'),
     'refinement_config':        p.get('refinement_config'),
-    'refine_mode':              p.get('refine_mode'),
+    'refine_mode':              refine_mode if refine_mode is not None else p.get('refine_mode'),
     'mae':                      m['mae'],
     'ccc':                      m['ccc'],
     'runtime_min':              m.get('runtime_min'),
@@ -783,15 +919,20 @@ def _collect_summary_row(data, pkl_path):
     'mae_micro_old':            mae_micro_old,
     'mae_macro_old':            mae_macro_old,
   }
-  row.update(_refinement_columns(data))
-  row.update(_recipe_columns(data))
+  row.update(_refinement_columns(data, refine_block=refine_block))
+  row.update(_recipe_columns(data, refine_block=refine_block))
+  row.update(_best_epoch_columns(data, refine_block=refine_block))
+  # Resolved dataset names (best-effort, never raise) so summary plots can name the
+  # source / new-model dataset in titles. _collect_summary_row is grid-only.
+  row['src_dataset'] = _resolve_old_dataset(data, 'grid', pkl_path)
+  row['new_dataset'] = _resolve_new_dataset(data, 'grid', pkl_path)
 
   # ── Clear, grouped before/after refinement comparison columns ──
   # These restate the existing (obscurely-named) refinement metrics under
   # self-documenting names so the three-stage comparison reads at a glance.
   # 'srctest_*' is the projected source/old split (= --old_model_csv; run it as
   # 'test'); 'newtest_*' is the new (target) model's own test split.
-  ref = data.get('refinement') or {}
+  ref = (refine_block if refine_block is not None else data.get('refinement')) or {}
   nan = float('nan')
   # Source/projected split stage values: old (old model on its own split) / before
   # (projection with the original head) / after (projection with the refined head/
@@ -844,7 +985,150 @@ def _collect_summary_row(data, pkl_path):
     row[f'newtest_mae_{m}_pct_before_after']   = pct
     row[f'newtest_mae_{m}_before_rounded'] = bef_r
     row[f'newtest_mae_{m}_after_rounded']  = aft_r
+
+  # ── General (merged srctest+newtest) MAE improvement vs the original models ──
+  # Headline measures of overall improvement/degradation relative to the original
+  # models ("old results": old model on the source split = srctest *_old; native
+  # new model on its own test split = newtest *_before). For each refinement step
+  # (before / after) and metric (micro / macro), each split's improvement vs its
+  # own original baseline is taken via _improvement (positive => MAE dropped =>
+  # improvement) and the two splits are averaged equally. The per-metric
+  # general_mae_{micro,macro}_* columns average the 2 splits; the grand
+  # general_mae_* columns additionally average across micro+macro (a single overall
+  # scalar per step). newtest is unchanged at the 'before' step, so its 'before'
+  # improvement is 0 by construction; a fixed split count keeps 'before' and
+  # 'after' comparable. A stage/metric absent (e.g. non-refinement runs) is dropped
+  # from the average; NaN only when nothing is finite.
+  metric_stages = {
+    'micro': (src['micro'][0], src['micro'][1], src['micro'][2], nb_micro, na_micro),
+    'macro': (src['macro'][0], src['macro'][1], src['macro'][2], nb_macro, na_macro),
+  }
+  grand = {'before': {'delta': [], 'pct': []}, 'after': {'delta': [], 'pct': []}}
+  for metric, (s_old, s_bef, s_aft, n_bef, n_aft) in metric_stages.items():
+    for step, s_stage, n_stage in (('before', s_bef, n_bef), ('after', s_aft, n_aft)):
+      s_d, s_pct = _improvement(s_old, s_stage)  # srctest baseline = old model
+      n_d, n_pct = _improvement(n_bef, n_stage)  # newtest baseline = native new model
+      deltas = [v for v in (s_d, n_d)     if np.isfinite(v)]
+      pcts   = [v for v in (s_pct, n_pct) if np.isfinite(v)]
+      row[f'general_mae_{metric}_delta_{step}'] = float(np.mean(deltas)) if deltas else nan
+      row[f'general_mae_{metric}_pct_{step}']   = float(np.mean(pcts))   if pcts   else nan
+      grand[step]['delta'].extend(deltas)
+      grand[step]['pct'].extend(pcts)
+  for step in ('before', 'after'):
+    gd, gp = grand[step]['delta'], grand[step]['pct']
+    row[f'general_mae_delta_{step}'] = float(np.mean(gd)) if gd else nan
+    row[f'general_mae_pct_{step}']   = float(np.mean(gp)) if gp else nan
   return row
+
+
+def _collect_summary_rows(data, pkl_path):
+  """
+  Build one summary row per refinement mode present in a pkl (grid-schema columns).
+
+  --refinement 3 stores two refinement blocks (linear_only / projector_linear) under the
+  plural 'refinements' key, each with its own srctest_* / newtest_* / ref_* metrics. This
+  emits one _collect_summary_row per mode (the 'refine_mode' column distinguishes them),
+  so every mode's measures land in the CSV. A single-mode ('refinement') or no-refinement
+  pkl yields exactly one row, identical to the pre-existing _collect_summary_row output.
+
+  Args:
+    data     (dict): pkl contents (grid-format, or standalone with trial_params injected).
+    pkl_path (str):  Path to the pkl (forwarded to _collect_summary_row).
+
+  Returns:
+    list[dict]: One flat row per refinement mode (>= 1 row).
+  """
+  items = _refine_items(data)
+  if not items:
+    return [_collect_summary_row(data, pkl_path)]
+  return [_collect_summary_row(data, pkl_path, refine_block=block, refine_mode=(mode or None))
+          for mode, block in items]
+
+
+def _synth_trial_params_from_cfg(cfg):
+  """
+  Build a grid-style trial_params dict from a standalone run's config block.
+
+  Standalone (and aggregated) pkls store the hyperparameters under
+  config_cross_space_projection rather than the grid format's trial_params. This maps the
+  former onto the keys _collect_summary_row reads, so a grid-schema summary row can be built
+  for a standalone subtrial. Keys absent from a standalone config (projector_config /
+  refinement_config / refine_mode / temperature) default to None.
+
+  Args:
+    cfg (dict): A run's config_cross_space_projection mapping.
+
+  Returns:
+    dict: trial_params with the keys _collect_summary_row reads.
+  """
+  return {
+    'num_anchors':              cfg.get('num_anchors'),
+    'anchor_selection_type':    cfg.get('anchor_selection_type'),
+    'csv_anchor_selection':     cfg.get('csv_anchor_selection'),
+    'old_model_csv':            cfg.get('old_model_csv'),
+    'interpolation_similarity': cfg.get('interpolation_similarity'),
+    'mlp_activation':           cfg.get('mlp_activation'),
+    'mlp_num_layers':           cfg.get('mlp_num_layers'),
+    'weighting_method':         cfg.get('weighting_method'),
+    'temperature':              cfg.get('temperature'),
+    'rbf_sigma':                cfg.get('rbf_sigma'),
+    'projector_config':         cfg.get('projector_config'),
+    'refinement_config':        cfg.get('refinement_config'),
+    'refine_mode':              cfg.get('refine_mode'),
+  }
+
+
+def _aggregated_summary_rows(data, pkl_path, subtrial_index, n_subtrials):
+  """
+  Build the grid-schema summary rows for a standalone-format pkl — one per refinement mode.
+
+  Reuses _collect_summary_rows by first injecting a synthesized trial_params + a trial_number,
+  then prepends identifier columns (subtrial_index, new_model_pth, old_model_pth, n_subtrials)
+  to every row so each is traceable to its model pair. A --refinement 3 subtrial yields one
+  row per mode (linear_only / projector_linear); single-mode / no-refinement pkls yield one.
+  Used for both the per-subtrial rows and the pooled aggregate row, so summary_per_subtrial.csv
+  and the pooled summary.csv share columns.
+
+  Args:
+    data           (dict): Loaded standalone/aggregated pkl contents.
+    pkl_path       (str):  Path the pkl was loaded from (forwarded to _collect_summary_rows).
+    subtrial_index (int | str): Identifier for these rows ('AGGREGATE' for the pooled row).
+    n_subtrials    (int): Number of subtrials pooled (same on every row for stable columns).
+
+  Returns:
+    list[dict]: One dict per refinement mode (>= 1), each = identifier columns followed by
+      every _collect_summary_row column.
+  """
+  cfg = data.get('config_cross_space_projection') or {}
+  d = dict(data)
+  d.setdefault('trial_params', _synth_trial_params_from_cfg(cfg))
+  d.setdefault('trial_number', subtrial_index)
+  ident = {
+    'subtrial_index': subtrial_index,
+    'new_model_pth':  cfg.get('new_model_pth'),
+    'old_model_pth':  cfg.get('old_model_pth'),
+    'n_subtrials':    n_subtrials,
+  }
+  return [{**ident, **row} for row in _collect_summary_rows(d, pkl_path)]
+
+
+def _aggregated_summary_row(data, pkl_path, subtrial_index, n_subtrials):
+  """
+  Build a single grid-schema summary row from a standalone-format pkl.
+
+  Thin wrapper over _aggregated_summary_rows returning its first row — used where exactly
+  one row is expected (the pooled 'AGGREGATE' row, whose pkl carries no refinement stage).
+
+  Args:
+    data           (dict): Loaded standalone/aggregated pkl contents.
+    pkl_path       (str):  Path the pkl was loaded from.
+    subtrial_index (int | str): Identifier for this row ('AGGREGATE' for the pooled row).
+    n_subtrials    (int): Number of subtrials pooled (same on every row for stable columns).
+
+  Returns:
+    dict: identifier columns followed by every _collect_summary_row column.
+  """
+  return _aggregated_summary_rows(data, pkl_path, subtrial_index, n_subtrials)[0]
 
 
 def _extract_linear_bundle(data):
@@ -2855,8 +3139,8 @@ def plot_hyperparam_mae_summary(df, out_dir):
   """
   hp_cols = [
     'num_anchors', 'anchor_selection_type', 'csv_anchor_selection', 'old_model_csv',
-    'interpolation_similarity', 'weighting_method', 'temperature', 'rbf_sigma',
-    'refine_mode',
+    'interpolation_similarity', 'mlp_num_layers', 'weighting_method', 'temperature',
+    'rbf_sigma', 'refine_mode',
   ]
   active = [c for c in hp_cols if c in df.columns and df[c].nunique() >= 2]
   if not active:
@@ -2934,7 +3218,7 @@ def plot_temperature_anchors_heatmap(df, out_dir):
   cell_h = max(4, len(anc_vals)  * 0.6 + 1.5)
   fig, axes = plt.subplots(n_rows, n_cols,
                            figsize=(n_cols * cell_w, n_rows * cell_h),
-                           squeeze=False)
+                           squeeze=False, constrained_layout=True)
 
   im_ref = None
   for ri, wm in enumerate(wm_vals):
@@ -2976,7 +3260,6 @@ def plot_temperature_anchors_heatmap(df, out_dir):
     '(rows = weighting_method, cols = interpolation_similarity)',
     fontsize=11,
   )
-  # plt.tight_layout()
   path = os.path.join(out_dir, 'heatmap_temperature_anchors.png')
   fig.savefig(path, dpi=150, bbox_inches='tight')
   plt.close(fig)
@@ -3018,7 +3301,7 @@ def plot_scale_interp_heatmap(df, out_dir):
     cell_h = max(4, len(scale_vals) * 0.6 + 1.5)
     fig, axes = plt.subplots(n_rows, n_cols,
                              figsize=(n_cols * cell_w, n_rows * cell_h),
-                             squeeze=False)
+                             squeeze=False, constrained_layout=True)
 
     im_ref = None
     for ri, wm in enumerate(wm_vals):
@@ -3060,7 +3343,6 @@ def plot_scale_interp_heatmap(df, out_dir):
       '(rows = weighting_method, cols = num_anchors)',
       fontsize=11,
     )
-    # plt.tight_layout()
     path = os.path.join(out_dir, f'heatmap_{scale_col}_interpolation_similarity.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
@@ -3105,7 +3387,7 @@ def plot_anchor_interp_heatmap(df, out_dir):
   cell_h = max(4, len(asel_vals) * 0.6 + 1.5)
   fig, axes = plt.subplots(n_rows, n_cols,
                            figsize=(n_cols * cell_w, n_rows * cell_h),
-                           squeeze=False)
+                           squeeze=False, constrained_layout=True)
 
   im_ref = None
   for ri, wm in enumerate(wm_vals):
@@ -3151,6 +3433,122 @@ def plot_anchor_interp_heatmap(df, out_dir):
   fig.savefig(path, dpi=150, bbox_inches='tight')
   plt.close(fig)
   print(f'Saved: {path}')
+
+
+def plot_refinement_lambda_heatmap(df, out_dir):
+  """
+  For the refinement sweep, write one PNG per after-refinement MAE metric showing
+  how that MAE varies jointly with the refinement loss weights lambda_A and lambda_B.
+
+  Mirrors plot_scale_interp_heatmap but for the refinement recipe knobs:
+  layout per file is rows = weighting_method, cols = ref_lr_projector. Inside each
+  subplot: x-axis = ref_lambda_B, y-axis = ref_lambda_A. Cell colour encodes mean
+  MAE for that metric (mean over every other swept param); empty combinations are
+  shown as white. One file is emitted for each of srctest_mae_micro_after and
+  newtest_mae_micro_after. Each file uses its own metric's [min, max] colour range.
+  The title's third line names the dataset and split the metric refers to (e.g.
+  'BIOVID · test split'), resolved from the src_dataset / new_dataset /
+  refine_new_eval_split columns; missing columns fall back to generic labels.
+
+  Only refinement rows are considered (ref_lambda_A / ref_lambda_B / ref_lr_projector
+  non-null). Returns silently for non-refinement sweeps (those columns are all-None),
+  when the recipe columns are absent, or when neither lambda axis has >= 2 distinct
+  values (nothing to compare).
+
+  Args:
+    df      (pd.DataFrame): Summary DataFrame with trial metrics and lp_*/ref_*
+      recipe columns.
+    out_dir (str): Directory to write plots into.
+  """
+  base_needed = {'weighting_method', 'ref_lr_projector', 'ref_lambda_A', 'ref_lambda_B'}
+  if not base_needed.issubset(df.columns):
+    return
+
+  ref_df = df.dropna(subset=['ref_lambda_A', 'ref_lambda_B', 'ref_lr_projector'])
+  if ref_df.empty:
+    return
+  if ref_df['ref_lambda_A'].nunique() < 2 and ref_df['ref_lambda_B'].nunique() < 2:
+    return
+
+  wm_vals = sorted(ref_df['weighting_method'].unique())
+  lr_vals = sorted(ref_df['ref_lr_projector'].unique())
+  la_vals = sorted(ref_df['ref_lambda_A'].unique())
+  lb_vals = sorted(ref_df['ref_lambda_B'].unique())
+
+  def _uniq_tag(col, fallback):
+    """Join a column's unique non-null values with '/', or return fallback when empty/absent."""
+    if col not in ref_df.columns:
+      return fallback
+    vals = sorted({str(v) for v in ref_df[col].dropna().unique()})
+    return '/'.join(vals) if vals else fallback
+
+  for metric in ('srctest_mae_micro_after', 'newtest_mae_micro_after'):
+    if metric not in ref_df.columns or ref_df[metric].notna().sum() == 0:
+      continue
+
+    vmin = float(ref_df[metric].min())
+    vmax = float(ref_df[metric].max())
+    n_rows, n_cols = len(wm_vals), len(lr_vals)
+
+    cell_w = max(5, len(lb_vals) * 0.9 + 1.5)
+    cell_h = max(4, len(la_vals) * 0.6 + 1.5)
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(n_cols * cell_w, n_rows * cell_h),
+                             squeeze=False, constrained_layout=True)
+
+    im_ref = None
+    for ri, wm in enumerate(wm_vals):
+      for ci, lr in enumerate(lr_vals):
+        ax = axes[ri][ci]
+        subset = ref_df[(ref_df['weighting_method'] == wm) & (ref_df['ref_lr_projector'] == lr)]
+        pivot = (
+          subset.groupby(['ref_lambda_A', 'ref_lambda_B'])[metric]
+          .mean()
+          .unstack('ref_lambda_B')
+          .reindex(index=la_vals, columns=lb_vals)
+        )
+        data = pivot.to_numpy(dtype=float)
+
+        im = ax.imshow(data, aspect='auto', cmap='RdYlGn_r', vmin=vmin, vmax=vmax,
+                       origin='lower')
+        im_ref = im
+
+        ax.set_xticks(range(len(lb_vals)))
+        ax.set_xticklabels([f'{v:.3g}' for v in lb_vals], rotation=45, ha='right')
+        ax.set_yticks(range(len(la_vals)))
+        ax.set_yticklabels([f'{v:.3g}' for v in la_vals])
+        ax.set_xlabel('lambda_B')
+        ax.set_ylabel('lambda_A')
+        ax.set_title(f'weighting={wm} / lr_projector={lr:.3g}')
+
+        for r in range(len(la_vals)):
+          for c in range(len(lb_vals)):
+            val = data[r, c]
+            if not np.isnan(val):
+              ax.text(c, r, f'{val:.3f}', ha='center', va='center',
+                      fontsize=7, color='black')
+
+    if im_ref is not None:
+      fig.colorbar(im_ref, ax=axes, label=metric, shrink=0.6)
+
+    # srctest is the source/old set run as 'test'; newtest is the new model's own
+    # eval split (refine_new_eval_split). Name the dataset · split the metric refers to.
+    if metric.startswith('srctest'):
+      set_tag = f"{_uniq_tag('src_dataset', 'source dataset')} · test split"
+    else:
+      set_tag = f"{_uniq_tag('new_dataset', 'new-model dataset')} · " \
+                f"{_uniq_tag('refine_new_eval_split', 'test')} split"
+
+    plt.suptitle(
+      'MAE heatmap: lambda_A × lambda_B (after refinement)\n'
+      '(rows = weighting_method, cols = lr_projector)\n'
+      f'{metric} — {set_tag}',
+      fontsize=11,
+    )
+    path = os.path.join(out_dir, f'heatmap_refinement_lambda_{metric}.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'Saved: {path}')
 
 
 def plot_mae_anchors_per_interp_sim(df, out_dir):
@@ -3327,6 +3725,7 @@ def _emit_summary_plots(df, out_dir):
   plot_temperature_anchors_heatmap(df, out_dir)
   plot_scale_interp_heatmap(df, out_dir)
   plot_anchor_interp_heatmap(df, out_dir)
+  plot_refinement_lambda_heatmap(df, out_dir)
   plot_mae_anchors_per_interp_sim(df, out_dir)
   plot_recipe_mae_per_interp_sim(df, out_dir)
 
@@ -3904,12 +4303,14 @@ def _apply_projector_ckpt(data, old_emb, ckpt_path, stage_label='refinement'):
     else:
       d_new = int(np.asarray(data['new_model_tensors']['embeddings']).shape[1])
     kind = (bundle.get('kind') or 'linear').lower()
-    if kind not in ('linear', 'mlp'):
+    if kind not in ('linear', 'mlp', 'autoencoder'):
       kind = 'linear'  # procrustes / linear_close use an nn.Linear under the hood
     activation = (bundle.get('config') or {}).get('mlp_activation')
+    num_layers = int((bundle.get('config') or {}).get('mlp_num_layers') or 1)
+    encoder_ratio = int((bundle.get('config') or {}).get('encoder_ratio') or 4)
 
     from cross_space_projection import _build_projector_network, _apply_linear_projector
-    projector = _build_projector_network(d_old, d_new, kind, activation)
+    projector = _build_projector_network(d_old, d_new, kind, activation, num_layers, encoder_ratio)
     projector.load_state_dict(torch.load(ckpt_path, map_location='cpu'))
     projector.eval()
     return _apply_linear_projector(projector, norm_stats, old_emb)
@@ -4037,7 +4438,8 @@ def _apply_linear_ckpt(emb, linear_pth, denorm):
 
 
 def _predict_with_ckpts(old_emb, proj_pth, linear_pth, norm_stats,
-                        d_old, d_new, kind, activation, denorm):
+                        d_old, d_new, kind, activation, denorm, num_layers=1,
+                        encoder_ratio=4):
   """
   Project old-space embeddings then classify with a checkpointed linear head.
 
@@ -4045,21 +4447,25 @@ def _predict_with_ckpts(old_emb, proj_pth, linear_pth, norm_stats,
   it in the same order as projection time, then classifies with _apply_linear_ckpt.
 
   Args:
-    old_emb      (np.ndarray): Raw old-model embeddings. Shape (N, D_old).
-    proj_pth     (str): Path to the projector state_dict (.pt).
-    linear_pth   (str): Path to the head.linear state_dict (.pt).
-    norm_stats   (dict | None): Projector normalization stats from the bundle.
-    d_old        (int): Old embedding dim (projector input).
-    d_new        (int): New embedding dim (projector output / linear input).
-    kind         (str): Projector kind ('linear' | 'mlp').
-    activation   (str | None): MLP activation when kind == 'mlp'.
-    denorm       (float): Multiplier mapping logits to the real label scale.
+    old_emb       (np.ndarray): Raw old-model embeddings. Shape (N, D_old).
+    proj_pth      (str): Path to the projector state_dict (.pt).
+    linear_pth    (str): Path to the head.linear state_dict (.pt).
+    norm_stats    (dict | None): Projector normalization stats from the bundle.
+    d_old         (int): Old embedding dim (projector input).
+    d_new         (int): New embedding dim (projector output / linear input).
+    kind          (str): Projector kind ('linear' | 'mlp' | 'autoencoder').
+    activation    (str | None): Activation for kind in ('mlp', 'autoencoder').
+    denorm        (float): Multiplier mapping logits to the real label scale.
+    num_layers    (int): Depth of the 'mlp' projector (ignored for 'linear'/'autoencoder';
+      default 1). Must match the depth the checkpoint was trained with or load_state_dict fails.
+    encoder_ratio (int): Bottleneck divisor for kind == 'autoencoder' (ignored otherwise;
+      default 4). Must match the ratio the checkpoint was trained with or load_state_dict fails.
 
   Returns:
     np.ndarray: Predictions in real label scale. Shape (N,).
   """
   from cross_space_projection import _build_projector_network, _apply_linear_projector
-  projector = _build_projector_network(d_old, d_new, kind, activation)
+  projector = _build_projector_network(d_old, d_new, kind, activation, num_layers, encoder_ratio)
   projector.load_state_dict(torch.load(proj_pth, map_location='cpu'))
   projector.eval()
   projected = _apply_linear_projector(projector, norm_stats, old_emb)
@@ -4153,17 +4559,19 @@ def _refinement_predictions(data, old_emb, refine_block=None):
     else:
       d_new = int(np.asarray(data['new_model_tensors']['embeddings']).shape[1])
     kind = (bundle.get('kind') or 'linear').lower()
-    if kind not in ('linear', 'mlp'):
+    if kind not in ('linear', 'mlp', 'autoencoder'):
       kind = 'linear'  # procrustes / linear_close use an nn.Linear under the hood
     activation = (bundle.get('config') or {}).get('mlp_activation')
+    num_layers = int((bundle.get('config') or {}).get('mlp_num_layers') or 1)
+    encoder_ratio = int((bundle.get('config') or {}).get('encoder_ratio') or 4)
     denorm = _label_denorm(data)
 
     before_preds = _predict_with_ckpts(
       old_emb, proj_before, linear_before,
-      norm_stats, d_old, d_new, kind, activation, denorm)
+      norm_stats, d_old, d_new, kind, activation, denorm, num_layers, encoder_ratio)
     after_preds = _predict_with_ckpts(
       old_emb, proj_after, linear_after,
-      norm_stats, d_old, d_new, kind, activation, denorm)
+      norm_stats, d_old, d_new, kind, activation, denorm, num_layers, encoder_ratio)
     return before_preds, after_preds
   except Exception as exc:
     print(f'[WARN] after-refinement MAE-per-class: failed to recompute predictions — {exc}')
@@ -5070,7 +5478,7 @@ def log_embedding_reconstruction(data, fmt, pkl_path, out_dir, run_label='',
 
 # ── search-folder aggregation ────────────────────────────────────────────────
 
-def generate_logs_search(search_dir, plot_only_top_k=None):
+def generate_logs_search(search_dir, plot_only_top_k=None, plot_trials=None, skip_umap=False):
   """
   Process all results.pkl files found recursively under a grid-search root folder.
 
@@ -5081,10 +5489,24 @@ def generate_logs_search(search_dir, plot_only_top_k=None):
   covers the full sweep) but diagnostic plots are generated only for the top K
   trials by MAE ascending.
 
+  When plot_trials is set it takes precedence over plot_only_top_k and triggers a
+  fast path: only the listed trials are loaded and plotted. The requested trial
+  numbers are resolved to their pkls from the 'trialNNNN_' directory names (with a
+  per-pkl fallback for directories that don't match that convention), so the rest
+  of the sweep is never read. summary.csv and the search_summary/ plots are NOT
+  written in this mode. A trial number that is not present under search_dir aborts
+  with a ValueError.
+
   Args:
     search_dir      (str): Root folder of a cross_space_projection grid search.
     plot_only_top_k (int | None): If set, limit plot generation to the K best
       trials by MAE. If None, plots are generated for every trial.
+    plot_trials     (list[int] | None): If set, load and plot only the trials whose
+      trial_number appears in this list, overriding plot_only_top_k and skipping
+      summary.csv / search_summary/. None leaves the top-K / plot-all behaviour
+      unchanged.
+    skip_umap       (bool): Forwarded to generate_logs for each trial to skip the
+      slow UMAP plots. Default False.
 
   Returns:
     str: Path to search_dir.
@@ -5098,11 +5520,64 @@ def generate_logs_search(search_dir, plot_only_top_k=None):
 
   print(f'[cross_space_logs] Found {len(pkl_paths)} trial(s) under {search_dir}')
 
-  if plot_only_top_k is None:
+  # Fast path: when explicit trials are requested, resolve them from the
+  # 'trialNNNN_' directory names and load/plot only those, skipping the full-sweep
+  # metric collection, summary.csv, and search_summary/ plots entirely.
+  if plot_trials is not None:
+    # Map trial_number -> pkl_path from directory names without opening any pkl.
+    by_number = {}
+    unparsed  = []
+    for pkl_path in pkl_paths:
+      n = _trial_number_from_pkl_path(pkl_path)
+      if n is None:
+        unparsed.append(pkl_path)
+      else:
+        by_number.setdefault(n, pkl_path)
+
+    requested = list(dict.fromkeys(plot_trials))
+
+    # Fallback: only for directories whose name didn't parse, open the pkl to read
+    # its trial_number, stopping as soon as every requested trial is resolved.
+    missing = [t for t in requested if t not in by_number]
+    if missing and unparsed:
+      for pkl_path in unparsed:
+        if not missing:
+          break
+        try:
+          data = _load_pkl(pkl_path)
+        except Exception as exc:
+          print(f'[WARN] Skipping {pkl_path}: {exc}')
+          continue
+        n = data.get('trial_number')
+        if n is not None:
+          by_number.setdefault(n, pkl_path)
+          missing = [t for t in requested if t not in by_number]
+
+    if missing:
+      raise ValueError(
+        f'--plot_trials: trial number(s) {missing} not found under {search_dir}. '
+        f'Available: {sorted(by_number)}'
+      )
+
+    print(f'[cross_space_logs] Plotting {len(requested)} requested trial(s): {requested}')
+    for t in tqdm(requested, desc='Plotting selected trials', unit='trial'):
+      try:
+        generate_logs(by_number[t], skip_umap=skip_umap)
+      except Exception as exc:
+        print(f'[WARN] Skipping {by_number[t]}: {exc}')
+
+    return search_dir
+
+  # Collect metrics for every trial first (without plotting) whenever plotting is
+  # restricted to a subset, so summary.csv still covers the full sweep. (plot_trials
+  # is handled by the fast path above, so it is always None here.)
+  collect_all = plot_only_top_k is not None
+
+  if not collect_all:
     rows = []
     for pkl_path in tqdm(pkl_paths, desc='Processing trials', unit='trial'):
       try:
-        _, row = generate_logs(pkl_path)
+        _, row = generate_logs(pkl_path, skip_umap=skip_umap)
         if row is not None:
           rows.append(row)
       except Exception as exc:
@@ -5132,11 +5607,75 @@ def generate_logs_search(search_dir, plot_only_top_k=None):
       print(f'[cross_space_logs] Plotting top {k} trial(s) by MAE...')
       for pkl_path in tqdm(df.head(k)['_pkl_path'], desc='Plotting top-K trials', unit='trial'):
         try:
-          generate_logs(pkl_path)
+          generate_logs(pkl_path, skip_umap=skip_umap)
         except Exception as exc:
           print(f'[WARN] Skipping {pkl_path}: {exc}')
 
   return search_dir
+
+
+def generate_logs_subtrials(container_dir, plot_only_top_k=None):
+  """
+  Process a container folder of standalone model-pair subtrials, grid-style.
+
+  cross_space_projection's model-combos mode (multiple --new_model_pth/--old_model_pth)
+  writes one standalone run per (new, old) pair under
+  <container>/cross_space_projection_subtrial_<i>_<j>_.../results_<uid>.pkl, plus a pooled
+  <container>/aggregated_<uid>/results_<uid>.pkl. This emulates generate_logs_search for that
+  layout: it writes a root summary.csv over the subtrials (sorted by MAE ascending) and
+  generates per-subtrial diagnostic plots in each subtrial's logs/ (UMAPs forced off, the
+  slow plots). The aggregated_* folder is excluded — it pools the subtrials and is left
+  untouched. No search_summary/ plots are emitted (all subtrials share the same hypers).
+
+  Args:
+    container_dir   (str): Folder holding the subtrial_* run folders (and one aggregated_*).
+    plot_only_top_k (int | None): If set, generate per-subtrial logs/ only for the K best
+      subtrials by MAE ascending (summary.csv still covers all). If None, plots every subtrial.
+
+  Returns:
+    str | None: container_dir if any subtrial pkls were found and processed; None when the
+      folder holds no standalone subtrials (so the caller can fall back to the grid path).
+  """
+  pkls = sorted(glob.glob(os.path.join(container_dir, '*', 'results_*.pkl')))
+  sub_pkls = [p for p in pkls
+              if not os.path.basename(os.path.dirname(p)).startswith('aggregated')]
+  if not sub_pkls:
+    return None
+
+  print(f'[cross_space_logs] Found {len(sub_pkls)} subtrial(s) under {container_dir}')
+  n_sub = len(sub_pkls)
+
+  rows = []
+  for idx, pkl_path in enumerate(sub_pkls):
+    try:
+      # One row per refinement mode (--refinement 3 → 2 rows/subtrial); all share _pkl_path.
+      for row in _aggregated_summary_rows(_load_pkl(pkl_path), pkl_path, idx, n_sub):
+        row['_pkl_path'] = pkl_path
+        rows.append(row)
+    except Exception as exc:
+      print(f'[WARN] Skipping {pkl_path}: {exc}')
+
+  if rows:
+    df = pd.DataFrame(rows).sort_values('mae').reset_index(drop=True)
+    csv_path = os.path.join(container_dir, 'summary.csv')
+    df.drop(columns=['_pkl_path'], errors='ignore').to_csv(csv_path, index=False)
+    print(f'Saved summary: {csv_path}')
+
+    # One plot pass per subtrial pkl (dedupe the per-mode rows), best MAE first.
+    unique_pkls = df['_pkl_path'].drop_duplicates()
+    if plot_only_top_k is not None:
+      k = min(plot_only_top_k, len(unique_pkls))
+      print(f'[cross_space_logs] Plotting top {k} subtrial(s) by MAE...')
+      to_plot = unique_pkls.head(k)
+    else:
+      to_plot = unique_pkls
+    for pkl_path in tqdm(to_plot, desc='Plotting subtrials', unit='subtrial'):
+      try:
+        generate_logs(pkl_path, skip_umap=True)
+      except Exception as exc:
+        print(f'[WARN] Skipping {pkl_path}: {exc}')
+
+  return container_dir
 
 
 # ── multi-folder entry point ─────────────────────────────────────────────────
@@ -5252,25 +5791,34 @@ def generate_logs_multi(search_dirs, plot_only_top_k=None, top_k_scope='global')
 
 # ── entry point ──────────────────────────────────────────────────────────────
 
-def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
+def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
+                  plot_trials=None, skip_umap=False):
   """
   Load a cross_space_projection pkl and write all diagnostic plots.
 
-  Accepts either a path to a single pkl file or a grid-search root directory.
-  When given a directory, delegates to generate_logs_search.
+  Accepts either a path to a single pkl file or a directory. A directory holding
+  grid-search trials (**/results.pkl) is delegated to generate_logs_search; a
+  directory holding standalone model-pair subtrials (subtrial_*/results_<uid>.pkl)
+  is delegated to generate_logs_subtrials.
 
   For grid-search trial pkls (containing trial_params) the subject-map CSV is
   resolved from <search_root>/precomputed/old_tensors_<old_model_csv>.csv and
   the anchor-UMAP plot is skipped (anchor embeddings are absent in that format).
 
   Args:
-    pkl_path            (str): Path to a results pkl, or a grid-search root directory.
+    pkl_path            (str): Path to a results pkl, or a grid-search / subtrial-container dir.
     plot_only_top_k     (int | None): When pkl_path is a directory, limits plot
-      generation to the top K trials by MAE ascending. Ignored for single files.
+      generation to the top K trials/subtrials by MAE ascending. Ignored for single files.
     only_projector_plots (bool): If True, emit only the linear-projector
       training-diagnostic plots (projector_training_curves, train_val_gap,
       weight_analysis, norm_comparison) and skip everything else. Useful for
       regenerating these on existing pkls without redoing UMAPs / heavy work.
+    plot_trials         (list[int] | None): When pkl_path is a directory, loads and
+      plots only the trials whose trial_number is listed, overriding plot_only_top_k
+      and skipping summary.csv / search_summary/ for speed. Ignored for single files.
+    skip_umap           (bool): If True, skip all UMAP plots (the slow ones:
+      umap_all, umap_split_impact, anchor_umap). Default False. Forced True by
+      generate_logs_subtrials when processing a subtrial-container folder.
 
   Returns:
     tuple[str, dict | None]:
@@ -5278,11 +5826,23 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
       - Summary row dict for grid-format pkls; None for standalone runs.
   """
   if os.path.isdir(pkl_path):
-    return generate_logs_search(pkl_path, plot_only_top_k=plot_only_top_k), None
+    has_grid = bool(glob.glob(os.path.join(pkl_path, '**', 'results.pkl'), recursive=True))
+    if not has_grid:
+      res = generate_logs_subtrials(pkl_path, plot_only_top_k=plot_only_top_k)
+      if res is not None:
+        return res, None
+    return generate_logs_search(
+      pkl_path, plot_only_top_k=plot_only_top_k, plot_trials=plot_trials, skip_umap=skip_umap,
+    ), None
 
   data = _load_pkl(pkl_path)
   data = _rebase_standalone_paths(data, pkl_path)
   fmt  = _detect_format(data)
+  # Aggregated (multi-model subtrial) pkls pool per-sample predictions across models but
+  # drop embeddings (different spaces can't be pooled): skip every embedding-based plot
+  # (UMAP / split-impact / anchor-UMAP / norm-cosine / reconstruction) and instead emit a
+  # per-subtrial summary CSV. Prediction-based plots run normally on the pooled preds.
+  is_aggregated = bool(data.get('aggregated'))
 
   if only_projector_plots:
     if fmt == 'grid':
@@ -5328,6 +5888,8 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
       'anchor_selection_type':    cfg.get('anchor_selection_type'),
       'old_model_csv':            cfg.get('old_model_csv'),
       'interpolation_similarity': cfg.get('interpolation_similarity'),
+      'mlp_activation':           cfg.get('mlp_activation'),
+      'mlp_num_layers':           cfg.get('mlp_num_layers'),
       'weighting_method':         cfg.get('weighting_method'),
       'temperature':              cfg.get('temperature'),
       'rbf_sigma':                cfg.get('rbf_sigma'),
@@ -5393,6 +5955,7 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
   summary_row['mae_macro_old_rounded'] = mae_macro_old_r
   summary_row.update(_refinement_columns(data))
   summary_row.update(_recipe_columns(data))
+  summary_row.update(_best_epoch_columns(data))
   print(f'Global metrics — MAE micro: {mae_micro_new:.4f}  MAE macro: {mae_macro_new:.4f}  CCC: {ccc:.4f}')
   print(f'Global metrics (rounded+clamped) — MAE micro: {mae_micro_new_r:.4f}  '
         f'MAE macro: {mae_macro_new_r:.4f}')
@@ -5403,14 +5966,7 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
   # new_model_tensors with the AFTER-refinement preds/embeddings, so the true "projected"
   # (after projection, before refinement) stage must be recomputed from the refinement
   # checkpoints; multi-mode / no-refine leave the stored tensors as the pure projection.
-  _multi = data.get('refinements')
-  if _multi:
-    refine_items = list(_multi.items())                       # [(mode, block), ...]
-  elif data.get('refinement'):
-    _rb0 = data['refinement']
-    refine_items = [(_rb0.get('refine_mode') or '', _rb0)]
-  else:
-    refine_items = []
+  refine_items = _refine_items(data)                          # [(mode, block), ...]
   multi_refine = len(refine_items) > 1
 
   def _mode_sfx(mode):
@@ -5422,7 +5978,7 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
     return (f'{run_label} | {mode} (after refinement)' if multi_refine
             else f'{run_label} | after refinement')
 
-  old_emb_src = np.asarray(old_t['embeddings'], dtype=np.float32)
+  old_emb_src = None if is_aggregated else np.asarray(old_t['embeddings'], dtype=np.float32)
 
   # Recompute per-mode (before, after) predictions + after-refinement embeddings once;
   # reused by the projected/refined plots, UMAPs, dashboards and comparison below.
@@ -5448,7 +6004,7 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
   single_mode  = refine_items[0][0] if len(refine_items) == 1 else None
   single_block = refine_items[0][1] if len(refine_items) == 1 else None
   proj_preds = new_preds
-  proj_emb   = np.asarray(new_t['embeddings'], dtype=np.float32)
+  proj_emb   = None if is_aggregated else np.asarray(new_t['embeddings'], dtype=np.float32)
   if single_block is not None:
     _rp = refine_preds_by_mode.get(single_mode)
     if _rp is not None:
@@ -5505,31 +6061,35 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
        'preds': None, 'labels': None, 'num_classes': None, 'note': 'no refinement stage'},
     ]
     plot_confusion_matrices_combined(panels, out_dir, run_label=run_label)
-  plot_umap(proj_emb, labels, sample_ids, subject_map, out_dir, run_label=_with_src(run_label),
-            filename_suffix='_projected')
+  # Embedding-space plots (UMAP + split-impact): pooled aggregates have no embeddings, skip.
+  # skip_umap additionally suppresses these (the slow plots) regardless of format.
   split_data = None
-  try:
-    split_data = _load_split_embeddings(data, fmt, pkl_path, SPLIT_TO_COMPARE, out_dir)
-    if split_data is not None:
-      s_emb, s_lab = split_data
-      plot_umap_split_impact(
-        np.asarray(proj_emb, dtype=np.float32), labels,
-        s_emb, s_lab, SPLIT_TO_COMPARE, out_dir, run_label=_with_src(run_label),
-        filename_suffix='_projected',
-        new_dataset=new_dataset, src_dataset=src_dataset,
-      )
-    else:
-      print(f'[WARN] split-impact UMAP: could not load {SPLIT_TO_COMPARE!r} '
-            f'embeddings — skipped.')
-  except Exception as exc:
-    print(f'[WARN] split-impact UMAP failed: {exc}')
+  if not is_aggregated and not skip_umap:
+    plot_umap(proj_emb, labels, sample_ids, subject_map, out_dir, run_label=_with_src(run_label),
+              filename_suffix='_projected')
+    try:
+      split_data = _load_split_embeddings(data, fmt, pkl_path, SPLIT_TO_COMPARE, out_dir)
+      if split_data is not None:
+        s_emb, s_lab = split_data
+        plot_umap_split_impact(
+          np.asarray(proj_emb, dtype=np.float32), labels,
+          s_emb, s_lab, SPLIT_TO_COMPARE, out_dir, run_label=_with_src(run_label),
+          filename_suffix='_projected',
+          new_dataset=new_dataset, src_dataset=src_dataset,
+        )
+      else:
+        print(f'[WARN] split-impact UMAP: could not load {SPLIT_TO_COMPARE!r} '
+              f'embeddings — skipped.')
+    except Exception as exc:
+      print(f'[WARN] split-impact UMAP failed: {exc}')
 
   plot_prediction_scatter(proj_preds, old_preds, labels, out_dir, run_label=_with_src(run_label))
   plot_prediction_by_class_boxplot(proj_preds, old_preds, labels, out_dir, run_label=_with_src(run_label))
-  try:
-    plot_embedding_norm_cosine_per_class(proj_emb, old_emb_src, labels, out_dir, run_label=_with_src(run_label))
-  except Exception as exc:
-    print(f'[WARN] Failed to plot embedding norm/cosine: {exc}')
+  if not is_aggregated:
+    try:
+      plot_embedding_norm_cosine_per_class(proj_emb, old_emb_src, labels, out_dir, run_label=_with_src(run_label))
+    except Exception as exc:
+      print(f'[WARN] Failed to plot embedding norm/cosine: {exc}')
 
   # ── Refinement (after-refinement) plots, one set per mode ───────────────────
   # UMAPs + per-class MAE + the refined-variant prediction/embedding plots. Single-mode
@@ -5540,18 +6100,19 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
     msfx = _mode_sfx(_mode)
     refined_emb = refined_emb_by_mode.get(_mode)
     if refined_emb is not None:
-      try:
-        plot_umap(refined_emb, labels, sample_ids, subject_map, out_dir,
-                  run_label=rl_src, filename_suffix=f'_refined{msfx}')
-        if split_data is not None:
-          s_emb, s_lab = split_data
-          plot_umap_split_impact(refined_emb, labels, s_emb, s_lab, SPLIT_TO_COMPARE,
-                                 out_dir, run_label=rl_src, filename_suffix=f'_refined{msfx}',
-                                 new_dataset=new_dataset, src_dataset=src_dataset)
-        else:
-          print(f'[WARN] after-refinement split-impact UMAP: {SPLIT_TO_COMPARE!r} split unavailable — skipped.')
-      except Exception as exc:
-        print(f'[WARN] after-refinement UMAP ({_mode or "refinement"}) failed: {exc}')
+      if not skip_umap:
+        try:
+          plot_umap(refined_emb, labels, sample_ids, subject_map, out_dir,
+                    run_label=rl_src, filename_suffix=f'_refined{msfx}')
+          if split_data is not None:
+            s_emb, s_lab = split_data
+            plot_umap_split_impact(refined_emb, labels, s_emb, s_lab, SPLIT_TO_COMPARE,
+                                   out_dir, run_label=rl_src, filename_suffix=f'_refined{msfx}',
+                                   new_dataset=new_dataset, src_dataset=src_dataset)
+          else:
+            print(f'[WARN] after-refinement split-impact UMAP: {SPLIT_TO_COMPARE!r} split unavailable — skipped.')
+        except Exception as exc:
+          print(f'[WARN] after-refinement UMAP ({_mode or "refinement"}) failed: {exc}')
       try:
         plot_embedding_norm_cosine_per_class(
           refined_emb, old_emb_src, labels, out_dir, run_label=rl_src,
@@ -5725,12 +6286,14 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
   # Embedding reconstruction (projected vs real new-model embeddings). The projected
   # stage is the before-refinement projection; refinement runs additionally get one
   # after-refinement variant per mode. Stage tags keep the CSV/PNG names distinct.
-  try:
-    log_embedding_reconstruction(data, fmt, pkl_path, out_dir, run_label=_with_src(run_label),
-                                 projected_override=proj_emb,
-                                 stage_tag=('_projected' if refine_items else ''))
-  except Exception as exc:
-    print(f'[WARN] embedding reconstruction diagnostic failed: {exc}')
+  # Skipped for aggregates (no pooled embeddings).
+  if not is_aggregated:
+    try:
+      log_embedding_reconstruction(data, fmt, pkl_path, out_dir, run_label=_with_src(run_label),
+                                   projected_override=proj_emb,
+                                   stage_tag=('_projected' if refine_items else ''))
+    except Exception as exc:
+      print(f'[WARN] embedding reconstruction diagnostic failed: {exc}')
   for _mode, _block in refine_items:
     refined_emb = refined_emb_by_mode.get(_mode)
     if refined_emb is None:
@@ -5742,7 +6305,7 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
     except Exception as exc:
       print(f'[WARN] refined embedding reconstruction ({_mode or "refinement"}) failed: {exc}')
 
-  if fmt == 'standalone' and data.get('old_model_anchors_embeddings') is not None:
+  if fmt == 'standalone' and not skip_umap and data.get('old_model_anchors_embeddings') is not None:
     plot_anchor_umap(
       data['old_model_anchors_embeddings']['embeddings'],
       data['new_model_anchors_embeddings']['embeddings'],
@@ -5761,7 +6324,41 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False):
     except Exception as exc:
       print(f'[WARN] Failed to plot anchor norm comparison: {exc}')
 
-  _write_summary_csv(summary_row, out_dir)
+  if is_aggregated:
+    # Pooled summary.csv + one grid-schema row per subtrial×refinement-mode (same columns).
+    # The pooled AGGREGATE row restates the aggregate; its refinement columns stay empty
+    # because the aggregated pkl pools only predictions/labels (no per-mode refinement metrics
+    # are stored — see _aggregate_model_combo_pkls). Each subtrial row is loaded from its own
+    # results pkl (paths stored relative to this pkl's dir) and traced back to its model pair.
+    n_sub = data.get('n_subtrials')
+    _write_summary_csv(_aggregated_summary_row(data, pkl_path, 'AGGREGATE', n_sub), out_dir)
+    base = os.path.dirname(os.path.abspath(pkl_path))
+    sub_rows = []
+    for idx, rel in enumerate(data.get('subtrial_pkls') or []):
+      sub_path = os.path.join(base, rel)
+      try:
+        # One row per refinement mode (--refinement 3 → 2 rows/subtrial).
+        sub_rows.extend(_aggregated_summary_rows(_load_pkl(sub_path), sub_path, idx, n_sub))
+      except Exception as exc:
+        print(f'[WARN] subtrial {idx} summary failed ({sub_path}): {exc}')
+    if sub_rows:
+      sub_csv = os.path.join(out_dir, 'summary_per_subtrial.csv')
+      pd.DataFrame(sub_rows).to_csv(sub_csv, index=False)
+      print(f'Saved: {sub_csv}  ({len(sub_rows)} rows)')
+  elif multi_refine:
+    # --refinement 3: one summary row per mode, refinement columns re-sourced per block
+    # (the base summary_row's singular-key refinement columns are empty for this schema).
+    out_rows = []
+    for _mode, _block in refine_items:
+      _r = dict(summary_row)
+      _r['refine_mode'] = _mode or None
+      _r.update(_refinement_columns(data, refine_block=_block))
+      _r.update(_recipe_columns(data, refine_block=_block))
+      _r.update(_best_epoch_columns(data, refine_block=_block))
+      out_rows.append(_r)
+    _write_summary_rows(out_rows, out_dir)
+  else:
+    _write_summary_csv(summary_row, out_dir)
   print(f'Done. All logs in {out_dir}')
   return out_dir, summary_row
 
@@ -5774,7 +6371,10 @@ if __name__ == '__main__':
     '--pkl_path', type=str, nargs='+', required=True,
     help=(
       'One or more paths to a results pkl produced by cross_space_projection.py, '
-      'OR grid-search root folder(s). '
+      'OR grid-search root folder(s), OR a subtrial-container folder (holding '
+      'cross_space_projection_subtrial_*/results_<uid>.pkl runs from a multi-model '
+      'combos run). A container folder produces per-subtrial logs/ + a root summary.csv '
+      '(UMAPs auto-skipped) and leaves the aggregated_* folder untouched. '
       'Single path: behaviour is unchanged — pkl or folder processed as before. '
       'Multiple paths: per-folder analysis is run for each folder and a merged '
       'global_summary/ (global_summary.csv + hyperparameter plots) is written '
@@ -5807,11 +6407,34 @@ if __name__ == '__main__':
       'applies when pkl_path is a single pkl file.'
     ),
   )
+  parser.add_argument(
+    '--skip_umap', action='store_true', default=False,
+    help=(
+      'Skip all UMAP plots (umap_all, umap_split_impact, anchor_umap) — the slow '
+      'ones. Default off. Forced on when --pkl_path is a subtrial-container folder '
+      '(per-subtrial logs/ are always generated without UMAPs).'
+    ),
+  )
+  parser.add_argument(
+    '--plot_trials', type=int, nargs='+', default=None,
+    help=(
+      'Explicit list of trial numbers (the trial_number field / "Trial #N") to '
+      'generate per-trial diagnostic plots for. Overrides --plot_only_top_k and '
+      'takes a fast path: only the listed trials are loaded and plotted, so the '
+      'rest of the sweep is never read and summary.csv / search_summary/ are NOT '
+      '(re)written. Only valid when a SINGLE grid-search folder is given as '
+      '--pkl_path (errors for a single pkl file, ignored with a warning when '
+      'multiple folders are passed). Aborts if any listed trial number is not '
+      'found in the folder.'
+    ),
+  )
   args = parser.parse_args()
   if len(args.pkl_path) > 1:
+    if args.plot_trials is not None:
+      print('[WARN] --plot_trials is ignored when multiple --pkl_path folders are given.')
     if args.only_projector_plots:
       for p in args.pkl_path:
-        generate_logs(p, only_projector_plots=True)
+        generate_logs(p, only_projector_plots=True, skip_umap=args.skip_umap)
     else:
       generate_logs_multi(
         args.pkl_path,
@@ -5819,8 +6442,13 @@ if __name__ == '__main__':
         top_k_scope=args.top_k_scope,
       )
   else:
+    single = args.pkl_path[0]
+    if args.plot_trials is not None and not os.path.isdir(single):
+      parser.error('--plot_trials is only valid when --pkl_path is a grid-search folder.')
     generate_logs(
-      args.pkl_path[0],
+      single,
       plot_only_top_k=args.plot_only_top_k,
       only_projector_plots=args.only_projector_plots,
+      plot_trials=args.plot_trials,
+      skip_umap=args.skip_umap,
     )
