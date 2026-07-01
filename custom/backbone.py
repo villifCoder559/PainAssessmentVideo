@@ -10,6 +10,15 @@ _VJEPA2_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _VJEPA2_ROOT not in sys.path:
   sys.path.insert(0, _VJEPA2_ROOT)
 
+# Project-local HF hub cache (mirrors HF_HOME=.../hugging_face_models in
+# ~/.profile/.bashrc). Hardcoded so loading works even when HF_HOME is unset
+# in non-interactive shells, instead of falling back to a (full) ~/.cache.
+# cache_dir corresponds to HF_HOME/hub, so the path includes the 'hub' segment.
+_HF_HUB_CACHE = os.path.join(
+  os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+  'hugging_face_models', 'hub',
+)
+
 from VideoMAEv2.models.modeling_finetune import (
   vit_small_patch16_224,
   vit_base_patch16_224,
@@ -139,7 +148,9 @@ class VideoBackbone(BackboneBase):
         raise ValueError("Adapters are not supported for JEPA2 models.")
       # Load JEPA2 model
       import transformers
-      self.model = transformers.AutoModel.from_pretrained(model_type.value,cache_dir="/equilibrium/fvilli/PainAssessmentVideo/hugging_face_models")
+      # No cache_dir: rely on the HF_HOME env var so all HF models share one cache
+      # (see ~/.bashrc / ~/.profile -> /equilibrium/fvilli/PainAssessmentVideo/hugging_face_models/hub).
+      self.model = transformers.AutoModel.from_pretrained(model_type.value)
       self.tubelet_size = self.model.config.tubelet_size
       self.img_size = self.model.config.image_size
       self.patch_size = self.model.config.patch_size
@@ -516,8 +527,12 @@ class VitImageBackbone(BackboneBase):
     
     # Load model and image processor
     print(f"Loading ViT model: {model_name}")
-    self.model = ViTModel.from_pretrained(model_name)
-    self.image_processor = ViTImageProcessor.from_pretrained(model_name)
+    # Read from the project-local HF cache and never hit the network: avoids the
+    # download-to-(full)-~/.cache failure when HF_HOME is unset (see _HF_HUB_CACHE).
+    self.model = ViTModel.from_pretrained(
+      model_name, cache_dir=_HF_HUB_CACHE, local_files_only=True)
+    self.image_processor = ViTImageProcessor.from_pretrained(
+      model_name, cache_dir=_HF_HUB_CACHE, local_files_only=True)
     self.model_type = MODEL_TYPE.ViT_image
 
     # Preprocessing constants from the ViT image processor (e.g. mean/std = 0.5 for this model,
