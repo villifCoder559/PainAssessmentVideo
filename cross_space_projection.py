@@ -78,7 +78,7 @@ def _set_global_seed(seed):
 # interpolation_similarity values that train/fit a projector mapping old→new space
 # (as opposed to the anchor-weighted distance metrics cos/l1/l2/l_inf/geodesic).
 # All require weighting_method='none' and num_anchors > 0.
-_PROJECTOR_KINDS = ('linear', 'mlp', 'procrustes', 'linear_close')
+_PROJECTOR_KINDS = ('linear', 'mlp', 'procrustes', 'linear_close', 'autoencoder')
 
 
 def _projector_key(interp, mlp_activation, mlp_num_layers=1):
@@ -99,8 +99,12 @@ def _projector_key(interp, mlp_activation, mlp_num_layers=1):
 
   Returns:
     str: 'mlp_<activation>' when interp == 'mlp' and depth == 1, 'mlp_<activation>_L<n>'
-         when interp == 'mlp' and depth == n != 1, else interp unchanged.
+         when interp == 'mlp' and depth == n != 1, 'autoencoder_<activation>' when
+         interp == 'autoencoder' (depth is unused; the bottleneck ratio lives in the
+         recipe tag), else interp unchanged.
   """
+  if interp == 'autoencoder':
+    return f'autoencoder_{mlp_activation}'
   if interp != 'mlp':
     return interp
   return f'mlp_{mlp_activation}' if mlp_num_layers == 1 else f'mlp_{mlp_activation}_L{mlp_num_layers}'
@@ -118,18 +122,21 @@ def _projector_tag(kind: str, cfg=None) -> str:
   closed-form trainings (see _projector_bundle_key).
 
   Args:
-    kind (str): 'linear', 'mlp', 'procrustes' or 'linear_close'. Procrustes and
-      linear_close ignore the optimizer/lr/bs/wd/epochs/loss fields (closed-form
-      solutions), so their tag only carries normalize_embeddings + split_ratios.
-      'mlp' shares the trained-projector recipe with 'linear' but is prefixed
-      'mlp_' (the swept activation is recorded separately in the run tag).
+    kind (str): 'linear', 'mlp', 'procrustes', 'linear_close' or 'autoencoder'.
+      Procrustes and linear_close ignore the optimizer/lr/bs/wd/epochs/loss fields
+      (closed-form solutions), so their tag only carries normalize_embeddings +
+      split_ratios. 'mlp' shares the trained-projector recipe with 'linear' but is
+      prefixed 'mlp_' (the swept activation is recorded separately in the run tag).
+      'autoencoder' shares that recipe but is prefixed 'ae_er{encoder_ratio}_' so
+      that bottleneck-ratio variants get distinct bundle keys (the ratio is absent
+      from the other kinds' tags, so their ratio variants still collapse to one bundle).
     cfg (dict | None): Projector recipe to tag. Defaults to LINEAR_PROJECTOR_CONFIG.
 
   Returns:
     str: Compact string like 'lr0.0001_bs64_adamw_wd0.0001_ep100_normT_mse_sp70-10-20'
          for kind='linear', the same prefixed with 'mlp_' for kind='mlp',
-         'proc_normT_sp0-50-50' for kind='procrustes', or
-         'linclose_rc1e-06_normT_sp0-50-50' for kind='linear_close'.
+         'ae_er4_'-prefixed for kind='autoencoder', 'proc_normT_sp0-50-50' for
+         kind='procrustes', or 'linclose_rc1e-06_normT_sp0-50-50' for kind='linear_close'.
   """
   cfg = LINEAR_PROJECTOR_CONFIG if cfg is None else cfg
   sr  = cfg['split_ratios']
@@ -149,6 +156,8 @@ def _projector_tag(kind: str, cfg=None) -> str:
     f"_{cfg['loss']}"
     f"_sp{sp}"
   )
+  if kind == 'autoencoder':
+    return f"ae_er{cfg.get('encoder_ratio', 4)}_{recipe}"
   return f"mlp_{recipe}" if kind == 'mlp' else recipe
 
 # Hyperparameters for the learned linear projector (interpolation_similarity='linear').
@@ -161,12 +170,17 @@ LINEAR_PROJECTOR_CONFIG = {
   'epochs':               300,
   'normalize_embeddings': True,
   'loss':                 'mse',     # 'mse' | 'mae' | 'cosine'
+  # Bottleneck divisor for interpolation_similarity='autoencoder' only: the network is
+  # Linear(D_old, D_old//r) -> act -> Linear(D_old//r, D_new//r) -> act -> Linear(D_new//r,
+  # D_new) with r=encoder_ratio. Sweepable (list in the YAML linear_projector block).
+  # Ignored by every other projector kind.
+  'encoder_ratio':        4,
   # Closed-form OLS solve (interpolation_similarity='linear_close' only): singular
   # values of the centered anchor matrix below closed_form_rcond * max(sv) are
   # truncated (truncated-SVD least squares), bounding weight magnitude when the
   # anchors are ill-conditioned (small num_anchors relative to D_old, or collinear
   # features). Ignored by all other kinds.
-  'closed_form_rcond':    1e-6,
+  'closed_form_rcond':    1e-5,
   # (train, val, test). The projector trains on ALL K anchors, so the train
   # entry is unused; val/test are splits of the new model's
   # val.csv sized by these fractions of the val.csv row count (test absorbs
@@ -187,6 +201,9 @@ LINEAR_PROJECTOR_CONFIG = {
 #   'projector_linear' (--refinement 2): jointly fine-tune the projector (old→new map)
 #       AND a COPY of head.linear. Requires a trained projector, so it only runs for
 #       projector kinds (interpolation_similarity in _PROJECTOR_KINDS) with num_anchors > 0.
+#       For interpolation_similarity='procrustes', set 'procrustes_constrained' to keep the
+#       refined projector a true similarity transform (R semi-orthogonal, isotropic scale)
+#       instead of letting it relax into a general affine map (see SimilarityProjector).
 #   'linear_only'      (--refinement 1): the projection is held FIXED and only a COPY of
 #       head.linear is fine-tuned. Works for ALL interpolation_similarity values — the
 #       projector kinds (frozen projector) AND the distance metrics (cos/l1/l2/l_inf/
@@ -201,6 +218,12 @@ LINEAR_PROJECTOR_CONFIG = {
 REFINEMENT_CONFIG = {
   'enabled':            False,    # default off; toggle per-run via the --refinement CLI flag
   'mode':               'projector_linear',  # 'projector_linear' (--refinement 2) | 'linear_only' (--refinement 1)
+  'procrustes_constrained': False,  # projector_linear + interpolation_similarity='procrustes' ONLY:
+                                    # keep the refined projector a true similarity transform — R held
+                                    # (semi-)orthogonal at every step via a hard Stiefel constraint and
+                                    # the scale a single isotropic scalar (see SimilarityProjector).
+                                    # Inert for linear_close / distance metrics / linear / mlp /
+                                    # linear_only / num_anchors<=0. Sweepable via YAML.
   'lr_projector':       1e-4,     # learning rate for the projector params (projector_linear only)
   'lr_linear':          1e-5,     # smaller → change the linear layer only slightly
   'lambda_B':           1.0,      # weight of the source (model B) label term
@@ -225,11 +248,11 @@ REFINEMENT_CONFIG = {
 # stay driven by the --refinement CLI flag.
 _PROJECTOR_SWEEPABLE = (
   'lr', 'batch_size', 'optimizer', 'weight_decay', 'epochs',
-  'normalize_embeddings', 'loss',
+  'normalize_embeddings', 'loss', 'encoder_ratio',
 )
 _REFINEMENT_SWEEPABLE = (
   'lr_projector', 'lr_linear', 'lambda_B', 'lambda_A', 'optimizer',
-  'weight_decay', 'epochs', 'loss', 'batch_size',
+  'weight_decay', 'epochs', 'loss', 'batch_size', 'procrustes_constrained',
 )
 
 # --refinement flag → the refinement mode(s) to run. 0=off, 1=linear_only,
@@ -358,12 +381,16 @@ def _projector_recipe_id(cfg) -> str:
     cfg (dict): A projector recipe (complete LINEAR_PROJECTOR_CONFIG-shaped dict).
 
   Returns:
-    str: e.g. 'lr0.0001_bs64_adamw_wd0_ep150_normT_mse'.
+    str: e.g. 'lr0.0001_bs64_adamw_wd0_ep150_normT_mse'. The autoencoder bottleneck
+         divisor is appended as '_er{encoder_ratio}' only when it differs from the
+         default (4), so existing (non-autoencoder) recipe ids stay byte-for-byte unchanged.
   """
   norm = 'T' if cfg['normalize_embeddings'] else 'F'
+  er = cfg.get('encoder_ratio', 4)
   return (
     f"lr{cfg['lr']}_bs{cfg['batch_size']}_{cfg['optimizer']}"
     f"_wd{cfg['weight_decay']}_ep{cfg['epochs']}_norm{norm}_{cfg['loss']}"
+    + ('' if er == 4 else f'_er{er}')
   )
 
 
@@ -408,6 +435,8 @@ def _refinement_tag(cfg) -> str:
     f"reflrp{cfg['lr_projector']}_reflrl{cfg['lr_linear']}"
     f"_lb{cfg['lambda_B']}_la{cfg['lambda_A']}_{cfg['optimizer']}"
     f"_wd{cfg['weight_decay']}_ep{cfg['epochs']}_{cfg['loss']}_bs{cfg['batch_size']}"
+    # Appended only when set, so existing (unconstrained) tags/cache dirs are byte-for-byte unchanged.
+    + ('_pcon' if cfg.get('procrustes_constrained') else '')
   )
 
 
@@ -421,7 +450,9 @@ _FEATURES_MAP = {
   ('VIDEOMAE', 'BIOVID'): 'partA/video/features/VideoMaev2_S/spatial_pooled_features_Biovid_B_last143_stride16_interpol',
   ('VIDEOMAE', 'AGEDB'):  'AgeDB/features/VideoMaev2_S/all_pooled_features_age',
   ('VIDEOMAE', 'MORPH'):  'MORPH_2/features/VideoMaev2_S/all_pooled_features_MORPH',
-}
+  ('VIT-B',    'AGEDB'):  'AgeDB/features/ViT-B/all_pooled_features_age',
+  ('VIT-B',    'MORPH'):  'MORPH_2/features/ViT-B/all_pooled_features_MORPH',
+  }
 
 
 
@@ -461,7 +492,7 @@ def _detect_backbone(features_path: str) -> str:
     features_path (str): Features folder path.
 
   Returns:
-    str: One of 'DFER', 'VIDEOMAE', 'VJEPA2'.
+    str: One of 'DFER', 'VIDEOMAE', 'VJEPA2', 'VIT-B'.
 
   Raises:
     ValueError: If no known backbone keyword is found in the path.
@@ -473,6 +504,8 @@ def _detect_backbone(features_path: str) -> str:
     return 'VIDEOMAE'
   if 'VJEPA' in p or 'JEPA' in p:
     return 'VJEPA2'
+  if 'VIT-B' in p:
+    return 'VIT-B'
   raise ValueError(f'Cannot detect backbone from features path: {features_path!r}')
 
 
@@ -952,7 +985,7 @@ _ACTIVATIONS = {
 }
 
 
-def _build_projector_network(d_old, d_new, kind, activation, num_layers=1):
+def _build_projector_network(d_old, d_new, kind, activation, num_layers=1, encoder_ratio=4):
   """
   Build the projector network mapping old-space embeddings (D_old) to new-space (D_new).
 
@@ -967,16 +1000,22 @@ def _build_projector_network(d_old, d_new, kind, activation, num_layers=1):
                       followed by a nonlinear refinement in the target space). Each
                       additional layer appends one more act → Linear(D_new,D_new) block;
                       there is no trailing activation after the final Linear.
-    activation (str | None): Activation name (a key of _ACTIVATIONS); only used for 'mlp'.
-    num_layers (int): Depth of the 'mlp' projector (>= 1; ignored for 'linear'). 1 is the
-                      default (Linear→act→Linear); n appends n blocks of act→Linear total.
+                      'autoencoder' → bottleneck MLP
+                      Linear(D_old, D_old//r) → act → Linear(D_old//r, D_new//r) → act →
+                      Linear(D_new//r, D_new) with r=encoder_ratio (no trailing activation).
+    activation (str | None): Activation name (a key of _ACTIVATIONS); used for 'mlp' and
+                      'autoencoder', ignored for 'linear'.
+    num_layers (int): Depth of the 'mlp' projector (>= 1; ignored for 'linear'/'autoencoder').
+                      1 is the default (Linear→act→Linear); n appends n blocks of act→Linear.
+    encoder_ratio (int): Bottleneck divisor for 'autoencoder' (>= 1; hidden dims are
+                      max(1, D_old//r) and max(1, D_new//r)). Ignored for other kinds.
 
   Returns:
     torch.nn.Module: The projector network (output is unconstrained real-valued).
 
   Raises:
-    ValueError: If kind is unknown, activation (for 'mlp') is not in _ACTIVATIONS, or
-      num_layers < 1.
+    ValueError: If kind is unknown, activation (for 'mlp'/'autoencoder') is not in
+      _ACTIVATIONS, num_layers < 1, or encoder_ratio < 1.
   """
   if kind == 'linear':
     return torch.nn.Linear(d_old, d_new)
@@ -990,6 +1029,18 @@ def _build_projector_network(d_old, d_new, kind, activation, num_layers=1):
     for _ in range(num_layers):
       layers += [act(), torch.nn.Linear(d_new, d_new)]
     return torch.nn.Sequential(*layers)
+  if kind == 'autoencoder':
+    if activation not in _ACTIVATIONS:
+      raise ValueError(f'Unknown autoencoder activation: {activation!r} (choices: {list(_ACTIVATIONS)})')
+    if encoder_ratio < 1:
+      raise ValueError(f'autoencoder encoder_ratio must be >= 1, got {encoder_ratio!r}')
+    act = _ACTIVATIONS[activation]
+    h_in, h_out = max(1, d_old // encoder_ratio), max(1, d_new // encoder_ratio)
+    return torch.nn.Sequential(
+      torch.nn.Linear(d_old, h_in), act(),
+      torch.nn.Linear(h_in, h_out), act(),
+      torch.nn.Linear(h_out, d_new),
+    )
   raise ValueError(f'Unknown projector network kind: {kind!r}')
 
 
@@ -1295,7 +1346,9 @@ def _train_linear_projector(old_anchors, new_anchors, df_anch, val_pool, project
 
   d_old = split_arrays['train']['old'].shape[1]
   d_new = split_arrays['train']['new'].shape[1]
-  projector = _build_projector_network(d_old, d_new, kind, activation, num_layers).to(device)
+  projector = _build_projector_network(
+    d_old, d_new, kind, activation, num_layers, cfg.get('encoder_ratio', 4),
+  ).to(device)
   optimizer = _build_projector_optimizer(projector.parameters(), cfg)
   loss_fn = _projector_loss_fn(cfg['loss'])
 
@@ -1389,7 +1442,9 @@ def _train_linear_projector(old_anchors, new_anchors, df_anch, val_pool, project
   torch.save(best_state_dict, ckpt_path)
 
   # --- Project each split's embeddings using the best (now-loaded) projector ---
-  projector_cpu = _build_projector_network(d_old, d_new, kind, activation, num_layers)
+  projector_cpu = _build_projector_network(
+    d_old, d_new, kind, activation, num_layers, cfg.get('encoder_ratio', 4),
+  )
   projector_cpu.load_state_dict(best_state_dict)
   projector_cpu.eval()
 
@@ -1968,9 +2023,16 @@ def _refine_projector_and_linear(projector, norm_stats, head_linear,
     'linear_before':    os.path.join(refine_dir, 'linear_before.pt'),
     'linear_after':     os.path.join(refine_dir, 'linear_after.pt'),
   }
+  # A SimilarityProjector (constrained procrustes refinement) is persisted as its exact
+  # plain-Linear equivalent, so saved projector checkpoints stay readable by the nn.Linear
+  # loaders (cross_space_logs.py). The in-memory module returned in the bundle stays the
+  # structured one (its forward is identical, so reported metrics are unaffected).
+  def _proj_save_sd(module):
+    """State_dict to persist: plain-Linear equivalent for a SimilarityProjector, else as-is."""
+    return module.to_linear().state_dict() if isinstance(module, SimilarityProjector) else module.state_dict()
   if not linear_only:
-    torch.save(projector_before.state_dict(),    ckpt_paths['projector_before'])
-    torch.save(projector_after_cpu.state_dict(), ckpt_paths['projector_after'])
+    torch.save(_proj_save_sd(projector_before),    ckpt_paths['projector_before'])
+    torch.save(_proj_save_sd(projector_after_cpu), ckpt_paths['projector_after'])
   torch.save(linear_before.state_dict(),       ckpt_paths['linear_before'])
   torch.save(linear_after_cpu.state_dict(),    ckpt_paths['linear_after'])
   pd.DataFrame(metrics).to_csv(os.path.join(refine_dir, 'refinement_metrics.csv'), index=False)
@@ -2099,6 +2161,16 @@ def _run_refinement_stage(old_model, new_model, old_model_pth, new_model_pth,
   projector  = None if projector_bundle is None else projector_bundle['projector']
   norm_stats = None if projector_bundle is None else projector_bundle['norm_stats']
   head_linear = new_model.head.linear
+
+  # Structure-preserving (constrained) procrustes refinement: replace the materialized
+  # nn.Linear with a SimilarityProjector so projector_linear refinement keeps the map a
+  # true similarity transform (R semi-orthogonal via a hard Stiefel constraint, single
+  # isotropic scale). Only for procrustes + projector_linear; inert otherwise (linear_only
+  # pre-projects emb_B and trains no projector; other kinds have no orthogonal structure).
+  if (not linear_only and projector_bundle is not None
+      and cfg.get('procrustes_constrained')
+      and projector_bundle.get('kind') == 'procrustes'):
+    projector = _build_similarity_projector(projector_bundle['procrustes_params'], cfg['device'])
 
   def _project_fixed(emb):
     """
@@ -2308,6 +2380,144 @@ def _fit_procrustes_solution(A, B):
     'bias':   bias,
     'sigma':  sigma.astype(np.float32),
   }
+
+
+class SimilarityProjector(torch.nn.Module):
+  """
+  Structure-preserving procrustes projector for constrained refinement.
+
+  Re-parameterizes the closed-form Orthogonal Procrustes map so its
+  similarity-transform structure is preserved under gradient descent: the rotation
+  R is held (semi-)orthogonal at EVERY optimizer step via a hard Stiefel constraint
+  (torch.nn.utils.parametrizations.orthogonal with the matrix_exp trivialization,
+  which supports rectangular D_old != D_new), the scale stays a single learnable
+  scalar (isotropic), and the translation is free. So the refined map remains a true
+  similarity transform y = s * (x - mu_A) @ R + mu_B throughout training, unlike a
+  plain nn.Linear whose free entries break both orthogonality and the single scale.
+
+  It is a drop-in nn.Module replacement for the materialized nn.Linear projector used
+  elsewhere: it maps NORMALIZED old-space embeddings to NORMALIZED new-space
+  embeddings, exactly like that nn.Linear (the raw<->normalized wrapping stays in
+  _project_to_new_raw / _apply_linear_projector). The forward map matches
+  _fit_procrustes_solution's y_hat = s * (X - mu_A) @ R + mu_B.
+
+  Used only during 'projector_linear' refinement when
+  REFINEMENT_CONFIG['procrustes_constrained'] is set (see _run_refinement_stage).
+  The trained map is affine, so it is persisted via to_linear() as a plain nn.Linear,
+  keeping saved projector checkpoints readable by the nn.Linear loaders in
+  cross_space_logs.py.
+
+  Note: the default orthogonal_map ('householder' for rectangular weights) does NOT
+  preserve orthogonality under Adam, so matrix_exp is pinned explicitly.
+
+  Attributes:
+    rot       (nn.Linear): bias-free linear whose weight (D_new, D_old) == R.T is kept
+                           (semi-)orthogonal by the parametrization; rot(z) == z @ R.
+    log_scale (nn.Parameter): scalar; the isotropic scale is exp(log_scale).
+    mu_A      (buffer): Shape (D_old,). Fixed input centering.
+    mu_B      (nn.Parameter): Shape (D_new,). Free translation.
+  """
+
+  def __init__(self, mu_A, mu_B, scale, R):
+    """
+    Warm-start a SimilarityProjector from a closed-form procrustes fit.
+
+    Args:
+      mu_A  (np.ndarray): Old-space input centering. Shape (D_old,).
+      mu_B  (np.ndarray): New-space translation. Shape (D_new,).
+      scale (float):      Initial isotropic scale s (> 0).
+      R     (np.ndarray): Semi-orthogonal rotation. Shape (D_old, D_new).
+    """
+    super().__init__()
+    from torch.nn.utils.parametrizations import orthogonal
+    R = np.asarray(R, dtype=np.float32)
+    d_old, d_new = R.shape
+    # rot.weight has shape (D_new, D_old) == R.T, so self.rot(z) == z @ R.
+    self.rot = torch.nn.Linear(d_old, d_new, bias=False)
+    # matrix_exp trivialization keeps weight (semi-)orthogonal at every step for both
+    # square and rectangular shapes AND supports warm-start assignment (right_inverse).
+    orthogonal(self.rot, name='weight', orthogonal_map='matrix_exp', use_trivialization=True)
+    with torch.no_grad():
+      self.rot.weight = torch.from_numpy(R.T.copy())
+    self.log_scale = torch.nn.Parameter(torch.tensor(float(np.log(max(float(scale), 1e-12)))))
+    self.register_buffer('mu_A', torch.from_numpy(np.asarray(mu_A, np.float32).copy()))
+    self.mu_B = torch.nn.Parameter(torch.from_numpy(np.asarray(mu_B, np.float32).copy()))
+
+  def forward(self, x):
+    """
+    Map normalized old-space embeddings to normalized new-space embeddings.
+
+    Args:
+      x: Normalized old-space embeddings. Shape (N, D_old).
+
+    Returns:
+      Normalized new-space embeddings. Shape (N, D_new).
+    """
+    return torch.exp(self.log_scale) * self.rot(x - self.mu_A) + self.mu_B
+
+  def to_linear(self):
+    """
+    Materialize the current similarity transform as an equivalent nn.Linear.
+
+    A similarity transform is affine, so the trained projector has an exact nn.Linear
+    equivalent (weight = (s * R).T, bias = mu_B - s * mu_A @ R). Used for persistence so
+    saved projector checkpoints stay in the plain-Linear format the downstream loaders
+    (cross_space_logs.py) expect. Computed on CPU regardless of the module's device.
+
+    Returns:
+      torch.nn.Linear: in_features=D_old, out_features=D_new, on CPU, in eval mode.
+    """
+    d_old, d_new = self.mu_A.numel(), self.mu_B.numel()
+    linear = torch.nn.Linear(d_old, d_new)
+    with torch.no_grad():
+      W   = self.rot.weight.detach().to('cpu')   # (D_new, D_old), semi-orthogonal
+      R   = W.t()                                # (D_old, D_new)
+      s   = torch.exp(self.log_scale.detach().to('cpu'))
+      muA = self.mu_A.detach().to('cpu')
+      muB = self.mu_B.detach().to('cpu')
+      linear.weight.copy_(s * W)                 # (D_new, D_old) == (s * R).T
+      linear.bias.copy_(muB - s * (muA @ R))
+    return linear.eval()
+
+
+def _build_similarity_projector(procrustes_params, device):
+  """
+  Build a warm-started SimilarityProjector from a procrustes bundle's closed-form params.
+
+  Asserts the structured forward reproduces the closed-form similarity map before
+  returning (mirrors _assert_linear_ckpt_matches_formula: float64, relative tolerance),
+  guarding against an init/round-trip bug in the orthogonal parametrization.
+
+  Args:
+    procrustes_params (dict): {'mu_old' (D_old,), 'mu_new' (D_new,), 'scale' float,
+                              'R' (D_old, D_new)} from a procrustes projector bundle.
+    device            (str | torch.device): Device for the returned module.
+
+  Returns:
+    SimilarityProjector: Warm-started, on `device`.
+
+  Raises:
+    AssertionError: If the structured forward diverges from the closed-form map.
+  """
+  mu_A  = np.asarray(procrustes_params['mu_old'], np.float32)
+  mu_B  = np.asarray(procrustes_params['mu_new'], np.float32)
+  scale = float(procrustes_params['scale'])
+  R     = np.asarray(procrustes_params['R'], np.float32)
+  proj  = SimilarityProjector(mu_A, mu_B, scale, R).to(device)
+
+  d_old = R.shape[0]
+  x_chk = (mu_A[None, :] + np.eye(d_old, dtype=np.float32))  # (D_old, D_old) probe points
+  with torch.no_grad():
+    y_mod = proj(torch.from_numpy(x_chk).to(device)).cpu().numpy().astype(np.float64)
+  y_ref   = scale * ((x_chk.astype(np.float64) - mu_A) @ R) + mu_B
+  max_abs = float(np.max(np.abs(y_mod - y_ref)))
+  scl     = float(np.max(np.abs(y_ref)))
+  rel     = max_abs / scl if scl > 0 else max_abs
+  assert rel < 1e-4, (
+    f"[procrustes_constrained] SimilarityProjector diverges from the closed-form "
+    f"similarity map (max abs err={max_abs:.3e}, rel err={rel:.3e})"
+  )
+  return proj
 
 
 def _train_procrustes_projector(old_anchors, new_anchors, df_anch, val_pool, projector_dir, anchor_key_tag, cfg=None):
@@ -3093,6 +3303,10 @@ def _precompute_embeddings(
     if k == 'mlp':
       base_projector_specs.extend(
         (k, act, nl) for act in args.mlp_activation for nl in args.mlp_num_layers)
+    elif k == 'autoencoder':
+      # activation swept via --mlp_activation; depth unused (nl=1); bottleneck ratio
+      # comes from the recipe inner-loop below.
+      base_projector_specs.extend((k, act, 1) for act in args.mlp_activation)
     else:
       base_projector_specs.append((k, None, 1))
   projector_specs = []   # list of (kind, activation, num_layers, recipe, bundle_key)
@@ -3427,6 +3641,7 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
   trial_result = {
     'trial_params': trial_params,
     'trial_number': trial_number,
+    'seed': _SEED,
     'uid': uid,
     'new_model_tensors': {
       **old_model_tensors,
@@ -3562,7 +3777,9 @@ def run_optuna(args, out_root=None):
       _proj_suffix_parts.append(_projector_tag(_k))
   _proj_suffix = ('_' + '_'.join(_proj_suffix_parts)) if _proj_suffix_parts else ''
   _act_suffix = (
-    f'_act{_fmt(args.mlp_activation)}' if 'mlp' in args.interpolation_similarity else ''
+    f'_act{_fmt(args.mlp_activation)}'
+    if ('mlp' in args.interpolation_similarity or 'autoencoder' in args.interpolation_similarity)
+    else ''
   )
   # Depth axis suffix: only when 'mlp' is swept and at least one non-default depth is requested
   # (keeps run-folder names byte-identical for existing single-layer mlp configs).
@@ -3585,13 +3802,14 @@ def run_optuna(args, out_root=None):
     + _act_suffix
     + _recipe_suffix
   )
-  tag_prefix = f'{args.run_tag}_' if args.run_tag else ''
+  group, _, leaf = (args.run_tag or '').rpartition('/')
+  tag_prefix = f'{leaf}_' if leaf else ''
   if len(f'search_{tag_prefix}{args_tag}_{uid}') > 200:
     _hash = hashlib.md5(args_tag.encode()).hexdigest()[:16]
     args_tag = f'{args_tag[:60]}_{_hash}'
   base = out_root if out_root is not None else os.getcwd()
   out_dir = os.path.join(
-    base, 'Cross_projection', f'search_{tag_prefix}{args_tag}_{uid}',
+    base, 'Cross_projection', group, f'search_{tag_prefix}{args_tag}_{uid}',
   )
   precomputed_dir = os.path.join(out_dir, 'precomputed')
   os.makedirs(precomputed_dir, exist_ok=True)
@@ -3652,9 +3870,9 @@ def run_optuna(args, out_root=None):
       raise optuna.TrialPruned(
         f"invalid combo: interpolation_similarity={interp!r} requires weighting_method='none'"
       )
-    # mlp_activation only affects 'mlp'; collapse the axis for every other interp so it
-    # does not multiply unrelated trials (only the first activation value is canonical).
-    if interp != 'mlp' and params['mlp_activation'] != args.mlp_activation[0]:
+    # mlp_activation affects 'mlp' and 'autoencoder'; collapse the axis for every other
+    # interp so it does not multiply unrelated trials (only the first value is canonical).
+    if interp not in ('mlp', 'autoencoder') and params['mlp_activation'] != args.mlp_activation[0]:
       raise optuna.TrialPruned(
         f"mlp_activation={params['mlp_activation']!r} irrelevant for interp={interp!r}"
       )
@@ -3729,9 +3947,9 @@ def run_optuna(args, out_root=None):
         return _closed_form_mae_cache[cf_key]
     if interp in _PROJECTOR_KINDS:
       _proj_tag_t = f'_{_projector_tag(interp, proj_map[params["projector_config"]])}'
-      if interp == 'mlp':
+      if interp in ('mlp', 'autoencoder'):
         _proj_tag_t += f'_{params["mlp_activation"]}'
-        if params['mlp_num_layers'] != 1:
+        if interp == 'mlp' and params['mlp_num_layers'] != 1:
           _proj_tag_t += f'_L{params["mlp_num_layers"]}'
     else:
       _proj_tag_t = f'_{params["weighting_method"]}_s{params["rbf_sigma"]}'
@@ -3796,6 +4014,8 @@ def run_optuna(args, out_root=None):
       continue
     if _k == 'mlp':
       _base_specs.extend((_k, a, nl) for a in args.mlp_activation for nl in args.mlp_num_layers)
+    elif _k == 'autoencoder':
+      _base_specs.extend((_k, a, 1) for a in args.mlp_activation)
     else:
       _base_specs.append((_k, None, 1))
   _proj_bundles = {_projector_bundle_key(k, a, proj_map[pid], nl)
@@ -3869,9 +4089,9 @@ def cross_space_projection(args, out_root=None):
   _ref_recipe  = (args.refinement_recipes[0] if getattr(args, 'refinement_recipes', None) else None)
   if args.interpolation_similarity in _PROJECTOR_KINDS:
     _proj_tag = f'_{_projector_tag(args.interpolation_similarity, _proj_recipe)}'
-    if args.interpolation_similarity == 'mlp':
+    if args.interpolation_similarity in ('mlp', 'autoencoder'):
       _proj_tag += f'_{args.mlp_activation}'
-      if args.mlp_num_layers != 1:
+      if args.interpolation_similarity == 'mlp' and args.mlp_num_layers != 1:
         _proj_tag += f'_L{args.mlp_num_layers}'
   else:
     _proj_tag = f'_{args.weighting_method}_s{args.rbf_sigma}'
@@ -3883,9 +4103,10 @@ def cross_space_projection(args, out_root=None):
     f'_{args.interpolation_similarity}'
     + _proj_tag
   )
-  tag_prefix = f'{args.run_tag}_' if args.run_tag else ''
+  group, _, leaf = (args.run_tag or '').rpartition('/')
+  tag_prefix = f'{leaf}_' if leaf else ''
   base = out_root if out_root is not None else os.getcwd()
-  out_dir = os.path.join(base, 'Cross_projection', f'cross_space_projection_{tag_prefix}{args_tag}_{uid}')
+  out_dir = os.path.join(base, 'Cross_projection', group, f'cross_space_projection_{tag_prefix}{args_tag}_{uid}')
   os.makedirs(out_dir, exist_ok=True)
   print(f'[cross_space_projection] Output: {out_dir}')
 
@@ -4003,7 +4224,7 @@ def cross_space_projection(args, out_root=None):
     if args.interpolation_similarity in _PROJECTOR_KINDS:
       # --- Step 6 (projector): fit on all anchors; val/test from val.csv ---
       kind = args.interpolation_similarity
-      activation = args.mlp_activation if kind == 'mlp' else None
+      activation = args.mlp_activation if kind in ('mlp', 'autoencoder') else None
       num_layers = args.mlp_num_layers if kind == 'mlp' else 1
       projector_dir = os.path.join(out_dir, f'{_projector_key(kind, activation, num_layers)}_projector')
       projector_val_pool = _extract_linear_val_pool(
@@ -4069,7 +4290,7 @@ def cross_space_projection(args, out_root=None):
             if REFINEMENT_CONFIG['enabled'] else [])
   if _modes:
     _is_projector_kind = args.interpolation_similarity in _PROJECTOR_KINDS
-    _act = args.mlp_activation if args.interpolation_similarity == 'mlp' else None
+    _act = args.mlp_activation if args.interpolation_similarity in ('mlp', 'autoencoder') else None
     _nl  = args.mlp_num_layers if args.interpolation_similarity == 'mlp' else 1
     if _is_projector_kind:
       _refine_base = os.path.join(
@@ -4158,6 +4379,7 @@ def cross_space_projection(args, out_root=None):
 
   dict_res = {
     'config_cross_space_projection': config_logging,
+    'seed':                          _SEED,
     'old_model_config': {k: v for k, v in old_config.items() if k != 'results'},
     'new_model_config': {k: v for k, v in new_config.items() if k != 'results'},
     'anchors_csv_path':             anchors_csv_path,
@@ -4227,12 +4449,16 @@ _ALLOWED_YAML_KEYS = {
   'run_tag', 'refinement', 'seed', 'linear_projector', 'refinement_config',
 }
 # YAML keys forwarded to argparse: list (nargs='+') axes vs scalar/string options.
+# new_model_pth / old_model_pth are list args too: a single path stays a 1-element list
+# (identical to the old single-model behaviour), and multiple paths trigger the
+# new×old subtrial-aggregation mode (see _run_model_combos).
 _YAML_LIST_ARGS = (
+  'new_model_pth', 'old_model_pth',
   'num_anchors', 'anchor_selection_type', 'csv_anchor_selection', 'old_model_csv',
   'interpolation_similarity', 'mlp_activation', 'mlp_num_layers', 'weighting_method', 'rbf_sigma',
+  'seed',
 )
-_YAML_SCALAR_ARGS = ('new_model_pth', 'old_model_pth', 'run_tag', 'optuna_sampler',
-                     'n_trials', 'refinement', 'seed')
+_YAML_SCALAR_ARGS = ('run_tag', 'optuna_sampler', 'n_trials', 'refinement')
 
 
 def _yaml_to_argv(ycfg):
@@ -4261,6 +4487,265 @@ def _yaml_to_argv(ycfg):
   return argv
 
 
+def _collect_seed_records(result_path, seed):
+  """
+  Read back the (mae, ccc) of every result produced by one seed's run.
+
+  Handles both dispatch paths: an Optuna run (result_path is the study out_dir,
+  holding many trial*/results.pkl), and a single run (result_path is a single
+  results_*.pkl file). Each record carries a `config` string so trials can later
+  be grouped across seeds; single runs use the sentinel 'single'.
+
+  Args:
+    result_path (str): Optuna out_dir (a directory) or single-run results .pkl path.
+    seed        (int): The seed that produced result_path (stamped on every record).
+
+  Returns:
+    list[dict]: One dict per result with keys 'seed', 'config' (str), 'mae', 'ccc'.
+  """
+  records = []
+  if os.path.isdir(result_path):
+    for pkl in sorted(Path(result_path).glob('trial*/results.pkl')):
+      with open(pkl, 'rb') as f:
+        d = pickle.load(f)
+      records.append({
+        'seed':   seed,
+        'config': json.dumps(d['trial_params'], sort_keys=True),
+        'mae':    float(d['metrics']['mae']),
+        'ccc':    float(d['metrics']['ccc']),
+      })
+  else:
+    with open(result_path, 'rb') as f:
+      d = pickle.load(f)
+    records.append({
+      'seed':   seed,
+      'config': 'single',
+      'mae':    float(d['metrics']['mae']),
+      'ccc':    float(d['metrics']['ccc']),
+    })
+  return records
+
+
+def _write_seed_summary(records, summary_dir):
+  """
+  Aggregate per-seed results into cross-seed mean+/-std summaries.
+
+  Writes two files into summary_dir:
+    seed_summary.csv — per-config table (the "grid over seeds" view): for each
+      distinct config, n_seeds and mean/std of MAE and CCC across seeds, sorted by
+      ascending mean MAE.
+    seed_summary.txt — headline: the per-seed best (min-MAE) trial of each seed,
+      reported as MAE/CCC mean+/-std over the seeds, the seed list, and the top
+      config row from the table.
+
+  Args:
+    records     (list[dict]): Rows from _collect_seed_records (keys 'seed','config',
+                              'mae','ccc'); may aggregate several seeds.
+    summary_dir (str): Directory (the common parent of the per-seed run folders)
+                       to write the two summary files into.
+
+  Returns:
+    None.
+  """
+  os.makedirs(summary_dir, exist_ok=True)
+  if not records:
+    with open(os.path.join(summary_dir, 'seed_summary.txt'), 'w') as f:
+      f.write('No per-seed results were collected (all trials pruned or missing).\n')
+    return
+  df = pd.DataFrame(records)
+  by_config = (
+    df.groupby('config')
+      .agg(n_seeds=('seed', 'nunique'),
+           mae_mean=('mae', 'mean'), mae_std=('mae', 'std'),
+           ccc_mean=('ccc', 'mean'), ccc_std=('ccc', 'std'))
+      .sort_values('mae_mean')
+  )
+  by_config.to_csv(os.path.join(summary_dir, 'seed_summary.csv'))
+
+  best_per_seed = df.loc[df.groupby('seed')['mae'].idxmin()]
+  seeds = sorted(df['seed'].unique().tolist())
+  top = by_config.iloc[0]
+  with open(os.path.join(summary_dir, 'seed_summary.txt'), 'w') as f:
+    f.write(f'seeds: {seeds} ({len(seeds)} seed(s))\n')
+    f.write(f'distinct configs: {len(by_config)}\n\n')
+    f.write('best-per-seed (min MAE within each seed) across seeds:\n')
+    f.write(f'  MAE: {best_per_seed["mae"].mean():.6f} +/- {best_per_seed["mae"].std():.6f}\n')
+    f.write(f'  CCC: {best_per_seed["ccc"].mean():.6f} +/- {best_per_seed["ccc"].std():.6f}\n\n')
+    f.write('top config by mean MAE (see seed_summary.csv for all):\n')
+    f.write(f'  config:  {top.name}\n')
+    f.write(f'  n_seeds: {int(top["n_seeds"])}\n')
+    f.write(f'  MAE: {top["mae_mean"]:.6f} +/- {top["mae_std"]:.6f}\n')
+    f.write(f'  CCC: {top["ccc_mean"]:.6f} +/- {top["ccc_std"]:.6f}\n')
+  print(f'[seed-sweep] wrote cross-seed summary → {summary_dir}/seed_summary.{{csv,txt}}')
+
+
+def _single_run_namespace(args):
+  """
+  Build a Namespace with every single-element list arg unwrapped to a scalar.
+
+  The CLI/YAML parse the hyper axes (and the model paths) as one-or-more-value lists,
+  but cross_space_projection expects scalar fields. The recipe lists
+  (projector_recipes / refinement_recipes) are left untouched because
+  cross_space_projection reads element [0] itself.
+
+  Args:
+    args (argparse.Namespace): Parsed args with list-valued hyper axes.
+
+  Returns:
+    argparse.Namespace: A copy in which every 1-element list field is replaced by its
+      scalar value (multi-element lists, e.g. a model-path list, keep element [0]).
+  """
+  _keep_lists = ('projector_recipes', 'refinement_recipes')
+  return argparse.Namespace(**{
+    k: (v[0] if (isinstance(v, list) and k not in _keep_lists) else v)
+    for k, v in vars(args).items()
+  })
+
+
+def _run_model_combos(args, model_pairs, group_tag):
+  """
+  Run every (new_model, old_model) pair as a subtrial and aggregate them into one pkl.
+
+  Each pair reuses the full single-run pipeline (cross_space_projection) with the fixed
+  hyperparameter combination, writing its own detailed results pkl under
+  Cross_projection/<group_tag>/cross_space_projection_subtrial_<i>_<j>_.... The per-sample
+  results of all pairs are then pooled by _aggregate_model_combo_pkls.
+
+  Args:
+    args        (argparse.Namespace): Parsed args (model-path fields are lists; all hyper
+                  axes are single-valued, enforced by the caller).
+    model_pairs (list[tuple[int, int, str, str]]): (new_idx, old_idx, new_pth, old_pth)
+                  tuples — the full N×O Cartesian product.
+    group_tag   (str): run_tag group the subtrials and the aggregated folder nest under.
+
+  Returns:
+    str: Path to the aggregated results pkl.
+  """
+  records = []
+  for (i, j, new_pth, old_pth) in model_pairs:
+    sub_args = _single_run_namespace(args)
+    sub_args.new_model_pth = new_pth
+    sub_args.old_model_pth = old_pth
+    sub_args.run_tag = f'{group_tag}/subtrial_{i}_{j}'
+    print(f'[model-combos] subtrial {i}_{j}  new={new_pth}  old={old_pth}')
+    pkl_path = cross_space_projection(sub_args)
+    records.append({'new_idx': i, 'old_idx': j, 'new_model_pth': new_pth,
+                    'old_model_pth': old_pth, 'pkl_path': pkl_path})
+  agg_dir = os.path.join(os.getcwd(), 'Cross_projection', group_tag,
+                         f'aggregated_{int(time.time())}')
+  return _aggregate_model_combo_pkls(records, agg_dir, args)
+
+
+def _aggregate_model_combo_pkls(records, out_dir, args):
+  """
+  Pool the per-sample results of several model-pair subtrials into one aggregated pkl.
+
+  Each subtrial pkl's old/new predictions, labels and sample_ids are concatenated (pooled)
+  across pairs. The aggregated pkl mimics a standalone results pkl so cross_space_logs can
+  draw the prediction-based plots (scatter, per-class/per-subject MAE, confusion matrices,
+  histograms). Embeddings are dropped (None) because embeddings from different models live
+  in different spaces and cannot be pooled, and weights is an empty (N, 0) matrix (the
+  no-anchor shape) so the anchor-weight plots skip cleanly. The 'aggregated' flag and the
+  per-subtrial pkl paths (relative to out_dir) let cross_space_logs guard the embedding
+  plots and build summary_per_subtrial.csv.
+
+  Args:
+    records (list[dict]): One dict per subtrial with keys 'new_idx', 'old_idx',
+              'new_model_pth', 'old_model_pth', 'pkl_path'.
+    out_dir (str): Directory to write the aggregated results pkl into (created here).
+    args    (argparse.Namespace): Parsed args (used only for script_cmd logging).
+
+  Returns:
+    str: Path to the aggregated results pkl.
+  """
+  os.makedirs(out_dir, exist_ok=True)
+  uid = int(time.time())
+
+  def _cat(dicts, group, key, dtype=np.float32):
+    """Concatenate one tensor field across the loaded subtrial dicts (pooled, 1-D)."""
+    return np.concatenate([np.asarray(d[group][key], dtype=dtype).reshape(-1) for d in dicts])
+
+  loaded, subtrials, rel_pkls, maes, cccs = [], [], [], [], []
+  for rec in records:
+    with open(rec['pkl_path'], 'rb') as f:
+      d = pickle.load(f)
+    loaded.append(d)
+    m = d.get('metrics') or {}
+    maes.append(float(m.get('mae', np.nan)))
+    cccs.append(float(m.get('ccc', np.nan)))
+    rel_pkls.append(os.path.relpath(rec['pkl_path'], out_dir))
+    subtrials.append({'new_idx': rec['new_idx'], 'old_idx': rec['old_idx'],
+                      'new_model_pth': rec['new_model_pth'],
+                      'old_model_pth': rec['old_model_pth'],
+                      'mae': maes[-1], 'ccc': cccs[-1]})
+
+  old_pred = _cat(loaded, 'old_model_tensors', 'predictions')
+  old_lab  = _cat(loaded, 'old_model_tensors', 'labels')
+  old_sid  = _cat(loaded, 'old_model_tensors', 'sample_ids', dtype=np.int64)
+  new_pred = _cat(loaded, 'new_model_tensors', 'predictions')
+  new_lab  = _cat(loaded, 'new_model_tensors', 'labels')
+  new_sid  = _cat(loaded, 'new_model_tensors', 'sample_ids', dtype=np.int64)
+
+  pooled_mae = float(np.mean(np.abs(new_pred - new_lab)))
+  pooled_ccc = float(tools.concordance_ccc(y_true=new_lab, y_pred=new_pred))
+  maes_arr, cccs_arr = np.asarray(maes, np.float64), np.asarray(cccs, np.float64)
+  n = len(loaded)
+
+  # Fixed hypers (identical across subtrials) carried through for downstream grid-row
+  # synthesis (cross_space_logs._synth_trial_params_from_cfg). Read from the first subtrial.
+  first_cfg = loaded[0].get('config_cross_space_projection') or {}
+  _hyper_keys = ('num_anchors', 'anchor_selection_type', 'csv_anchor_selection', 'old_model_csv',
+                 'interpolation_similarity', 'mlp_activation', 'mlp_num_layers',
+                 'weighting_method', 'rbf_sigma')
+  config_logging = {
+    **{k: first_cfg.get(k) for k in _hyper_keys},
+    'new_model_pth':        list(dict.fromkeys(r['new_model_pth'] for r in records)),
+    'old_model_pth':        list(dict.fromkeys(r['old_model_pth'] for r in records)),
+    'uid':                  uid,
+    'out_dir':              out_dir,
+    'old_tensors_csv_path': first_cfg.get('old_tensors_csv_path'),
+    'aggregated':           True,
+    'n_subtrials':          n,
+    'model_pairs':          [(r['new_model_pth'], r['old_model_pth']) for r in records],
+    'script_cmd':           ' '.join(sys.argv),
+  }
+
+  dict_res = {
+    'config_cross_space_projection': config_logging,
+    'seed':                 _SEED,
+    'aggregated':           True,
+    'n_subtrials':          n,
+    'subtrial_pkls':        rel_pkls,         # relative to out_dir (the folder is movable)
+    'subtrials':            subtrials,
+    'old_tensors_csv_path': first_cfg.get('old_tensors_csv_path'),
+    'old_model_tensors': {
+      'predictions': old_pred, 'labels': old_lab, 'sample_ids': old_sid, 'embeddings': None,
+    },
+    'new_model_tensors': {
+      'predictions': new_pred, 'labels': new_lab, 'sample_ids': new_sid,
+      'embeddings': None, 'weights': np.zeros((new_pred.shape[0], 0), dtype=np.float32),
+    },
+    'metrics': {
+      'mae': pooled_mae, 'ccc': pooled_ccc,
+      'mae_mean': float(np.nanmean(maes_arr)), 'ccc_mean': float(np.nanmean(cccs_arr)),
+      'mae_std':  float(np.nanstd(maes_arr, ddof=1)) if n > 1 else 0.0,
+      'ccc_std':  float(np.nanstd(cccs_arr, ddof=1)) if n > 1 else 0.0,
+    },
+  }
+
+  out_pkl = os.path.join(out_dir, f'results_{uid}.pkl')
+  with open(out_pkl, 'wb') as f:
+    pickle.dump(dict_res, f)
+  with open(os.path.join(out_dir, 'config_logging.txt'), 'w') as f:
+    for k, v in config_logging.items():
+      f.write(f'{k}: {v}\n')
+  _std = float(np.nanstd(maes_arr, ddof=1)) if n > 1 else 0.0
+  print(f'[model-combos] pooled {n} subtrials ({new_pred.shape[0]} samples) → {out_pkl}\n'
+        f'  pooled MAE {pooled_mae:.4f}  CCC {pooled_ccc:.4f}  |  '
+        f'per-subtrial MAE {np.nanmean(maes_arr):.4f} +/- {_std:.4f}')
+  return out_pkl
+
+
 if __name__ == '__main__':
   # --- YAML-only detection: --config is mutually exclusive with every other flag ---
   _pre = argparse.ArgumentParser(add_help=False)
@@ -4277,10 +4762,15 @@ if __name__ == '__main__':
                            'mirrors these flags (lists stay lists) plus two swept-recipe blocks '
                            "'linear_projector' and 'refinement_config' whose fields may be scalars "
                            'or lists (lists are swept as a full Cartesian grid).')
-  parser.add_argument('--new_model_pth', type=str, required=True,
-                      help='Path to new model checkpoint (.pt/.pth)')
-  parser.add_argument('--old_model_pth', type=str, required=True,
-                      help='Path to old model checkpoint (.pt/.pth)')
+  parser.add_argument('--new_model_pth', type=str, nargs='+', required=True,
+                      help='Path(s) to new model checkpoint(s) (.pt/.pth). Pass more than one '
+                           '(together with multiple --old_model_pth) to run every new×old '
+                           'combination as a subtrial and aggregate them into one pooled result '
+                           '(a validation/robustness sweep). Requires a single fixed '
+                           'hyperparameter combination (no swept axes).')
+  parser.add_argument('--old_model_pth', type=str, nargs='+', required=True,
+                      help='Path(s) to old model checkpoint(s) (.pt/.pth). See --new_model_pth '
+                           'for the multi-model (subtrial aggregation) behaviour.')
   # --- Hyper args: accept one or more values; multiple values trigger Optuna ---
   parser.add_argument('--num_anchors', type=int, nargs='+', required=True,
                       help='Number of anchor samples (one or more values to sweep)')
@@ -4299,7 +4789,7 @@ if __name__ == '__main__':
   parser.add_argument('--old_model_csv', type=str, nargs='+', required=True,
                       help='Split(s) to project (train/val/test/all/exc_train/exc_val/exc_test) — old model domain')
   parser.add_argument('--interpolation_similarity', type=str, nargs='+', default=['cos'],
-                      choices=['cos', 'l1', 'l2', 'l_inf', 'linear', 'mlp', 'procrustes', 'linear_close', 'geodesic'],
+                      choices=['cos', 'l1', 'l2', 'l_inf', 'linear', 'mlp', 'procrustes', 'linear_close', 'autoencoder', 'geodesic'],
                       help='Distance metric(s) for weight computation. '
                            "'cos' uses cosine distance d = 1 - |cos_sim| in [0, 1]. "
                            "'geodesic' builds a k-NN graph (k=5, Euclidean edges) over anchor "
@@ -4314,8 +4804,13 @@ if __name__ == '__main__':
                            'semi-orthogonal map on the same anchor pairs (no SGD); '
                            "'linear_close' fits the same nn.Linear(D_old, D_new) as 'linear' "
                            'but via the closed-form OLS (least-squares) solution instead of SGD '
-                           '(exact minimizer of the pure MSE loss, no weight decay). For '
-                           "'linear', 'mlp', 'procrustes' and 'linear_close', weighting_method "
+                           '(exact minimizer of the pure MSE loss, no weight decay). '
+                           "'autoencoder' trains a bottleneck MLP "
+                           'Linear(D_old,D_old//r)->act->Linear(D_old//r,D_new//r)->act->'
+                           'Linear(D_new//r,D_new) (same training recipe; activation set via '
+                           '--mlp_activation; bottleneck ratio r set via the linear_projector '
+                           "config field encoder_ratio). For 'linear', 'mlp', 'procrustes', "
+                           "'linear_close' and 'autoencoder', weighting_method "
                            "must be 'none' and rbf_sigma is ignored.")
   parser.add_argument('--mlp_activation', type=str, nargs='+', default=['gelu'],
                       choices=['gelu', 'relu', 'silu', 'leaky_relu'],
@@ -4345,10 +4840,15 @@ if __name__ == '__main__':
                       choices=['tpe', 'random', 'grid'],
                       help='Optuna sampler (tpe, random, grid). Default is grid')
   parser.add_argument('--run_tag', type=str, default=None,
-                      help='Optional label prepended to the output folder name for easy identification')
-  parser.add_argument('--seed', type=int, default=_SEED,
-                      help='Global RNG seed for reproducibility (python random, numpy, torch, cuda). '
-                           'Default 42.')
+                      help='Optional label prepended to the output folder name for easy identification. '
+                           'A "/" splits it into "<subfolder.../leaf-label>": everything before the last '
+                           '"/" becomes group subfolder(s) under Cross_projection (so multiple runs can be '
+                           'grouped together), and the last segment is the leaf folder label.')
+  parser.add_argument('--seed', type=int, nargs='+', default=[_SEED],
+                      help='One or more global RNG seeds (python random, numpy, torch, cuda). '
+                           'A single seed reproduces the previous behavior. Multiple seeds re-run '
+                           'the whole grid once per seed (each under a seed<N> subfolder) and write '
+                           'a cross-seed mean+/-std summary. Default 42.')
   parser.add_argument('--refinement', type=int, choices=[0, 1, 2, 3],
                       default=int(REFINEMENT_CONFIG['enabled']),
                       help='Post-projection refinement stage (see REFINEMENT_CONFIG). The value is '
@@ -4360,7 +4860,10 @@ if __name__ == '__main__':
                            'linear/mlp/procrustes/linear_close only); 3 = ALL applicable modes in one '
                            'run (linear_only + projector_linear; projector_linear is skipped for '
                            'distance metrics, so 3 collapses to 1 there). 1/2/3 all require '
-                           'num_anchors>0. Default off.')
+                           'num_anchors>0. Default off. To keep projector_linear refinement of a '
+                           "procrustes projector a true similarity transform (R semi-orthogonal, "
+                           "isotropic scale), set the 'procrustes_constrained' field in the "
+                           "refinement_config recipe (not a --refinement flag value).")
 
   if _pre_args.config is not None:
     # --- YAML-only mode: the file is the sole source of args ---
@@ -4418,13 +4921,10 @@ if __name__ == '__main__':
       parser.error(
         f"interpolation_similarity={sorted(_anchor_weighted_in_sweep)} requires "
         f"--weighting_method='rbf' (got {args.weighting_method!r}). 'none' is only valid "
-        f"for linear/mlp/procrustes/linear_close."
+        f"for linear/mlp/procrustes/linear_close/autoencoder."
       )
-  # Apply the user's seed once, up front: this reassigns the module-global _SEED so
-  # every call-time consumer (anchor sampling, subject-disjoint splits, Optuna sampler)
-  # and the entry-point re-seeds in run_optuna / cross_space_projection use it.
-  _set_global_seed(args.seed)
-
+  # use_optuna is decided by the non-seed axes only: a seed sweep must NOT force Optuna
+  # mode (each seed is an independent run that re-runs the seed-dependent precompute).
   _hyper_lists = [
     args.num_anchors, args.anchor_selection_type, args.csv_anchor_selection,
     args.old_model_csv, args.interpolation_similarity, args.mlp_activation,
@@ -4437,14 +4937,48 @@ if __name__ == '__main__':
     or len(args.refinement_recipes) > 1
   )
 
-  if use_optuna:
-    run_optuna(args)
-  else:
-    # Unwrap single-element lists so cross_space_projection receives scalar args. The
-    # recipe lists stay lists (cross_space_projection reads element [0] itself).
-    _keep_lists = ('projector_recipes', 'refinement_recipes')
-    single_args = argparse.Namespace(**{
-      k: (v[0] if (isinstance(v, list) and k not in _keep_lists) else v)
-      for k, v in vars(args).items()
-    })
-    cross_space_projection(single_args)
+  # --- Multi-model subtrial aggregation: N new × O old model paths. With more than one
+  #     pair we fix the (single) hyperparameter combination and run every pair as a
+  #     subtrial, then pool their per-sample results into one aggregated pkl (a
+  #     validation/robustness sweep — see _run_model_combos). A single pair keeps the
+  #     previous behaviour exactly (scalar model paths, no aggregation). ---
+  _new_pths    = list(args.new_model_pth)      # nargs='+' -> always a list here
+  _old_pths    = list(args.old_model_pth)
+  _model_pairs = [(i, j, n, o) for i, n in enumerate(_new_pths) for j, o in enumerate(_old_pths)]
+  _multi_model = len(_model_pairs) > 1
+  if _multi_model and use_optuna:
+    parser.error(
+      'multiple --new_model_pth/--old_model_pth require a single fixed hyperparameter '
+      'combination (no swept axes, n_trials<=1, single recipe); got a sweep. Fix the hypers, '
+      'or pass exactly one model each to use the Optuna grid.')
+
+  # --- Seed sweep: re-run the whole pipeline once per seed. A single seed keeps the
+  #     previous behavior byte-identical (no seed subfolder, no summary). Multiple seeds
+  #     route each run under run_tag/seed<N> and write a cross-seed mean+/-std summary.
+  #     Reseeding the module-global _SEED makes every call-time consumer (anchor sampling,
+  #     subject-disjoint splits, Optuna sampler, weight init / shuffle) use this seed. ---
+  _seeds        = args.seed                    # list[int] (argparse nargs='+')
+  _multi_seed   = len(_seeds) > 1
+  _group        = args.run_tag or f'seed_sweep_{int(time.time())}'  # parent of the per-seed runs
+  _seed_records = []
+  for _s in _seeds:
+    _set_global_seed(_s)
+    args.seed = _s                             # scalar for this run's logging / single_args
+    if _multi_seed:
+      args.run_tag = f'{_group}/seed{_s}'      # nests under run_optuna's group/leaf rpartition
+    if _multi_model:
+      # Every new×old pair runs as a subtrial under the current run_tag; results pooled.
+      _out = _run_model_combos(args, _model_pairs,
+                               args.run_tag or f'model_combos_{int(time.time())}')
+    elif use_optuna:
+      args.new_model_pth, args.old_model_pth = _new_pths[0], _old_pths[0]  # scalars for run_optuna
+      _out = run_optuna(args)
+    else:
+      args.new_model_pth, args.old_model_pth = _new_pths[0], _old_pths[0]  # scalars
+      # Unwrap single-element lists so cross_space_projection receives scalar args. The
+      # recipe lists stay lists (cross_space_projection reads element [0] itself).
+      _out = cross_space_projection(_single_run_namespace(args))
+    if _multi_seed:
+      _seed_records += _collect_seed_records(_out, _s)
+  if _multi_seed:
+    _write_seed_summary(_seed_records, os.path.join(os.getcwd(), 'Cross_projection', _group))
