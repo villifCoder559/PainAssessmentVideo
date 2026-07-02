@@ -73,7 +73,10 @@ Plots generated:
                                       each rank position (0=most impactful, top_n-1=least
                                       shown) across all N samples
   11. dashboard.png                 — combined panel; metrics table lists per-stage MAE
-                                      (old/projected/refined) micro/macro + preserve before/after
+                                      (old/projected/refined) micro/macro + preserve before/after.
+                                      For an aggregate (pooled multi-model) run the per-mode
+                                      dashboard_<mode>.png renders each MAE as 'mean ± std' across
+                                      subtrials instead of a bare mean.
   12. refinement_training_curves_train_vs_val.png — per-epoch train-vs-val loss (total/B/A) +
                                       held-out val MAE (micro/macro) for source-B and preserve-A
                                       (refinement runs only)
@@ -103,6 +106,7 @@ import argparse
 import glob
 import os
 import pickle
+from collections import Counter
 from tqdm import tqdm
 
 import matplotlib
@@ -700,6 +704,56 @@ def _detect_format(data):
   return 'grid' if 'trial_params' in data else 'standalone'
 
 
+def _anchor_count_from_data(data):
+  """
+  Real number of anchors actually used by a single run, from its anchor embeddings.
+
+  The configured `num_anchors` is only a budget; anchor selection caps each stratum at the
+  samples available (see cross_space_projection._allocate_balanced), so the real count is
+  often lower. The aligned `old_model_anchors_embeddings` are exactly the anchors the
+  projector was fit on, making their length the canonical "real" count.
+
+  Args:
+    data (dict): Deserialized run pkl contents.
+
+  Returns:
+    int | None: len(old_model_anchors_embeddings['sample_ids']), or None when the pkl
+      carries no anchor embeddings (grid trials without them, or num_anchors in {0, -1}).
+  """
+  sid = (data.get('old_model_anchors_embeddings') or {}).get('sample_ids')
+  return int(len(sid)) if sid is not None else None
+
+
+def _real_anchor_freq_from_subtrials(data, pkl_path):
+  """
+  Frequency of the real anchor count across an aggregate's subtrials: {real_count: n_subtrials}.
+
+  The pooled aggregate pkl stores no anchor embeddings, and the base dashboard is drawn
+  before the subtrial pkls are (heavily) loaded, so the count is read cheaply from each
+  subtrial's sibling anchors.csv (rows = header + one line per selected anchor). Subtrial
+  pkl paths are stored relative to this aggregate pkl's directory in data['subtrial_pkls'].
+
+  Args:
+    data     (dict): Aggregated pkl contents (must carry 'subtrial_pkls').
+    pkl_path (str):  Path the aggregate pkl was loaded from (anchors.csv paths resolve
+      relative to its directory).
+
+  Returns:
+    dict | None: {real_anchor_count: number_of_subtrials}, sorted by count ascending;
+      None when no subtrial anchors.csv could be read.
+  """
+  base = os.path.dirname(os.path.abspath(pkl_path))
+  counts = []
+  for rel in data.get('subtrial_pkls') or []:
+    csvp = os.path.join(os.path.dirname(os.path.join(base, rel)), 'anchors.csv')
+    try:
+      with open(csvp) as f:
+        counts.append(sum(1 for _ in f) - 1)
+    except OSError:
+      continue
+  return dict(sorted(Counter(counts).items())) if counts else None
+
+
 # Refinement-stage columns surfaced from the optional 'refinement' pkl block written by
 # cross_space_projection._run_refinement_stage. Absent / non-refinement runs receive
 # defaults so summary.csv keeps a stable schema across mixed sweeps.
@@ -777,6 +831,7 @@ def _refinement_columns(data, refine_block=None):
 # a recipe sweep is comparable at a glance. Absent blocks → None (stable schema).
 _LP_SUMMARY_FIELDS = (
   'lr', 'batch_size', 'optimizer', 'weight_decay', 'epochs', 'normalize_embeddings', 'loss',
+  'encoder_ratio',
 )
 _REF_SUMMARY_FIELDS = (
   'lr_projector', 'lr_linear', 'lambda_B', 'lambda_A', 'optimizer',
@@ -899,6 +954,7 @@ def _collect_summary_row(data, pkl_path, refine_block=None, refine_mode=None):
     'trial_number':             data['trial_number'],
     'seed':                     data.get('seed'),
     'num_anchors':              p['num_anchors'],
+    'num_anchors_real':         _anchor_count_from_data(data),
     'anchor_selection_type':    p['anchor_selection_type'],
     'csv_anchor_selection':     p['csv_anchor_selection'],
     'old_model_csv':            p['old_model_csv'],
@@ -1129,6 +1185,134 @@ def _aggregated_summary_row(data, pkl_path, subtrial_index, n_subtrials):
     dict: identifier columns followed by every _collect_summary_row column.
   """
   return _aggregated_summary_rows(data, pkl_path, subtrial_index, n_subtrials)[0]
+
+
+# Per-stage source/preserve MAE column pairs (micro, macro) that the dashboard metrics table
+# consumes as mae_stages. Keys mirror plot_dashboard's recognized stages; the source stages
+# map onto the srctest_* comparison block and the preserve stages onto newtest_* (see
+# _collect_summary_row). Used to roll a pooled cross-validation aggregate up from the
+# per-subtrial rows without needing the (pooled) refined predictions.
+_STAGE_MAE_COLUMNS = {
+  'old':             ('srctest_mae_micro_old',    'srctest_mae_macro_old'),
+  'projected':       ('srctest_mae_micro_before', 'srctest_mae_macro_before'),
+  'refined':         ('srctest_mae_micro_after',  'srctest_mae_macro_after'),
+  'preserve_before': ('newtest_mae_micro_before', 'newtest_mae_macro_before'),
+  'preserve_after':  ('newtest_mae_micro_after',  'newtest_mae_macro_after'),
+}
+
+
+def _aggregate_subtrial_rows(sub_rows, n_subtrials):
+  """
+  Roll the per-subtrial x per-mode summary rows up into per-mode mean + std rows.
+
+  A cross-validation aggregate's pooled pkl carries no refinement metrics, so its single
+  AGGREGATE summary row leaves every refinement column empty. This instead averages the
+  fully-populated per-subtrial rows (grouped by refine_mode), emitting for each mode a MEAN
+  row and a STD row that share summary_per_subtrial.csv's exact schema — so the aggregate
+  summary.csv carries the same srctest_* / newtest_* / refine_* columns, now filled.
+
+  Args:
+    sub_rows    (list[dict]): Per-subtrial x per-mode rows (from _aggregated_summary_rows);
+      each carries a 'refine_mode' (may be None) and the numeric stage/refinement columns.
+    n_subtrials (int): Number of subtrials pooled (stamped onto every emitted row).
+
+  Returns:
+    list[dict]: Two rows per refine_mode — subtrial_index 'AGGREGATE_MEAN' (numeric columns =
+      mean across the mode's subtrials) and 'AGGREGATE_STD' (sample std, ddof=1; 0.0 for a
+      single-subtrial group). Non-numeric columns (paths, hyperparameter labels, refine_mode)
+      are carried through unchanged (constant within a mode). Empty list when sub_rows is empty.
+  """
+  if not sub_rows:
+    return []
+  df = pd.DataFrame(sub_rows)
+  numeric_cols     = df.select_dtypes(include=[np.number]).columns
+  non_numeric_cols = [c for c in df.columns if c not in numeric_cols]
+  out = []
+  for _mode, grp in df.groupby('refine_mode', dropna=False):
+    means = grp[numeric_cols].mean()
+    stds  = grp[numeric_cols].std(ddof=1)
+    if len(grp) == 1:                       # ddof=1 std of a lone sample is NaN → report 0.0
+      stds = stds.fillna(0.0)
+    base = {c: grp.iloc[0][c] for c in non_numeric_cols}
+    for tag, stat in (('AGGREGATE_MEAN', means), ('AGGREGATE_STD', stds)):
+      row = {**base, **stat.to_dict()}
+      row['subtrial_index'] = tag
+      row['n_subtrials']    = n_subtrials
+      out.append(row)
+  return out
+
+
+def _per_mode_stage_reduce(sub_rows, reduce_fn):
+  """
+  Per-mode dashboard mae_stages built by reducing the per-subtrial stage columns.
+
+  Rolls the per-subtrial rows up (grouped by refine_mode) into the (micro, macro) MAE tuples
+  the dashboard metrics table renders: source old/projected/refined plus the new-model
+  preserve before/after. A stage whose columns are entirely NaN for a mode (e.g. no
+  refinement ran) is omitted so single-mode / no-refinement aggregates degrade gracefully.
+
+  Stage presence is decided by the *mean* (i.e. data availability), independent of reduce_fn,
+  so the mean and std roll-ups expose exactly the same stage keys — a lone subtrial's ddof=1
+  std is NaN yet its stage stays present (the std reducer reports 0.0 for it).
+
+  Args:
+    sub_rows  (list[dict]): Per-subtrial x per-mode rows (from _aggregated_summary_rows).
+    reduce_fn (callable): pandas Series -> float reducer applied to each stage column
+      (e.g. Series.mean or a ddof=1 std).
+
+  Returns:
+    dict[str, dict]: {refine_mode: {stage: (micro, macro)}}. refine_mode may be None
+      (no-refinement aggregate). Empty dict when sub_rows is empty.
+  """
+  if not sub_rows:
+    return {}
+  df = pd.DataFrame(sub_rows)
+  out = {}
+  for mode, grp in df.groupby('refine_mode', dropna=False):
+    stages = {}
+    for stage, (mi_col, ma_col) in _STAGE_MAE_COLUMNS.items():
+      if mi_col not in grp.columns or ma_col not in grp.columns:
+        continue
+      if not (np.isfinite(grp[mi_col].mean()) or np.isfinite(grp[ma_col].mean())):
+        continue                                        # pandas mean skips NaN
+      stages[stage] = (reduce_fn(grp[mi_col]), reduce_fn(grp[ma_col]))
+    out[mode] = stages
+  return out
+
+
+def _per_mode_stage_means(sub_rows):
+  """
+  Per-mode dashboard mae_stages holding the mean of the per-subtrial stage columns.
+
+  Args:
+    sub_rows (list[dict]): Per-subtrial x per-mode rows (from _aggregated_summary_rows).
+
+  Returns:
+    dict[str, dict]: {refine_mode: {stage: (mae_micro_mean, mae_macro_mean)}}. refine_mode may
+      be None (no-refinement aggregate). Empty dict when sub_rows is empty.
+  """
+  return _per_mode_stage_reduce(sub_rows, lambda s: s.mean())
+
+
+def _per_mode_stage_stds(sub_rows):
+  """
+  Per-mode dashboard mae_stages holding the sample std (ddof=1) of the per-subtrial columns.
+
+  Companion to _per_mode_stage_means with identical keys, so the aggregate dashboard can
+  render each per-stage MAE as 'mean ± std'. A single-subtrial group's ddof=1 std is NaN and
+  is reported as 0.0, matching the AGGREGATE_STD convention in _aggregate_subtrial_rows.
+
+  Args:
+    sub_rows (list[dict]): Per-subtrial x per-mode rows (from _aggregated_summary_rows).
+
+  Returns:
+    dict[str, dict]: {refine_mode: {stage: (mae_micro_std, mae_macro_std)}}. refine_mode may
+      be None (no-refinement aggregate). Empty dict when sub_rows is empty.
+  """
+  def _std(s):
+    v = s.std(ddof=1)
+    return 0.0 if not np.isfinite(v) else float(v)
+  return _per_mode_stage_reduce(sub_rows, _std)
 
 
 def _extract_linear_bundle(data):
@@ -3750,9 +3934,10 @@ def generate_search_summary_plots(df, search_dir):
 
 def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
                    run_label: str = '', mae_macro=None, mae_macro_old=None,
-                   mae_stages=None, filename_suffix: str = '',
+                   mae_stages=None, mae_stages_std=None, filename_suffix: str = '',
                    projected_stage_name: str = 'Projected',
-                   src_dataset: str = None, new_dataset: str = None):
+                   src_dataset: str = None, new_dataset: str = None,
+                   real_anchors=None, config_anchors=None):
   """
   Combined dashboard PNG with all key diagnostic plots for a single run.
 
@@ -3781,6 +3966,9 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
       'projected', 'refined' (source/cross-domain side) and 'preserve_before',
       'preserve_after' (new-model-on-test side). When None the table shows only
       the Old + Projected rows derived from new_preds/old_preds (legacy behavior).
+    mae_stages_std (dict | None): Optional per-stage MAE *std* companion to mae_stages
+      (same {stage: (micro, macro)} shape). Aggregate-only: when supplied, each source/
+      preserve MAE cell renders as 'mean ± std'. None ⇒ plain mean cells (single-run runs).
     filename_suffix (str): Optional suffix before '.png' (e.g. '_linear_only') so a
       multi-mode run can emit one dashboard per mode. Default '' ⇒ dashboard.png.
     projected_stage_name (str): Stage label for the new-model panels (passed as
@@ -3790,6 +3978,11 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
       (cross-domain) metrics-table section. None ⇒ generic wording.
     new_dataset (str | None): Resolved new/target dataset name, named on the preserve
       (new-model test) metrics-table section. None ⇒ generic wording.
+    real_anchors (int | dict | None): Real number of anchors actually used, shown in the
+      metrics table against the configured budget. An int for a single run; for an
+      aggregate a {real_count: n_subtrials} frequency dict (counts vary per subtrial).
+      None ⇒ the anchor row is omitted.
+    config_anchors (int | None): Configured num_anchors budget, shown alongside real_anchors.
   """
   suffix     = f' | {run_label}' if run_label else ''
   labels_int = np.round(labels).astype(int)
@@ -3908,7 +4101,23 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
   def _pair(v):
     return f'{float(v):.4f}' if (v is not None and np.isfinite(float(v))) else '—'
 
-  stages = mae_stages or {}
+  stages     = mae_stages or {}
+  stages_std = mae_stages_std or {}
+
+  def _cell(stage_key, mean_tuple):
+    """'micro / macro' cell, appending '± std' per value when mae_stages_std supplies it."""
+    std_tuple = stages_std.get(stage_key)
+    def _fmt(m, s):
+      if m is None or not np.isfinite(float(m)):
+        return '—'
+      base = f'{float(m):.4f}'
+      if s is not None and np.isfinite(float(s)):
+        return f'{base} ± {float(s):.4f}'
+      return base
+    s0 = std_tuple[0] if std_tuple is not None else None
+    s1 = std_tuple[1] if std_tuple is not None else None
+    return f'{_fmt(mean_tuple[0], s0)} / {_fmt(mean_tuple[1], s1)}'
+
   # Source (cross-domain) MAE per stage. Fall back to the scalar args when a stage
   # is not supplied in mae_stages so the legacy Old+Projected view still renders.
   src_old       = stages.get('old',       (mae_micro_old, mae_macro_old))
@@ -3916,10 +4125,10 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
   src_refined   = stages.get('refined')
   src_section = f'── source (cross-domain: {src_dataset}) ──' if src_dataset else '── source (cross-domain) ──'
   rows_data = [[src_section, '']]
-  rows_data.append(['MAE micro / macro (old)',       f'{_pair(src_old[0])} / {_pair(src_old[1])}'])
-  rows_data.append(['MAE micro / macro (projected)', f'{_pair(src_projected[0])} / {_pair(src_projected[1])}'])
+  rows_data.append(['MAE micro / macro (old)',       _cell('old', src_old)])
+  rows_data.append(['MAE micro / macro (projected)', _cell('projected', src_projected)])
   if src_refined is not None:
-    rows_data.append(['MAE micro / macro (refined)', f'{_pair(src_refined[0])} / {_pair(src_refined[1])}'])
+    rows_data.append(['MAE micro / macro (refined)', _cell('refined', src_refined)])
   # Rounded+clamped MAE (matches the training `test_l1_error` definition) shown alongside
   # the continuous values for direct comparison against summary.csv all_test_l1_error.
   old_r = _compute_rounded_mae(old_preds, labels, num_classes)
@@ -3934,13 +4143,19 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
                         else '── preserve (new-model test) ──')
     rows_data.append([preserve_section, ''])
     if pre_b is not None:
-      rows_data.append(['MAE micro / macro (before)', f'{_pair(pre_b[0])} / {_pair(pre_b[1])}'])
+      rows_data.append(['MAE micro / macro (before)', _cell('preserve_before', pre_b)])
     if pre_a is not None:
-      rows_data.append(['MAE micro / macro (after)',  f'{_pair(pre_a[0])} / {_pair(pre_a[1])}'])
+      rows_data.append(['MAE micro / macro (after)',  _cell('preserve_after', pre_a)])
   rows_data.append(['── overall ──', ''])
   rows_data.append(['CCC (projected)', f'{ccc:.4f}'])
   rows_data.append(['N samples',       str(len(labels))])
   rows_data.append(['N classes',       str(num_classes)])
+  # Real anchors actually used (int, or {count: n_subtrials} for an aggregate) vs the
+  # configured num_anchors budget — the two diverge when few source samples are available.
+  if real_anchors is not None or config_anchors is not None:
+    cfg_str = str(config_anchors) if config_anchors is not None else '—'
+    rows_data.append(['N anchors (real / config)',
+                      f'{real_anchors if real_anchors is not None else "—"} / {cfg_str}'])
 
   tbl = ax_tbl.table(
     cellText=rows_data, colLabels=['Metric', 'micro / macro'],
@@ -5885,6 +6100,7 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
     summary_row     = {
       'uid':                      cfg.get('uid'),
       'num_anchors':              cfg.get('num_anchors'),
+      'num_anchors_real':         _anchor_count_from_data(data),
       'anchor_selection_type':    cfg.get('anchor_selection_type'),
       'old_model_csv':            cfg.get('old_model_csv'),
       'interpolation_similarity': cfg.get('interpolation_similarity'),
@@ -5931,6 +6147,13 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
   sample_ids  = np.asarray(new_t['sample_ids'],  dtype=np.int64)
   weights     = np.asarray(new_t['weights'],      dtype=np.float32)
   num_classes = int(np.round(labels).max()) + 1
+
+  # Real anchors actually used vs the configured budget, surfaced in the dashboard metrics
+  # table. A single run reports an int (from its aligned anchor embeddings); an aggregate
+  # reports a {real_count: n_subtrials} frequency dict read from the subtrials' anchors.csv.
+  config_anchors = num_anchors_val
+  real_anchors   = (_real_anchor_freq_from_subtrials(data, pkl_path) if is_aggregated
+                    else _anchor_count_from_data(data))
 
   if fmt == 'standalone':
     mae = float(np.mean(np.abs(new_preds - labels)))
@@ -6246,13 +6469,15 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
     plot_dashboard(proj_preds, old_preds, labels, num_classes, mae_micro_proj, ccc_proj, out_dir,
                    run_label=_with_src(run_label), mae_macro=mae_macro_proj, mae_macro_old=mae_macro_old,
                    mae_stages=base_stages, projected_stage_name=proj_stage_name,
-                   src_dataset=src_dataset, new_dataset=new_dataset)
+                   src_dataset=src_dataset, new_dataset=new_dataset,
+                   real_anchors=real_anchors, config_anchors=config_anchors)
     for _mode, _block in refine_items:
       plot_dashboard(proj_preds, old_preds, labels, num_classes, mae_micro_proj, ccc_proj, out_dir,
                      run_label=_with_src(f'{run_label} | {_mode}'), mae_macro=mae_macro_proj,
                      mae_macro_old=mae_macro_old, mae_stages=_stages_for(_mode, _block),
                      filename_suffix=f'_{_mode}', projected_stage_name=proj_stage_name,
-                     src_dataset=src_dataset, new_dataset=new_dataset)
+                     src_dataset=src_dataset, new_dataset=new_dataset,
+                     real_anchors=real_anchors, config_anchors=config_anchors)
     try:
       plot_refinement_modes_comparison(refine_items, refine_preds_by_mode, old_preds, labels,
                                        base_stages, out_dir, run_label=_with_src(run_label),
@@ -6265,7 +6490,8 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
     plot_dashboard(proj_preds, old_preds, labels, num_classes, mae_micro_proj, ccc_proj, out_dir,
                    run_label=_with_src(run_label), mae_macro=mae_macro_proj, mae_macro_old=mae_macro_old,
                    mae_stages=stages, projected_stage_name=proj_stage_name,
-                   src_dataset=src_dataset, new_dataset=new_dataset)
+                   src_dataset=src_dataset, new_dataset=new_dataset,
+                   real_anchors=real_anchors, config_anchors=config_anchors)
 
   plot_projector_diagnostics(_extract_linear_bundle(data), out_dir, run_label=_with_src(run_label))
 
@@ -6325,13 +6551,12 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
       print(f'[WARN] Failed to plot anchor norm comparison: {exc}')
 
   if is_aggregated:
-    # Pooled summary.csv + one grid-schema row per subtrial×refinement-mode (same columns).
-    # The pooled AGGREGATE row restates the aggregate; its refinement columns stay empty
-    # because the aggregated pkl pools only predictions/labels (no per-mode refinement metrics
-    # are stored — see _aggregate_model_combo_pkls). Each subtrial row is loaded from its own
-    # results pkl (paths stored relative to this pkl's dir) and traced back to its model pair.
+    # The pooled aggregated pkl stores only predictions/labels (no per-mode refinement metrics —
+    # see _aggregate_model_combo_pkls), so its lone AGGREGATE summary row and the dashboard's
+    # stage table can only reach the old + projected stages. Recover the refined (and preserve)
+    # stages by rolling the fully-populated per-subtrial rows up per refinement mode: each
+    # subtrial pkl is loaded from its own results pkl (paths stored relative to this pkl's dir).
     n_sub = data.get('n_subtrials')
-    _write_summary_csv(_aggregated_summary_row(data, pkl_path, 'AGGREGATE', n_sub), out_dir)
     base = os.path.dirname(os.path.abspath(pkl_path))
     sub_rows = []
     for idx, rel in enumerate(data.get('subtrial_pkls') or []):
@@ -6345,6 +6570,30 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
       sub_csv = os.path.join(out_dir, 'summary_per_subtrial.csv')
       pd.DataFrame(sub_rows).to_csv(sub_csv, index=False)
       print(f'Saved: {sub_csv}  ({len(sub_rows)} rows)')
+      # summary.csv: per-mode MEAN + STD rows (cross-validation aggregate) with every
+      # srctest_* / newtest_* / refine_* column filled, replacing the single empty AGGREGATE row.
+      _write_summary_rows(_aggregate_subtrial_rows(sub_rows, n_sub), out_dir)
+      # Per-mode dashboards whose metrics table carries source old/projected/refined + preserve
+      # (mean across subtrials). The per-sample panels stay the pooled projected-vs-old view
+      # (refined per-sample preds are not pooled); the base dashboard.png stays projected-only,
+      # matching the non-aggregated multi-mode convention. Emitted only for modes that actually
+      # refined (a 'refined' stage present), so no-refinement aggregates skip cleanly.
+      stds_by_mode = _per_mode_stage_stds(sub_rows)
+      for _mode, _stages in _per_mode_stage_means(sub_rows).items():
+        if 'refined' not in _stages:
+          continue
+        _sfx = f'_{_mode}' if _mode else '_refined'
+        _lbl = f'{run_label} | {_mode or "refined"} (aggregate mean ± std of {n_sub} subtrials)'
+        plot_dashboard(proj_preds, old_preds, labels, num_classes, mae_micro_proj, ccc_proj,
+                       out_dir, run_label=_with_src(_lbl), mae_macro=mae_macro_proj,
+                       mae_macro_old=mae_macro_old, mae_stages=_stages,
+                       mae_stages_std=stds_by_mode.get(_mode), filename_suffix=_sfx,
+                       projected_stage_name='Projected (before refinement)',
+                       src_dataset=src_dataset, new_dataset=new_dataset,
+                       real_anchors=real_anchors, config_anchors=config_anchors)
+    else:
+      # No subtrial rows resolvable → fall back to the single (empty-refinement) AGGREGATE row.
+      _write_summary_csv(_aggregated_summary_row(data, pkl_path, 'AGGREGATE', n_sub), out_dir)
   elif multi_refine:
     # --refinement 3: one summary row per mode, refinement columns re-sourced per block
     # (the base summary_row's singular-key refinement columns are empty for this schema).
