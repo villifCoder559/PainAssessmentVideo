@@ -8,6 +8,7 @@
 #   ./multiple_feature_extraction.sh 0 5 --dataset biovid --model VJEPA2_1 all
 #   ./multiple_feature_extraction.sh 0 5 --dataset biovid --model G all
 #   ./multiple_feature_extraction.sh 0 5 --dataset biovid --model G --prefix my_feats_G --emb_red none shift
+#   ./multiple_feature_extraction.sh 0 5 --dataset mintpain --model S all
 
 # same saving_folder_path is managed in extract_feature.py to avoid overwriting features
 # when multiple augmentations are applied together (adds $int_id to the path)
@@ -49,6 +50,14 @@ case "$DATASET" in
     SAVING_NAME_PREFIX="spatial_pooled_features_${DATASET_TAG}_B_last143_stride16_interpol"
     EMB_RED="spatial"
     ;;
+  mintpain)
+    PATH_DATASET="MIntPAIN/video_frontalized"
+    PATH_LABELS="MIntPAIN/starting_point/samples.csv"
+    SAVING_BASE="MIntPAIN/features"
+    DATASET_TAG="MIntPAIN"
+    SAVING_NAME_PREFIX="spatial_pooled_features_${DATASET_TAG}_B_last143_stride16_interpol"
+    EMB_RED="spatial"
+    ;;
   agedb)
     PATH_DATASET="AgeDB/video/video_age"
     PATH_LABELS="AgeDB/starting_point/samples.csv"
@@ -58,7 +67,7 @@ case "$DATASET" in
     EMB_RED="all"
     ;;
   *)
-    echo "Unknown dataset: $DATASET (valid: biovid, unbc, agedb)"
+    echo "Unknown dataset: $DATASET (valid: biovid, unbc, mintpain, agedb)"
     exit 1
     ;;
 esac
