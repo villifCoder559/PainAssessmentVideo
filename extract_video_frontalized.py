@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import sys
+# Suppress tqdm's nested per-video bars by default so only the parent
+# "Frontalizing videos" bar is shown. This MUST run before tqdm is imported
+# (directly below and transitively via custom.tools) — tqdm reads TQDM_DISABLE
+# once at import time, so setting it any later is a no-op. Forked workers inherit
+# this environment. Pass --verbose_bars to keep the inner bars for debugging.
+if '--verbose_bars' not in sys.argv:
+  os.environ['TQDM_DISABLE'] = '1'
 import pickle
 from pathlib import Path
 import numpy as np
@@ -26,11 +34,17 @@ def worker_init(ref_landmarks, cfg):
   a fresh extractor can be created for every video task.
   """
   global worker_config
+  # Workers inherit TQDM_DISABLE from the module-level setting (set before tqdm was
+  # imported), so their nested per-video bars are already suppressed by default.
   # make a shallow copy so worker_config is local to each process
   worker_config = dict(cfg)
   worker_config['ref_landmarks'] = ref_landmarks
   # ensure 'only_oval' exists
   worker_config.setdefault('only_oval', False)
+  # ensure 'preprocess' exists (default on)
+  worker_config.setdefault('preprocess', True)
+  # ensure 'skip_existing' exists (default off)
+  worker_config.setdefault('skip_existing', False)
 
 def process_one_video(video_path):
   """
@@ -40,51 +54,71 @@ def process_one_video(video_path):
   """
   global worker_config
   out = {'video': video_path, 'ok': False, 'error': None}
-  face_extractor = None
 
-  # try:
-  # instantiate a new FaceExtractor for this video
-  face_extractor = extractor.FaceExtractor(
-    visionRunningMode='video',
-    min_face_detection_confidence=worker_config['face_confidence'],
-    min_face_presence_confidence=worker_config['face_confidence'],
-    min_tracking_confidence=worker_config['face_confidence']
-  )
-
-  original_video_path = video_path
-  # translate path using GLOBAL_PATH if requested
-  video_path_for_ids = video_path
-  if worker_config.get('global_path'):
-    try:
-      video_path_for_ids = GLOBAL_PATH.get_global_path(video_path)
-    except Exception:
-      # fallback to original if mapping fails
-      video_path_for_ids = video_path
-
-  sample_id = os.path.split(video_path_for_ids)[-1]
-  if 'caer' not in video_path_for_ids.lower():
-    folder_id = Path(video_path_for_ids).parts[-2]
-  else:
-    folder_id = os.path.join(*Path(video_path_for_ids).parts[-3:-1])
-
-  out_path = os.path.join(worker_config['path_folder_output'], folder_id, sample_id)
-  if worker_config.get('global_path'):
-    try:
-      out_path = GLOBAL_PATH.get_global_path(out_path)
-    except Exception:
-      pass
-
-  # ensure directory exists before writing video
-  out_dir = os.path.dirname(out_path)
-  if out_dir:
-    os.makedirs(out_dir, exist_ok=True)
+  # The entire worker body is wrapped so that a failure on any single video is
+  # recorded and returned as ok=False rather than propagating out of the worker.
+  # With imap_unordered an uncaught exception here re-raises in the parent consumer
+  # loop, aborting the whole run and skipping every remaining video.
   try:
+    # instantiate a new FaceExtractor for this video
+    face_extractor = extractor.FaceExtractor(
+      visionRunningMode='video',
+      min_face_detection_confidence=worker_config['face_confidence'],
+      min_face_presence_confidence=worker_config['face_confidence'],
+      min_tracking_confidence=worker_config['face_confidence'],
+      preprocess=worker_config['preprocess']
+    )
+
+    original_video_path = video_path
+    # translate path using GLOBAL_PATH if requested
+    video_path_for_ids = video_path
+    if worker_config.get('global_path'):
+      try:
+        video_path_for_ids = GLOBAL_PATH.get_global_path(video_path)
+      except Exception:
+        # fallback to original if mapping fails
+        video_path_for_ids = video_path
+
+    sample_id = os.path.split(video_path_for_ids)[-1]
+    if 'caer' not in video_path_for_ids.lower():
+      folder_id = Path(video_path_for_ids).parts[-2]
+    else:
+      folder_id = os.path.join(*Path(video_path_for_ids).parts[-3:-1])
+
+    out_path = os.path.join(worker_config['path_folder_output'], folder_id, sample_id)
+    if worker_config.get('global_path'):
+      try:
+        out_path = GLOBAL_PATH.get_global_path(out_path)
+      except Exception:
+        pass
+
+    # skip processing entirely if the target output already exists (opt-in via --skip_existing)
+    if worker_config.get('skip_existing') and os.path.exists(out_path):
+      tqdm.tqdm.write(f'Skipping existing output: {out_path}')
+      out['ok'] = True
+      out['skipped'] = True
+      return out
+
+    # ensure directory exists before writing video
+    out_dir = os.path.dirname(out_path)
+    if out_dir:
+      os.makedirs(out_dir, exist_ok=True)
+
+    # optional temporal smoothing of the detected landmarks (default: savgol)
+    landmark_smoother = None
+    smoothing_method = worker_config.get('landmark_smoothing_method')
+    if smoothing_method and smoothing_method != 'none':
+      landmark_smoother = extractor.LandmarkSmoother(
+        method=smoothing_method,
+        window_size=worker_config.get('landmark_smoothing_window', 5))
+
     if worker_config['only_oval']:
       list_frames, FPS = face_extractor.generate_face_oval_video(
         path_video_input=original_video_path,
         path_video_output=out_path,
         generate_video=False,
         interpolation_mod_chunk=worker_config.get('interpolation_mod_chunk'),
+        preprocess=worker_config['preprocess'],
       )
       dict_result = {'list_frontalized_frame': list_frames, 'FPS': FPS}
     else:
@@ -94,51 +128,33 @@ def process_one_video(video_path):
         only_landmarks_crop=worker_config['only_oval'],
         align_before_front=worker_config.get('align_before_front', False),
         interpolation_mod_chunk=worker_config.get('interpolation_mod_chunk'),
-        extra_landmark_smoothing=None,
+        extra_landmark_smoothing=landmark_smoother,
+        stabilize=worker_config.get('stabilize', True),
         plot_debug=worker_config.get('plot_flag', False),
         plot_every=worker_config.get('plot_every', 30),
-        plot_output_dir=worker_config.get('plot_output_dir')
+        plot_output_dir=worker_config.get('plot_output_dir'),
+        preprocess=worker_config['preprocess']
       )
-  except Exception as e:
-    print(f'Error processing video {video_path}: {repr(e)}')
+
+    if worker_config.get('generate_video'):
+      if len(dict_result['list_frontalized_frame']) == 0:
+        # tqdm.write keeps the parent's aggregate bar intact instead of print().
+        tqdm.tqdm.write(f'No frontalized frames for video {video_path}. Skipping video generation.')
+        out['error'] = f'No frontalized frames in {video_path}'
+        return out
+      tools.generate_video_from_list_frame(
+        list_frame=dict_result['list_frontalized_frame'],
+        fps=dict_result['FPS'],
+        path_video_output=out_path
+      )
+
+    out['ok'] = True
     return out
 
-  if worker_config.get('generate_video'):
-    if len(dict_result['list_frontalized_frame']) == 0:
-      print(f'No frontalized frames for video {video_path}. Skipping video generation.')
-      out['error'] = f'No frontalized frames in {video_path}'
-      return out
-    tools.generate_video_from_list_frame(
-      list_frame=dict_result['list_frontalized_frame'],
-      fps=dict_result['FPS'],
-      path_video_output=out_path
-    )
-
-  out['ok'] = True
-  return out
-
-  # except extractor.DetectionError as e:
-  #   print(f'DetectionError for video {video_path}: {getattr(e, "list_no_detection_idx", str(e))}')
-  #   out['error'] = f'DetectionError: {getattr(e, "list_no_detection_idx", str(e))}'
-  #   return out
-
-  # except Exception as e:
-  #   print(f'Error processing video {video_path}: {repr(e)}')
-  #   out['error'] = repr(e)
-  #   return out
-
-  # finally:
-  #   # best-effort cleanup if FaceExtractor exposes a cleanup method
-  #   try:
-  #     if face_extractor is not None:
-  #       if hasattr(face_extractor, 'close'):
-  #         face_extractor.close()
-  #       elif hasattr(face_extractor, 'release'):
-  #         face_extractor.release()
-  #   except Exception:
-  #     print(f'Warning: cleanup failed for video {video_path}')
-  #     # never let cleanup raise and break the worker
-  #     pass
+  except Exception as e:
+    tqdm.tqdm.write(f'Error processing video {video_path}: {repr(e)}')
+    out['error'] = repr(e)
+    return out
 
 def prepare_video_list(csv_path, video_folder_path, list_target_video, from_, to_):
   csv_list_video_path = np.array(
@@ -175,7 +191,9 @@ def main(generate_video, csv_path, path_folder_output, list_target_video,
          video_folder_path, align_before_front, log_error_path=None,
          only_oval=False, workers=4, face_confidence=0.1,
          plot_flag=False, plot_every=30, plot_output_dir=None,
-         single_video_path=None, explicit_video_paths=None):
+         single_video_path=None, explicit_video_paths=None, preprocess=True,
+         skip_existing=False, landmark_smoothing_method='savgol',
+         landmark_smoothing_window=5, stabilize=True):
 
   csv_path = os.path.expanduser(csv_path)
   path_folder_output = os.path.expanduser(path_folder_output)
@@ -228,7 +246,12 @@ def main(generate_video, csv_path, path_folder_output, list_target_video,
     'face_confidence': face_confidence,
     'plot_flag': plot_flag,
     'plot_every': plot_every,
-    'plot_output_dir': plot_output_dir if plot_output_dir is not None else os.path.join(path_folder_output, 'debug_plots')
+    'plot_output_dir': plot_output_dir if plot_output_dir is not None else os.path.join(path_folder_output, 'debug_plots'),
+    'preprocess': preprocess,
+    'skip_existing': skip_existing,
+    'landmark_smoothing_method': landmark_smoothing_method,
+    'landmark_smoothing_window': landmark_smoothing_window,
+    'stabilize': stabilize
   }
 
   Path(path_folder_output).mkdir(parents=True, exist_ok=True)
@@ -243,9 +266,11 @@ def main(generate_video, csv_path, path_folder_output, list_target_video,
   success = 0
   errors = 0
   error_records = []
+  # disable=False forces this aggregate bar on even when TQDM_DISABLE=1 has
+  # suppressed the workers' inner per-video bars.
   with tqdm.tqdm(total=len(list_video_path),
                  desc='Frontalizing videos',
-                 unit='video') as pbar:
+                 unit='video', disable=False) as pbar:
     for res in results_iter:
       pbar.update(1)
       if res.get('ok'):
@@ -299,12 +324,28 @@ if __name__ == '__main__':
   parser.add_argument('--only_oval', action='store_true',
                       help='Extract only face oval from the video')
   parser.add_argument('--interpolation_mod_chunk', nargs='*', default=None,
-                      help='[mod, chunk]')
+                      metavar=('mod', 'chunk'),
+                      help='Pad each video so its frame count is a multiple of <chunk>, by adding '
+                           'interpolated/mirrored frames. Takes exactly 2 values: <mod> <chunk>.\n'
+                           '  mod   (str): padding modality. One of:\n'
+                           '           mirror_start_video - prepend mirrored copies of the first N '
+                           'frames until the length reaches the next multiple of <chunk> '
+                           '(landmark-aware).\n'
+                           '           spread_linearly    - insert linearly-interpolated (averaged) '
+                           'frames spread across the video until the length reaches the next '
+                           'multiple of <chunk> (does not support landmark interpolation).\n'
+                           '  chunk (int): chunk size; total frames are padded up to the next '
+                           'multiple of this value.\n'
+                           'Example: --interpolation_mod_chunk mirror_start_video 16. '
+                           'Default: None (no interpolation/padding).')
   parser.add_argument('--align_before_front', action='store_true',
                       help='Align the face before frontalization')
   parser.add_argument('--workers', type=int, default=1,
                       help='Number of worker processes for parallel execution')
-  parser.add_argument('--face_confidence', type=float, default=0.1,
+  parser.add_argument('--verbose_bars', action='store_true',
+                      help='Show the per-video inner tqdm bars (noisy with many workers). '
+                           'By default only the outer "Frontalizing videos" bar is shown.')
+  parser.add_argument('--face_confidence', type=float, default=0.5,
                       help='Minimum confidence for face detection/tracking')
   parser.add_argument('--plot_flag', action='store_true',
                       help='Save a 2x2 frontalization debug figure every --plot_every frames (frontalization path only)')
@@ -314,6 +355,24 @@ if __name__ == '__main__':
                       help='Directory for debug PNGs. Defaults to <pfo>/debug_plots')
   parser.add_argument('--video_path', type=str, default=None,
                       help='Process a single explicit video path, bypassing the --csv/--vfp/--ltv lookup')
+  parser.add_argument('--skip_existing', action='store_true',
+                      help='Skip processing a video if its target output path already exists (no overwrite)')
+  parser.add_argument('--landmark_smoothing', nargs='+', default=['savgol', '5'],
+                      metavar=('method', 'window'),
+                      help='Temporal smoothing of the detected landmarks before frontalization. '
+                           'Takes <method> and optionally <window> (odd frame count, default 5). '
+                           'method: savgol (zero-lag, default), moving_average, median_filter, '
+                           'kalman, or none to disable (previous behavior). '
+                           'Example: --landmark_smoothing savgol 7')
+  parser.add_argument('--no_stabilize', action='store_true',
+                      help='Disable temporal stabilization of the preprocessing face ROI and of '
+                           'the output crop box (constant size, smoothed center). By default both '
+                           'are stabilized to remove frame-to-frame jitter; this flag restores the '
+                           'old per-frame boxes.')
+  parser.add_argument('--no_preprocess', action='store_true',
+                      help='Disable the small-face preprocessing step. By default a face detector '
+                           'crops every frame to a stable face ROI before frontalization/oval extraction, '
+                           'which helps when the face is small relative to the frame.')
   args = parser.parse_args()
 
   ltv_explicit_paths = None
@@ -332,6 +391,13 @@ if __name__ == '__main__':
 
   if args.interpolation_mod_chunk and len(args.interpolation_mod_chunk) != 2:
     raise SystemExit('interpolation_mod_chunk must have 2 elements: mod and chunk')
+
+  if len(args.landmark_smoothing) not in (1, 2):
+    raise SystemExit('landmark_smoothing takes <method> and optionally <window>')
+  smoothing_method = args.landmark_smoothing[0]
+  if smoothing_method not in ('savgol', 'moving_average', 'median_filter', 'kalman', 'none'):
+    raise SystemExit(f'Unknown landmark_smoothing method: {smoothing_method}')
+  smoothing_window = int(args.landmark_smoothing[1]) if len(args.landmark_smoothing) == 2 else 5
 
   interp = None
   if args.interpolation_mod_chunk:
@@ -360,4 +426,9 @@ if __name__ == '__main__':
        plot_output_dir=args.plot_output_dir,
        single_video_path=args.video_path,
        explicit_video_paths=ltv_explicit_paths,
+       preprocess=not args.no_preprocess,
+       skip_existing=args.skip_existing,
+       landmark_smoothing_method=smoothing_method,
+       landmark_smoothing_window=smoothing_window,
+       stabilize=not args.no_stabilize,
        workers=args.workers)
