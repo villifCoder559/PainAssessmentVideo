@@ -13,7 +13,7 @@ import os
 import time
 import numpy as np
 import cv2
-from scipy.signal import medfilt
+from scipy.signal import medfilt, savgol_filter
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -26,11 +26,76 @@ RIGHT_CORNER_EYE_INDEXES = [362, 263]  # Right eye corners
 NOSE_INDEX = 1  # Nose tip
 FACE_OVAL = [(conn.start, conn.end) for conn in FaceLandmarksConnections.FACE_LANDMARKS_FACE_OVAL]
 FACE_TESSELATION = [(conn.start, conn.end) for conn in FaceLandmarksConnections.FACE_LANDMARKS_TESSELATION]
+
+# Fractional margin added on each side of the detected face box before cropping the
+# stable ROI that gets fed to the FaceLandmarker (see the `preprocess` option). Mirrors
+# PREPROCESS_MARGIN in crop_face_oval.py.
+PREPROCESS_MARGIN = 0.7
 def ensure_array(X):
   X = np.asarray(X, dtype=np.float64)
   if X.ndim != 2 or X.shape[1] not in (2,3):
     raise ValueError("Points must be (N,2) or (N,3)")
   return X
+
+def smooth_boxes(boxes, frame_shape, smooth_window=15):
+  """
+  Temporally stabilize a per-frame sequence of boxes into constant-size, smoothly
+  moving crops.
+
+  Converts each box to (center, size), fills detection gaps (None entries) by linear
+  interpolation from neighboring frames, low-pass filters the center trajectory with a
+  zero-phase Savitzky-Golay filter, and applies one constant box size for the whole
+  sequence (the max interpolated width/height). A per-frame independent box jitters
+  frame-to-frame: as a preprocessing ROI it defeats the MediaPipe VIDEO-mode tracker
+  and makes the normalized landmarks incomparable across frames; as an output crop it
+  produces variable frame sizes that get stretch-resized by the video writer. Boxes
+  are clamped in-bounds by shifting, never by shrinking, so every frame keeps
+  identical dimensions.
+
+  Args:
+    boxes:         List of per-frame (x0, y0, x1, y1) pixel boxes, or None for frames
+                   with no detection.
+    frame_shape:   (H, W) of the frames the boxes live in, used for clamping.
+    smooth_window: Savitzky-Golay window in frames for the center trajectory. Clamped
+                   to the sequence length; sequences shorter than 5 frames are not
+                   smoothed (gap-filling and the constant size still apply).
+
+  Returns:
+    List aligned with boxes: (x0, y0, x1, y1) int tuples, all with the same width and
+    height. If every input box is None, returns a list of all None (caller falls back
+    to the full frame).
+  """
+  n = len(boxes)
+  if n == 0:
+    return []
+  det_idx = [i for i, b in enumerate(boxes) if b is not None]
+  if not det_idx:
+    return [None] * n
+  h, w = frame_shape[:2]
+  det = np.array([boxes[i] for i in det_idx], dtype=np.float64)
+  t = np.arange(n)
+  cx = np.interp(t, det_idx, (det[:, 0] + det[:, 2]) / 2.0)
+  cy = np.interp(t, det_idx, (det[:, 1] + det[:, 3]) / 2.0)
+  bw = np.interp(t, det_idx, det[:, 2] - det[:, 0])
+  bh = np.interp(t, det_idx, det[:, 3] - det[:, 1])
+
+  window = min(smooth_window, n)
+  if window % 2 == 0:
+    window -= 1
+  if window >= 5:  # needs to exceed polyorder=2; below 5 the fit is (near) identity
+    cx = savgol_filter(cx, window, polyorder=2)
+    cy = savgol_filter(cy, window, polyorder=2)
+
+  box_w = min(w, int(np.ceil(bw.max())))
+  box_h = min(h, int(np.ceil(bh.max())))
+  smoothed = []
+  for i in range(n):
+    x0 = int(round(cx[i] - box_w / 2.0))
+    y0 = int(round(cy[i] - box_h / 2.0))
+    x0 = min(max(x0, 0), w - box_w)
+    y0 = min(max(y0, 0), h - box_h)
+    smoothed.append((x0, y0, x0 + box_w, y0 + box_h))
+  return smoothed
 
 class FaceExtractor:
   """
@@ -44,7 +109,9 @@ class FaceExtractor:
 
   def __init__(self, min_face_detection_confidence=0.5, min_face_presence_confidence=0.5,
                min_tracking_confidence=0.5, num_faces=1, model_path='landmark_model/face_landmarker.task',
-               device='cpu', visionRunningMode='video', apply_mirroring_reconstruction=False):
+               device='cpu', visionRunningMode='video', apply_mirroring_reconstruction=False,
+               preprocess=True, preprocess_detector_model_path='landmark_model/blaze_face_short_range.tflite',
+               preprocess_detection_confidence=0.5):
     """
     Initialize the FaceExtractor with the given parameters.
 
@@ -57,6 +124,14 @@ class FaceExtractor:
       device (str): Device to use ('cpu' or 'gpu').
       visionRunningMode (str): Running mode ('video' or 'image').
       apply_mirroring_reconstruction (bool): Whether to apply mirroring reconstruction.
+      preprocess (bool): If True, build a standalone face detector used to locate the
+        face and crop a per-frame ROI before landmark extraction (helps with small/distant
+        faces). See _compute_per_frame_face_rois and _get_list_frame.
+      preprocess_detector_model_path (str): Legacy/unused. Retained for backward
+        compatibility; the preprocessing crop now uses the full-range Solutions
+        BlazeFace detector (model_selection=1), which needs no model file.
+      preprocess_detection_confidence (float): Minimum detection confidence for the
+        preprocessing detector. Kept low to maximize small-face recall.
     """
     delegate = mp.tasks.BaseOptions.Delegate.CPU if device == 'cpu' else mp.tasks.BaseOptions.Delegate.GPU
     running_mode = mp.tasks.vision.RunningMode.VIDEO if visionRunningMode == 'video' else mp.tasks.vision.RunningMode.IMAGE
@@ -76,6 +151,17 @@ class FaceExtractor:
     aligner_options = FaceAlignerOptions(base_options=base_options)
     self.mp_face_aligner = FaceAligner.create_from_options(aligner_options)
     self.face_detector = vision.FaceLandmarker.create_from_options(self.options)
+
+    # Standalone face detector for the preprocessing ROI crop. Uses the full-range
+    # Solutions BlazeFace detector (model_selection=1) to locate small/distant faces,
+    # mirroring crop_face_oval.py. Only created when preprocess=True.
+    self.preprocess = preprocess
+    self.preprocess_detection_confidence = preprocess_detection_confidence
+    self.preprocess_detector = None
+    if preprocess:
+      self.preprocess_detector = mp.solutions.face_detection.FaceDetection(
+        model_selection=1, min_detection_confidence=preprocess_detection_confidence)
+
     self.FACE_OVAL = FACE_OVAL
     self.config = {
       'min_face_detection_confidence': min_face_detection_confidence,
@@ -85,7 +171,10 @@ class FaceExtractor:
       'model_path': model_path,
       'device': device,
       'visionRunningMode': visionRunningMode,
-      'apply_mirroring_reconstruction': apply_mirroring_reconstruction
+      'apply_mirroring_reconstruction': apply_mirroring_reconstruction,
+      'preprocess': preprocess,
+      'preprocess_detector_model_path': preprocess_detector_model_path,
+      'preprocess_detection_confidence': preprocess_detection_confidence
     }
 
   def align_face(self, image):
@@ -110,7 +199,52 @@ class FaceExtractor:
   def reset_face_detector(self):
     self.face_detector.close()
     self.face_detector = vision.FaceLandmarker.create_from_options(self.options)
-  
+    if self.preprocess_detector is not None:
+      self.preprocess_detector.close()
+      self.preprocess_detector = mp.solutions.face_detection.FaceDetection(
+        model_selection=1, min_detection_confidence=self.preprocess_detection_confidence)
+
+  def _compute_per_frame_face_rois(self, frame_list, margin=PREPROCESS_MARGIN):
+    """
+    Detect the face in every frame and return one tight, padded ROI per frame.
+
+    Runs the full-range Solutions face detector on each frame, takes the top
+    (highest-score) detection, and returns its bounding box expanded by `margin`
+    on each side and clamped to the frame bounds. Cropping every frame to its own
+    ROI enlarges the face for the downstream FaceLandmarker, which is what it needs
+    on videos where the face is small relative to the frame. A single ROI unioned
+    across all frames balloons to nearly the full frame when the face moves and
+    defeats the zoom, so we crop per frame instead (mirrors crop_face_oval.py).
+
+    Args:
+      frame_list: List of RGB frames. Each has shape (H, W, 3), dtype uint8. All frames
+                  are assumed to share the same (H, W).
+      margin:     Fractional margin added on each side of each box (0.0 = tight).
+
+    Returns:
+      List aligned with frame_list; each element is a (x0, y0, x1, y1) tuple of pixel
+      corners, or None for a frame with no detection (caller then falls back to the
+      full frame for that frame).
+    """
+    if not frame_list or self.preprocess_detector is None:
+      return [None] * len(frame_list)
+    h, w = frame_list[0].shape[:2]
+    rois = []
+    for frame in frame_list:
+      # frame is already RGB (see _get_list_frame), so it is passed straight to the
+      # Solutions detector without a colour conversion.
+      result = self.preprocess_detector.process(frame)
+      if not result.detections:
+        rois.append(None)
+        continue
+      box = result.detections[0].location_data.relative_bounding_box
+      x0 = max(0, int((box.xmin - box.width * margin) * w))
+      y0 = max(0, int((box.ymin - box.height * margin) * h))
+      x1 = min(w, int((box.xmin + box.width * (1 + margin)) * w))
+      y1 = min(h, int((box.ymin + box.height * (1 + margin)) * h))
+      rois.append((x0, y0, x1, y1) if (x1 > x0 and y1 > y0) else None)
+    return rois
+
   def extract_facial_landmarks(self, frame_list):
     """
     Extract facial landmarks from a list of frames.
@@ -231,33 +365,58 @@ class FaceExtractor:
     return detector.detect_for_video(mp_frame,int(timestamp))
 
   def apply_video_interpolation(self,frame_list,chunk_size,fps=None,mod='mirror_start_video',landmarks_list=None):
-    new_frame_list = []
-    new_video_frames = (len(frame_list) // chunk_size + 1) * chunk_size
+    """
+    Pad a video so its frame count reaches the next multiple of chunk_size.
+
+    Args:
+      frame_list:     List of frames, each an array of shape (H, W, 3).
+      chunk_size:     Chunk size; frames are padded up to the next multiple of this value.
+                      Videos whose length is already a multiple are returned unchanged.
+      fps:            Frames per second, used to rebuild evenly spaced timestamps (ms).
+      mod:            Padding modality: 'mirror_start_video' prepends a symmetric (ping-pong)
+                      reflection of the first frames; 'spread_linearly' inserts averaged frames
+                      spread across the video (no landmark support).
+      landmarks_list: Optional per-frame landmarks list, padded with the same indices as the
+                      frames ('mirror_start_video' only).
+
+    Returns:
+      (new_frame_list, new_timestamp_list) or, when landmarks_list is given,
+      (new_frame_list, new_timestamp_list, new_landmarks_list).
+    """
+    new_frame_list = list(frame_list)
+    new_video_frames = -(-len(frame_list) // chunk_size) * chunk_size
     frames_to_add = new_video_frames - len(frame_list)
+    new_timestamp_list = None
     if fps is not None:
       step_timestamp_ms = int(1000 // fps)
-      new_timestamp_list = list(range(0,(len(frame_list)+frames_to_add)*step_timestamp_ms,step_timestamp_ms))
-    
-    # Add linearly interpolated frames according to mod
+      new_timestamp_list = list(range(0,new_video_frames*step_timestamp_ms,step_timestamp_ms))
+
     if mod == 'spread_linearly':
-      new_frame_position = np.linspace(1, len(frame_list)-2, num=frames_to_add)
-      count=0
-      for frame in frame_list:
-        new_frame_list.append(frame)
-        if count in new_frame_position:
-          # interpolated_frame = interpolate_frames_linear([frame_list[-1][0],frame], num_interpolations=1)
-          tmp = np.stack([frame_list[-1][0],frame],axis=0,dtype=np.float64)
-          interpolated_frame = [np.mean(tmp,axis=0).astype(np.uint8)]
-          new_frame_list.append(interpolated_frame[0])
-        count += 1 
       if landmarks_list is not None:
         raise NotImplementedError("Landmarks interpolation not implemented for 'spread_linearly' mode.")
-    if mod == 'mirror_start_video':
-      mirrored_frames = list(reversed(frame_list.copy()[:frames_to_add]))
-      new_frame_list = mirrored_frames + frame_list
+      if frames_to_add > 0:
+        insert_after = np.round(np.linspace(1, max(len(frame_list)-2,0), num=frames_to_add)).astype(int)
+        new_frame_list = []
+        for count, frame in enumerate(frame_list):
+          new_frame_list.append(frame)
+          next_frame = frame_list[min(count+1, len(frame_list)-1)]
+          for _ in range(int(np.sum(insert_after == count))):
+            tmp = np.stack([frame,next_frame],axis=0).astype(np.float64)
+            new_frame_list.append(np.mean(tmp,axis=0).astype(np.uint8))
+    elif mod == 'mirror_start_video':
+      # Symmetric (ping-pong) reflection of the start, as in np.pad(mode='symmetric'):
+      # [f1, f0] + [f0, f1, ...]. Cycles through the video again when frames_to_add
+      # exceeds its length (very short videos).
+      n = len(frame_list)
+      period = 2 * n
+      prefix_idx = []
+      for i in range(frames_to_add):
+        j = (-(i + 1)) % period
+        prefix_idx.append(j if j < n else period - 1 - j)
+      prefix_idx.reverse()
+      new_frame_list = [frame_list[j] for j in prefix_idx] + list(frame_list)
       if landmarks_list is not None:
-        mirrored_landmarks = list(reversed(landmarks_list.copy()[:frames_to_add]))
-        landmarks_list = mirrored_landmarks + landmarks_list
+        landmarks_list = [landmarks_list[j] for j in prefix_idx] + list(landmarks_list)
     else:
       raise ValueError("Invalid interpolation mode. Choose 'spread_linearly' or 'mirror_start_video'.")
     
@@ -267,50 +426,81 @@ class FaceExtractor:
     else:
       return new_frame_list,new_timestamp_list
 
-  def _get_list_frame(self,path_video_input,return_tuple=True,align=False):
+  def _get_list_frame(self,path_video_input,return_tuple=True,align=False,preprocess=False,stabilize=True):
+    """
+    Read every frame of a video, optionally crop to a stable face ROI and align.
+
+    When `preprocess` is True the raw frames are read first, a tight face ROI is computed
+    per frame (see _compute_per_frame_face_rois) and every frame is cropped to its own ROI
+    before the (optional) alignment step. This helps the FaceLandmarker on videos where the
+    face is small relative to the frame. With `preprocess` False the behavior matches the
+    original per-frame read (alignment simply runs in its own pass).
+
+    Args:
+      path_video_input: Path to the source video.
+      return_tuple:     If True, return list of (frame, timestamp_ms) tuples. If False,
+                        return (frame_list, timestamp_list, FPS).
+      align:            If True, align each frame with the MediaPipe FaceAligner.
+      preprocess:       If True, crop every frame to a stable face ROI before alignment.
+      stabilize:        If True (default), temporally smooth the per-frame ROIs into
+                        constant-size, smoothly tracking crops (see smooth_boxes). Raw
+                        per-frame detector boxes jitter, which defeats the VIDEO-mode
+                        landmark tracking. False restores the old per-frame boxes.
+
+    Returns:
+      If return_tuple: List[Tuple[np.ndarray, float]] of (RGB frame, timestamp in ms).
+      Else: Tuple[List[np.ndarray], List[float], float] of (frames, timestamps_ms, FPS).
+    """
     cap = cv2.VideoCapture(path_video_input)
-    FPS = cap.get(cv2.CAP_PROP_FPS)    
-    # video_name = os.path.split(path_video_input)[-1]
-    # if interpolate_every and num_frames % interpolate_every != 0:
-    #   new_video_frames = (num_frames // interpolate_every + 1) * interpolate_every
-    #   frame_to_be_added = new_video_frames - num_frames
-    #   new_frame_position = np.linspace(1, num_frames-2, num=frame_to_be_added)
+    FPS = cap.get(cv2.CAP_PROP_FPS)
     frame_list = []
-    timestamp_list = []
     if not cap.isOpened():
       raise IOError(f"Err: Unable to open video file: {path_video_input}")
-    count = 0
-    count_real_frames = 0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     pbar = tqdm.tqdm(total=total_frames if total_frames > 0 else None, desc="Reading video frames...")
+    # First pass: read all raw RGB frames.
     while cap.isOpened():
       ret, frame = cap.read()
       if not ret:
           break
       frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
       frame = np.array(frame,dtype=np.uint8)
-      if align:
-        frame = self.align_face(mp.Image(image_format=mp.ImageFormat.SRGB, data=frame))
-      # if count_real_frames in new_frame_position:
-      #   # interpolated_frame = interpolate_frames_linear([frame_list[-1][0],frame], num_interpolations=1)
-      #   tmp = np.stack([frame_list[-1][0],frame],axis=0,dtype=np.float64)
-      #   interpolated_frame = [np.mean(tmp,axis=0).astype(np.uint8)]
-      #   # diff_interpolated_frame_next = np.abs(interpolated_frame[0] - frame,dtype=np.uint32).sum()
-      #   # diff_interpolated_frame_prev = np.abs(interpolated_frame[0] - frame_list[-1][0],dtype=np.uint32).sum()
-      #   # print(f'diff_interpolated_frame_prev: {diff_interpolated_frame_prev} \ndiff_interpolated_frame_next: {diff_interpolated_frame_next}')
-      #   # cv2.imwrite(os.path.join('z_interpolation_results',f'{video_name}_{count-1}.jpg'),cv2.cvtColor(np.copy(frame_list[-1][0]), cv2.COLOR_RGB2BGR))
-      #   # cv2.imwrite(os.path.join('z_interpolation_results',f'{video_name}_{count}.jpg'),cv2.cvtColor(np.copy(interpolated_frame[0]), cv2.COLOR_RGB2BGR))
-      #   # cv2.imwrite(os.path.join('z_interpolation_results',f'{video_name}_{count+1}.jpg'),cv2.cvtColor(np.copy(frame), cv2.COLOR_RGB2BGR))
-      #   frame_list.append((interpolated_frame[0],(count/FPS) * 1000))
-      #   count += 1
       frame_list.append(frame)
-      timestamp_list.append((count/FPS) * 1000)
-      count += 1
-      count_real_frames += 1
       pbar.update(1)
 
     pbar.close()
     cap.release()
+
+    # Optional preprocessing: crop every frame to its own tight face ROI so the face is
+    # enlarged for the downstream landmarker (small-face videos). A per-frame crop is used
+    # (not one shared ROI) because a union across a moving face balloons to the full frame
+    # and defeats the zoom.
+    if preprocess:
+      rois = self._compute_per_frame_face_rois(frame_list)
+      if all(roi is None for roi in rois):
+        print(f"No face detected for preprocessing ROI in {path_video_input}; using full frames.")
+      elif stabilize:
+        # Replace the raw jittery per-frame boxes with constant-size, smoothly moving
+        # crops; detection gaps are interpolated instead of falling back to the full
+        # frame (which caused a one-frame scale jump).
+        rois = smooth_boxes(rois, frame_list[0].shape[:2])
+      cropped_list = []
+      for frame, roi in zip(frame_list, rois):
+        if roi is None:
+          cropped_list.append(frame)  # no detection: fall back to the full frame
+        else:
+          x0, y0, x1, y1 = roi
+          # np.ascontiguousarray: slicing yields a non-contiguous view, but mp.Image
+          # requires a C-contiguous uint8 buffer.
+          cropped_list.append(np.ascontiguousarray(frame[y0:y1, x0:x1]))
+      frame_list = cropped_list
+
+    # Optional alignment pass (runs on the possibly-cropped frames).
+    if align:
+      frame_list = [self.align_face(mp.Image(image_format=mp.ImageFormat.SRGB, data=frame))
+                    for frame in frame_list]
+
+    timestamp_list = [(count / FPS) * 1000 for count in range(len(frame_list))]
     if return_tuple:
       return list(zip(frame_list,timestamp_list))
     else:
@@ -408,15 +598,18 @@ class FaceExtractor:
       P = ensure_array(P)
       return (scale * (P @ R.T)) + t  # note: P @ R^T => (R @ P^T)^T
 
-  def generate_face_oval_video(self, path_video_input, path_video_output=None, generate_video=False,interpolation_mod_chunk=None, align=False, template_landmarks=None):
+  def generate_face_oval_video(self, path_video_input, path_video_output=None, generate_video=False,interpolation_mod_chunk=None, align=False, template_landmarks=None, preprocess=True):
     """
     Generate a face-oval video. If template_landmarks is provided, it should be a normalized
     (x,y) array of shape (N,2) with the same landmark ordering/indices used by self.FACE_OVAL.
     Alignment is applied per-frame using Umeyama similarity transform (scale + rotation + translation).
+
+    When `preprocess` is True (default), every frame is cropped to a stable face ROI
+    before landmark extraction (see _get_list_frame), which helps on small-face videos.
     """
     routes_idx = self.FACE_OVAL
     new_video = []
-    frame_list,timestamp_list,FPS = self._get_list_frame(path_video_input, align=align,return_tuple=False)
+    frame_list,timestamp_list,FPS = self._get_list_frame(path_video_input, align=align,return_tuple=False,preprocess=preprocess)
     frame_list_timestamp = list(zip(frame_list,timestamp_list))
     detection_result_list = self.extract_facial_landmarks(frame_list_timestamp)
     
@@ -646,7 +839,7 @@ class FaceExtractor:
     print(f'shift_x: {shift_x}, shift_y: {shift_y}')
     return shift_x,shift_y
   
-  def frontalized_video(self,video_path,ref_landmarks,interpolation_mod_chunk=None,only_landmarks_crop=False,align_before_front=False,log_path=None,time_logs=False,extra_landmark_smoothing=None,plot_debug=False,plot_every=30,plot_output_dir=None):
+  def frontalized_video(self,video_path,ref_landmarks,interpolation_mod_chunk=None,only_landmarks_crop=False,align_before_front=False,log_path=None,time_logs=False,extra_landmark_smoothing=None,plot_debug=False,plot_every=30,plot_output_dir=None,preprocess=True,stabilize=True):
     """
     Frontalize every detected frame of a video and return the frontalized frames/landmarks.
 
@@ -654,6 +847,13 @@ class FaceExtractor:
       plot_debug:      If True, save a 2x2 debug figure every plot_every frames (frontalization path only).
       plot_every:      Interval between debug figures, in frames. Only used when plot_debug is True.
       plot_output_dir: Directory where debug PNGs are written. Falls back to 'z_debug_frontalization'.
+      preprocess:      If True (default), crop every frame to a stable face ROI before
+                       landmark extraction (see _get_list_frame); helps on small-face videos.
+      stabilize:       If True (default), temporally stabilize the preprocessing ROI and use
+                       one constant-size, smoothed-center output crop per video instead of a
+                       per-frame landmark min/max box (see smooth_boxes). Removes the
+                       frame-to-frame position/scale jitter of the output video. False
+                       restores the old per-frame behavior.
     """
 
     def validate_frame_detection(list_to_validate):
@@ -668,16 +868,18 @@ class FaceExtractor:
       return miss_detection, list_is_detected
 
     # start = time.time()
-    list_frames,list_timestamp,fps = self._get_list_frame(video_path,align=align_before_front,return_tuple=False)
-    if interpolation_mod_chunk is not None:
-      if len(interpolation_mod_chunk) == 2:
-        list_frames,list_timestamp = self.apply_video_interpolation(frame_list=list_frames,
+    list_frames,list_timestamp,fps = self._get_list_frame(video_path,align=align_before_front,return_tuple=False,preprocess=preprocess,stabilize=stabilize)
+    if interpolation_mod_chunk is not None and len(interpolation_mod_chunk) != 2:
+      raise ValueError(f'interpolation_mod_chunk must have len == 2, position 0 string for modality (spread_linearly or mirror_start_video), position 1 chunk size')
+    if interpolation_mod_chunk is not None and interpolation_mod_chunk[0] == 'spread_linearly':
+      # spread_linearly cannot pad landmarks, so it must pad frames before detection. Frames
+      # later dropped by detection can then break the chunk-multiple guarantee; mirror_start_video
+      # instead pads after detection filtering (below) and does not have this problem.
+      list_frames,list_timestamp = self.apply_video_interpolation(frame_list=list_frames,
                                                                 mod=interpolation_mod_chunk[0],
                                                                 chunk_size=interpolation_mod_chunk[1],
                                                                 fps=fps,
                                                                 )
-      else:
-        raise ValueError(f'interpolation_mod_chunk must have len == 2, position 0 string for modality (spread_linearly or mirror_start_video), position 1 chunk size')
     # print("Time to get list frame: ",time.time()-start)
     tuple_frames_timestamp = list(zip(list_frames,list_timestamp))
     miss_detection, list_is_detected = validate_frame_detection(tuple_frames_timestamp)
@@ -705,31 +907,64 @@ class FaceExtractor:
         list_frontalized_landmarks = []
         list_frames = [frame for frame, _ in tuple_frames_timestamp]
         del tuple_frames_timestamp
+        if interpolation_mod_chunk is not None and interpolation_mod_chunk[0] == 'mirror_start_video':
+          # Pad AFTER detection filtering so the output frame count is guaranteed to be a
+          # multiple of the chunk size; landmarks are padded with the same mirrored indices.
+          list_frames, _, list_landmarks = self.apply_video_interpolation(frame_list=list_frames,
+                                                                mod=interpolation_mod_chunk[0],
+                                                                chunk_size=interpolation_mod_chunk[1],
+                                                                fps=fps,
+                                                                landmarks_list=list(list_landmarks))
+          list_landmarks = np.array(list_landmarks)
         # print(f'Elapsed time to extract landmarks: {time.time()-start}')
         if extra_landmark_smoothing is not None and isinstance(extra_landmark_smoothing,LandmarkSmoother):
           print(f"Additional landmark smoothing: {extra_landmark_smoothing.method}")
           list_landmarks = extra_landmark_smoothing.smooth(list_landmarks)
         # start = time.time()
         if not only_landmarks_crop:
-          for count, (frame, landmarks) in tqdm.tqdm(enumerate(zip(list_frames, list_landmarks)), total=len(list_frames), desc="Frontalizing frames..."):
-            # print(f'Frontalizing frame {count}/{len(list_frames)}')
+          # Pass 1 (cheap, transforms only): frontalize the landmarks of every frame
+          # first so the output crop geometry can be derived for the whole video.
+          for landmarks in list_landmarks:
             rotation, translation = self.compute_rigid_transform(landmarks, ref_landmarks)
-            frontalized_landmarks = self.apply_rigid_transform(rotation, translation, landmarks).T
+            list_frontalized_landmarks.append(self.apply_rigid_transform(rotation, translation, landmarks).T)
 
-            
+          crop_boxes = None
+          if stabilize:
+            # One constant-size crop per video with a smoothed center: per-frame min/max
+            # boxes vary in size, and the video writer then stretch-resizes every frame
+            # to a common size, which shows up as scale/position pulsing. In frontalized
+            # space the face is quasi-static (aligned to ref_landmarks), so a max-sized
+            # box tracking the smoothed center cannot lose it. The 2 px pad absorbs
+            # per-frame deviations from the smoothed center.
+            crop_boxes = []
+            for frame, frontalized_landmarks in zip(list_frames, list_frontalized_landmarks):
+              h, w = frame.shape[:2]
+              xs = frontalized_landmarks[:, 0] * w
+              ys = frontalized_landmarks[:, 1] * h
+              crop_boxes.append((int(np.min(xs)) - 2, int(np.min(ys)) - 2,
+                                 int(np.max(xs)) + 2, int(np.max(ys)) + 2))
+            crop_boxes = smooth_boxes(crop_boxes, list_frames[0].shape[:2])
+
+          # Pass 2 (expensive): warp each frame and crop it with its precomputed box.
+          for count, (frame, landmarks, frontalized_landmarks) in tqdm.tqdm(
+              enumerate(zip(list_frames, list_landmarks, list_frontalized_landmarks)),
+              total=len(list_frames), desc="Frontalizing frames..."):
             frontalized_img_SVD = self._get_frontalized_img(landmarks_2d=landmarks,
                                                             frontalized_landmarks_2d=frontalized_landmarks,
                                                             orig_frame=frame,
                                                             log_path=log_path,
                                                             nr_frame=count)
 
-            top_left_corner = (int(np.min(frontalized_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
-                              int(np.min(frontalized_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
-            bottom_right_corner = (int(np.max(frontalized_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
-                              int(np.max(frontalized_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
-            
-            # face_size = bottom_right_corner[0] - top_left_corner[0], bottom_right_corner[1] - top_left_corner[1]
-            # print(f'Face size: {face_size}')
+            if crop_boxes is not None:
+              x0, y0, x1, y1 = crop_boxes[count]
+              top_left_corner = (x0, y0)
+              bottom_right_corner = (x1, y1)
+            else:
+              top_left_corner = (int(np.min(frontalized_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
+                                int(np.min(frontalized_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
+              bottom_right_corner = (int(np.max(frontalized_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
+                                int(np.max(frontalized_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
+
             frontalized_img_SVD = self.post_process_frontalized_img(frontalized_img=frontalized_img_SVD,
                                         top_left_corner=top_left_corner,
                                         bottom_right_corner=bottom_right_corner,
@@ -745,7 +980,6 @@ class FaceExtractor:
                                              frontalized_landmarks=frontalized_landmarks,
                                              save_path=save_path)
             list_frontalized_img.append(frontalized_img_SVD)
-            list_frontalized_landmarks.append(frontalized_landmarks)
         else:
           for count, (frame, landmarks) in tqdm.tqdm(enumerate(zip(list_frames, list_landmarks)), total=len(list_frames), desc="Cropping frames to face oval..."):
             frame,mask = self.extract_frame_oval_from_img(frame,landmarks)
@@ -977,22 +1211,21 @@ class FaceExtractor:
       cv2.fillConvexPoly(rect_mask, np.int32(triangle_in_rect), (255))
 
       mask_expanded = rect_mask[:, :, np.newaxis]
-      frontalized_image_y = [y_front, y_front + h_front]
-      frontalized_image_x = [x_front, x_front + w_front]
-
-      mask_expanded = mask_expanded[:frontalized_image_y[1] - frontalized_image_y[0],
-                                    :frontalized_image_x[1] - frontalized_image_x[0]]
-      wrp_region = wrp_region[:frontalized_image_y[1] - frontalized_image_y[0],
-                                    :frontalized_image_x[1] - frontalized_image_x[0]]
-      if frontalized_image_y[0] < 0 or frontalized_image_x[0] < 0:
-        print(f'frontalized_image_y: {frontalized_image_y}, frontalized_image_x: {frontalized_image_x}')
-        raise ValueError("Invalid bounding box for the triangle.")
+      # Clip the destination rectangle to the canvas: the rigid transform can push
+      # frontalized landmarks (slightly) outside the frame, giving a bounding rect with
+      # negative x/y or extending past the bottom/right edge.
+      dst_y0, dst_y1 = max(0, y_front), min(frontalized_image.shape[0], y_front + h_front)
+      dst_x0, dst_x1 = max(0, x_front), min(frontalized_image.shape[1], x_front + w_front)
+      if dst_y1 <= dst_y0 or dst_x1 <= dst_x0:
+        continue
+      mask_expanded = mask_expanded[dst_y0 - y_front:dst_y1 - y_front,
+                                    dst_x0 - x_front:dst_x1 - x_front]
+      wrp_region = wrp_region[dst_y0 - y_front:dst_y1 - y_front,
+                              dst_x0 - x_front:dst_x1 - x_front]
       # adapt the mask to the frontalized image
-      frontalized_image[frontalized_image_y[0]: frontalized_image_y[1], 
-                          frontalized_image_x[0]: frontalized_image_x[1]] = (
+      frontalized_image[dst_y0:dst_y1, dst_x0:dst_x1] = (
         wrp_region * (mask_expanded / 255.0) +
-        frontalized_image[frontalized_image_y[0]: frontalized_image_y[1],
-                          frontalized_image_x[0]:frontalized_image_x[1]] * (1 - mask_expanded / 255.0)
+        frontalized_image[dst_y0:dst_y1, dst_x0:dst_x1] * (1 - mask_expanded / 255.0)
       )
       
       # if count == tri.simplices.shape[0]-675:
@@ -1139,7 +1372,9 @@ class LandmarkSmoother:
     Initializes the faceExtractor with the specified method and window size.
 
     Args:
-      method (str): The method to be used for smoothing. Can be "moving_average", "median_filter", or "kalman". 
+      method (str): The method to be used for smoothing. Can be "savgol", "moving_average",
+                    "median_filter", or "kalman". "savgol" is zero-phase (no temporal lag)
+                    and preserves fast expression onsets better than a trailing average.
       window_size (int): The size of the window for processing. Default is 5.
     """
 
@@ -1159,10 +1394,12 @@ class LandmarkSmoother:
 
   def smooth(self, landmarks):
     """Apply smoothing to landmarks using the selected method."""
-    landmarks = np.array(landmarks)  # Shape: (num_frames, num_landmarks, 2)
+    landmarks = np.array(landmarks)  # Shape: (num_frames, num_landmarks, 2 or 3)
     num_frames, num_points, _ = landmarks.shape
 
-    if self.method == "moving_average":
+    if self.method == "savgol":
+      return self.savgol(landmarks)
+    elif self.method == "moving_average":
       return self.moving_average(landmarks)
     elif self.method == "median_filter":
       return self.median_filter(landmarks)
@@ -1172,6 +1409,25 @@ class LandmarkSmoother:
       return self.kalman_filter_smoothing(landmarks)
     else:
       raise ValueError("Invalid smoothing method!")
+
+  def savgol(self, landmarks):
+    """
+    Zero-phase Savitzky-Golay filtering along the time axis.
+
+    Args:
+      landmarks: Landmark trajectories. Shape: (num_frames, num_landmarks, 2 or 3).
+
+    Returns:
+      Smoothed landmarks, same shape. Videos shorter than the minimum valid window
+      (5 frames) are returned unchanged.
+    """
+    num_frames = landmarks.shape[0]
+    window = min(self.window_size, num_frames)
+    if window % 2 == 0:
+      window -= 1
+    if window < 5:  # must exceed polyorder=2; below 5 the fit is (near) identity
+      return landmarks
+    return savgol_filter(landmarks, window, polyorder=2, axis=0)
 
   def moving_average(self, landmarks):
     """Apply a moving average filter to smooth landmarks."""
@@ -1198,7 +1454,9 @@ class LandmarkSmoother:
 
         kf.correct(measurement)
         prediction = kf.predict()
-        smoothed[frame_idx, point_idx] = prediction[:2].flatten()
+        # only x/y are filtered; extra coordinates (z) pass through untouched
+        smoothed[frame_idx, point_idx, :2] = prediction[:2].flatten()
+        smoothed[frame_idx, point_idx, 2:] = landmarks[frame_idx, point_idx, 2:]
     return smoothed
 
 class DetectionError(Exception):
