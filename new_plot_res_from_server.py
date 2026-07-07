@@ -605,6 +605,8 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
             return 14.1, 2
           elif 'morph' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower():
             return 14.1, 2
+          elif 'mintpain' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower():
+            return 2, 0.25
           else:
             return 14.1, 2
         y_lim_loss, step_lim = get_y_lim_loss_and_step()
