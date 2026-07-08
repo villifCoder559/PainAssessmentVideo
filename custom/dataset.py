@@ -1463,11 +1463,14 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
     augmentation_strategy:   1 = pick random augmented samples; 2 = pick random augmentation types globally.
     root_folder_features:    Optional path to feature folder, used to discover available augmentation types.
     drop_last:               Whether to drop the last incomplete batch.
+    undersample_max_per_class: Per-class cap on base-id groups per epoch (undersampling). 0 = disabled,
+                             -1 = cap every class at the minority class group count, N > 0 = absolute cap.
+                             The subset of groups kept for over-represented classes is redrawn each epoch.
   """
-  def __init__(self, df, batch_size, shuffle, n_keep_augmentations, augmentation_strategy, root_folder_features=None, drop_last=False, keep_original=1.0):
+  def __init__(self, df, batch_size, shuffle, n_keep_augmentations, augmentation_strategy, root_folder_features=None, drop_last=False, keep_original=1.0, undersample_max_per_class=0):
     """
     Args:
-      df:                      DataFrame with at least 'sample_id' column; index used as dataset indices.
+      df:                      DataFrame with at least 'sample_id' and 'class_id' columns; index used as dataset indices.
       batch_size:              Number of samples per batch.
       shuffle:                 Whether to shuffle the selected indices before batching.
       n_keep_augmentations:    Maximum number of augmented variants to keep per original sample.
@@ -1477,10 +1480,17 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
       keep_original:           Fraction of original samples to keep per epoch (0-1). When < 1, a random subset
                                of originals is selected each epoch; their augmentations are excluded. Non-selected
                                originals are excluded but their augmentations remain available via the strategy.
+      undersample_max_per_class: Per-class cap on base-id groups per epoch. 0 = disabled, -1 = cap every class
+                               at the minority class group count, N > 0 = absolute cap. Over-represented classes
+                               get a fresh random subset of groups each epoch; classes at or below the cap keep
+                               all their groups. Applied before the keep_original split.
     """
     if not 0 <= keep_original <= 1:
       raise ValueError(f"keep_original must be between 0 and 1, got {keep_original}")
+    if undersample_max_per_class < -1:
+      raise ValueError(f"undersample_max_per_class must be >= -1, got {undersample_max_per_class}")
     self.keep_original = keep_original
+    self.undersample_max_per_class = undersample_max_per_class
     self.batch_size = batch_size
     self.shuffle = shuffle
     self.n_keep_augmentations = n_keep_augmentations
@@ -1489,6 +1499,7 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
     
     self.log_augmented_usage = {idx: 0 for idx in df.index}
     self.base_id_groups = {} # base_id -> {'original': idx, 'augmented': {type: idx}}
+    self.class_of_base_id = {} # base_id -> class_id (originals and augmentations share the class)
     self.available_augmentation_types = set()
     
     # Get available augmentations from folder if possible
@@ -1514,19 +1525,36 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
       
       if base_id not in self.base_id_groups:
         self.base_id_groups[base_id] = {'original': None, 'augmented': {}}
-        
+
       if is_original:
         self.base_id_groups[base_id]['original'] = idx
       elif aug_type:
         self.base_id_groups[base_id]['augmented'][aug_type] = idx
+      self.class_of_base_id[base_id] = row['class_id']
 
     self.available_augmentation_types = sorted(list(self.available_augmentation_types))
+
+    self.base_ids_per_class = {} # class_id -> [base_id, ...]
+    for base_id, class_id in self.class_of_base_id.items():
+      self.base_ids_per_class.setdefault(class_id, []).append(base_id)
+
+    if self.undersample_max_per_class == -1:
+      self.effective_undersample_cap = min(len(b) for b in self.base_ids_per_class.values())
+    elif self.undersample_max_per_class > 0:
+      self.effective_undersample_cap = self.undersample_max_per_class
+    else:
+      self.effective_undersample_cap = None # undersampling disabled
+
     self._calculate_length()
 
   def _calculate_length(self):
     """
     Estimates the total number of samples per epoch to compute the number of batches.
 
+    When undersampling is active, contributions are estimated per class: each class's expected
+    total is scaled by the fraction of its groups surviving the cap (the actual subset is redrawn
+    randomly each epoch, so this is exact in expectation but the true count can vary slightly when
+    augmentation counts differ between groups of the same class).
     When keep_original < 1, only a fraction of groups contribute their original (no augmentations),
     and the remaining groups contribute only augmentations (no original).
 
@@ -1536,18 +1564,33 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
     total_samples = 0
     n_groups_with_original = sum(1 for g in self.base_id_groups.values() if g['original'] is not None)
 
-    if self.keep_original >= 1.0:
-      for group in self.base_id_groups.values():
-        if group['original'] is not None:
-          total_samples += 1
-        n_available = len(group['augmented'])
-        total_samples += min(self.n_keep_augmentations, n_available)
+    # Per-class selection ratios (1.0 for every class when undersampling is disabled)
+    if self.effective_undersample_cap is not None:
+      class_ratios = {class_id: min(self.effective_undersample_cap, len(b)) / len(b)
+                      for class_id, b in self.base_ids_per_class.items()}
     else:
-      n_original_kept = int(self.keep_original * n_groups_with_original)
+      class_ratios = {class_id: 1.0 for class_id in self.base_ids_per_class}
+
+    if self.keep_original >= 1.0:
+      expected_total = 0.0
+      for class_id, base_ids in self.base_ids_per_class.items():
+        class_total = 0
+        for base_id in base_ids:
+          group = self.base_id_groups[base_id]
+          if group['original'] is not None:
+            class_total += 1
+          class_total += min(self.n_keep_augmentations, len(group['augmented']))
+        expected_total += class_total * class_ratios[class_id]
+      total_samples = int(round(expected_total))
+    else:
+      n_selected_with_original = int(round(sum(
+        class_ratios[class_id] * sum(1 for bid in base_ids if self.base_id_groups[bid]['original'] is not None)
+        for class_id, base_ids in self.base_ids_per_class.items())))
+      n_original_kept = int(self.keep_original * n_selected_with_original)
       # Original-only groups contribute 1 sample each (no augmentations)
       total_samples += n_original_kept
       # Augmentation-only groups contribute augmentations only
-      n_augment_groups = n_groups_with_original - n_original_kept
+      n_augment_groups = n_selected_with_original - n_original_kept
       avg_aug = np.mean([min(self.n_keep_augmentations, len(g['augmented']))
                          for g in self.base_id_groups.values() if g['augmented']]) if n_augment_groups > 0 else 0
       total_samples += int(n_augment_groups * avg_aug)
@@ -1559,6 +1602,27 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
 
   def __len__(self):
     return self.n_batches
+
+  def _select_undersampled_base_ids(self):
+    """
+    Selects the base_ids to use for the current epoch according to the per-class undersampling cap.
+
+    For each class, if the number of base-id groups exceeds the effective cap, a random subset of
+    cap groups is drawn without replacement (fresh draw on every call, i.e. every epoch); otherwise
+    all groups of that class are kept. When undersampling is disabled, all base_ids are returned.
+
+    Returns:
+      List of selected base_ids.
+    """
+    if self.effective_undersample_cap is None:
+      return list(self.base_id_groups.keys())
+    selected_base_ids = []
+    for base_ids in self.base_ids_per_class.values():
+      if len(base_ids) > self.effective_undersample_cap:
+        selected_base_ids.extend(np.random.choice(base_ids, size=self.effective_undersample_cap, replace=False).tolist())
+      else:
+        selected_base_ids.extend(base_ids)
+    return selected_base_ids
 
   def _select_augmentations_for_group(self, group):
     """
@@ -1589,20 +1653,21 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
     """
     Yields batches of dataset indices for one epoch.
 
-    When keep_original < 1, a random subset of base_ids is selected as "original-only" (their
-    augmentations are excluded). The remaining base_ids become "augmentation-only" (their originals
+    When undersampling is active, a per-class random subset of base_ids (at most the effective cap
+    per class) is drawn first; only the surviving groups contribute samples. The subset changes each epoch.
+    When keep_original < 1, a random subset of the surviving base_ids is selected as "original-only"
+    (their augmentations are excluded). The remaining base_ids become "augmentation-only" (their originals
     are excluded, augmentations selected via the configured strategy). The subset changes each epoch.
 
     Returns:
       Iterator of lists of dataset indices (batches).
     """
     selected_indices = []
-    all_base_ids = list(self.base_id_groups.keys())
+    all_base_ids = self._select_undersampled_base_ids()
 
     if self.keep_original < 1.0:
-      n_groups_with_original = sum(1 for g in self.base_id_groups.values() if g['original'] is not None)
-      n_to_keep = int(self.keep_original * n_groups_with_original)
       base_ids_with_original = [bid for bid in all_base_ids if self.base_id_groups[bid]['original'] is not None]
+      n_to_keep = int(self.keep_original * len(base_ids_with_original))
       kept_base_ids = set(np.random.choice(base_ids_with_original, size=n_to_keep, replace=False)) if n_to_keep > 0 else set()
     else:
       kept_base_ids = None  # sentinel: keep all originals
@@ -2106,7 +2171,8 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                                   augmentation_strategy=kwargs['filtered_augm_strategy'],
                                                   root_folder_features=root_folder_features,
                                                   drop_last=False,
-                                                  keep_original=kwargs.get('keep_original', 1.0))
+                                                  keep_original=kwargs.get('keep_original', 1.0),
+                                                  undersample_max_per_class=kwargs.get('undersample_max_per_class', 0))
       print(f'Use FilteredAugmentationBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
     elif kwargs['sampler_loader_type'] == 'augmented_only':
       sampler = AugmentedOnlyBatchSampler(df=dataset_.df,
