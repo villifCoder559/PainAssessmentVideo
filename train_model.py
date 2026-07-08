@@ -486,6 +486,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   filtered_augm_n_keep = trial.suggest_categorical('filtered_augm_n_keep', kwargs['filtered_augm_n_keep'])
   filtered_augm_strategy = trial.suggest_categorical('filtered_augm_strategy', kwargs['filtered_augm_strategy'])
   keep_original = trial.suggest_categorical('keep_original', kwargs['keep_original'])
+  undersample_max_per_class = trial.suggest_categorical('undersample_max_per_class', kwargs['undersample_max_per_class'])
 
   # --- Scheduler Config ---
   # Construct config manually here to ensure we use the sampled 'lr' and 'regulariz_lambda_L2'
@@ -740,6 +741,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'filtered_augm_n_keep': filtered_augm_n_keep,
     'filtered_augm_strategy': filtered_augm_strategy,
     'keep_original': keep_original,
+    'undersample_max_per_class': undersample_max_per_class,
     'only_augments': only_augments,
     'sampler_loader_type': sampler_loader_type,
     'sampler_augmented_only_types': sampler_augmented_only_types,
@@ -973,6 +975,12 @@ def validate_arguments(dict_args):
   if any(dict_args['filtered_augm_n_keep']) ^ any(dict_args['filtered_augm_strategy']):
     raise ValueError("Both filtered_augm_n_keep and filtered_augm_strategy must be set together.")
 
+  for v in dict_args['undersample_max_per_class']:
+    if v < -1:
+      raise ValueError(f"undersample_max_per_class values must be >= -1 (0=disabled, -1=match minority class), got {v}")
+  if any(v != 0 for v in dict_args['undersample_max_per_class']) and 'selective_augm' not in dict_args['sampler_loader_type']:
+    raise ValueError("undersample_max_per_class is only used with sampler_loader_type='selective_augm'.")
+
   if 'caer' in dict_args['csv']:
     print("\n Detected CAER, FORCE SPLIT INDICES FOR TRAINING K-FOLD \n")
     helper.step_shift = 13176
@@ -1138,6 +1146,10 @@ if __name__ == '__main__':
                       help='Fraction of original samples to keep per epoch (0-1). When < 1, selected originals'
                       ' exclude their augmentations; non-selected originals are excluded but their augmentations'
                       ' remain available via the augmentation strategy.')
+  parser.add_argument('--undersample_max_per_class', type=int, nargs='*', default=[0],
+                      help='Max base-sample groups per class per epoch for the selective_augm sampler (undersampling).'
+                      ' 0 = disabled, -1 = match the minority class group count, N > 0 = absolute cap.'
+                      ' The subset kept for over-represented classes is redrawn randomly each epoch.')
   parser.add_argument('--save_model_every_n_epochs', type=int, default=0, help='Save model every n epochs.')
   parser.add_argument('--balance_batches', type=int, nargs='*', default=[0], help='Try to balance batches.')
   parser.add_argument('--type_group', type=int, nargs='*', default=[0], help='Type of group for stratified sampling.')
