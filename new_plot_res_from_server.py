@@ -54,20 +54,22 @@ def _auto_y_lim(values_list, base_y_lim, margin=1.1):
 
 
 def find_results_files(parent_folder):
+  """
+  Recursively find k_fold_results.pkl files under parent_folder.
+
+  Args:
+    parent_folder: Root folder to search. Result pickles may sit at any depth.
+
+  Returns:
+    Sorted list of paths to *k_fold_results.pkl files (one per run directory).
+  """
   results_files = []
-  list_history_folder = os.listdir(parent_folder)
-  for folder in list_history_folder:
-    if os.path.isdir(os.path.join(parent_folder, folder)):
-      list_runs = os.listdir(os.path.join(parent_folder, folder))
-      for run in list_runs:
-        if os.path.isdir(os.path.join(parent_folder, folder, run)):
-          pkl_files = [f for f in os.listdir(os.path.join(parent_folder, folder, run)) if 'k_fold_results.pkl' in f]
-          if len(pkl_files) == 1:
-            results_files.append(os.path.join(parent_folder, folder, run, pkl_files[0]))
-          # elif len(pkl_files) == 0:
-          #   # delete the folder if no .pkl files are found
-          #   shutil.rmtree(os.path.join(parent_folder, folder))
-  return results_files
+  for dirpath, dirnames, filenames in os.walk(parent_folder):
+    dirnames[:] = [d for d in dirnames if d != '_summary']  # skip our own output folder
+    pkl_files = [f for f in filenames if 'k_fold_results.pkl' in f]
+    if len(pkl_files) == 1:
+      results_files.append(os.path.join(dirpath, pkl_files[0]))
+  return sorted(results_files)
 
 def load_results(file_path):
   with open(file_path, 'rb') as f:
