@@ -1,6 +1,7 @@
 import gc
 import os
 import pickle
+import re
 import matplotlib.pyplot as plt
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
@@ -308,6 +309,23 @@ def _accumulate_confusion_matrices(accum, t):
   return torch.cat([top, bottom], dim=0)
 
 
+def _balanced_accuracy_from_confmat(cm_obj):
+  """
+  Compute balanced accuracy (mean per-class recall) from a confusion matrix.
+
+  Args:
+    cm_obj: MulticlassConfusionMatrix instance or raw torch.Tensor of counts,
+            rows = true labels, cols = predictions.
+
+  Returns:
+    float: mean of diag/row_sum over classes with support > 0.
+  """
+  t = (cm_obj.confmat if hasattr(cm_obj, 'confmat') else cm_obj).float()
+  support = t.sum(dim=1)
+  mask = support > 0
+  return (torch.diag(t)[mask] / support[mask]).mean().item()
+
+
 def plot_grouped_confusion_matrix(data, run_output_folder, test_id, additional_info=''):
   """
   Aggregates confusion matrices across sub-folds within each k-fold group and
@@ -368,11 +386,9 @@ def plot_grouped_confusion_matrix(data, run_output_folder, test_id, additional_i
       xticklabels=[str(i) for i in range(n)],
       yticklabels=[str(i) for i in range(n)],
     )
-    for i in range(n - 1):
-      ax.add_patch(plt.Rectangle((i, i), 1, 1, fill=False, edgecolor='black', lw=2.5, clip_on=False))
     for idx, text in enumerate(ax.texts):
       row, col = divmod(idx, n)
-      if row == col and row < n - 1:
+      if row == col:
         text.set_fontweight('bold')
         # text.set_color('crimson')
     ax.set_title(title)
@@ -1540,6 +1556,15 @@ def plot_hsic_per_epoch(data, run_output_folder, test_id, additional_info=''):
         plt.close(fig)
         
 
+def _prepare_best_model_indices(data):
+  for key, result in data.items():
+    if 'final' in key or 'train_val' not in result:
+      continue
+    val_losses = result['train_val']['val_losses']
+    if val_losses != []:
+      result['train_val']['best_model_idx'] = np.argmin(val_losses)
+
+
 def generate_csv_row(data,config,time_, test_id): 
 
   list_fold = [int(k.split('_')[0][1:]) for k in data.keys() if 'final' not in k]
@@ -1547,11 +1572,6 @@ def generate_csv_row(data,config,time_, test_id):
   list_final_test = [int(k.split('_')[0][1:]) for k in data.keys() if 'final' in k]
   real_k_fold = max(list_fold) + 1
   real_sub_fold = max(list_sub_fold) + 1
-  for i in range(real_k_fold):
-    for j in range(real_sub_fold):
-      if data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'] != []:
-        best_epoch_idx = np.argmin(data[f'k{i}_cross_val_sub_{j}']['train_val']['val_losses'])
-        data[f'k{i}_cross_val_sub_{j}']['train_val']['best_model_idx'] = best_epoch_idx
   metric = data['k0_cross_val_sub_0']['train_val']['metric_for_stopping']
   key_metric_val = 'list_val_performance_metric'
   
@@ -1594,6 +1614,14 @@ def generate_csv_row(data,config,time_, test_id):
     all_test_l1_error = {'mean_test_l1_error': np.mean([data[f'k{i}_cross_val_final']['test'].get('test_l1_error', None) for i in list_final_test])}
     list_l1_error = [data[f'k{i}_cross_val_final']['test'].get('test_l1_error', None) for i in list_final_test]
     test_l1_errors = {'all_test_l1_error': ",".join([f"{error:.3f}" for error in list_l1_error])}
+    list_test_cms = [data[f'k{i}_cross_val_final']['test'].get('test_confusion_matrix', None) for i in list_final_test]
+    if all(cm is not None for cm in list_test_cms):
+      list_balanced_acc = [_balanced_accuracy_from_confmat(cm) for cm in list_test_cms]
+      mean_balanced_test_accuracy = {'mean_balanced_test_accuracy': np.mean(list_balanced_acc)}
+      all_balanced_test_accuracy = {'all_balanced_test_accuracy': ",".join([f"{acc:.3f}" for acc in list_balanced_acc])}
+    else:
+      mean_balanced_test_accuracy = {}
+      all_balanced_test_accuracy = {}
     # 3 decimal places
     all_test_losses_best_epoch = ",".join([f"{loss:.3f}" for loss in all_test_losses_best_epoch]) 
     all_test_losses_best_epoch = {'all_test_losses_best_epoch': all_test_losses_best_epoch}
@@ -1612,6 +1640,8 @@ def generate_csv_row(data,config,time_, test_id):
     fold_used_for_final_test = {}
     all_test_l1_error = {}
     test_l1_errors = {}
+    mean_balanced_test_accuracy = {}
+    all_balanced_test_accuracy = {}
   
   if 'list_val_l1_error' not in data[f'k0_cross_val_sub_0']['train_val'] or len(data[f'k0_cross_val_sub_0']['train_val']['list_val_l1_error']) == 0:
     val_l1_error = {}
@@ -1667,6 +1697,7 @@ def generate_csv_row(data,config,time_, test_id):
     'target_metric': config['target_metric_best_model'],
     'criterion': type(config['criterion']).__name__,
     'train_batch_sampler': ','.join(train_batch_sampler),
+    'undersample_max_per_class': config.get('undersample_max_per_class', 0),
     'round_output_loss': config['round_output_loss'],
     'early_stopping_key': config['key_for_early_stopping'], # + f'(pat={config["early_stopping"].patience},eps={config["early_stopping"].min_delta},t_mod={config["early_stopping"].threshold_mode})',
     'feature_type': config['features_folder_saving_path'][-1] if config['features_folder_saving_path'][-1] != '' else config['features_folder_saving_path'][-2],
@@ -1714,6 +1745,8 @@ def generate_csv_row(data,config,time_, test_id):
     **total_mean_val_loss_best_epoch,
     **all_test_losses_best_epoch,
     **test_l1_errors,
+    **mean_balanced_test_accuracy,
+    **all_balanced_test_accuracy,
     **best_epoch_values,
     'final_best_epoch_values': final_best_epoch_values,
     **fold_used_for_final_test,
@@ -2128,17 +2161,18 @@ def _process_single_run(args):
   Process a single training result entry: generate a CSV row and optional plots.
 
   Args:
-    args: Tuple of (file, output_root, only_csv, dict_args, plot_only_loss).
+    args: Tuple of (file, output_root, only_csv, dict_args, plot_only_loss, write_csv).
           file:          Path to the .pkl result file.
           output_root:   Root directory for output files.
-          only_csv:      If True, skip all plotting.
-          dict_args:     Dict with 'loss_plot_type' and 'test_as_validation'.
-          plot_only_loss: If True, skip non-loss plots.
+      only_csv:      If True, skip all plotting.
+      dict_args:     Dict with 'loss_plot_type' and 'test_as_validation'.
+      plot_only_loss: If True, skip non-loss plots.
+      write_csv:     If True, compute and return a summary CSV row.
 
   Returns:
-    CSV row dict, or None if the run had no results.
+    CSV row dict, or None if CSV generation is disabled or the run had no results.
   """
-  file, output_root, only_csv, dict_args, plot_only_loss = args
+  file, output_root, only_csv, dict_args, plot_only_loss, write_csv = args
   plt.switch_backend('agg')  # ensure no display backend in worker process
   data = load_results(file)  # load here to avoid passing large objects through multiprocessing pipes
 
@@ -2148,9 +2182,10 @@ def _process_single_run(args):
   if data['config']['real_k_fold'] == 0:
     print(f'No TEST file found in {file}')
     return None
+  _prepare_best_model_indices(data['results'])
   grid_search_folder = Path(file).parts[-3]
   is_unbc = 'unbc' in "".join(data['config']['path_csv_dataset']).lower()
-  csv_row = generate_csv_row(data['results'], data['config'], data['time'], test_id)
+  csv_row = generate_csv_row(data['results'], data['config'], data['time'], test_id) if write_csv else None
   if not only_csv:
     clean_data(data['results'], data['config'])
     data['config']['model_type'] = data['config']['model_type'].name
@@ -2176,21 +2211,50 @@ def _process_single_run(args):
   return csv_row
 
 
-def plot_run_details(results_data, output_root, only_csv, dict_args, plot_only_loss=False, max_workers=None, split_by_dataset=False):
-  list_row_csv = []
-  generate_subject_class_loss_csv(results_data, output_root)
+def _canonical_column_order(cols):
+  """
+  Compute a deterministic column order that groups per-fold metric columns together.
+
+  Columns sharing the same base name with a `_k<N>` suffix (e.g. mean_val_loss_last_ep_k0,
+  mean_val_loss_last_ep_k3) are placed contiguously, sorted by fold index. The
+  first-appearance order of base names is preserved.
+
+  Args:
+    cols: Iterable of column-name strings.
+
+  Returns:
+    List of column names in canonical order.
+  """
+  order, groups = [], {}
+  for c in cols:
+    m = re.match(r'^(.*_k)(\d+)$', c)
+    base = m.group(1) if m else c
+    if base not in groups:
+      groups[base] = []
+      order.append(base)
+    groups[base].append(c)
+  fold_idx = lambda c: int(re.search(r'_k(\d+)$', c).group(1)) if re.search(r'_k(\d+)$', c) else 0
+  return [c for base in order for c in sorted(groups[base], key=fold_idx)]
+
+
+def plot_run_details(results_data, output_root, only_csv, dict_args, plot_only_loss=False, max_workers=None, split_by_dataset=False, write_csv=True):
+  if write_csv:
+    generate_subject_class_loss_csv(results_data, output_root)
   args_list = [
-    (file, output_root, only_csv, dict_args, plot_only_loss)
+    (file, output_root, only_csv, dict_args, plot_only_loss, write_csv)
     for file in results_data
   ]
   with ProcessPoolExecutor(max_workers=max_workers) as executor:
     futures = [executor.submit(_process_single_run, a) for a in args_list]
     for future in tqdm.tqdm(as_completed(futures), total=len(futures)):
-      row = future.result()  # raises immediately on exception (fail fast)
-      if row is not None:
-        list_row_csv.append(row)
+      future.result()  # raises immediately on exception (fail fast)
+    if not write_csv:
+      return
+    # collect in submission order so row (and column) order is deterministic
+    list_row_csv = [f.result() for f in futures if f.result() is not None]
   df = pd.DataFrame(list_row_csv)
   df = df.fillna('ND')
+  df = df[_canonical_column_order(df.columns)]
   if not os.path.exists(output_root):
     os.makedirs(output_root, exist_ok=True)
   df.to_csv(os.path.join(output_root, 'summary.csv'), index=False)
@@ -2275,7 +2339,7 @@ if __name__ == '__main__':
   parser.add_argument('--test_as_validation', default=0, type=int,
                       help='If set to 1, use plot test set as validation set (for UNBC) if possible')
   parser.add_argument('--test_ids', type=str, default='',
-                      help='Comma separated list of test IDs to process (e.g., test1,test2). If empty, process all tests.')
+                      help='Comma separated list of test IDs to plot without recomputing CSV summaries (e.g., test1,test2). If empty, process all tests.')
   parser.add_argument('--plot_only_loss', action='store_true',
                       help='If set, only plot the loss curves without other plots.')
   parser.add_argument('--num_workers', type=int, default=1,
@@ -2283,6 +2347,8 @@ if __name__ == '__main__':
   parser.add_argument('--split_csv_by_dataset', action='store_true',
                       help='Also generate one summary_{csv_name}.csv per unique path_csv_dataset value.')
   args = parser.parse_args()
+  if args.test_ids and (args.only_csv or args.split_csv_by_dataset):
+    parser.error('--test_ids cannot be combined with --only_csv or --split_csv_by_dataset')
   dict_args = vars(args)
   only_csv = args.only_csv
 
@@ -2337,10 +2403,9 @@ if __name__ == '__main__':
           if test_id in test_ids_list:
             results_data[file] = load_results(file)
         print(f'Loaded {len(results_data)} results files after filtering by test IDs')
-        plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args, plot_only_loss=args.plot_only_loss, max_workers=args.num_workers, split_by_dataset=args.split_csv_by_dataset)
+        plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args, plot_only_loss=args.plot_only_loss, max_workers=args.num_workers, split_by_dataset=args.split_csv_by_dataset, write_csv=False)
       else:
         results_files = find_results_files(parent_folder) # get .pkl files
         results_data = {file: load_results(file) for file in results_files} # load .pkl files with path as a key
         # print(f'Loaded {len(results_data)} results files')
         plot_run_details(results_data, os.path.join(output_root, 'plot_run_details'), only_csv, dict_args, plot_only_loss=args.plot_only_loss, max_workers=args.num_workers, split_by_dataset=args.split_csv_by_dataset)
-
