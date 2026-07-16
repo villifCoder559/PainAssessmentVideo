@@ -37,7 +37,13 @@ def read_sample_ids(path: Path) -> list[int]:
     ids = tensors.get_tensor('list_sample_id').reshape(-1).tolist()
   if not ids:
     raise ValueError("empty 'list_sample_id'")
-  return [int(sample_id) for sample_id in ids]
+  try:
+    integer_ids = [int(sample_id) for sample_id in ids]
+  except (TypeError, ValueError, OverflowError) as error:
+    raise ValueError(f'non-integral IDs: {ids}') from error
+  if any(sample_id != integer_id for sample_id, integer_id in zip(ids, integer_ids)):
+    raise ValueError(f'non-integral IDs: {ids}')
+  return integer_ids
 
 
 def original_sample_id(path: Path, step_shift: int) -> int:
@@ -114,7 +120,12 @@ def main() -> int:
 
   for sibling in siblings:
     sibling_files = collect_safetensors(sibling)
-    shift = helper.get_shift_for_sample_id(augmentation_suffix(original, sibling))
+    try:
+      shift = helper.get_shift_for_sample_id(augmentation_suffix(original, sibling))
+      shift_error = None
+    except Exception as error:
+      shift = None
+      shift_error = error
     completed_before = completed
     failed_before = len(failures)
 
@@ -130,6 +141,8 @@ def main() -> int:
       )
     for relative_path in sorted(original_files & sibling_files):
       try:
+        if shift_error is not None:
+          raise ValueError(f'could not determine augmentation shift: {shift_error}')
         ids = read_sample_ids(sibling / relative_path)
         reference_id = original_ids[relative_path]
         if reference_id is None:
@@ -139,7 +152,10 @@ def main() -> int:
           raise ValueError(f'expected only {expected}, found {sorted(set(ids))}')
         completed += 1
       except Exception as error:
-        kind = 'invalid_reference' if original_ids[relative_path] is None else 'wrong_sample_id'
+        if shift_error is not None:
+          kind = 'invalid_augmentation'
+        else:
+          kind = 'invalid_reference' if original_ids[relative_path] is None else 'wrong_sample_id'
         record_failure(
           failures, kind, sibling.name, relative_path, str(error), args.verbose,
         )
@@ -156,8 +172,9 @@ def main() -> int:
     )
   except OSError as error:
     print(f'WARNING: could not write failure log {log_path}: {error}')
+  else:
+    print(f'Failure log: {log_path}')
 
-  print(f'Failure log: {log_path}')
   print(f'Summary: tot_completed={completed} tot_fails={len(failures)}')
   return 0
 
