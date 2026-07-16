@@ -101,12 +101,15 @@ Usage:
   python3 cross_space_logs.py --pkl_path <path>
   python3 cross_space_logs.py --pkl_path <folder> --plot_only_top_k 5
   python3 cross_space_logs.py --pkl_path <folder> --plot_trials 3 7 12
+  python3 cross_space_logs.py --pkl_path <root_folder> --only_aggregated
 """
 import argparse
 import glob
 import os
 import pickle
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 from tqdm import tqdm
 
 import matplotlib
@@ -1077,6 +1080,23 @@ def _collect_summary_row(data, pkl_path, refine_block=None, refine_mode=None):
   return row
 
 
+def _collect_row_task(pkl_path):
+  """
+  Load one trial pkl and extract its summary row (worker for the parallel
+  'Collecting metrics' phase of generate_logs_search).
+
+  Args:
+    pkl_path (str): Path to a trial's results.pkl.
+
+  Returns:
+    dict: The _collect_summary_row row, with '_pkl_path' set to pkl_path.
+  """
+  data = _load_pkl(pkl_path)
+  row  = _collect_summary_row(data, pkl_path)
+  row['_pkl_path'] = pkl_path
+  return row
+
+
 def _collect_summary_rows(data, pkl_path):
   """
   Build one summary row per refinement mode present in a pkl (grid-schema columns).
@@ -1874,6 +1894,8 @@ def plot_umap_split_impact(projected_emb, projected_labels, split_emb, split_lab
     f'UMAP fit on BOTH (projected {src_ds_lbl} + {new_ds_lbl} {split_name}) — projected only\n'
     f'colored by label · {frac_note}{suffix}'
   )
+  axes[1].set_xlim(axes[0].get_xlim())
+  axes[1].set_ylim(axes[0].get_ylim())
 
   # Panel 3: fit on the split alone.
   sc2 = axes[2].scatter(
@@ -5121,6 +5143,26 @@ def _resolve_old_model_pth(data, fmt, pkl_path):
   return None
 
 
+@lru_cache(maxsize=None)
+def _features_folder_from_ckpt(model_pth):
+  """
+  Resolve a checkpoint's native features folder from its k_fold_results.pkl, cached.
+
+  _load_config deserializes the full k_fold_results.pkl (which embeds torch
+  tensors, ~seconds per load), and every trial of a sweep points at the same one
+  or two checkpoints — so the result is memoized per checkpoint path for the
+  lifetime of the process.
+
+  Args:
+    model_pth (str): Absolute path to the .pt/.pth model checkpoint.
+
+  Returns:
+    str: The config's model_advanced_params['features_folder_saving_path'].
+  """
+  from cross_space_projection import _load_config
+  return _load_config(model_pth)['model_advanced_params']['features_folder_saving_path']
+
+
 def _resolve_old_dataset(data, fmt, pkl_path):
   """
   Infer the old/source model's dataset name for use in plot titles.
@@ -5140,7 +5182,7 @@ def _resolve_old_dataset(data, fmt, pkl_path):
     str | None: Uppercase dataset name ('UNBC' | 'BIOVID' | 'AGEDB' | 'CAER' |
       'MORPH') or None if no source path yields a known dataset keyword.
   """
-  from cross_space_projection import _detect_dataset, _load_config
+  from cross_space_projection import _detect_dataset
 
   cfg        = data.get('config_cross_space_projection') or {}
   candidates = []
@@ -5151,8 +5193,7 @@ def _resolve_old_dataset(data, fmt, pkl_path):
   if old_model_pth:
     candidates.append(old_model_pth)
     try:
-      candidates.append(
-        _load_config(old_model_pth)['model_advanced_params']['features_folder_saving_path'])
+      candidates.append(_features_folder_from_ckpt(old_model_pth))
     except Exception:
       pass
 
@@ -5198,7 +5239,7 @@ def _resolve_new_dataset(data, fmt, pkl_path):
     str | None: Uppercase dataset name ('UNBC' | 'BIOVID' | 'AGEDB' | 'CAER' |
       'MORPH') or None if no source path yields a known dataset keyword.
   """
-  from cross_space_projection import _detect_dataset, _load_config
+  from cross_space_projection import _detect_dataset
 
   candidates = []
 
@@ -5208,8 +5249,7 @@ def _resolve_new_dataset(data, fmt, pkl_path):
   if new_model_pth:
     candidates.append(new_model_pth)
     try:
-      candidates.append(
-        _load_config(new_model_pth)['model_advanced_params']['features_folder_saving_path'])
+      candidates.append(_features_folder_from_ckpt(new_model_pth))
     except Exception:
       pass
 
@@ -5798,16 +5838,18 @@ def generate_logs_search(search_dir, plot_only_top_k=None, plot_trials=None, ski
       except Exception as exc:
         print(f'[WARN] Skipping {pkl_path}: {exc}')
   else:
-    # Phase 1: collect metrics for all trials without generating plots.
+    # Phase 1: collect metrics for all trials without generating plots. The pkl
+    # loads are NFS-I/O-bound, so a small thread pool overlaps the reads; rows are
+    # consumed in submission order to keep the output identical to the sequential
+    # loop.
     rows = []
-    for pkl_path in tqdm(pkl_paths, desc='Collecting metrics', unit='trial'):
-      try:
-        data = _load_pkl(pkl_path)
-        row = _collect_summary_row(data, pkl_path)
-        row['_pkl_path'] = pkl_path
-        rows.append(row)
-      except Exception as exc:
-        print(f'[WARN] Skipping {pkl_path}: {exc}')
+    with ThreadPoolExecutor(max_workers=4) as pool:
+      futures = [(p, pool.submit(_collect_row_task, p)) for p in pkl_paths]
+      for pkl_path, fut in tqdm(futures, desc='Collecting metrics', unit='trial'):
+        try:
+          rows.append(fut.result())
+        except Exception as exc:
+          print(f'[WARN] Skipping {pkl_path}: {exc}')
 
   if rows:
     df = pd.DataFrame(rows).sort_values('mae').reset_index(drop=True)
@@ -5891,6 +5933,115 @@ def generate_logs_subtrials(container_dir, plot_only_top_k=None):
         print(f'[WARN] Skipping {pkl_path}: {exc}')
 
   return container_dir
+
+
+# ── aggregated-only entry point ──────────────────────────────────────────────
+
+def _find_aggregated_pkls(root_dir):
+  """Find every pkl located in or below an ``aggregated*`` directory.
+
+  Matching is recursive and applies to directory basenames, including
+  ``root_dir`` itself. Returned paths are absolute, sorted, and deduplicated.
+
+  Args:
+    root_dir (str | os.PathLike): Root directory to search.
+
+  Returns:
+    list[str]: Matching absolute pkl paths in deterministic order.
+
+  Raises:
+    ValueError: If root_dir is not a directory or contains no matching pkls.
+  """
+  root = os.path.abspath(os.fspath(root_dir))
+  if not os.path.isdir(root):
+    raise ValueError(f'--only_aggregated root is not a directory: {root_dir}')
+
+  root_is_aggregated = os.path.basename(os.path.normpath(root)).startswith('aggregated')
+  matches = set()
+  for current_dir, _, filenames in os.walk(root):
+    rel_dir = os.path.relpath(current_dir, root)
+    rel_parts = [] if rel_dir == os.curdir else rel_dir.split(os.sep)
+    inside_aggregated = root_is_aggregated or any(
+      part.startswith('aggregated') for part in rel_parts
+    )
+    if not inside_aggregated:
+      continue
+    for filename in filenames:
+      if filename.endswith('.pkl'):
+        matches.add(os.path.abspath(os.path.join(current_dir, filename)))
+
+  if not matches:
+    raise ValueError(
+      f'No .pkl files found under an aggregated* directory in: {root_dir}'
+    )
+  return sorted(matches)
+
+
+def generate_logs_aggregated(root_dirs, skip_umap=False):
+  """Generate normal logs only for aggregate pkls below one or more roots.
+
+  Each matching pkl is processed through :func:`generate_logs`. The summary rows
+  emitted by those runs are then combined into ``aggregated_summary.csv`` at the
+  corresponding search root, with ``source_pkl`` identifying their source.
+
+  Args:
+    root_dirs (list[str | os.PathLike]): Roots searched independently.
+    skip_umap (bool): Forwarded to each single-pkl logging call.
+
+  Returns:
+    list[str]: Input root paths after successful processing.
+
+  Raises:
+    ValueError: If any root is invalid or has no aggregate pkls.
+    RuntimeError: If every matching pkl for a root fails to produce a summary.
+  """
+  roots = [os.fspath(root) for root in root_dirs]
+  # Discover everything first so an invalid/empty root fails before any outputs
+  # are generated for the other roots.
+  pkls_by_root = [(root, _find_aggregated_pkls(root)) for root in roots]
+
+  failed_roots = []
+  for root, pkl_paths in pkls_by_root:
+    root_abs = os.path.abspath(root)
+    parent_counts = Counter(os.path.dirname(path) for path in pkl_paths)
+    print(
+      f'[cross_space_logs] Found {len(pkl_paths)} aggregated pkl(s) under {root}'
+    )
+    summary_frames = []
+    for pkl_path in tqdm(pkl_paths, desc='Processing aggregated pkls', unit='pkl'):
+      try:
+        log_kwargs = {'skip_umap': skip_umap}
+        parent = os.path.dirname(pkl_path)
+        if parent_counts[parent] > 1:
+          stem = os.path.splitext(os.path.basename(pkl_path))[0]
+          log_kwargs['out_dir_override'] = os.path.join(parent, f'logs_{stem}')
+        out_dir, _ = generate_logs(pkl_path, **log_kwargs)
+        summary_path = os.path.join(out_dir, 'summary.csv')
+        frame = pd.read_csv(summary_path)
+        if frame.empty:
+          raise ValueError(f'generated summary has no rows: {summary_path}')
+        frame['source_pkl'] = os.path.relpath(pkl_path, root_abs)
+        ordered = ['source_pkl'] + [c for c in frame.columns if c != 'source_pkl']
+        summary_frames.append(frame[ordered])
+      except Exception as exc:
+        print(f'[WARN] Skipping aggregated pkl {pkl_path}: {exc}')
+
+    if not summary_frames:
+      failed_roots.append(root)
+      continue
+
+    combined = pd.concat(summary_frames, ignore_index=True)
+    combined_path = os.path.join(root_abs, 'aggregated_summary.csv')
+    combined.to_csv(combined_path, index=False)
+    print(f'Saved aggregated summary: {combined_path}')
+
+  if failed_roots:
+    joined = ', '.join(failed_roots)
+    raise RuntimeError(
+      f'No aggregated summaries were generated successfully under: {joined}'
+    )
+
+  return roots
 
 
 # ── multi-folder entry point ─────────────────────────────────────────────────
@@ -6006,8 +6157,18 @@ def generate_logs_multi(search_dirs, plot_only_top_k=None, top_k_scope='global')
 
 # ── entry point ──────────────────────────────────────────────────────────────
 
+def _resolve_logs_out_dir(data, fmt, pkl_path, out_dir_override=None):
+  """Resolve the logs directory for one pkl, honoring an explicit override."""
+  if out_dir_override is not None:
+    return os.path.abspath(os.fspath(out_dir_override))
+  if fmt == 'grid':
+    return os.path.join(os.path.dirname(pkl_path), 'logs')
+  cfg = data['config_cross_space_projection']
+  return os.path.join(cfg['out_dir'], 'logs')
+
+
 def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
-                  plot_trials=None, skip_umap=False):
+                  plot_trials=None, skip_umap=False, out_dir_override=None):
   """
   Load a cross_space_projection pkl and write all diagnostic plots.
 
@@ -6034,6 +6195,9 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
     skip_umap           (bool): If True, skip all UMAP plots (the slow ones:
       umap_all, umap_split_impact, anchor_umap). Default False. Forced True by
       generate_logs_subtrials when processing a subtrial-container folder.
+    out_dir_override    (str | os.PathLike | None): Explicit logs directory for
+      a single pkl. Used by aggregated-only batches when sibling pkls would
+      otherwise overwrite one another. None preserves the standard location.
 
   Returns:
     tuple[str, dict | None]:
@@ -6060,13 +6224,12 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
   is_aggregated = bool(data.get('aggregated'))
 
   if only_projector_plots:
+    out_dir = _resolve_logs_out_dir(data, fmt, pkl_path, out_dir_override)
     if fmt == 'grid':
-      out_dir   = os.path.join(os.path.dirname(pkl_path), 'logs')
       uid       = data.get('uid') or os.path.basename(os.path.dirname(os.path.dirname(pkl_path))).split('_')[-1]
       run_label = f"Trial #{data['trial_number']} | UID: {uid}"
     else:
       cfg       = data['config_cross_space_projection']
-      out_dir   = os.path.join(cfg['out_dir'], 'logs')
       run_label = f"UID: {cfg['uid']}"
     os.makedirs(out_dir, exist_ok=True)
     print(f'[cross_space_logs] (projector-only) Output: {out_dir}')
@@ -6080,7 +6243,7 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
     return out_dir, None
 
   if fmt == 'grid':
-    out_dir       = os.path.join(os.path.dirname(pkl_path), 'logs')
+    out_dir       = _resolve_logs_out_dir(data, fmt, pkl_path, out_dir_override)
     search_root   = os.path.dirname(os.path.dirname(pkl_path))
     uid           = data.get('uid') or os.path.basename(search_root).split('_')[-1]
     run_label     = f"Trial #{data['trial_number']} | UID: {uid}"
@@ -6093,7 +6256,7 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
     summary_row   = _collect_summary_row(data, pkl_path)
   else:
     cfg             = data['config_cross_space_projection']
-    out_dir         = os.path.join(cfg['out_dir'], 'logs')
+    out_dir         = _resolve_logs_out_dir(data, fmt, pkl_path, out_dir_override)
     run_label       = f"UID: {cfg['uid']}"
     num_anchors_val = cfg.get('num_anchors')
     subject_map     = _get_subject_map(cfg['old_tensors_csv_path'])
@@ -6612,7 +6775,8 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
   return out_dir, summary_row
 
 
-if __name__ == '__main__':
+def main(argv=None):
+  """Parse command-line arguments and dispatch the requested logging mode."""
   parser = argparse.ArgumentParser(
     description='Generate diagnostic plots from a cross_space_projection pkl file or grid-search folder.'
   )
@@ -6624,6 +6788,7 @@ if __name__ == '__main__':
       'cross_space_projection_subtrial_*/results_<uid>.pkl runs from a multi-model '
       'combos run). A container folder produces per-subtrial logs/ + a root summary.csv '
       '(UMAPs auto-skipped) and leaves the aggregated_* folder untouched. '
+      'Use --only_aggregated to recursively process only pkls below aggregated* folders. '
       'Single path: behaviour is unchanged — pkl or folder processed as before. '
       'Multiple paths: per-folder analysis is run for each folder and a merged '
       'global_summary/ (global_summary.csv + hyperparameter plots) is written '
@@ -6677,7 +6842,29 @@ if __name__ == '__main__':
       'found in the folder.'
     ),
   )
-  args = parser.parse_args()
+  parser.add_argument(
+    '--only_aggregated', action='store_true', default=False,
+    help=(
+      'Treat every --pkl_path value as a root folder, recursively find all .pkl '
+      'files contained in aggregated* directories, and run the usual single-pkl '
+      'logging workflow for each. Writes aggregated_summary.csv at each root. '
+      'Incompatible with --plot_trials and --only_projector_plots; top-K options '
+      'are ignored.'
+    ),
+  )
+  args = parser.parse_args(argv)
+
+  if args.only_aggregated:
+    if args.plot_trials is not None:
+      parser.error('--plot_trials cannot be used with --only_aggregated.')
+    if args.only_projector_plots:
+      parser.error('--only_projector_plots cannot be used with --only_aggregated.')
+    try:
+      generate_logs_aggregated(args.pkl_path, skip_umap=args.skip_umap)
+    except (ValueError, RuntimeError) as exc:
+      parser.error(str(exc))
+    return
+
   if len(args.pkl_path) > 1:
     if args.plot_trials is not None:
       print('[WARN] --plot_trials is ignored when multiple --pkl_path folders are given.')
@@ -6701,3 +6888,7 @@ if __name__ == '__main__':
       plot_trials=args.plot_trials,
       skip_umap=args.skip_umap,
     )
+
+
+if __name__ == '__main__':
+  main()
