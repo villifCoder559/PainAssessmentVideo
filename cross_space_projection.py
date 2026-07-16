@@ -711,50 +711,54 @@ def _extract_embeddings(model, model_pth, csv_path, config_model, features_path_
   """
   original_path = model.path_to_extracted_features
   original_dtype = model.dataset_type
-  if features_path_override is not None:
-    model.path_to_extracted_features = features_path_override
-    model.dataset_type = tools.get_dataset_type(features_path_override)
+  clean_csv = None
+  try:
+    if features_path_override is not None:
+      model.path_to_extracted_features = features_path_override
+      model.dataset_type = tools.get_dataset_type(features_path_override)
 
-  # set_step_shift must match the active features path so augmentation filtering is correct
-  helper.set_step_shift(model.path_to_extracted_features)
+    # set_step_shift must match the active features path so augmentation filtering is correct
+    helper.set_step_shift(model.path_to_extracted_features)
 
-  # Clean the CSV once more (idempotent for already-clean CSVs, writes a _cleaned.csv copy)
-  clean_csv = clean_csv_from_augmentations(csv_path)
+    # Each inference owns a private completed CSV. This prevents concurrent runs from
+    # replacing the file while a dataset is opening or consuming it.
+    clean_csv = clean_csv_from_augmentations(csv_path, unique=True)
 
-  helper.init_log_video_embeddings()
-  helper.LOG_VIDEO_EMBEDDINGS['enable'] = True
-  helper.LOG_HISTORY_SAMPLE = True
+    helper.init_log_video_embeddings()
+    helper.LOG_VIDEO_EMBEDDINGS['enable'] = True
+    helper.LOG_HISTORY_SAMPLE = True
 
-  cfg = config_model['config']
-  test_args = {
-    'path_model_weights': model_pth,
-    'state_dict': None,
-    'csv_path': clean_csv,
-    'criterion': cfg['criterion'],
-    'is_test': True,
-    'concatenate_temporal': cfg['concatenate_temp_dim'],
-    'concatenate_quadrants': cfg['concatenate_quadrants'],
-    'CCC_loss': cfg['CCC_loss'],
-  }
-  extra_kwargs = {k: v for k, v in cfg.items() if k not in test_args}
-  extra_kwargs['split_chunks'] = 0
+    cfg = config_model['config']
+    test_args = {
+      'path_model_weights': model_pth,
+      'state_dict': None,
+      'csv_path': clean_csv,
+      'criterion': cfg['criterion'],
+      'is_test': True,
+      'concatenate_temporal': cfg['concatenate_temp_dim'],
+      'concatenate_quadrants': cfg['concatenate_quadrants'],
+      'CCC_loss': cfg['CCC_loss'],
+    }
+    extra_kwargs = {k: v for k, v in cfg.items() if k not in test_args}
+    extra_kwargs['split_chunks'] = 0
 
-  model.test_pretrained_model(**test_args, **extra_kwargs)
+    model.test_pretrained_model(**test_args, **extra_kwargs)
 
-  raw = helper.LOG_VIDEO_EMBEDDINGS
-  # raw['embeddings'] is a list of (B, D) tensors, one per batch
-  embeddings = np.concatenate([b.numpy() for b in raw['embeddings']], axis=0).astype(np.float32)
+    raw = helper.LOG_VIDEO_EMBEDDINGS
+    # raw['embeddings'] is a list of (B, D) tensors, one per batch
+    embeddings = np.concatenate([b.numpy() for b in raw['embeddings']], axis=0).astype(np.float32)
 
-  result = {
-    'embeddings':  embeddings,
-    'labels':      np.array(raw['labels'],     dtype=np.float32),
-    'sample_ids':  np.array(raw['sample_ids'], dtype=np.int64),
-    'predictions': np.array(raw['predictions'], dtype=np.float32),
-  }
-
-  model.path_to_extracted_features = original_path
-  model.dataset_type = original_dtype
-  return result
+    return {
+      'embeddings':  embeddings,
+      'labels':      np.array(raw['labels'],     dtype=np.float32),
+      'sample_ids':  np.array(raw['sample_ids'], dtype=np.int64),
+      'predictions': np.array(raw['predictions'], dtype=np.float32),
+    }
+  finally:
+    if clean_csv is not None:
+      Path(clean_csv).unlink(missing_ok=True)
+    model.path_to_extracted_features = original_path
+    model.dataset_type = original_dtype
 
 
 def _align_by_sample_id(reference, to_align):
