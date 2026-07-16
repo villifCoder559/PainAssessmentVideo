@@ -105,6 +105,14 @@ def test_read_sample_ids_rejects_fractional_values(tmp_path):
     checker.read_sample_ids(path)
 
 
+def test_read_sample_ids_rejects_boolean_values(tmp_path):
+  path = tmp_path / 'boolean.safetensors'
+  _write_ids(path, [True], dtype=np.bool_)
+
+  with pytest.raises(ValueError, match='boolean'):
+    checker.read_sample_ids(path)
+
+
 def test_does_not_claim_failure_log_when_write_fails(tmp_path, monkeypatch, capsys):
   original = tmp_path / 'features_UNBC'
   _write_ids(original / 'valid.safetensors', [3])

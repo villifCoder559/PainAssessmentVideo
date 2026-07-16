@@ -37,6 +37,8 @@ def read_sample_ids(path: Path) -> list[int]:
     ids = tensors.get_tensor('list_sample_id').reshape(-1).tolist()
   if not ids:
     raise ValueError("empty 'list_sample_id'")
+  if any(isinstance(sample_id, bool) for sample_id in ids):
+    raise ValueError(f'boolean IDs are invalid: {ids}')
   try:
     integer_ids = [int(sample_id) for sample_id in ids]
   except (TypeError, ValueError, OverflowError) as error:
