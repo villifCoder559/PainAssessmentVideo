@@ -14,6 +14,11 @@ from pathlib import Path
 import argparse
 import logging
 from custom import helper
+from custom.plot_aggregation import (
+  confusion_axis_labels,
+  merge_confusion_matrices,
+  weighted_means_by_label,
+)
 import custom.loss as losses  # For pickle loading
 import seaborn as sns
 import cv2
@@ -28,7 +33,7 @@ MAX_CLASSES_FOR_CONFUSION_MATRIX = 20
 
 # Hardcoded y-axis height for the FINAL grouped per-class loss plot.
 # If None, the y-axis auto-scales; if set, this exact value is used.
-GROUPED_LOSS_PER_CLASS_FINAL_YLIM = 35
+GROUPED_LOSS_PER_CLASS_FINAL_YLIM = 5
 
 
 def _auto_y_lim(values_list, base_y_lim, margin=1.1):
@@ -87,22 +92,6 @@ def retrieve_subject_ids(data, key, best_epoch):
   return uniqie_subject_ids_train, uniqie_subject_ids_val
 
 def get_grouped_losses(data, config):
-  
-  def update_dict_grouped_losses(k_fold, res, best_epoch, key, value, key_target_dict, upper_dict = 'train_val'):
-    # convert to numpy if tensor
-    train_class_labels = np.array(res[upper_dict][key])
-    if 'test' in upper_dict:
-      train_class_loss = np.array(res[upper_dict][value])
-    else:
-      train_class_loss = np.array(res[upper_dict][value][best_epoch])
-    if len(train_class_labels) == 0:
-      print(f'No {value} found in results for {k_fold} - skipping')
-    for k,loss in zip(train_class_labels, train_class_loss):
-      if k not in dict_grouped_losses[k_fold][key_target_dict]:
-        dict_grouped_losses[k_fold][key_target_dict][k] = []
-      dict_grouped_losses[k_fold][key_target_dict][k].append(loss)
-
-  
   # Group results by K-Fold, separating final results if present
   dict_grouped_k_fold = {}
   real_k_fold = set([int(key.split('_')[0][1]) for key in data['results'].keys()])
@@ -118,8 +107,8 @@ def get_grouped_losses(data, config):
   
   # Compute grouped losses, per class and subject
   for k_fold,sub_k_dict in dict_grouped_k_fold.items():
-    if 'final' in k_fold:
-      final_flag = True
+    final_flag = 'final' in k_fold
+    if final_flag:
       dict_grouped_losses[k_fold] = {
           'subject_train_loss':{},
           'train_loss':[],
@@ -129,7 +118,6 @@ def get_grouped_losses(data, config):
           'test_loss':[],
       }
     else:
-      final_flag = False
       dict_grouped_losses[k_fold] = {
           'subject_train_loss':{},
           'train_loss':[],
@@ -138,7 +126,24 @@ def get_grouped_losses(data, config):
           'class_val_loss':{},
           'val_loss':[],
       }
-     
+    weighted_records = {
+      key: [] for key, value in dict_grouped_losses[k_fold].items()
+      if isinstance(value, dict)
+    }
+
+    def add_weighted_losses(res, best_epoch, labels_key, loss_key, count_key,
+                            target_key, upper_dict='train_val'):
+      labels = np.asarray(res[upper_dict][labels_key])
+      values = np.asarray(res[upper_dict][loss_key] if upper_dict == 'test'
+                          else res[upper_dict][loss_key][best_epoch])
+      counts = res[upper_dict][count_key]
+      supports = ([counts[label.item() if hasattr(label, 'item') else label] for label in labels]
+                  if isinstance(counts, dict) else np.asarray(counts))
+      if len(labels) == 0:
+        print(f'No {loss_key} found in results for {k_fold} - skipping')
+        return
+      weighted_records[target_key].append((labels, values, supports))
+
     for sub_k, res in sub_k_dict.items():
       if 'train_val' in res:
         best_epoch = res['train_val']['best_model_idx']
@@ -151,39 +156,42 @@ def get_grouped_losses(data, config):
       if not isinstance(config['criterion'],losses.RESupConLoss):
         # Get train loss per class
         if 'train_val' in res:
-          update_dict_grouped_losses(key='train_unique_y',value='train_loss_per_class',key_target_dict='class_train_loss',
-                                    k_fold=k_fold, res=res, best_epoch=best_epoch)
+          add_weighted_losses(res, best_epoch, 'train_unique_y', 'train_loss_per_class',
+                              'count_y_train', 'class_train_loss')
         
         # Get val/test loss per class, only if available
         if ('train_val' in res and res['train_val']['count_y_val'] is not None) or final_flag:
-          update_dict_grouped_losses(key='val_unique_y' if not final_flag else 'test_unique_y',
-                                    value='val_loss_per_class' if not final_flag else 'test_loss_per_class',
-                                    key_target_dict='class_val_loss' if not final_flag else 'class_test_loss',
-                                    upper_dict= 'train_val' if not final_flag else 'test',
-                                    k_fold=k_fold, res=res, best_epoch=best_epoch)      
+          add_weighted_losses(
+            res, best_epoch,
+            'test_unique_y' if final_flag else 'val_unique_y',
+            'test_loss_per_class' if final_flag else 'val_loss_per_class',
+            'test_count_y' if final_flag else 'count_y_val',
+            'class_test_loss' if final_flag else 'class_val_loss',
+            'test' if final_flag else 'train_val',
+          )
         
         # Get train loss per subject
         if 'train_val' in res:
-          update_dict_grouped_losses(k_fold=k_fold, res=res, best_epoch=best_epoch,
-                                    key='train_unique_subject_ids', value='train_loss_per_subject', key_target_dict='subject_train_loss')
+          add_weighted_losses(res, best_epoch, 'train_unique_subject_ids',
+                              'train_loss_per_subject', 'count_subject_ids_train',
+                              'subject_train_loss')
         
         # Get val/test loss per subject, only if available
         if ('train_val' in res and res['train_val']['count_y_val'] is not None) or final_flag:
-          update_dict_grouped_losses(k_fold=k_fold, res=res, best_epoch=best_epoch,
-                                    key='val_unique_subject_ids' if not final_flag else 'test_unique_subject_ids',
-                                    value='val_loss_per_subject' if not final_flag else 'test_loss_per_subject',
-                                    upper_dict='train_val' if not final_flag else 'test',
-                                    key_target_dict='subject_val_loss' if not final_flag else 'subject_test_loss')
-      
-    # compute the mean loss per class and subject
-    for k,v in dict_grouped_losses[k_fold].items():
-      if 'loss' in k:
-        if len(v) != 0:
-          if isinstance(v, list):
-            dict_grouped_losses[k_fold][k] = np.mean(v)
-          elif isinstance(v, dict):
-            for key_inner, list_loss in v.items():
-              dict_grouped_losses[k_fold][k][key_inner] = np.mean(list_loss)
+          add_weighted_losses(
+            res, best_epoch,
+            'test_unique_subject_ids' if final_flag else 'val_unique_subject_ids',
+            'test_loss_per_subject' if final_flag else 'val_loss_per_subject',
+            'test_count_subject_ids' if final_flag else 'count_subject_ids_val',
+            'subject_test_loss' if final_flag else 'subject_val_loss',
+            'test' if final_flag else 'train_val',
+          )
+
+    for key, records in weighted_records.items():
+      dict_grouped_losses[k_fold][key] = weighted_means_by_label(records)
+    for key, values in dict_grouped_losses[k_fold].items():
+      if isinstance(values, list) and values:
+        dict_grouped_losses[k_fold][key] = np.mean(values)
   return dict_grouped_losses
         
     
@@ -266,49 +274,6 @@ def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', pl
     plt.close(fig)
 
 
-def _accumulate_confusion_matrices(accum, t):
-  """
-  Merge two raw-count confusion matrices that may have different sizes.
-
-  Each matrix is assumed to have the format (N+1)×(N+1) where the last row and
-  column represent an out-of-range (OOR) bin.  When the matrices differ in size,
-  the valid-class block ([:-1, :-1]) and OOR column ([:-1, -1]) of the smaller
-  matrix are zero-padded to match the larger one before summing.  The OOR row is
-  always set to zero in the output (true labels are never OOR).
-
-  Args:
-    accum: Running-sum tensor of dtype long, or None on the first call.
-    t:     New fold's raw-count confusion matrix (long tensor, (N+1)×(N+1)).
-
-  Returns:
-    Merged (max_N+1) × (max_N+1) long tensor.
-  """
-  if accum is None:
-    return t
-  if accum.shape == t.shape:
-    return accum + t
-
-  a_valid, a_oor = accum[:-1, :-1], accum[:-1, -1]
-  t_valid, t_oor = t[:-1, :-1],     t[:-1, -1]
-
-  s_a, s_t = a_valid.shape[0], t_valid.shape[0]
-  max_s = max(s_a, s_t)
-
-  if s_a < max_s:
-    pad = max_s - s_a
-    a_valid = torch.nn.functional.pad(a_valid, (0, pad, 0, pad))
-    a_oor   = torch.nn.functional.pad(a_oor,   (0, pad))
-  if s_t < max_s:
-    pad = max_s - s_t
-    t_valid = torch.nn.functional.pad(t_valid, (0, pad, 0, pad))
-    t_oor   = torch.nn.functional.pad(t_oor,   (0, pad))
-
-  merged_oor = (a_oor + t_oor).unsqueeze(1)
-  top    = torch.cat([a_valid + t_valid, merged_oor], dim=1)
-  bottom = torch.zeros(1, max_s + 1, dtype=accum.dtype)
-  return torch.cat([top, bottom], dim=0)
-
-
 def _balanced_accuracy_from_confmat(cm_obj):
   """
   Compute balanced accuracy (mean per-class recall) from a confusion matrix.
@@ -368,7 +333,12 @@ def plot_grouped_confusion_matrix(data, run_output_folder, test_id, additional_i
     """
     return cm_obj.confmat.long() if hasattr(cm_obj, 'confmat') else cm_obj.long()
 
-  def _plot_heatmap(ax, matrix_tensor, title, fmt, cbar_label):
+  def _merge_confmat(accum, cm_obj, observed_labels):
+    matrix = _get_confmat_tensor(cm_obj)
+    labels = confusion_axis_labels(matrix, observed_labels)
+    return merge_confusion_matrices(accum, matrix, labels)
+
+  def _plot_heatmap(ax, matrix_tensor, labels, title, fmt, cbar_label):
     """
     Render a single confusion matrix heatmap on the given axes.
 
@@ -383,8 +353,8 @@ def plot_grouped_confusion_matrix(data, run_output_folder, test_id, additional_i
     sns.heatmap(
       matrix_tensor.cpu().numpy(), annot=True, fmt=fmt, cmap='Blues',
       cbar_kws={'label': cbar_label}, ax=ax,
-      xticklabels=[str(i) for i in range(n)],
-      yticklabels=[str(i) for i in range(n)],
+      xticklabels=[str(label) for label in labels],
+      yticklabels=[str(label) for label in labels],
     )
     for idx, text in enumerate(ax.texts):
       row, col = divmod(idx, n)
@@ -409,17 +379,23 @@ def plot_grouped_confusion_matrix(data, run_output_folder, test_id, additional_i
 
       train_cms = res['train_val'].get('train_confusion_matricies', {})
       if epoch_str in train_cms:
-        sum_train = _accumulate_confusion_matrices(sum_train, _get_confmat_tensor(train_cms[epoch_str]))
+        sum_train = _merge_confmat(
+          sum_train, train_cms[epoch_str], res['train_val']['train_unique_y']
+        )
 
       if not is_final:
         val_cms = res['train_val'].get('val_confusion_matricies', {})
         if epoch_str in val_cms:
-          sum_val = _accumulate_confusion_matrices(sum_val, _get_confmat_tensor(val_cms[epoch_str]))
+          sum_val = _merge_confmat(
+            sum_val, val_cms[epoch_str], res['train_val']['val_unique_y']
+          )
 
       if 'test' in res and res['test']:
         test_cm = res['test'].get('test_confusion_matrix')
         if test_cm is not None:
-          sum_test = _accumulate_confusion_matrices(sum_test, _get_confmat_tensor(test_cm))
+          sum_test = _merge_confmat(
+            sum_test, test_cm, res['test']['test_unique_y']
+          )
 
     if sum_train is None:
       continue
@@ -433,8 +409,10 @@ def plot_grouped_confusion_matrix(data, run_output_folder, test_id, additional_i
       splits.append(('TEST', sum_test))
 
     n_splits = len(splits)
+    title_notes = ({'TRAIN': '\n(repeated/oversampled samples)',
+                    'TEST': '\n(pooled out-of-fold samples)'} if is_final else {})
 
-    n_classes = splits[0][1].shape[0]
+    n_classes = max(len(state[1]) for _, state in splits)
     if n_classes > MAX_CLASSES_FOR_CONFUSION_MATRIX:
       print(f'[skip] grouped confusion matrix for {test_id}/{k_fold}: '
             f'C={n_classes} > {MAX_CLASSES_FOR_CONFUSION_MATRIX}')
@@ -444,8 +422,11 @@ def plot_grouped_confusion_matrix(data, run_output_folder, test_id, additional_i
     fig_counts, axs_counts = plt.subplots(n_splits, 1, figsize=(6, 5 * n_splits))
     if n_splits == 1:
       axs_counts = [axs_counts]
-    for ax, (split_name, mat) in zip(axs_counts, splits):
-      _plot_heatmap(ax, mat, f'{split_name} - Grouped Counts - {k_fold} - {test_id}', fmt='d', cbar_label='Count')
+    for ax, (split_name, (mat, labels)) in zip(axs_counts, splits):
+      _plot_heatmap(ax, mat, labels,
+                    f'{split_name} - Grouped Counts - {k_fold} - {test_id}'
+                    f'{title_notes.get(split_name, "")}',
+                    fmt='d', cbar_label='Count')
     fig_counts.tight_layout()
     fig_counts.savefig(os.path.join(grouped_output_folder, f'{test_id}{additional_info}_grouped_confusion_matrix_{k_fold}_counts.png'))
     plt.close(fig_counts)
@@ -454,9 +435,12 @@ def plot_grouped_confusion_matrix(data, run_output_folder, test_id, additional_i
     fig_pct, axs_pct = plt.subplots(n_splits, 1, figsize=(6, 5 * n_splits))
     if n_splits == 1:
       axs_pct = [axs_pct]
-    for ax, (split_name, mat) in zip(axs_pct, splits):
+    for ax, (split_name, (mat, labels)) in zip(axs_pct, splits):
       pct_mat = convert_conf_matrix_to_percent(mat)
-      _plot_heatmap(ax, pct_mat, f'{split_name} - Grouped % - {k_fold} - {test_id}', fmt='.1f', cbar_label='Percentage (%)')
+      _plot_heatmap(ax, pct_mat, labels,
+                    f'{split_name} - Grouped % - {k_fold} - {test_id}'
+                    f'{title_notes.get(split_name, "")}',
+                    fmt='.1f', cbar_label='Percentage (%)')
     fig_pct.tight_layout()
     fig_pct.savefig(os.path.join(grouped_output_folder, f'{test_id}{additional_info}_grouped_confusion_matrix_{k_fold}_percent.png'))
     plt.close(fig_pct)
