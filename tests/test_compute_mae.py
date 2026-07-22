@@ -68,6 +68,16 @@ class TestComputeMAE(unittest.TestCase):
         
         print("✅ Column-wise MAE correct.")
 
+    def test_empty_column(self):
+        cm = torch.tensor([
+            [5, 0],
+            [5, 0],
+        ])
+
+        result = compute_mae_per_class(cm, compute_column_wise=True)
+
+        self.assertIsNone(result['col_mae'][1])
+
     def test_numpy_input(self):
         print("\nTesting Numpy Input...")
         cm = np.array([[10, 0], [0, 10]])
