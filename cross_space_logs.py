@@ -978,6 +978,14 @@ def _collect_summary_row(data, pkl_path, refine_block=None, refine_mode=None):
     'mae_micro_old':            mae_micro_old,
     'mae_macro_old':            mae_macro_old,
   }
+  fake_meta = data.get('fake_projection_metadata') or {}
+  if data.get('fake_projection_evaluations'):
+    row.update({
+      'fake_projection': True,
+      'fake_projection_distribution': fake_meta.get(
+        'distribution', data.get('fake_projection_distribution')),
+      'fake_projection_seed': fake_meta.get('seed', data.get('fake_projection_seed')),
+    })
   row.update(_refinement_columns(data, refine_block=refine_block))
   row.update(_recipe_columns(data, refine_block=refine_block))
   row.update(_best_epoch_columns(data, refine_block=refine_block))
@@ -3954,6 +3962,61 @@ def generate_search_summary_plots(df, search_dir):
   return summary_dir
 
 
+def plot_fake_vs_real_dashboard(evaluation, out_dir, mode=None, filename_suffix=''):
+  """Plot paired real/fake replay predictions on shared axes and return the PNG path."""
+  labels = np.asarray(evaluation['labels'], dtype=np.float32).reshape(-1)
+  real = np.asarray(evaluation['real_predictions'], dtype=np.float32).reshape(-1)
+  fake = np.asarray(evaluation['fake_predictions'], dtype=np.float32).reshape(-1)
+  classes = np.round(labels).astype(int)
+  limits = [float(min(labels.min(), real.min(), fake.min())),
+            float(max(labels.max(), real.max(), fake.max()))]
+  if limits[0] == limits[1]:
+    limits = [limits[0] - .5, limits[1] + .5]
+
+  fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+  for ax, predictions, name, color in (
+      (axes[0, 0], real, 'Real replay', '#4C72B0'),
+      (axes[0, 1], fake, 'Fake replay', '#DD8452')):
+    ax.scatter(labels, predictions, alpha=.65, color=color, edgecolor='white', linewidth=.3)
+    ax.plot(limits, limits, '--', color='#555555', linewidth=1)
+    ax.set(xlim=limits, ylim=limits, xlabel='Ground truth', ylabel='Prediction', title=name)
+    ax.grid(alpha=.25)
+
+  bins = np.linspace(limits[0], limits[1], 20)
+  axes[1, 0].hist(real, bins=bins, alpha=.65, label='Real replay', color='#4C72B0')
+  axes[1, 0].hist(fake, bins=bins, alpha=.65, label='Fake replay', color='#DD8452')
+  axes[1, 0].set(title='Prediction distributions', xlabel='Prediction', ylabel='Count')
+  axes[1, 0].legend()
+  axes[1, 0].grid(axis='y', alpha=.25)
+
+  class_ids = sorted(np.unique(classes))
+  real_mae = [float(np.abs(real[classes == cls] - labels[classes == cls]).mean())
+              for cls in class_ids]
+  fake_mae = [float(np.abs(fake[classes == cls] - labels[classes == cls]).mean())
+              for cls in class_ids]
+  x = np.arange(len(class_ids))
+  axes[1, 1].bar(x - .2, real_mae, .4, label='Real replay', color='#4C72B0')
+  axes[1, 1].bar(x + .2, fake_mae, .4, label='Fake replay', color='#DD8452')
+  axes[1, 1].set(title='MAE per class', xlabel='Class', ylabel='MAE',
+                 xticks=x, xticklabels=[str(cls) for cls in class_ids])
+  axes[1, 1].legend()
+  axes[1, 1].grid(axis='y', alpha=.25)
+
+  rm, fm = evaluation['real_metrics'], evaluation['fake_metrics']
+  title = f'Fake vs real projection replay{f" — {mode}" if mode else ""}'
+  subtitle = (
+    f"Real: micro MAE {rm['mae_micro']:.4f}, macro MAE {rm['mae_macro']:.4f}, CCC {rm['ccc']:.4f}"
+    f"   |   Fake: micro MAE {fm['mae_micro']:.4f}, macro MAE {fm['mae_macro']:.4f}, "
+    f"CCC {fm['ccc']:.4f}")
+  fig.suptitle(f'{title}\n{subtitle}', fontsize=13, fontweight='bold')
+  fig.tight_layout(rect=(0, 0, 1, .94))
+  path = os.path.join(out_dir, f'fake_vs_real_dashboard{filename_suffix}.png')
+  fig.savefig(path, dpi=150, bbox_inches='tight')
+  plt.close(fig)
+  print(f'Saved: {path}')
+  return path
+
+
 def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
                    run_label: str = '', mae_macro=None, mae_macro_old=None,
                    mae_stages=None, mae_stages_std=None, filename_suffix: str = '',
@@ -6217,6 +6280,9 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
   data = _load_pkl(pkl_path)
   data = _rebase_standalone_paths(data, pkl_path)
   fmt  = _detect_format(data)
+  fake_evaluations = data.get('fake_projection_evaluations') or {}
+  fake_metadata = data.get('fake_projection_metadata') or {}
+  is_fake_replay = bool(fake_evaluations)
   # Aggregated (multi-model subtrial) pkls pool per-sample predictions across models but
   # drop embeddings (different spaces can't be pooled): skip every embedding-based plot
   # (UMAP / split-impact / anchor-UMAP / norm-cosine / reconstruction) and instead emit a
@@ -6278,9 +6344,22 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
     run_label += ' | K=0 (identity)'
   elif num_anchors_val == -1:
     run_label += ' | K=-1 (original_video)'
+  if is_fake_replay:
+    distribution = fake_metadata.get(
+      'distribution', data.get('fake_projection_distribution', 'unknown'))
+    fake_seed = fake_metadata.get('seed', data.get('fake_projection_seed'))
+    run_label += f' | FAKE {distribution}' + (f' (seed {fake_seed})' if fake_seed is not None else '')
+    summary_row.update({
+      'fake_projection': True,
+      'fake_projection_distribution': distribution,
+      'fake_projection_seed': fake_seed,
+    })
 
   os.makedirs(out_dir, exist_ok=True)
   print(f'[cross_space_logs] Output: {out_dir}')
+  for mode, evaluation in fake_evaluations.items():
+    suffix = f'_{mode}' if len(fake_evaluations) > 1 else ''
+    plot_fake_vs_real_dashboard(evaluation, out_dir, mode=mode, filename_suffix=suffix)
 
   # Source-set CSV name, surfaced into the confusion-matrix titles so the dataset is explicit.
   src_csv = (data['trial_params']['old_model_csv'] if fmt == 'grid'
@@ -6364,7 +6443,9 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
     return (f'{run_label} | {mode} (after refinement)' if multi_refine
             else f'{run_label} | after refinement')
 
-  old_emb_src = None if is_aggregated else np.asarray(old_t['embeddings'], dtype=np.float32)
+  old_emb_src = (None if is_aggregated else
+                 np.asarray(data.get('fake_source_embeddings'), dtype=np.float32)
+                 if is_fake_replay else np.asarray(old_t['embeddings'], dtype=np.float32))
 
   # Recompute per-mode (before, after) predictions + after-refinement embeddings once;
   # reused by the projected/refined plots, UMAPs, dashboards and comparison below.
