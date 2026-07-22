@@ -452,6 +452,8 @@ _FEATURES_MAP = {
   ('VIDEOMAE', 'MORPH'):  'MORPH_2/features/VideoMaev2_S/all_pooled_features_MORPH',
   ('VIT-B',    'AGEDB'):  'AgeDB/features/ViT-B/all_pooled_features_age',
   ('VIT-B',    'MORPH'):  'MORPH_2/features/ViT-B/all_pooled_features_MORPH',
+  ('DFER',     'MINTPAIN'): 'MIntPAIN/features/DFER/spatial_pooled_features_MIntPAIN_B_last143_stride16_interpol',
+  ('VIDEOMAE', 'MINTPAIN'): 'MIntPAIN/features/VideoMaev2_S/spatial_pooled_features_MIntPAIN_B_last143_stride16_interpol'
   }
 
 
@@ -475,6 +477,8 @@ def _detect_dataset(features_path: str) -> str:
     return 'UNBC'
   if 'parta' in p or 'biovid' in p:
     return 'BIOVID'
+  if 'mint' in p:
+    return 'MINTPAIN'
   if 'agedb' in p:
     return 'AGEDB'
   if 'caer' in p:
@@ -806,6 +810,76 @@ def _align_df_to_sample_ids(df, sample_ids, label):
   assert not missing, f'sample_ids missing from {label}: {missing}'
   order = np.array([sid_to_row[int(s)] for s in target], dtype=np.int64)
   return df.iloc[order].reset_index(drop=True)
+
+
+_FAKE_PROJECTION_DISTRIBUTIONS = ('matched_gaussian', 'standard_normal')
+
+
+def _fake_embeddings(embeddings, seed, distribution='matched_gaussian'):
+  """
+  Draw fake embeddings from the selected local seeded distribution.
+
+  Args:
+    embeddings  (np.ndarray): Real embeddings whose shape is preserved.
+    seed        (int): Seed for a local NumPy generator.
+    distribution (str): 'matched_gaussian' or 'standard_normal'.
+
+  Returns:
+    np.ndarray: Fake embeddings with the real shape and float32 dtype.
+  """
+  embeddings = np.asarray(embeddings, dtype=np.float32)
+  rng = np.random.default_rng(seed)
+  if distribution == 'matched_gaussian':
+    fake = rng.normal(
+      loc=embeddings.mean(axis=0),
+      scale=embeddings.std(axis=0),
+      size=embeddings.shape,
+    )
+  elif distribution == 'standard_normal':
+    fake = rng.standard_normal(embeddings.shape)
+  else:
+    raise ValueError(
+      f'fake_projection_distribution must be one of {_FAKE_PROJECTION_DISTRIBUTIONS}, '
+      f'got {distribution!r}'
+    )
+  return fake.astype(np.float32)
+
+
+def _matched_gaussian_embeddings(embeddings, seed):
+  """Draw independent per-dimension Gaussian samples matching real embeddings."""
+  return _fake_embeddings(embeddings, seed, 'matched_gaussian')
+
+
+def _fake_projection_suffix(enabled, distribution):
+  """
+  Return the backwards-compatible output suffix for a fake-projection run.
+
+  Args:
+    enabled      (bool): Whether fake projection is active.
+    distribution (str): Selected fake embedding distribution.
+
+  Returns:
+    str: Empty when disabled, otherwise the distribution-specific suffix.
+  """
+  if not enabled:
+    return ''
+  return '_fake' if distribution == 'matched_gaussian' else f'_fake_{distribution}'
+
+
+def _prediction_frame(sample_ids, labels, predictions):
+  """Build the stable per-sample CSV representation used by paired evaluations."""
+  return pd.DataFrame({
+    'sample_id': np.asarray(sample_ids).reshape(-1),
+    'label': np.asarray(labels).reshape(-1),
+    'prediction': np.asarray(predictions).reshape(-1),
+  })
+
+
+def _validate_fake_projection(enabled, num_anchors):
+  """Reject fake projection for identity/oracle modes, which do not project inputs."""
+  values = num_anchors if isinstance(num_anchors, (list, tuple)) else [num_anchors]
+  if enabled and any(n <= 0 for n in values):
+    raise ValueError('--fake_projection requires every num_anchors value to be > 0')
 
 
 def _softmax(x):
@@ -1509,6 +1583,52 @@ def _apply_linear_projector(projector, norm_stats, old_embeddings):
   if norm_stats is not None:
     pred = (pred * norm_stats['new_std']) + norm_stats['new_mean']
   return pred.astype(np.float32)
+
+
+def _evaluate_projection_inputs(
+  real_embeddings, labels, classify_linear, label_denorm,
+  interpolation_similarity, rbf_sigma,
+  old_model_anchors, new_model_anchors_aligned,
+  projector=None, norm_stats=None, fake_projection=False,
+  fake_projection_distribution='matched_gaussian', seed=_SEED,
+):
+  """Project/classify real inputs and, when requested, a selected fake copy."""
+  def evaluate(source_embeddings):
+    if interpolation_similarity in _PROJECTOR_KINDS:
+      projected = _apply_linear_projector(projector, norm_stats, source_embeddings)
+      weights = np.zeros((len(projected), 0), dtype=np.float32)
+    else:
+      weights = _compute_weights(
+        z=source_embeddings,
+        anchors=old_model_anchors['embeddings'],
+        sim_type=interpolation_similarity,
+        sigma=rbf_sigma,
+      )
+      projected = weights @ new_model_anchors_aligned['embeddings'].astype(np.float32)
+
+    classify_linear.eval()
+    device = next(classify_linear.parameters()).device
+    with torch.no_grad():
+      logits = classify_linear(torch.tensor(projected, dtype=torch.float32).to(device)).cpu()
+    predictions = (logits.numpy() * label_denorm).astype(np.float32)
+    preds_flat = predictions.reshape(-1)
+    return {
+      'source_embeddings': np.asarray(source_embeddings, dtype=np.float32),
+      'embeddings': np.asarray(projected, dtype=np.float32),
+      'weights': weights.astype(np.float32),
+      'logits': logits.numpy().astype(np.float32),
+      'predictions': predictions,
+      'metrics': {
+        'mae': float(np.mean(np.abs(preds_flat - labels))),
+        'ccc': float(tools.concordance_ccc(y_true=labels, y_pred=preds_flat)),
+      },
+    }
+
+  real_result = evaluate(real_embeddings)
+  if not fake_projection:
+    return real_result, None
+  fake_embeddings = _fake_embeddings(real_embeddings, seed, fake_projection_distribution)
+  return evaluate(fake_embeddings), real_result
 
 
 # ---------------------------------------------------------------------------
@@ -3531,7 +3651,8 @@ def _precompute_embeddings(
 
 
 def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model, new_config,
-               trial_dir, uid, projector_recipe_map, refinement_recipe_map):
+               trial_dir, uid, projector_recipe_map, refinement_recipe_map,
+               fake_projection=False, fake_projection_distribution='matched_gaussian'):
   """
   Run a single cheap projection trial using pre-cached embeddings.
 
@@ -3559,6 +3680,7 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
   _rmode       = trial_params.get('refine_mode', 'none')
   old_model_tensors = tensor_cache[trial_params['old_model_csv']]['old_tensors']
   classify_linear = new_model.head.linear  # overridden below when refinement is applied
+  eval_projector = eval_norm_stats = None
 
   if trial_params['num_anchors'] == 0:
     d_old = old_model_tensors['embeddings'].shape[1]
@@ -3599,6 +3721,7 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
       projected = _apply_linear_projector(
         _proj_module, bundle['norm_stats'], old_model_tensors['embeddings'],
       )
+      eval_projector, eval_norm_stats = _proj_module, bundle['norm_stats']
       if _use_refined:
         classify_linear = _refine['refine_bundle']['linear_after']
       weights = np.zeros((len(projected), 0), dtype=np.float32)
@@ -3623,22 +3746,47 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
           print(f"  [trial {trial_number}] interpolation_similarity="
                 f"{trial_params['interpolation_similarity']} → linear_only refinement applied")
 
+  real_projected = projected
+
   normalize_labels = bool(new_config['config'].get('normalize_labels', 0))
   max_label = new_config['config'].get('max_label', None)
   label_denorm = float(max_label) if normalize_labels and max_label else 1.0
 
-  new_model.head.eval()
-  classify_linear.eval()
-  device = next(classify_linear.parameters()).device
-  with torch.no_grad():
-    logits = classify_linear(
-      torch.tensor(projected, dtype=torch.float32).to(device)
-    ).cpu()
-  predictions = (logits.numpy() * label_denorm).astype(np.float32)
-  preds_flat  = predictions.squeeze(-1) if predictions.ndim > 1 else predictions
   labels_true = old_model_tensors['labels']
-  mae = float(np.mean(np.abs(preds_flat - labels_true)))
-  ccc = float(tools.concordance_ccc(y_true=labels_true, y_pred=preds_flat))
+  if fake_projection:
+    evaluation, real_evaluation = _evaluate_projection_inputs(
+      real_embeddings=old_model_tensors['embeddings'],
+      labels=labels_true,
+      classify_linear=classify_linear,
+      label_denorm=label_denorm,
+      interpolation_similarity=trial_params['interpolation_similarity'],
+      rbf_sigma=trial_params['rbf_sigma'],
+      old_model_anchors=old_model_anchors,
+      new_model_anchors_aligned=new_model_anchors_aligned,
+      projector=eval_projector,
+      norm_stats=eval_norm_stats,
+      fake_projection=True,
+      fake_projection_distribution=fake_projection_distribution,
+      seed=_SEED,
+    )
+    projected = evaluation['embeddings']
+    weights = evaluation['weights']
+    logits = torch.from_numpy(evaluation['logits'])
+    predictions = evaluation['predictions']
+    mae, ccc = evaluation['metrics']['mae'], evaluation['metrics']['ccc']
+  else:
+    real_evaluation = None
+    new_model.head.eval()
+    classify_linear.eval()
+    device = next(classify_linear.parameters()).device
+    with torch.no_grad():
+      logits = classify_linear(
+        torch.tensor(projected, dtype=torch.float32).to(device)
+      ).cpu()
+    predictions = (logits.numpy() * label_denorm).astype(np.float32)
+    preds_flat = predictions.squeeze(-1) if predictions.ndim > 1 else predictions
+    mae = float(np.mean(np.abs(preds_flat - labels_true)))
+    ccc = float(tools.concordance_ccc(y_true=labels_true, y_pred=preds_flat))
   print(f'  [trial {trial_number}] MAE={mae:.4f}  CCC={ccc:.4f}  params={trial_params}')
 
   os.makedirs(trial_dir, exist_ok=True)
@@ -3657,6 +3805,14 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
     'old_model_tensors': old_model_tensors,
     'metrics': {'mae': mae, 'ccc': ccc},
   }
+  if fake_projection:
+    trial_result['fake_projection'] = True
+    trial_result['fake_projection_distribution'] = fake_projection_distribution
+  if real_evaluation is not None:
+    trial_result['real_projection'] = {
+      'predictions': real_evaluation['predictions'],
+      'metrics': real_evaluation['metrics'],
+    }
   if (trial_params['interpolation_similarity'] in _PROJECTOR_KINDS
       and trial_params['num_anchors'] not in (0, -1)):
     anchor_key = (
@@ -3691,8 +3847,8 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
       old_emb, old_lab = old_model_tensors['embeddings'], old_model_tensors['labels']
       if _rmode == 'linear_only':
         # Projection is frozen; `projected` already holds the projector's output of old_emb.
-        mi_b, ma_b = _eval_linear_mae(projected, rb['linear_before'], old_lab, label_denorm)
-        mi_a, ma_a = _eval_linear_mae(projected, rb['linear_after'],  old_lab, label_denorm)
+        mi_b, ma_b = _eval_linear_mae(real_projected, rb['linear_before'], old_lab, label_denorm)
+        mi_a, ma_a = _eval_linear_mae(real_projected, rb['linear_after'],  old_lab, label_denorm)
       else:
         mi_b, ma_b = _eval_proj_mae(old_emb, rb['projector_before'], ns, rb['linear_before'], old_lab, label_denorm)
         mi_a, ma_a = _eval_proj_mae(old_emb, rb['projector_after'],  ns, rb['linear_after'],  old_lab, label_denorm)
@@ -3722,8 +3878,8 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
       rb = _rd['refine_bundle']
       old_lab = old_model_tensors['labels']
       # `projected` is the fixed distance-metric projection of the old-on-csv split.
-      mi_b, ma_b = _eval_linear_mae(projected, rb['linear_before'], old_lab, label_denorm)
-      mi_a, ma_a = _eval_linear_mae(projected, rb['linear_after'],  old_lab, label_denorm)
+      mi_b, ma_b = _eval_linear_mae(real_projected, rb['linear_before'], old_lab, label_denorm)
+      mi_a, ma_a = _eval_linear_mae(real_projected, rb['linear_after'],  old_lab, label_denorm)
       trial_result['refinement'] = {
         **_rd['metrics'],
         'mae_micro_old_oncsv_before': mi_b,
@@ -3738,6 +3894,12 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
   _runtime_min = (time.time() - _trial_t0) / 60.0
   trial_result['metrics']['runtime_min'] = _runtime_min
   print(f'  [trial {trial_number}] runtime: {_runtime_min:.2f} min')
+  if real_evaluation is not None:
+    _prediction_frame(old_model_tensors['sample_ids'], labels_true, predictions).to_csv(
+      os.path.join(trial_dir, 'predictions_fake.csv'), index=False)
+    _prediction_frame(
+      old_model_tensors['sample_ids'], labels_true, real_evaluation['predictions'],
+    ).to_csv(os.path.join(trial_dir, 'predictions_real.csv'), index=False)
   with open(os.path.join(trial_dir, 'results.pkl'), 'wb') as f:
     pickle.dump(trial_result, f)
   return mae
@@ -3760,6 +3922,10 @@ def run_optuna(args, out_root=None):
     str: Path to the output directory containing study results.
   """
   _set_global_seed(_SEED)
+  fake_projection = getattr(args, 'fake_projection', False)
+  fake_projection_distribution = getattr(
+    args, 'fake_projection_distribution', 'matched_gaussian')
+  _validate_fake_projection(fake_projection, args.num_anchors)
   optuna.logging.set_verbosity(optuna.logging.WARNING)
 
   uid = int(time.time())
@@ -3805,6 +3971,7 @@ def run_optuna(args, out_root=None):
     + _proj_suffix
     + _act_suffix
     + _recipe_suffix
+    + _fake_projection_suffix(fake_projection, fake_projection_distribution)
   )
   group, _, leaf = (args.run_tag or '').rpartition('/')
   tag_prefix = f'{leaf}_' if leaf else ''
@@ -3968,13 +4135,16 @@ def run_optuna(args, out_root=None):
       f'_{params["old_model_csv"]}'
       f'_{params["interpolation_similarity"]}'
       + _proj_tag_t
+      + _fake_projection_suffix(fake_projection, fake_projection_distribution)
     )
     if len(f'trial{trial.number:04d}_{trial_tag}') > 200:
       _th = hashlib.md5(trial_tag.encode()).hexdigest()[:16]
       trial_tag = f'{trial_tag[:60]}_{_th}'
     trial_dir = os.path.join(out_dir, f'trial{trial.number:04d}_{trial_tag}')
     mae = _run_trial(params, trial.number, anchor_cache, tensor_cache, new_model, new_config,
-                     trial_dir, uid, proj_map, ref_map)
+                     trial_dir, uid, proj_map, ref_map,
+                     fake_projection=fake_projection,
+                     fake_projection_distribution=fake_projection_distribution)
     if params['num_anchors'] == 0:
       _zero_anchor_mae_cache[params['old_model_csv']] = mae
     if params['num_anchors'] == -1:
@@ -4085,6 +4255,10 @@ def cross_space_projection(args, out_root=None):
     str: Path to the saved results .pkl file.
   """
   _set_global_seed(_SEED)
+  fake_projection = getattr(args, 'fake_projection', False)
+  fake_projection_distribution = getattr(
+    args, 'fake_projection_distribution', 'matched_gaussian')
+  _validate_fake_projection(fake_projection, args.num_anchors)
 
   _run_t0 = time.time()
   uid = int(time.time())
@@ -4106,6 +4280,7 @@ def cross_space_projection(args, out_root=None):
     f'_{args.old_model_csv}'
     f'_{args.interpolation_similarity}'
     + _proj_tag
+    + _fake_projection_suffix(fake_projection, fake_projection_distribution)
   )
   group, _, leaf = (args.run_tag or '').rpartition('/')
   tag_prefix = f'{leaf}_' if leaf else ''
@@ -4128,6 +4303,7 @@ def cross_space_projection(args, out_root=None):
   old_model = _build_model(old_config)
   new_model = _build_model(new_config)
   linear_bundle = None  # populated only for projector modes (linear/mlp/procrustes)
+  eval_projector = eval_norm_stats = None
 
   # --- Step 3: Build old model projection dataset ---
   raw_old_csvs = _resolve_old_model_csvs(args.old_model_pth, args.old_model_csv)
@@ -4254,6 +4430,7 @@ def cross_space_projection(args, out_root=None):
         linear_bundle['projector'], linear_bundle['norm_stats'],
         old_model_tensors['embeddings'],
       )
+      eval_projector, eval_norm_stats = linear_bundle['projector'], linear_bundle['norm_stats']
       weights = np.zeros((len(projected), 0), dtype=np.float32)
       print(f'  projected ({kind}): {projected.shape}')
     else:
@@ -4337,26 +4514,52 @@ def cross_space_projection(args, out_root=None):
         projected = _apply_linear_projector(
           _rb['projector_after'], linear_bundle['norm_stats'], old_model_tensors['embeddings'])
         new_model_tensors['embeddings'] = projected
+        eval_projector = _rb['projector_after']
         classify_linear = _rb['linear_after']
 
-  new_model.head.eval()
-  classify_linear.eval()
-  device = next(classify_linear.parameters()).device
-  with torch.no_grad():
-    logits = classify_linear(
-      torch.tensor(projected, dtype=torch.float32).to(device)
-    ).cpu()
-  predictions = (logits.numpy() * label_denorm).astype(np.float32)
+  labels_true = old_model_tensors['labels']
+  if fake_projection:
+    evaluation, real_evaluation = _evaluate_projection_inputs(
+      real_embeddings=old_model_tensors['embeddings'],
+      labels=labels_true,
+      classify_linear=classify_linear,
+      label_denorm=label_denorm,
+      interpolation_similarity=args.interpolation_similarity,
+      rbf_sigma=args.rbf_sigma,
+      old_model_anchors=old_model_anchors,
+      new_model_anchors_aligned=new_model_anchors_aligned,
+      projector=eval_projector,
+      norm_stats=eval_norm_stats,
+      fake_projection=True,
+      fake_projection_distribution=fake_projection_distribution,
+      seed=_SEED,
+    )
+    projected = evaluation['embeddings']
+    weights = evaluation['weights']
+    logits = torch.from_numpy(evaluation['logits'])
+    predictions = evaluation['predictions']
+    metrics = dict(evaluation['metrics'])
+  else:
+    real_evaluation = None
+    new_model.head.eval()
+    classify_linear.eval()
+    device = next(classify_linear.parameters()).device
+    with torch.no_grad():
+      logits = classify_linear(
+        torch.tensor(projected, dtype=torch.float32).to(device)
+      ).cpu()
+    predictions = (logits.numpy() * label_denorm).astype(np.float32)
+    preds_flat = predictions.squeeze(-1) if predictions.ndim > 1 else predictions
+    mae = float(np.mean(np.abs(preds_flat - labels_true)))
+    ccc = float(tools.concordance_ccc(y_true=labels_true, y_pred=preds_flat))
+    metrics = {'mae': mae, 'ccc': ccc}
+  new_model_tensors['embeddings'] = projected
+  new_model_tensors['weights'] = weights.astype(np.float32)
   new_model_tensors['logits'] = logits.numpy().astype(np.float32)
   new_model_tensors['predictions'] = predictions
 
   # --- Metrics ---
-  labels_true = old_model_tensors['labels']
-  preds_flat = predictions.squeeze(-1) if predictions.ndim > 1 else predictions
-  mae = float(np.mean(np.abs(preds_flat - labels_true)))
-  ccc = float(tools.concordance_ccc(y_true=labels_true, y_pred=preds_flat))
-  metrics = {'mae': mae, 'ccc': ccc}
-  print(f'Metrics — MAE: {mae:.4f}  CCC: {ccc:.4f}')
+  print(f"Metrics — MAE: {metrics['mae']:.4f}  CCC: {metrics['ccc']:.4f}")
 
   # --- Step 9: Save outputs ---
   config_logging = {
@@ -4377,6 +4580,9 @@ def cross_space_projection(args, out_root=None):
     'out_dir':                 out_dir,
     'script_cmd':              ' '.join(sys.argv),
   }
+  if fake_projection:
+    config_logging['fake_projection'] = True
+    config_logging['fake_projection_distribution'] = fake_projection_distribution
 
   _runtime_min = (time.time() - _run_t0) / 60.0
   metrics['runtime_min'] = _runtime_min
@@ -4394,6 +4600,11 @@ def cross_space_projection(args, out_root=None):
     'new_model_tensors':            new_model_tensors, # includes projected embeddings, logits, predictions
     'metrics':                      metrics,
   }
+  if real_evaluation is not None:
+    dict_res['real_projection'] = {
+      'predictions': real_evaluation['predictions'],
+      'metrics': real_evaluation['metrics'],
+    }
   if linear_bundle is not None:
     dict_res['linear_projector'] = {
       'config':               linear_bundle['config'],
@@ -4428,6 +4639,13 @@ def cross_space_projection(args, out_root=None):
     pd.DataFrame([rr['metrics'] for rr in refine_results.values()]).to_csv(
       os.path.join(out_dir, 'refinement_summary.csv'), index=False)
 
+  if real_evaluation is not None:
+    _prediction_frame(old_model_tensors['sample_ids'], labels_true, predictions).to_csv(
+      os.path.join(out_dir, 'predictions_fake.csv'), index=False)
+    _prediction_frame(
+      old_model_tensors['sample_ids'], labels_true, real_evaluation['predictions'],
+    ).to_csv(os.path.join(out_dir, 'predictions_real.csv'), index=False)
+
   out_pkl = os.path.join(out_dir, f'results_{uid}.pkl')
   pkl_bytes = pickle.dumps(dict_res)
   print(f'Saving pkl ({len(pkl_bytes) / 1e6:.1f} MB) → {out_pkl}')
@@ -4450,7 +4668,8 @@ _ALLOWED_YAML_KEYS = {
   'new_model_pth', 'old_model_pth', 'num_anchors', 'anchor_selection_type',
   'csv_anchor_selection', 'old_model_csv', 'interpolation_similarity', 'mlp_activation',
   'mlp_num_layers', 'weighting_method', 'rbf_sigma', 'n_trials', 'optuna_sampler',
-  'run_tag', 'refinement', 'seed', 'linear_projector', 'refinement_config',
+  'run_tag', 'refinement', 'seed', 'fake_projection', 'fake_projection_distribution',
+  'linear_projector', 'refinement_config',
 }
 # YAML keys forwarded to argparse: list (nargs='+') axes vs scalar/string options.
 # new_model_pth / old_model_pth are list args too: a single path stays a 1-element list
@@ -4462,7 +4681,9 @@ _YAML_LIST_ARGS = (
   'interpolation_similarity', 'mlp_activation', 'mlp_num_layers', 'weighting_method', 'rbf_sigma',
   'seed',
 )
-_YAML_SCALAR_ARGS = ('run_tag', 'optuna_sampler', 'n_trials', 'refinement')
+_YAML_SCALAR_ARGS = (
+  'run_tag', 'optuna_sampler', 'n_trials', 'refinement', 'fake_projection_distribution',
+)
 
 
 def _yaml_to_argv(ycfg):
@@ -4481,6 +4702,17 @@ def _yaml_to_argv(ycfg):
     list[str]: argv tokens, e.g. ['--num_anchors', '50', '100', '--optuna_sampler', 'grid'].
   """
   argv = []
+  if 'fake_projection' in ycfg:
+    if not isinstance(ycfg['fake_projection'], bool):
+      raise ValueError("YAML key 'fake_projection' must be a boolean")
+    if ycfg['fake_projection']:
+      argv.append('--fake_projection')
+  distribution = ycfg.get('fake_projection_distribution')
+  if distribution is not None and distribution not in _FAKE_PROJECTION_DISTRIBUTIONS:
+    raise ValueError(
+      f'fake_projection_distribution must be one of {_FAKE_PROJECTION_DISTRIBUTIONS}, '
+      f'got {distribution!r}'
+    )
   for key in _YAML_SCALAR_ARGS:
     if ycfg.get(key) is not None:
       argv += [f'--{key}', str(ycfg[key])]
@@ -4640,7 +4872,7 @@ def _run_model_combos(args, model_pairs, group_tag):
   return _aggregate_model_combo_pkls(records, agg_dir, args)
 
 
-def _aggregate_model_combo_pkls(records, out_dir, args):
+def _aggregate_model_combo_pkls(records, out_dir, args, output_filename=None):
   """
   Pool the per-sample results of several model-pair subtrials into one aggregated pkl.
 
@@ -4658,6 +4890,8 @@ def _aggregate_model_combo_pkls(records, out_dir, args):
               'new_model_pth', 'old_model_pth', 'pkl_path'.
     out_dir (str): Directory to write the aggregated results pkl into (created here).
     args    (argparse.Namespace): Parsed args (used only for script_cmd logging).
+    output_filename (str | None): Explicit deterministic pkl basename. Fake replay
+      callers pass ``results_fake.pkl``; None keeps the timestamped legacy name.
 
   Returns:
     str: Path to the aggregated results pkl.
@@ -4689,6 +4923,13 @@ def _aggregate_model_combo_pkls(records, out_dir, args):
   new_pred = _cat(loaded, 'new_model_tensors', 'predictions')
   new_lab  = _cat(loaded, 'new_model_tensors', 'labels')
   new_sid  = _cat(loaded, 'new_model_tensors', 'sample_ids', dtype=np.int64)
+  fake_projection = all('real_projection' in item for item in loaded)
+  real_pred = (
+    _cat(loaded, 'real_projection', 'predictions') if fake_projection else None
+  )
+  fake_eval_modes = sorted({
+    mode for item in loaded for mode in (item.get('fake_projection_evaluations') or {})
+  })
 
   pooled_mae = float(np.mean(np.abs(new_pred - new_lab)))
   pooled_ccc = float(tools.concordance_ccc(y_true=new_lab, y_pred=new_pred))
@@ -4713,6 +4954,10 @@ def _aggregate_model_combo_pkls(records, out_dir, args):
     'model_pairs':          [(r['new_model_pth'], r['old_model_pth']) for r in records],
     'script_cmd':           ' '.join(sys.argv),
   }
+  if fake_projection:
+    config_logging['fake_projection'] = True
+    config_logging['fake_projection_distribution'] = first_cfg.get(
+      'fake_projection_distribution', 'matched_gaussian')
 
   dict_res = {
     'config_cross_space_projection': config_logging,
@@ -4736,8 +4981,75 @@ def _aggregate_model_combo_pkls(records, out_dir, args):
       'ccc_std':  float(np.nanstd(cccs_arr, ddof=1)) if n > 1 else 0.0,
     },
   }
+  if fake_projection:
+    real_mae = float(np.mean(np.abs(real_pred - new_lab)))
+    real_ccc = float(tools.concordance_ccc(y_true=new_lab, y_pred=real_pred))
+    dict_res['real_projection'] = {
+      'predictions': real_pred,
+      'metrics': {'mae': real_mae, 'ccc': real_ccc},
+    }
+    _prediction_frame(new_sid, new_lab, new_pred).to_csv(
+      os.path.join(out_dir, 'predictions_fake.csv'), index=False)
+    _prediction_frame(new_sid, new_lab, real_pred).to_csv(
+      os.path.join(out_dir, 'predictions_real.csv'), index=False)
 
-  out_pkl = os.path.join(out_dir, f'results_{uid}.pkl')
+  if fake_eval_modes:
+    pooled_evaluations = {}
+    for mode in fake_eval_modes:
+      parts = [item['fake_projection_evaluations'][mode] for item in loaded
+               if mode in (item.get('fake_projection_evaluations') or {})]
+      sample_ids = np.concatenate([
+        np.asarray(part['sample_ids'], dtype=np.int64).reshape(-1) for part in parts])
+      labels = np.concatenate([
+        np.asarray(part['labels'], dtype=np.float32).reshape(-1) for part in parts])
+      real_predictions = np.concatenate([
+        np.asarray(part['real_predictions'], dtype=np.float32).reshape(-1) for part in parts])
+      fake_predictions = np.concatenate([
+        np.asarray(part['fake_predictions'], dtype=np.float32).reshape(-1) for part in parts])
+      real_micro, real_macro = _mae_micro_macro(real_predictions, labels)
+      fake_micro, fake_macro = _mae_micro_macro(fake_predictions, labels)
+      pooled_evaluations[mode] = {
+        'sample_ids': sample_ids,
+        'labels': labels,
+        'real_predictions': real_predictions,
+        'fake_predictions': fake_predictions,
+        'real_metrics': {
+          'mae_micro': real_micro, 'mae_macro': real_macro,
+          'ccc': float(tools.concordance_ccc(y_true=labels, y_pred=real_predictions)),
+        },
+        'fake_metrics': {
+          'mae_micro': fake_micro, 'mae_macro': fake_macro,
+          'ccc': float(tools.concordance_ccc(y_true=labels, y_pred=fake_predictions)),
+        },
+      }
+      evaluation = pooled_evaluations[mode]
+      for prefix in ('real', 'fake'):
+        evaluation.update({
+          f'{prefix}_{name}': value
+          for name, value in evaluation[f'{prefix}_metrics'].items()
+        })
+      evaluation.update({
+        f'fake_minus_real_{name}': (
+          evaluation['fake_metrics'][name] - evaluation['real_metrics'][name])
+        for name in ('mae_micro', 'mae_macro', 'ccc')
+      })
+    first_meta = loaded[0].get('fake_projection_metadata') or {}
+    dict_res.update({
+      'fake_source_embeddings': None,
+      'fake_projection_evaluations': pooled_evaluations,
+      'fake_projection_metadata': {
+        **first_meta,
+        'source_pkls': rel_pkls,
+        'aggregated': True,
+      },
+      'fake_projection_distribution': first_meta.get(
+        'distribution', loaded[0].get('fake_projection_distribution', 'matched_gaussian')),
+      'fake_projection_seed': first_meta.get(
+        'seed', loaded[0].get('fake_projection_seed', _SEED)),
+    })
+
+  out_pkl = os.path.join(
+    out_dir, output_filename or ('results_fake.pkl' if fake_eval_modes else f'results_{uid}.pkl'))
   with open(out_pkl, 'wb') as f:
     pickle.dump(dict_res, f)
   with open(os.path.join(out_dir, 'config_logging.txt'), 'w') as f:
@@ -4848,6 +5160,15 @@ if __name__ == '__main__':
                            'A "/" splits it into "<subfolder.../leaf-label>": everything before the last '
                            '"/" becomes group subfolder(s) under Cross_projection (so multiple runs can be '
                            'grouped together), and the last segment is the leaf folder label.')
+  parser.add_argument('--fake_projection', action='store_true',
+                      help='Sanity check: train only on real embeddings, then evaluate both the '
+                           'real inputs and selected-distribution fake inputs. Fake MAE/CCC '
+                           'remain the headline result. Requires every num_anchors value to be > 0.')
+  parser.add_argument('--fake_projection_distribution', type=str,
+                      choices=_FAKE_PROJECTION_DISTRIBUTIONS, default='matched_gaussian',
+                      help='Fake input distribution: matched_gaussian (default, per-dimension '
+                           'real mean/std) or independent standard_normal N(0,1). Has no effect '
+                           'unless --fake_projection is enabled.')
   parser.add_argument('--seed', type=int, nargs='+', default=[_SEED],
                       help='One or more global RNG seeds (python random, numpy, torch, cuda). '
                            'A single seed reproduces the previous behavior. Multiple seeds re-run '
@@ -4884,7 +5205,10 @@ if __name__ == '__main__':
     if isinstance(_ycfg.get('refinement'), dict):
       parser.error("YAML key 'refinement' is the 0/1/2 on/off+mode flag; put the swept "
                    "refinement hyperparameters under 'refinement_config' instead")
-    args = parser.parse_args(_yaml_to_argv(_ycfg))
+    try:
+      args = parser.parse_args(_yaml_to_argv(_ycfg))
+    except ValueError as exc:
+      parser.error(str(exc))
     args.projector_recipes = _expand_recipes(
       LINEAR_PROJECTOR_CONFIG, _ycfg.get('linear_projector'), _PROJECTOR_SWEEPABLE, 'linear_projector')
     args.refinement_recipes = _expand_recipes(
@@ -4893,6 +5217,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
     args.projector_recipes  = [copy.deepcopy(LINEAR_PROJECTOR_CONFIG)]
     args.refinement_recipes = [copy.deepcopy(REFINEMENT_CONFIG)]
+
+  try:
+    _validate_fake_projection(args.fake_projection, args.num_anchors)
+  except ValueError as exc:
+    parser.error(str(exc))
 
   REFINEMENT_CONFIG['enabled'] = (args.refinement != 0)
   # For 1/2 this is the single mode; for 3 (run all modes) it is only a vestigial default
