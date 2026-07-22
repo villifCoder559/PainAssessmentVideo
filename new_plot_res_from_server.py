@@ -28,7 +28,7 @@ import torch
 
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
 
-MAX_SUBJECTS_FOR_PLOT = 40
+MAX_SUBJECTS_FOR_PLOT = 88
 MAX_CLASSES_FOR_CONFUSION_MATRIX = 20
 
 # Hardcoded y-axis height for the FINAL grouped per-class loss plot.
@@ -1902,7 +1902,7 @@ def compute_mae_per_class(conf_matrix, compute_column_wise=False):
     for i in range(n_classes):
       row_sum = matrix[i, :].sum()
       if row_sum == 0:
-        continue
+        row_mae[i] = None
       else:
         # Absolute distance between true class i and all possible predictions j
         distances = torch.abs(torch.arange(n_classes, device=device) - i)
@@ -1915,7 +1915,7 @@ def compute_mae_per_class(conf_matrix, compute_column_wise=False):
       for j in range(n_classes):
         col_sum = matrix[:, j].sum()
         if col_sum == 0:
-          continue
+          col_mae[j] = None
         else:
           # Absolute distance between predicted class j and all possible true labels i
           distances = torch.abs(torch.arange(n_classes, device=device) - j)
