@@ -34,8 +34,8 @@ def recompute_raw_fold_metrics(pkl_path: str, data: dict, final_keys: list, ffsp
     ffsp_override: Optional replacement for features_folder_saving_path.
 
   Returns:
-    Dict fold_key -> {'raw_mae': float, 'raw_mae_per_class': {class: float},
-                      'recomputed_l1': float, 'n_samples': int}.
+    Dict keyed by fold with raw MAE plus freshly evaluated fold/subject L1
+    and accuracy metrics.
   """
   import custom.helper as helper
   from custom.model import Model_Advanced
@@ -102,8 +102,14 @@ def recompute_raw_fold_metrics(pkl_path: str, data: dict, final_keys: list, ffsp
       'raw_mae': float(np.mean(list(err.values()))),
       'raw_mae_per_class': per_class,
       'recomputed_l1': float(dict_test['test_l1_error']),
+      'recomputed_accuracy': float(dict_test['test_accuracy']),
+      'recomputed_loss_per_subject': to_numpy(dict_test['test_loss_per_subject']).astype(float),
+      'recomputed_accuracy_per_subject': to_numpy(dict_test['test_accuracy_per_subject']).astype(float),
+      'recomputed_subject_ids': to_numpy(dict_test['test_unique_subject_ids']),
       'n_samples': len(labels),
     }
+  if hasattr(model, 'free_gpu_memory'):
+    model.free_gpu_memory()
   return out
 
 
