@@ -101,6 +101,7 @@ Usage:
   python3 cross_space_logs.py --pkl_path <path>
   python3 cross_space_logs.py --pkl_path <folder> --plot_only_top_k 5
   python3 cross_space_logs.py --pkl_path <folder> --plot_trials 3 7 12
+  python3 cross_space_logs.py --pkl_path <root_folder> --subtrial_idx 2_3 4_1
   python3 cross_space_logs.py --pkl_path <root_folder> --only_aggregated
 """
 import argparse
@@ -4070,6 +4071,8 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
     config_anchors (int | None): Configured num_anchors budget, shown alongside real_anchors.
   """
   suffix     = f' | {run_label}' if run_label else ''
+  active_stage = ('refined' if projected_stage_name.lower().startswith('refined')
+                  else 'projected')
   labels_int = np.round(labels).astype(int)
   class_ids  = sorted(int(c) for c in np.unique(labels_int))
 
@@ -4219,7 +4222,8 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
   old_r = _compute_rounded_mae(old_preds, labels, num_classes)
   new_r = _compute_rounded_mae(new_preds, labels, num_classes)
   rows_data.append(['MAE micro / macro rounded (old)',       f'{_pair(old_r[0])} / {_pair(old_r[1])}'])
-  rows_data.append(['MAE micro / macro rounded (projected)', f'{_pair(new_r[0])} / {_pair(new_r[1])}'])
+  rows_data.append([f'MAE micro / macro rounded ({active_stage})',
+                    f'{_pair(new_r[0])} / {_pair(new_r[1])}'])
   # Preserve (new-model-on-test) MAE before vs after refinement, when available.
   pre_b = stages.get('preserve_before')
   pre_a = stages.get('preserve_after')
@@ -4232,7 +4236,7 @@ def plot_dashboard(new_preds, old_preds, labels, num_classes, mae, ccc, out_dir,
     if pre_a is not None:
       rows_data.append(['MAE micro / macro (after)',  _cell('preserve_after', pre_a)])
   rows_data.append(['── overall ──', ''])
-  rows_data.append(['CCC (projected)', f'{ccc:.4f}'])
+  rows_data.append([f'CCC ({active_stage})', f'{ccc:.4f}'])
   rows_data.append(['N samples',       str(len(labels))])
   rows_data.append(['N classes',       str(num_classes)])
   # Real anchors actually used (int, or {count: n_subtrials} for an aggregate) vs the
@@ -4876,6 +4880,96 @@ def _refinement_predictions(data, old_emb, refine_block=None):
   except Exception as exc:
     print(f'[WARN] after-refinement MAE-per-class: failed to recompute predictions — {exc}')
     return None
+
+
+def _aggregate_refinement_modes(data, pkl_path):
+  modes = list((data.get('fake_projection_evaluations') or {}).keys())
+  if modes:
+    return modes
+  base = os.path.dirname(os.path.abspath(pkl_path))
+  for rel in data.get('subtrial_pkls') or []:
+    try:
+      sub_path = os.path.join(base, rel)
+      return [mode for mode, _ in _refine_items(_load_pkl(sub_path))]
+    except Exception:
+      continue
+  return []
+
+
+def _aggregate_refinement_predictions(data, pkl_path, mode):
+  """Return aligned pooled (before, after) predictions for one aggregate mode."""
+  expected = data.get('new_model_tensors') or {}
+  expected_ids = np.asarray(expected.get('sample_ids')).reshape(-1)
+  expected_labels = np.asarray(expected.get('labels'), dtype=np.float32).reshape(-1)
+  base = os.path.dirname(os.path.abspath(pkl_path))
+
+  if data.get('fake_projection_evaluations'):
+    evaluation = data['fake_projection_evaluations'].get(mode)
+    if evaluation is None:
+      print(f'[WARN] aggregate refinement predictions ({mode}) unavailable — dashboard skipped.')
+      return None
+    after = np.asarray(evaluation['fake_predictions'], dtype=np.float32).reshape(-1)
+    after_ids = np.asarray(evaluation['sample_ids']).reshape(-1)
+    after_labels = np.asarray(evaluation['labels'], dtype=np.float32).reshape(-1)
+    before_parts, id_parts, label_parts = [], [], []
+    for rel in data.get('subtrial_pkls') or []:
+      sub_path = os.path.join(base, rel)
+      try:
+        sub = _load_pkl(sub_path)
+        part = (sub.get('fake_projection_evaluations') or {})[mode]
+        before_parts.append(np.asarray(
+          part['fake_before_predictions'], dtype=np.float32).reshape(-1))
+        id_parts.append(np.asarray(part['sample_ids']).reshape(-1))
+        label_parts.append(np.asarray(part['labels'], dtype=np.float32).reshape(-1))
+      except Exception as exc:
+        print(f'[WARN] aggregate refinement predictions ({mode}) incomplete '
+              f'at {sub_path}: {exc} — dashboard skipped.')
+        return None
+    before = np.concatenate(before_parts) if before_parts else np.array([], dtype=np.float32)
+    pooled_ids = np.concatenate(id_parts) if id_parts else np.array([], dtype=np.int64)
+    pooled_labels = (np.concatenate(label_parts) if label_parts
+                     else np.array([], dtype=np.float32))
+  else:
+    before_parts, after_parts, id_parts, label_parts = [], [], [], []
+    for rel in data.get('subtrial_pkls') or []:
+      sub_path = os.path.join(base, rel)
+      try:
+        sub = _rebase_standalone_paths(_load_pkl(sub_path), sub_path)
+        block = dict(_refine_items(sub))[mode]
+        predictions = _refinement_predictions(
+          sub, np.asarray(sub['old_model_tensors']['embeddings'], dtype=np.float32),
+          refine_block=block)
+        if predictions is None:
+          raise ValueError('checkpoint predictions unavailable')
+        before, after = predictions
+        tensors = sub['new_model_tensors']
+        before_parts.append(np.asarray(before, dtype=np.float32).reshape(-1))
+        after_parts.append(np.asarray(after, dtype=np.float32).reshape(-1))
+        id_parts.append(np.asarray(tensors['sample_ids']).reshape(-1))
+        label_parts.append(np.asarray(tensors['labels'], dtype=np.float32).reshape(-1))
+      except Exception as exc:
+        print(f'[WARN] aggregate refinement predictions ({mode}) incomplete '
+              f'at {sub_path}: {exc} — dashboard skipped.')
+        return None
+    before = np.concatenate(before_parts) if before_parts else np.array([], dtype=np.float32)
+    after = np.concatenate(after_parts) if after_parts else np.array([], dtype=np.float32)
+    pooled_ids = np.concatenate(id_parts) if id_parts else np.array([], dtype=np.int64)
+    pooled_labels = (np.concatenate(label_parts) if label_parts
+                     else np.array([], dtype=np.float32))
+    after_ids, after_labels = pooled_ids, pooled_labels
+
+  aligned = (
+    len(before) == len(after) == len(expected_ids) == len(expected_labels)
+    and np.array_equal(pooled_ids, expected_ids)
+    and np.allclose(pooled_labels, expected_labels)
+    and np.array_equal(after_ids, expected_ids)
+    and np.allclose(after_labels, expected_labels)
+  )
+  if not aligned:
+    print(f'[WARN] aggregate refinement predictions ({mode}) are incomplete or '
+          'misaligned with aggregate tensors — dashboard skipped.')
+    return None
+  return before, after
 
 
 def plot_refinement_mae_per_class(after_preds, before_preds, old_preds, labels,
@@ -5998,6 +6092,72 @@ def generate_logs_subtrials(container_dir, plot_only_top_k=None):
   return container_dir
 
 
+# ── subtrial-index entry point ───────────────────────────────────────────────
+
+def _find_subtrial_pkls(root_dirs, subtrial_indices):
+  """Find direct results pkls for exact ``i_j`` subtrial pairs below roots."""
+  indices = list(dict.fromkeys(os.fspath(index) for index in subtrial_indices))
+  if not indices or any(
+      len(parts := index.split('_')) != 2 or not all(part.isdigit() for part in parts)
+      for index in indices
+  ):
+    raise ValueError('--subtrial_idx values must use the DIGITS_DIGITS form (for example 2_3).')
+
+  roots = [os.path.abspath(os.fspath(root)) for root in root_dirs]
+  invalid = [root for root in roots if not os.path.isdir(root)]
+  if invalid:
+    raise ValueError(f'--subtrial_idx root is not a directory: {invalid[0]}')
+
+  prefixes = {index: f'cross_space_projection_subtrial_{index}_' for index in indices}
+  matches, found_indices = set(), set()
+  for root in roots:
+    for current_dir, dirnames, filenames in os.walk(root):
+      name = os.path.basename(os.path.normpath(current_dir))
+      index = next((key for key, prefix in prefixes.items() if name.startswith(prefix)), None)
+      if index is None:
+        continue
+      found = [
+        os.path.abspath(os.path.join(current_dir, filename))
+        for filename in filenames
+        if filename.startswith('results_') and filename.endswith('.pkl')
+      ]
+      if found:
+        matches.update(found)
+        found_indices.add(index)
+      dirnames[:] = []
+
+  if not matches:
+    raise ValueError(
+      f'No subtrial results pkls found for {indices} under: {", ".join(roots)}'
+    )
+  return sorted(matches), [index for index in indices if index not in found_indices]
+
+
+def generate_logs_subtrial_indices(root_dirs, subtrial_indices, skip_umap=False,
+                                   only_projector_plots=False):
+  """Run the normal single-pkl logger for selected subtrial pairs below roots."""
+  pkl_paths, missing = _find_subtrial_pkls(root_dirs, subtrial_indices)
+  if missing:
+    print(f'[WARN] --subtrial_idx pair(s) not found under any root: {missing}')
+  print(f'[cross_space_logs] Found {len(pkl_paths)} matching subtrial pkl(s)')
+
+  processed = []
+  for pkl_path in tqdm(pkl_paths, desc='Plotting selected subtrials', unit='subtrial'):
+    try:
+      generate_logs(
+        pkl_path,
+        skip_umap=skip_umap,
+        only_projector_plots=only_projector_plots,
+      )
+      processed.append(pkl_path)
+    except Exception as exc:
+      print(f'[WARN] Skipping subtrial pkl {pkl_path}: {exc}')
+
+  if not processed:
+    raise RuntimeError('No subtrial logs were generated successfully.')
+  return processed
+
+
 # ── aggregated-only entry point ──────────────────────────────────────────────
 
 def _find_aggregated_pkls(root_dir):
@@ -6453,7 +6613,14 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
   refined_emb_by_mode  = {}    # mode -> after-refinement projected embeddings
   for _mode, _block in refine_items:
     try:
-      _rp = _refinement_predictions(data, old_emb_src, refine_block=_block)
+      if is_fake_replay:
+        _evaluation = fake_evaluations[_mode]
+        _rp = (
+          np.asarray(_evaluation['fake_before_predictions'], dtype=np.float32).reshape(-1),
+          np.asarray(_evaluation['fake_predictions'], dtype=np.float32).reshape(-1),
+        )
+      else:
+        _rp = _refinement_predictions(data, old_emb_src, refine_block=_block)
       if _rp is not None:
         refine_preds_by_mode[_mode] = _rp
     except Exception as exc:
@@ -6465,17 +6632,28 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
     except Exception as exc:
       print(f'[WARN] refined embeddings ({_mode or "refinement"}) failed: {exc}')
 
+  aggregate_modes = []
+  aggregate_refine_preds = {}
+  if is_aggregated:
+    aggregate_modes = _aggregate_refinement_modes(data, pkl_path)
+    for _mode in aggregate_modes:
+      _rp = _aggregate_refinement_predictions(data, pkl_path, _mode)
+      if _rp is not None:
+        aggregate_refine_preds[_mode] = _rp
+
   # The "projected" stage = after projection, before refinement. For a single-mode run
   # this is recomputed (stored tensors are after-refinement); otherwise the stored
   # tensors already hold the pure projection.
-  single_mode  = refine_items[0][0] if len(refine_items) == 1 else None
   single_block = refine_items[0][1] if len(refine_items) == 1 else None
   proj_preds = new_preds
   proj_emb   = None if is_aggregated else np.asarray(new_t['embeddings'], dtype=np.float32)
-  if single_block is not None:
-    _rp = refine_preds_by_mode.get(single_mode)
+  if refine_items:
+    _rp = refine_preds_by_mode.get(refine_items[0][0])
     if _rp is not None:
       proj_preds = _rp[0]
+  if aggregate_refine_preds:
+    proj_preds = next(iter(aggregate_refine_preds.values()))[0]
+  if single_block is not None:
     _be = _projected_before_refinement_embeddings(data, old_emb_src, refine_block=single_block)
     if _be is not None:
       proj_emb = _be
@@ -6483,7 +6661,13 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
   mae_micro_proj, mae_macro_proj = _compute_global_mae(proj_preds, labels)
   ccc_proj = float(concordance_ccc(labels, proj_preds))
   # Dashboard "Projected" panels are before-refinement when a refinement stage exists.
-  proj_stage_name = 'Projected (before refinement)' if refine_items else 'Projected (new model)'
+  has_refinement = bool(refine_items or aggregate_modes)
+  proj_stage_name = ('Projected (before refinement)' if has_refinement
+                     else 'Projected (new model)')
+  projected_dashboard_available = not (
+    (refine_items and not refine_preds_by_mode)
+    or (aggregate_modes and not aggregate_refine_preds)
+  )
 
   # ── Projected (before-refinement) plots ─────────────────────────────────────
   plot_predictions_histogram(proj_preds, old_preds, labels, out_dir, run_label=_with_src(run_label))
@@ -6705,37 +6889,42 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
       st['preserve_after'] = pa
     return st
 
-  # Dashboard "Projected" panels/scalars use the before-refinement stage (proj_*); the
-  # metrics table's refined row comes from mae_stages. Headline summary.csv MAE/CCC stay
-  # the reported (after-refinement) numbers and are untouched here.
+  # dashboard.png stays the projected-before-refinement baseline. Each mode dashboard
+  # uses that mode's after-refinement predictions for every active panel and metric.
+  if projected_dashboard_available:
+    plot_dashboard(
+      proj_preds, old_preds, labels, num_classes, mae_micro_proj, ccc_proj, out_dir,
+      run_label=_with_src(run_label), mae_macro=mae_macro_proj,
+      mae_macro_old=mae_macro_old, mae_stages=base_stages,
+      projected_stage_name=proj_stage_name, src_dataset=src_dataset,
+      new_dataset=new_dataset, real_anchors=real_anchors,
+      config_anchors=config_anchors)
+  else:
+    print('[WARN] projected-before-refinement predictions are unavailable; '
+          'baseline dashboard skipped.')
+  for _mode, _block in refine_items:
+    _rp = refine_preds_by_mode.get(_mode)
+    if _rp is None:
+      print(f'[WARN] refinement dashboard ({_mode or "refinement"}) has incomplete '
+            'prediction coverage — skipped.')
+      continue
+    _after = _rp[1]
+    _micro, _macro = _compute_global_mae(_after, labels)
+    _ccc = float(concordance_ccc(labels, _after))
+    plot_dashboard(
+      _after, old_preds, labels, num_classes, _micro, _ccc, out_dir,
+      run_label=_with_src(f'{run_label} | {_mode}'), mae_macro=_macro,
+      mae_macro_old=mae_macro_old, mae_stages=_stages_for(_mode, _block),
+      filename_suffix=f'_{_mode}', projected_stage_name='Refined (after refinement)',
+      src_dataset=src_dataset, new_dataset=new_dataset,
+      real_anchors=real_anchors, config_anchors=config_anchors)
   if multi_refine:
-    # Base dashboard stays projected-only; one dashboard per mode + a combined comparison.
-    plot_dashboard(proj_preds, old_preds, labels, num_classes, mae_micro_proj, ccc_proj, out_dir,
-                   run_label=_with_src(run_label), mae_macro=mae_macro_proj, mae_macro_old=mae_macro_old,
-                   mae_stages=base_stages, projected_stage_name=proj_stage_name,
-                   src_dataset=src_dataset, new_dataset=new_dataset,
-                   real_anchors=real_anchors, config_anchors=config_anchors)
-    for _mode, _block in refine_items:
-      plot_dashboard(proj_preds, old_preds, labels, num_classes, mae_micro_proj, ccc_proj, out_dir,
-                     run_label=_with_src(f'{run_label} | {_mode}'), mae_macro=mae_macro_proj,
-                     mae_macro_old=mae_macro_old, mae_stages=_stages_for(_mode, _block),
-                     filename_suffix=f'_{_mode}', projected_stage_name=proj_stage_name,
-                     src_dataset=src_dataset, new_dataset=new_dataset,
-                     real_anchors=real_anchors, config_anchors=config_anchors)
     try:
       plot_refinement_modes_comparison(refine_items, refine_preds_by_mode, old_preds, labels,
                                        base_stages, out_dir, run_label=_with_src(run_label),
                                        src_dataset=src_dataset, new_dataset=new_dataset)
     except Exception as exc:
       print(f'[WARN] refinement modes comparison failed: {exc}')
-  else:
-    # Single mode (or none): the one dashboard carries the refined row (legacy behavior).
-    stages = _stages_for(*refine_items[0]) if refine_items else base_stages
-    plot_dashboard(proj_preds, old_preds, labels, num_classes, mae_micro_proj, ccc_proj, out_dir,
-                   run_label=_with_src(run_label), mae_macro=mae_macro_proj, mae_macro_old=mae_macro_old,
-                   mae_stages=stages, projected_stage_name=proj_stage_name,
-                   src_dataset=src_dataset, new_dataset=new_dataset,
-                   real_anchors=real_anchors, config_anchors=config_anchors)
 
   plot_projector_diagnostics(_extract_linear_bundle(data), out_dir, run_label=_with_src(run_label))
 
@@ -6817,22 +7006,28 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
       # summary.csv: per-mode MEAN + STD rows (cross-validation aggregate) with every
       # srctest_* / newtest_* / refine_* column filled, replacing the single empty AGGREGATE row.
       _write_summary_rows(_aggregate_subtrial_rows(sub_rows, n_sub), out_dir)
-      # Per-mode dashboards whose metrics table carries source old/projected/refined + preserve
-      # (mean across subtrials). The per-sample panels stay the pooled projected-vs-old view
-      # (refined per-sample preds are not pooled); the base dashboard.png stays projected-only,
-      # matching the non-aggregated multi-mode convention. Emitted only for modes that actually
-      # refined (a 'refined' stage present), so no-refinement aggregates skip cleanly.
+      # Per-mode dashboards carry cross-validation mean ± sample std in the stage table,
+      # while every active panel uses the aligned pooled after-refinement predictions.
+      # dashboard.png remains the pooled before-refinement baseline.
       stds_by_mode = _per_mode_stage_stds(sub_rows)
       for _mode, _stages in _per_mode_stage_means(sub_rows).items():
         if 'refined' not in _stages:
           continue
+        _rp = aggregate_refine_preds.get(_mode)
+        if _rp is None:
+          print(f'[WARN] aggregate refinement dashboard ({_mode or "refined"}) has '
+                'incomplete prediction coverage — skipped.')
+          continue
+        _after = _rp[1]
+        _micro, _macro = _compute_global_mae(_after, labels)
+        _ccc = float(concordance_ccc(labels, _after))
         _sfx = f'_{_mode}' if _mode else '_refined'
         _lbl = f'{run_label} | {_mode or "refined"} (aggregate mean ± std of {n_sub} subtrials)'
-        plot_dashboard(proj_preds, old_preds, labels, num_classes, mae_micro_proj, ccc_proj,
-                       out_dir, run_label=_with_src(_lbl), mae_macro=mae_macro_proj,
+        plot_dashboard(_after, old_preds, labels, num_classes, _micro, _ccc,
+                       out_dir, run_label=_with_src(_lbl), mae_macro=_macro,
                        mae_macro_old=mae_macro_old, mae_stages=_stages,
                        mae_stages_std=stds_by_mode.get(_mode), filename_suffix=_sfx,
-                       projected_stage_name='Projected (before refinement)',
+                       projected_stage_name='Refined (after refinement)',
                        src_dataset=src_dataset, new_dataset=new_dataset,
                        real_anchors=real_anchors, config_anchors=config_anchors)
     else:
@@ -6870,6 +7065,8 @@ def main(argv=None):
       'combos run). A container folder produces per-subtrial logs/ + a root summary.csv '
       '(UMAPs auto-skipped) and leaves the aggregated_* folder untouched. '
       'Use --only_aggregated to recursively process only pkls below aggregated* folders. '
+      'Use --subtrial_idx i_j [i_j ...] to recursively process exact model-pair '
+      'subtrials below the supplied folder roots. '
       'Single path: behaviour is unchanged — pkl or folder processed as before. '
       'Multiple paths: per-folder analysis is run for each folder and a merged '
       'global_summary/ (global_summary.csv + hyperparameter plots) is written '
@@ -6882,7 +7079,7 @@ def main(argv=None):
       'When pkl_path is a folder, generate diagnostic plots only for the '
       'top K trials ranked by MAE ascending. Metrics are still collected '
       'for all trials and summary.csv covers the full sweep. '
-      'Ignored when pkl_path is a single pkl file.'
+      'Ignored when pkl_path is a single pkl file or --subtrial_idx is used.'
     ),
   )
   parser.add_argument(
@@ -6898,8 +7095,8 @@ def main(argv=None):
     '--only_projector_plots', action='store_true', default=False,
     help=(
       'Emit only the linear-projector training-diagnostic plots and skip '
-      'everything else (UMAPs, confusion matrix, dashboard, etc.). Only '
-      'applies when pkl_path is a single pkl file.'
+      'everything else (UMAPs, confusion matrix, dashboard, etc.). Applies '
+      'to a single pkl file or every pkl selected by --subtrial_idx.'
     ),
   )
   parser.add_argument(
@@ -6924,6 +7121,17 @@ def main(argv=None):
     ),
   )
   parser.add_argument(
+    '--subtrial_idx', type=str, nargs='+', default=None,
+    help=(
+      'One or more exact model-pair indices in i_j form (for example 2_3 4_1). '
+      'Treat every --pkl_path value as a root folder, recursively find matching '
+      'cross_space_projection_subtrial_<i>_<j>_*/results_<uid>.pkl files, and '
+      'run the normal single-pkl logging workflow for each. Honors --skip_umap '
+      'and --only_projector_plots. Incompatible with --plot_trials and '
+      '--only_aggregated; top-K options are ignored.'
+    ),
+  )
+  parser.add_argument(
     '--only_aggregated', action='store_true', default=False,
     help=(
       'Treat every --pkl_path value as a root folder, recursively find all .pkl '
@@ -6934,6 +7142,22 @@ def main(argv=None):
     ),
   )
   args = parser.parse_args(argv)
+
+  if args.subtrial_idx is not None:
+    if args.plot_trials is not None:
+      parser.error('--plot_trials cannot be used with --subtrial_idx.')
+    if args.only_aggregated:
+      parser.error('--only_aggregated cannot be used with --subtrial_idx.')
+    try:
+      generate_logs_subtrial_indices(
+        args.pkl_path,
+        args.subtrial_idx,
+        skip_umap=args.skip_umap,
+        only_projector_plots=args.only_projector_plots,
+      )
+    except (ValueError, RuntimeError) as exc:
+      parser.error(str(exc))
+    return
 
   if args.only_aggregated:
     if args.plot_trials is not None:
