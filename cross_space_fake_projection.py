@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+from tqdm import tqdm
 
 
 SEED = 42
@@ -20,6 +21,9 @@ SUMMARY_METRICS = (
   'fake_mae_micro', 'fake_mae_macro', 'fake_ccc',
   'fake_minus_real_mae_micro', 'fake_minus_real_mae_macro',
   'fake_minus_real_ccc',
+  'new_test_head_mae_micro_before', 'new_test_head_mae_macro_before',
+  'new_test_head_mae_micro_after', 'new_test_head_mae_macro_after',
+  'new_test_head_mae_micro_delta', 'new_test_head_mae_macro_delta',
 )
 CONFIG_KEYS = (
   'trial_number', 'uid', 'seed', 'new_model_pth', 'old_model_pth',
@@ -108,6 +112,24 @@ def _metrics(predictions, labels):
   }
 
 
+def _new_test_head_metrics(block):
+  """Return before/after/delta MAE from saved strict-test head predictions."""
+  test = block.get('new_test_eval')
+  if not isinstance(test, dict) or test.get('split') != 'test':
+    raise ReplayError('Missing strict-test refinement new_test_eval block')
+  missing = [key for key in ('labels', 'preds_before', 'preds_after')
+             if test.get(key) is None]
+  if missing:
+    raise ReplayError(f'new_test_eval missing fields: {missing}')
+  before = _metrics(test['preds_before'], test['labels'])
+  after = _metrics(test['preds_after'], test['labels'])
+  return {
+    'before': {key: before[key] for key in ('mae_micro', 'mae_macro')},
+    'after': {key: after[key] for key in ('mae_micro', 'mae_macro')},
+    'delta': {key: after[key] - before[key] for key in ('mae_micro', 'mae_macro')},
+  }
+
+
 def _refinement_items(data):
   plural = data.get('refinements')
   if isinstance(plural, dict) and plural:
@@ -120,6 +142,60 @@ def _refinement_items(data):
   if not mode:
     mode = ('projector_linear' if block.get('projector_after_pth') else 'linear_only')
   return [(str(mode), block)]
+
+
+def _prediction_frame(evaluation, key):
+  sample_ids = np.asarray(evaluation['sample_ids']).reshape(-1)
+  labels = np.asarray(evaluation['labels']).reshape(-1)
+  predictions = np.asarray(evaluation[key]).reshape(-1)
+  if not (len(sample_ids) == len(labels) == len(predictions)):
+    raise ReplayError(
+      f'Prediction CSV fields are misaligned: {len(sample_ids)}, '
+      f'{len(labels)}, {len(predictions)}')
+  return pd.DataFrame({
+    'sample_id': sample_ids, 'label': labels, 'prediction': predictions,
+  })
+
+
+def _write_fake_prediction_csvs(data, pkl_path):
+  """Write before-refinement and per-mode after-refinement fake predictions."""
+  evaluations = data.get('fake_projection_evaluations') or {}
+  if not evaluations:
+    return
+
+  if data.get('aggregated'):
+    parts = []
+    base = Path(pkl_path).resolve().parent
+    for relative in data.get('subtrial_pkls') or []:
+      with (base / relative).resolve().open('rb') as stream:
+        subtrial = pickle.load(stream)
+      sub_evaluations = subtrial.get('fake_projection_evaluations') or {}
+      if not sub_evaluations:
+        raise ReplayError(f'Aggregate subtrial has no successful fake replay: {relative}')
+      parts.append(_prediction_frame(
+        next(iter(sub_evaluations.values())), 'fake_before_predictions'))
+    before = pd.concat(parts, ignore_index=True)
+  else:
+    before = _prediction_frame(
+      next(iter(evaluations.values())), 'fake_before_predictions')
+
+  output_dir = Path(pkl_path).resolve().parent
+  expected = data.get('new_model_tensors') or {}
+  if data.get('aggregated') and (
+      not np.array_equal(before['sample_id'], np.asarray(expected['sample_ids']).reshape(-1))
+      or not np.allclose(before['label'], np.asarray(expected['labels']).reshape(-1))):
+    raise ReplayError('Aggregate before-refinement CSV rows are misaligned')
+  before.to_csv(output_dir / 'predictions_fake_before_refinement.csv', index=False)
+  before.to_csv(output_dir / 'predictions_fake.csv', index=False)
+  for mode, evaluation in evaluations.items():
+    frame = _prediction_frame(evaluation, 'fake_predictions')
+    if data.get('aggregated') and (
+        len(frame) != len(before)
+        or not np.array_equal(frame['sample_id'], before['sample_id'])
+        or not np.allclose(frame['label'], before['label'])):
+      continue
+    frame.to_csv(
+      output_dir / f'predictions_fake_after_refinement_{mode}.csv', index=False)
 
 
 def _config(data):
@@ -376,6 +452,7 @@ def replay_result(source_pkl, output_pkl, distribution='matched_gaussian', seed=
   evaluations, stage_results, rows, errors = {}, {}, {}, []
   for mode, block in items:
     try:
+      head_metrics = _new_test_head_metrics(block)
       real_before = _evaluate(source, source_pkl, block, mode, 'before', real_embeddings, labels)
       fake_before = _evaluate(source, source_pkl, block, mode, 'before', fake_embeddings, labels)
       real_after = _evaluate(source, source_pkl, block, mode, 'after', real_embeddings, labels)
@@ -394,6 +471,7 @@ def replay_result(source_pkl, output_pkl, distribution='matched_gaussian', seed=
       'fake_before_predictions': fake_before['predictions'],
       'real_metrics': real_after['metrics'],
       'fake_metrics': fake_after['metrics'],
+      'new_test_head_metrics': head_metrics,
     }
     for prefix, metric in (('real', real_after['metrics']), ('fake', fake_after['metrics'])):
       evaluation.update({f'{prefix}_{name}': value for name, value in metric.items()})
@@ -418,7 +496,18 @@ def replay_result(source_pkl, output_pkl, distribution='matched_gaussian', seed=
         row[f'{prefix}_{name}'] = value
     for name in ('mae_micro', 'mae_macro', 'ccc'):
       row[f'fake_minus_real_{name}'] = fake_after['metrics'][name] - real_after['metrics'][name]
+    for stage, metrics in head_metrics.items():
+      for name, value in metrics.items():
+        row[f'new_test_head_{name}_{stage}'] = value
     rows[mode] = row
+    print(
+      f'  [{mode}] new-model real test head MAE — '
+      f"micro: {head_metrics['before']['mae_micro']:.4f} → "
+      f"{head_metrics['after']['mae_micro']:.4f} "
+      f"(Δ {head_metrics['delta']['mae_micro']:+.4f})  |  "
+      f"macro: {head_metrics['before']['mae_macro']:.4f} → "
+      f"{head_metrics['after']['mae_macro']:.4f} "
+      f"(Δ {head_metrics['delta']['mae_macro']:+.4f})")
 
     target = ((output.get('refinements') or {}).get(mode)
               if isinstance(output.get('refinements'), dict) else output.get('refinement'))
@@ -482,6 +571,7 @@ def replay_result(source_pkl, output_pkl, distribution='matched_gaussian', seed=
   output_pkl.parent.mkdir(parents=True, exist_ok=True)
   with output_pkl.open('wb') as stream:
     pickle.dump(output, stream)
+  _write_fake_prediction_csvs(output, output_pkl)
 
   for mode, error in errors:
     rows[mode] = {
@@ -580,8 +670,12 @@ def _aggregate(group, output_pkls, output_dir):
       'old_model_pth': cfg.get('old_model_pth', f'old_{index}'),
       'pkl_path': str(pkl_path),
     })
-  return Path(_aggregate_model_combo_pkls(
+  output = Path(_aggregate_model_combo_pkls(
     records, str(output_dir), argparse.Namespace(), output_filename='results_fake.pkl'))
+  with output.open('rb') as stream:
+    data = pickle.load(stream)
+  _write_fake_prediction_csvs(data, output)
+  return output
 
 
 def run(input_path, distribution='matched_gaussian', seed=SEED):
@@ -594,7 +688,7 @@ def run(input_path, distribution='matched_gaussian', seed=SEED):
   fake_root = input_root / f'fake_projection_{distribution}'
   attempt_rows, output_by_source, generated = [], {}, []
 
-  for source in sources:
+  for source in tqdm(sources, desc='Testing fake projections', unit='test'):
     output = fake_root / source.relative_to(input_root)
     try:
       rows = replay_result(source, output, distribution, seed)
