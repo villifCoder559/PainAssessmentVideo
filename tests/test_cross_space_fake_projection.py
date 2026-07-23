@@ -23,6 +23,7 @@ from cross_space_fake_projection import (
   group_results,
   main as replay_main,
   replay_result,
+  run,
 )
 
 # cross_space_projection imports custom.helper, whose profiling Manager opens a
@@ -527,6 +528,12 @@ def _write_replay_fixture(folder, modes=('linear_only',), *, distance=False,
       'linear_before_pth': str(heads['before'][1]),
       'linear_after_pth': str(folder / 'missing.pt') if broken else str(heads[mode][1]),
       'config': {'mode': mode},
+      'new_test_eval': {
+        'split': 'test',
+        'labels': labels.copy(),
+        'preds_before': before_predictions.copy(),
+        'preds_after': after_predictions.copy(),
+      },
     }
 
   headline_mode = modes[0] if len(modes) == 1 else 'before'
@@ -642,6 +649,26 @@ class RetrospectiveFakeProjectionTest(unittest.TestCase):
       grouped = group_results(root, found)
       self.assertEqual(list(grouped), [root / 'cv_a', root / 'cv_b'])
 
+  def test_run_reports_progress_for_each_result(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      root = Path(tmp)
+      source = root / 'results.pkl'
+      source.write_bytes(b'original')
+      row = {
+        'refinement_mode': 'linear_only',
+        'source_pkl_path': str(source.resolve()),
+        'fake_pkl_path': str(root / 'fake.pkl'),
+        'replay_error': '',
+        'status': 'success',
+      }
+      with mock.patch('cross_space_fake_projection.tqdm', create=True,
+                      side_effect=lambda iterable, **_: iterable) as progress, \
+           mock.patch('cross_space_fake_projection.replay_result', return_value=[row]):
+        self.assertEqual(run(root), 0)
+
+      progress.assert_called_once_with(
+        [source.resolve()], desc='Testing fake projections', unit='test')
+
   def test_replays_single_mode_without_changing_source(self):
     with tempfile.TemporaryDirectory() as tmp:
       source = _write_replay_fixture(Path(tmp) / 'trial')
@@ -663,7 +690,63 @@ class RetrospectiveFakeProjectionTest(unittest.TestCase):
         replayed['new_model_tensors']['predictions'].reshape(-1),
         evaluation['fake_predictions'],
       )
+      before_path = output.parent / 'predictions_fake_before_refinement.csv'
+      alias_path = output.parent / 'predictions_fake.csv'
+      after_path = output.parent / 'predictions_fake_after_refinement_linear_only.csv'
+      self.assertTrue(before_path.is_file())
+      self.assertTrue(alias_path.is_file())
+      self.assertTrue(after_path.is_file())
+      before = pd.read_csv(before_path)
+      alias = pd.read_csv(alias_path)
+      after = pd.read_csv(after_path)
+      self.assertEqual(before.columns.tolist(), ['sample_id', 'label', 'prediction'])
+      pd.testing.assert_frame_equal(alias, before)
+      np.testing.assert_array_equal(before['sample_id'], evaluation['sample_ids'])
+      np.testing.assert_array_equal(before['label'], evaluation['labels'])
+      np.testing.assert_allclose(before['prediction'], evaluation['fake_before_predictions'])
+      np.testing.assert_allclose(after['prediction'], evaluation['fake_predictions'])
       self.assertEqual(rows[0]['status'], 'success')
+
+  def test_reports_real_new_test_head_mae_before_after_and_delta(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      source = _write_replay_fixture(Path(tmp) / 'trial')
+      output = Path(tmp) / 'fake' / source.name
+
+      with mock.patch('builtins.print') as printed:
+        rows = replay_result(source, output)
+
+      with output.open('rb') as stream:
+        replayed = pickle.load(stream)
+      metrics = replayed['fake_projection_evaluations']['linear_only'][
+        'new_test_head_metrics']
+      self.assertEqual(metrics, {
+        'before': {'mae_micro': .5, 'mae_macro': .5},
+        'after': {'mae_micro': 0., 'mae_macro': 0.},
+        'delta': {'mae_micro': -.5, 'mae_macro': -.5},
+      })
+      for key, expected in (
+          ('new_test_head_mae_micro_before', .5),
+          ('new_test_head_mae_macro_before', .5),
+          ('new_test_head_mae_micro_after', 0.),
+          ('new_test_head_mae_macro_after', 0.),
+          ('new_test_head_mae_micro_delta', -.5),
+          ('new_test_head_mae_macro_delta', -.5)):
+        self.assertEqual(rows[0][key], expected)
+      self.assertTrue(any(
+        'new-model real test head MAE' in str(call)
+        for call in printed.call_args_list))
+
+  def test_missing_real_new_test_predictions_rejects_mode(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      source = _write_replay_fixture(Path(tmp) / 'trial')
+      with source.open('rb') as stream:
+        data = pickle.load(stream)
+      del data['refinement']['new_test_eval']
+      with source.open('wb') as stream:
+        pickle.dump(data, stream)
+
+      with self.assertRaisesRegex(ReplayError, 'new_test_eval'):
+        replay_result(source, Path(tmp) / 'fake' / source.name)
 
   def test_multi_mode_headline_is_fake_before_refinement(self):
     with tempfile.TemporaryDirectory() as tmp:
@@ -680,6 +763,12 @@ class RetrospectiveFakeProjectionTest(unittest.TestCase):
         replayed['new_model_tensors']['predictions'].reshape(-1), fake[:, 0])
       self.assertEqual(set(replayed['fake_projection_evaluations']),
                        {'linear_only', 'projector_linear'})
+      for mode, evaluation in replayed['fake_projection_evaluations'].items():
+        frame = pd.read_csv(
+          output.parent / f'predictions_fake_after_refinement_{mode}.csv')
+        np.testing.assert_array_equal(frame['sample_id'], evaluation['sample_ids'])
+        np.testing.assert_array_equal(frame['label'], evaluation['labels'])
+        np.testing.assert_allclose(frame['prediction'], evaluation['fake_predictions'])
 
   def test_standalone_distance_uses_anchors_but_grid_without_anchors_fails(self):
     with tempfile.TemporaryDirectory() as tmp:
@@ -738,8 +827,123 @@ class RetrospectiveFakeProjectionTest(unittest.TestCase):
       self.assertEqual(replay_main([str(root / 'cv')]), 0)
       summary = pd.read_csv(root / 'cv' / 'aggregated_summary_fake.csv')
       self.assertEqual(summary['summary_row'].tolist(), ['MEAN', 'STD'])
+      self.assertEqual(summary['new_test_head_mae_micro_before'].tolist(), [.5, 0.])
+      self.assertEqual(summary['new_test_head_mae_micro_after'].tolist(), [0., 0.])
+      self.assertEqual(summary['new_test_head_mae_micro_delta'].tolist(), [-.5, 0.])
       self.assertTrue((root / 'cv' / 'fake_projection_matched_gaussian'
                        / 'aggregated_fake' / 'results_fake.pkl').is_file())
+      aggregate_dir = (root / 'cv' / 'fake_projection_matched_gaussian'
+                       / 'aggregated_fake')
+      aggregate = pickle.loads((aggregate_dir / 'results_fake.pkl').read_bytes())
+      evaluation = aggregate['fake_projection_evaluations']['linear_only']
+      before = pd.read_csv(aggregate_dir / 'predictions_fake_before_refinement.csv')
+      pd.testing.assert_frame_equal(
+        pd.read_csv(aggregate_dir / 'predictions_fake.csv'), before)
+      np.testing.assert_array_equal(before['sample_id'], evaluation['sample_ids'])
+      np.testing.assert_array_equal(before['label'], evaluation['labels'])
+      after = pd.read_csv(
+        aggregate_dir / 'predictions_fake_after_refinement_linear_only.csv')
+      np.testing.assert_allclose(after['prediction'], evaluation['fake_predictions'])
+
+  def test_aggregate_skips_mode_csv_with_partial_sample_coverage(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      root = Path(tmp)
+      modes = ('linear_only', 'projector_linear')
+      _write_replay_fixture(root / 'cv' / 'trial0001', modes=modes)
+      partial = _write_replay_fixture(root / 'cv' / 'trial0002', modes=modes)
+      data = pickle.loads(partial.read_bytes())
+      data['refinements']['projector_linear']['linear_after_pth'] = str(
+        partial.parent / 'missing.pt')
+      partial.write_bytes(pickle.dumps(data))
+
+      self.assertEqual(replay_main([str(root / 'cv')]), 0)
+
+      aggregate_dir = (root / 'cv' / 'fake_projection_matched_gaussian'
+                       / 'aggregated_fake')
+      self.assertTrue((aggregate_dir /
+                       'predictions_fake_after_refinement_linear_only.csv').is_file())
+      self.assertFalse((aggregate_dir /
+                        'predictions_fake_after_refinement_projector_linear.csv').exists())
+
+  def test_mode_dashboards_use_after_refinement_predictions_and_metrics(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      root = Path(tmp)
+      source = _write_replay_fixture(
+        root / 'trial', modes=('linear_only', 'projector_linear'))
+      output = root / 'fake' / source.name
+      replay_result(source, output)
+      replayed = pickle.loads(output.read_bytes())
+
+      with mock.patch('cross_space_logs.plot_dashboard') as dashboard:
+        generate_logs(str(output), skip_umap=True, out_dir_override=root / 'logs')
+
+      mode_calls = {
+        call.kwargs.get('filename_suffix', ''): call
+        for call in dashboard.call_args_list
+      }
+      self.assertIn('', mode_calls)
+      for mode, evaluation in replayed['fake_projection_evaluations'].items():
+        call = mode_calls[f'_{mode}']
+        expected = evaluation['fake_predictions']
+        np.testing.assert_allclose(call.args[0], expected)
+        self.assertAlmostEqual(call.args[4], float(np.mean(np.abs(expected - evaluation['labels']))))
+        self.assertAlmostEqual(call.args[5], _ccc(evaluation['labels'], expected))
+        self.assertEqual(call.kwargs['projected_stage_name'], 'Refined (after refinement)')
+
+  def test_real_aggregate_mode_dashboard_requires_aligned_subtrials(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      root = Path(tmp)
+      subtrial = _write_replay_fixture(
+        root / 'subtrial', modes=('linear_only', 'projector_linear'))
+      record = {
+        'new_idx': 0, 'old_idx': 0, 'new_model_pth': 'new',
+        'old_model_pth': 'old', 'pkl_path': str(subtrial),
+      }
+      aggregate_path = Path(_aggregate_model_combo_pkls(
+        [record], str(root / 'aggregate'), argparse.Namespace()))
+
+      with mock.patch('cross_space_logs.plot_dashboard') as dashboard:
+        generate_logs(str(aggregate_path), skip_umap=True, out_dir_override=root / 'logs_ok')
+      mode_call = next(
+        call for call in dashboard.call_args_list
+        if call.kwargs.get('filename_suffix') == '_linear_only')
+      aggregate = pickle.loads(aggregate_path.read_bytes())
+      np.testing.assert_allclose(
+        mode_call.args[0], aggregate['new_model_tensors']['labels'])
+      self.assertEqual(mode_call.args[4], 0.)
+      self.assertEqual(mode_call.args[5], 1.)
+
+      subtrial_data = pickle.loads(subtrial.read_bytes())
+      subtrial_data['new_model_tensors']['sample_ids'][0] = 999
+      subtrial.write_bytes(pickle.dumps(subtrial_data))
+      with mock.patch('cross_space_logs.plot_dashboard') as dashboard, \
+           mock.patch('builtins.print') as printed:
+        generate_logs(str(aggregate_path), skip_umap=True, out_dir_override=root / 'logs_bad')
+      self.assertFalse(any(
+        call.kwargs.get('filename_suffix') == '_linear_only'
+        for call in dashboard.call_args_list))
+      self.assertTrue(any('misaligned' in str(call).lower()
+                          for call in printed.call_args_list))
+
+  def test_real_single_mode_aggregate_skips_unavailable_baseline_dashboard(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      root = Path(tmp)
+      subtrial = _write_replay_fixture(root / 'subtrial')
+      aggregate_path = Path(_aggregate_model_combo_pkls([{
+        'new_idx': 0, 'old_idx': 0, 'new_model_pth': 'new',
+        'old_model_pth': 'old', 'pkl_path': str(subtrial),
+      }], str(root / 'aggregate'), argparse.Namespace()))
+      subtrial_data = pickle.loads(subtrial.read_bytes())
+      subtrial_data['new_model_tensors']['sample_ids'][0] = 999
+      subtrial.write_bytes(pickle.dumps(subtrial_data))
+
+      with mock.patch('cross_space_logs.plot_dashboard') as dashboard, \
+           mock.patch('builtins.print') as printed:
+        generate_logs(str(aggregate_path), skip_umap=True, out_dir_override=root / 'logs')
+
+      dashboard.assert_not_called()
+      self.assertTrue(any('baseline dashboard' in str(call).lower()
+                          for call in printed.call_args_list))
 
   def test_fake_vs_real_dashboard_is_written_for_one_mode(self):
     evaluation = {
