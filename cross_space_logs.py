@@ -63,6 +63,9 @@ Plots generated:
         confusion_matrix_all_stages.png       — combined 2×3 comparison of all of the above
                                                 (stages absent for the run are blanked)
   5.  umap_all_projected.png / umap_all_refined.png — 1×2 UMAP: colored by label and by subject
+      umap_space_comparison_*.png — 2×2 UMAP comparing aligned old-model test
+                                      embeddings before and after projection, colored by
+                                      label and by subject
   6.  anchor_weights.png            — weight entropy histogram + top-20 anchor usage
   7.  anchor_umap.png               — old vs new anchor embeddings in UMAP space
   9.  anchor_norm_comparison.png    — 3-panel: scatter (old_norm vs new_norm), overlaid
@@ -1807,6 +1810,81 @@ def plot_umap(embeddings, labels, sample_ids, subject_map, out_dir, run_label: s
   fig.savefig(path, dpi=150)
   plt.close(fig)
   print(f'Saved: {path}')
+
+
+def plot_umap_space_comparison(old_embeddings, projected_embeddings, labels, sample_ids,
+                               old_sample_ids, subject_map, out_dir, stage_title, filename_suffix,
+                               run_label: str = ''):
+  """Compare aligned source-test samples before and after projection in a 2x2 UMAP."""
+  if old_embeddings is None or projected_embeddings is None:
+    print('[WARN] UMAP space comparison: embeddings unavailable — skipped.')
+    return
+  old_embeddings = np.asarray(old_embeddings, dtype=np.float32)
+  projected_embeddings = np.asarray(projected_embeddings, dtype=np.float32)
+  labels = np.asarray(labels, dtype=np.float32).reshape(-1)
+  sample_ids = np.asarray(sample_ids).reshape(-1)
+  old_sample_ids = np.asarray(old_sample_ids).reshape(-1)
+  counts = (
+    len(old_embeddings), len(projected_embeddings), len(labels),
+    len(sample_ids), len(old_sample_ids),
+  )
+  if len(set(counts)) != 1:
+    print(f'[WARN] UMAP space comparison: sample count mismatch {counts} — skipped.')
+    return
+  if not np.array_equal(old_sample_ids, sample_ids):
+    print('[WARN] UMAP space comparison: sample ID mismatch — skipped.')
+    return
+
+  print(f'Computing old-vs-projected UMAP comparison ({stage_title})...')
+  try:
+    old_reduced = _compute_umap(old_embeddings)
+    projected_reduced = _compute_umap(projected_embeddings)
+  except Exception as exc:
+    print(f'[WARN] UMAP space comparison failed: {exc} — skipped.')
+    return
+  subject_ids = np.array([subject_map.get(int(sid), -1) for sid in sample_ids])
+  n_subjects = len(np.unique(subject_ids))
+  subject_cmap = (
+    'tab10' if n_subjects <= 10 else ('tab20' if n_subjects <= 20 else 'nipy_spectral')
+  )
+
+  fig, axes = plt.subplots(2, 2, figsize=(20, 16))
+  spaces = (
+    ('Old model feature space', old_reduced),
+    ('Projected new-model feature space', projected_reduced),
+  )
+  for col, (space_title, reduced) in enumerate(spaces):
+    label_scatter = axes[0, col].scatter(
+      reduced[:, 0], reduced[:, 1], c=labels, cmap='jet',
+      vmin=float(labels.min()), vmax=float(labels.max()), s=10, alpha=0.7,
+    )
+    fig.colorbar(label_scatter, ax=axes[0, col], label='Pain label')
+    axes[0, col].set_title(f'{space_title} — by pain label')
+
+    subject_scatter = axes[1, col].scatter(
+      reduced[:, 0], reduced[:, 1], c=subject_ids, cmap=subject_cmap,
+      vmin=float(subject_ids.min()), vmax=float(subject_ids.max()), s=10, alpha=0.7,
+    )
+    fig.colorbar(subject_scatter, ax=axes[1, col], label='Subject')
+    axes[1, col].set_title(f'{space_title} — by subject')
+
+  for ax in axes.flat:
+    ax.set_xlabel('UMAP 1')
+    ax.set_ylabel('UMAP 2')
+  suffix = f' | {run_label}' if run_label else ''
+  fig.suptitle(f'Old-model test embeddings: old vs projected space — {stage_title}{suffix}',
+               fontsize=14, fontweight='bold')
+  plt.tight_layout(rect=(0, 0, 1, 0.96))
+  path = os.path.join(out_dir, f'umap_space_comparison{filename_suffix}.png')
+  fig.savefig(path, dpi=150)
+  plt.close(fig)
+  print(f'Saved: {path}')
+
+
+def _umap_comparison_embedding(mode, projected_embedding, refined_embeddings_by_mode):
+  """Return the mode's embedding matrix; linear-only refinement leaves it unchanged."""
+  return (projected_embedding if mode == 'linear_only'
+          else refined_embeddings_by_mode.get(mode))
 
 
 def plot_umap_split_impact(projected_emb, projected_labels, split_emb, split_labels,
@@ -6718,6 +6796,12 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
   if not is_aggregated and not skip_umap:
     plot_umap(proj_emb, labels, sample_ids, subject_map, out_dir, run_label=_with_src(run_label),
               filename_suffix='_projected')
+    plot_umap_space_comparison(
+      old_emb_src, proj_emb, labels, sample_ids, old_t['sample_ids'], subject_map, out_dir,
+      stage_title=('After projection (before refinement)' if has_refinement
+                   else 'After projection (new-model space)'),
+      filename_suffix='_projected', run_label=_with_src(run_label),
+    )
     try:
       split_data = _load_split_embeddings(data, fmt, pkl_path, SPLIT_TO_COMPARE, out_dir)
       if split_data is not None:
@@ -6750,6 +6834,27 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
     rl_src = _with_src(rl)   # rl + source dataset·split line, for the non-CM plots
     msfx = _mode_sfx(_mode)
     refined_emb = refined_emb_by_mode.get(_mode)
+    comparison_emb = _umap_comparison_embedding(
+      _mode, proj_emb, refined_emb_by_mode)
+    if not skip_umap:
+      if comparison_emb is None:
+        print(f'[WARN] UMAP space comparison ({_mode or "refinement"}): '
+              'projected embeddings unavailable — skipped.')
+      else:
+        comparison_title = (
+          'After linear_only refinement (head refined; projector unchanged)'
+          if _mode == 'linear_only' else f'After {_mode} refinement'
+        )
+        try:
+          plot_umap_space_comparison(
+            old_emb_src, comparison_emb, labels, sample_ids, old_t['sample_ids'],
+            subject_map, out_dir,
+            stage_title=comparison_title,
+            filename_suffix=f'_refined_{_mode}' if _mode else '_refined',
+            run_label=rl_src,
+          )
+        except Exception as exc:
+          print(f'[WARN] UMAP space comparison ({_mode or "refinement"}) failed: {exc}')
     if refined_emb is not None:
       if not skip_umap:
         try:
