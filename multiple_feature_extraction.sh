@@ -9,6 +9,8 @@
 #   ./multiple_feature_extraction.sh 0 5 --dataset biovid --model G all
 #   ./multiple_feature_extraction.sh 0 5 --dataset biovid --model G --prefix my_feats_G --emb_red none shift
 #   ./multiple_feature_extraction.sh 0 5 --dataset mintpain --model S all
+#   ./multiple_feature_extraction.sh 0 5 --dataset xite --split train --model S all
+#   ./multiple_feature_extraction.sh 0 1 --dataset xite --split test --model S shift
 
 # same saving_folder_path is managed in extract_feature.py to avoid overwriting features
 # when multiple augmentations are applied together (adds $int_id to the path)
@@ -16,11 +18,13 @@ GPU_ID=$1
 N_RUNS=$2
 shift 2
 
-# Parse named flags --dataset, --model, --prefix, --emb_red; remaining args are configs
+# Parse named flags --dataset, --model, --prefix, --emb_red, --split; remaining args are configs
 DATASET="biovid"
 MODEL="S"
 PREFIX_OVERRIDE=""
 EMB_RED_OVERRIDE=""
+SPLIT="train"
+SPLIT_SET=0
 CONFIGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -28,9 +32,15 @@ while [[ $# -gt 0 ]]; do
     --model)   MODEL="$2";            shift 2 ;;
     --prefix)  PREFIX_OVERRIDE="$2";  shift 2 ;;
     --emb_red) EMB_RED_OVERRIDE="$2"; shift 2 ;;
+    --split)   SPLIT="$2"; SPLIT_SET=1; shift 2 ;;
     *)         CONFIGS+=("$1"); shift ;;
   esac
 done
+
+if [ "$DATASET" != "xite" ] && [ "$SPLIT_SET" -eq 1 ]; then
+  echo "--split is only valid with --dataset xite" >&2
+  exit 1
+fi
 
 # Derive dataset-specific paths
 case "$DATASET" in
@@ -66,8 +76,24 @@ case "$DATASET" in
     SAVING_NAME_PREFIX="all_pooled_features_${DATASET_TAG}"
     EMB_RED="all"
     ;;
+  xite)
+    PATH_DATASET="XITE/video/video_frontalized"
+    case "$SPLIT" in
+      train) PATH_LABELS="XITE/starting_point/train_samples.csv" ;;
+      test)  PATH_LABELS="XITE/starting_point/test_samples.csv" ;;
+      all)   PATH_LABELS="XITE/starting_point/samples.csv" ;;
+      *)
+        echo "Unknown XITE split: $SPLIT (valid: train, test, all)" >&2
+        exit 1
+        ;;
+    esac
+    SAVING_BASE="XITE/video/features"
+    DATASET_TAG="XITE"
+    SAVING_NAME_PREFIX="spatial_pooled_features_${DATASET_TAG}_B_last143_stride16_interpol_${SPLIT}"
+    EMB_RED="spatial"
+    ;;
   *)
-    echo "Unknown dataset: $DATASET (valid: biovid, unbc, mintpain, agedb)"
+    echo "Unknown dataset: $DATASET (valid: biovid, unbc, mintpain, agedb, xite)"
     exit 1
     ;;
 esac
@@ -91,6 +117,15 @@ case "$MODEL" in
     exit 1
     ;;
 esac
+
+if [ "$DATASET" = "xite" ]; then
+  echo "Checking XITE frontalized videos for split: $SPLIT"
+  if ! python3 XITE/check_frontalized_videos.py \
+      --labels "$PATH_LABELS" --clip-length 16; then
+    echo "XITE frontalized-video validation failed; repair the reported videos before extraction." >&2
+    exit 1
+  fi
+fi
 
 ALL_CONFIGS=(shift jitter gaussian zoom jitter_shift rotation_zoom shift_hflip)
 
