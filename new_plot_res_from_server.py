@@ -193,6 +193,214 @@ def get_grouped_losses(data, config):
       if isinstance(values, list) and values:
         dict_grouped_losses[k_fold][key] = np.mean(values)
   return dict_grouped_losses
+
+
+def _group_results_by_k_fold(results):
+  """Group cross-validation entries by outer fold and combine final entries."""
+  grouped = {}
+  real_k_folds = sorted({
+    int(key.split('_')[0][1:])
+    for key in results
+    if '_final' not in key
+  })
+  for k_fold in real_k_folds:
+    keys = [
+      key for key in results
+      if key.startswith(f'k{k_fold}_') and '_final' not in key
+    ]
+    grouped[f'k{k_fold}'] = {key: results[key] for key in keys}
+
+  final_keys = [key for key in results if '_final' in key]
+  if final_keys:
+    grouped['final'] = {key: results[key] for key in final_keys}
+  return grouped
+
+
+def _confmat_accuracy_record(confmat, observed_labels):
+  """Return labels, per-class recall, and row supports for one confusion matrix."""
+  matrix = confmat.confmat if hasattr(confmat, 'confmat') else confmat
+  matrix = torch.as_tensor(matrix).float()
+  labels = confusion_axis_labels(matrix, observed_labels)
+  supports = matrix.sum(dim=1)
+  valid = supports > 0
+  accuracies = torch.diag(matrix)[valid] / supports[valid]
+  labels = [label for label, keep in zip(labels, valid.tolist()) if keep]
+  return labels, accuracies.tolist(), supports[valid].tolist()
+
+
+def _value_at_epoch(values, epoch):
+  if values is None:
+    return None
+  if isinstance(values, dict):
+    return values.get(str(epoch), values.get(epoch))
+  try:
+    return values[epoch]
+  except (IndexError, KeyError, TypeError):
+    return None
+
+
+def _stored_accuracy_record(accuracy, labels, counts):
+  """Build a weighted-mean record from legacy per-class accuracy fields."""
+  if accuracy is None or labels is None or counts is None:
+    return None
+  labels = [label.item() if hasattr(label, 'item') else label for label in labels]
+  values = np.asarray(accuracy, dtype=float).reshape(-1)
+  if isinstance(counts, dict):
+    supports = [counts.get(label) for label in labels]
+  else:
+    supports = np.asarray(counts, dtype=float).reshape(-1).tolist()
+  if not (len(labels) == len(values) == len(supports)):
+    return None
+
+  valid = [
+    idx for idx, (value, support) in enumerate(zip(values, supports))
+    if support is not None and float(support) > 0 and np.isfinite(value)
+  ]
+  if not valid:
+    return None
+  return (
+    [labels[idx] for idx in valid],
+    [values[idx] for idx in valid],
+    [supports[idx] for idx in valid],
+  )
+
+
+def get_grouped_accuracies(data):
+  """Return sample-pooled per-class accuracy for each grouped fold and split."""
+  grouped_accuracies = {}
+  for k_fold, sub_folds in _group_results_by_k_fold(data['results']).items():
+    records = {'train': [], 'val': [], 'test': []}
+    is_final = k_fold == 'final'
+    for result in sub_folds.values():
+      train_val = result.get('train_val', {})
+      best_epoch = train_val.get('best_model_idx')
+      if best_epoch is not None:
+        for split in ('train', 'val'):
+          if split == 'val' and is_final:
+            continue
+          matrices = train_val.get(f'{split}_confusion_matricies', {})
+          matrix = _value_at_epoch(matrices, best_epoch)
+          labels = train_val.get(f'{split}_unique_y')
+          if matrix is not None and labels is not None:
+            records[split].append(_confmat_accuracy_record(matrix, labels))
+          else:
+            record = _stored_accuracy_record(
+              _value_at_epoch(
+                train_val.get(f'list_{split}_accuracy_per_class'), best_epoch
+              ),
+              labels,
+              train_val.get(f'count_y_{split}'),
+            )
+            if record is not None:
+              records[split].append(record)
+
+      if is_final:
+        test = result.get('test', {})
+        matrix = test.get('test_confusion_matrix')
+        labels = test.get('test_unique_y')
+        if matrix is not None and labels is not None:
+          records['test'].append(_confmat_accuracy_record(matrix, labels))
+        else:
+          record = _stored_accuracy_record(
+            test.get('test_accuracy_per_class'),
+            labels,
+            test.get('test_count_y'),
+          )
+          if record is not None:
+            records['test'].append(record)
+
+    grouped_accuracies[k_fold] = {
+      split: weighted_means_by_label(split_records) if split_records else {}
+      for split, split_records in records.items()
+    }
+  return grouped_accuracies
+
+
+def _plot_grouped_accuracy_per_class(ax, accuracy_by_class, title):
+  """Plot fractional per-class accuracies as percentages on ``ax``."""
+  labels = sorted(accuracy_by_class)
+  percentages = [float(accuracy_by_class[label]) * 100 for label in labels]
+  positions = np.arange(len(labels))
+  bars = ax.bar(positions, percentages, width=0.6, edgecolor='black')
+  ax.bar_label(
+    bars,
+    labels=[f'{value:.1f}%' for value in percentages],
+    fontsize=9,
+    padding=2,
+  )
+  ax.set_xticks(positions)
+  ax.set_xticklabels([str(label) for label in labels])
+  ax.set_ylim(0, 100)
+  ax.set_yticks(np.arange(0, 101, 10))
+  ax.set_xlabel('Class')
+  ax.set_ylabel('Accuracy (%)')
+  ax.set_title(title)
+  ax.yaxis.grid(True, linestyle='--', which='major', color='grey', alpha=0.5)
+
+
+def plot_grouped_accuracy_per_class(
+  data, run_output_folder, test_id, additional_info=''
+):
+  """Save grouped TRAIN/VAL or TRAIN/TEST per-class accuracy figures."""
+  unsupported_criteria = (
+    losses.RESupConLoss,
+    losses.RnCLoss,
+    losses.RnCLossV2,
+    losses.DisentangledLoss,
+  )
+  if isinstance(data['config']['criterion'], unsupported_criteria):
+    return
+  if 'unbc' in ''.join(data['config']['path_csv_dataset']).lower():
+    return
+
+  grouped_output_folder = os.path.join(run_output_folder, test_id)
+  os.makedirs(grouped_output_folder, exist_ok=True)
+  grouped_accuracies = get_grouped_accuracies(data)
+
+  for k_fold, split_accuracies in grouped_accuracies.items():
+    requested_splits = (
+      (('TRAIN', 'train'), ('TEST', 'test'))
+      if k_fold == 'final'
+      else (('TRAIN', 'train'), ('VAL', 'val'))
+    )
+    available_splits = [
+      (display_name, split_accuracies[split_name])
+      for display_name, split_name in requested_splits
+      if split_accuracies[split_name]
+    ]
+    missing_splits = [
+      display_name
+      for display_name, split_name in requested_splits
+      if not split_accuracies[split_name]
+    ]
+    if missing_splits:
+      print(
+        f'[skip] grouped per-class accuracy split(s) for {test_id}/{k_fold}: '
+        f'{", ".join(missing_splits)} data unavailable'
+      )
+    if not available_splits:
+      continue
+
+    fig, axes = plt.subplots(
+      len(available_splits), 1,
+      figsize=(14, 4.5 * len(available_splits)),
+      squeeze=False,
+    )
+    for ax, (split_name, accuracy_by_class) in zip(
+      axes.flatten(), available_splits
+    ):
+      _plot_grouped_accuracy_per_class(
+        ax,
+        accuracy_by_class,
+        f'Grouped {split_name} Accuracy per Class - {k_fold} - {test_id}',
+      )
+
+    fig.tight_layout()
+    fig.savefig(os.path.join(
+      grouped_output_folder,
+      f'{test_id}{additional_info}_grouped_accuracy_per_class_{k_fold}.png',
+    ))
+    plt.close(fig)
         
     
 def plot_grouped_k_fold(data, run_output_folder, test_id, additional_info='', plot_type='loss', group_folds=True):
@@ -2178,6 +2386,7 @@ def _process_single_run(args):
     plot_separated_losses_adversarial(data, output_root, test_id)
     plot_hsic_per_epoch(data, output_root, test_id)
     if not plot_only_loss:
+      plot_grouped_accuracy_per_class(data, output_root, test_id)
       plot_grouped_confusion_matrix(data, output_root, test_id)
       plot_confusion_matrices(data, output_root, test_id)
       plot_lr_wd_across_epochs(data, output_root, test_id)
