@@ -178,3 +178,6 @@ DFER_all_*
 unbc_dfer_*
 PEMF/*
 z_latex_tables
+XITE/*
+!XITE/check_frontalized_videos.py
+!XITE/DATASET_STRUCTURE.md
