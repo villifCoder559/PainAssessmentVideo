@@ -136,6 +136,8 @@ def set_step_shift(folder_feature):
     step_shift = 50015
   elif 'agedb' in folder_feature.lower(): # AgeDB dataset, sample_id starts from 1 
     step_shift = 16488
+  elif 'xite' in folder_feature.lower(): # XITE challenge train + test IDs, sample_id starts from 1
+    step_shift = 3597
   else:  
     raise ValueError(f'Dataset not recognized in folder_feature: {folder_feature}')
 
