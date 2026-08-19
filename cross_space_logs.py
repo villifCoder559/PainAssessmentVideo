@@ -5178,32 +5178,73 @@ def plot_refinement_mae_per_class(after_preds, before_preds, old_preds, labels,
   print(f'Saved: {path}')
 
 
-def _new_model_pth_from_config(config_path, search_root):
+def _model_pth_from_config(config_path, search_root, key, *, run_local=False):
   """
-  Read new_model_pth from a cross_space_projection --config YAML.
+  Read a model checkpoint path from a cross_space_projection --config YAML.
 
-  Recovers the new-model checkpoint for grid searches launched via `--config <yaml>`
-  (whose best_config.txt script_cmd carries no explicit --new_model_pth token). The
-  YAML path recorded in script_cmd is relative to the launch CWD (repo root); it is
-  also tried relative to the search root as a fallback for moved run folders.
+  Legacy --config paths are tried as recorded and relative to the search root.
+  Snapshot metadata is run-local, so relative paths are resolved only against the
+  durable search root.
 
   Args:
-    config_path (str): The --config value parsed from best_config.txt's script_cmd.
-    search_root (str): The grid-search root dir (fallback base for config_path).
+    config_path (str): YAML path from best_config.txt.
+    search_root (str): The grid-search root dir.
+    key (str): YAML key to read (new_model_pth or old_model_pth).
+    run_local (bool): Resolve a relative path strictly within search_root.
 
   Returns:
-    str | None: The YAML's new_model_pth, or None when the YAML/key is missing.
+    str | None: The YAML checkpoint value, or None when the YAML/key is missing.
   """
   import yaml
-  for candidate in (config_path, os.path.join(search_root, config_path)):
+  if not config_path:
+    return None
+  if run_local and config_path and not os.path.isabs(config_path):
+    candidates = (os.path.join(search_root, config_path),)
+  else:
+    candidates = (config_path, os.path.join(search_root, config_path))
+  for candidate in candidates:
     if candidate and os.path.isfile(candidate):
       try:
         with open(candidate) as f:
           ycfg = yaml.safe_load(f) or {}
-        return ycfg.get('new_model_pth')
+        return ycfg.get(key)
       except Exception as exc:
-        print(f'[cross_space_logs] failed to read new_model_pth from {candidate}: {exc}')
+        print(f'[cross_space_logs] failed to read {key} from {candidate}: {exc}')
         return None
+  return None
+
+
+def _new_model_pth_from_config(config_path, search_root):
+  """Backward-compatible wrapper for reading new_model_pth from a launch YAML."""
+  return _model_pth_from_config(config_path, search_root, 'new_model_pth')
+
+
+def _model_pth_from_best_config(search_root, key):
+  """Resolve a grid checkpoint via explicit CLI, snapshot, then legacy YAML."""
+  cfg_txt = os.path.join(search_root, 'best_config.txt')
+  if not os.path.isfile(cfg_txt):
+    return None
+  config_path = None
+  snapshot_path = None
+  explicit_flag = f'--{key}'
+  with open(cfg_txt) as f:
+    for line in f:
+      if line.startswith('script_cmd:'):
+        tokens = line.split()
+        for i, tok in enumerate(tokens):
+          if tok == explicit_flag and i + 1 < len(tokens):
+            return tokens[i + 1]
+          if tok == '--config' and i + 1 < len(tokens):
+            config_path = tokens[i + 1]
+      elif line.startswith('config_snapshot:'):
+        snapshot_path = line.partition(':')[2].strip()
+  if snapshot_path:
+    snapshot_value = _model_pth_from_config(
+      snapshot_path, search_root, key, run_local=True)
+    if snapshot_value is not None:
+      return snapshot_value
+  if config_path:
+    return _model_pth_from_config(config_path, search_root, key)
   return None
 
 
@@ -5214,8 +5255,8 @@ def _resolve_new_model_pth(data, fmt, pkl_path):
   Standalone pkls store it under config_cross_space_projection. Grid trial
   pkls do not — for those we parse the search root's best_config.txt to
   recover --new_model_pth from the saved script_cmd line. Searches launched from
-  a YAML (--config <yaml>) carry no --new_model_pth token, so as a fallback the
-  referenced YAML's top-level new_model_pth key is read instead.
+  a YAML (--config <yaml>) carry no --new_model_pth token, so the run-local
+  config_snapshot is consulted before the referenced legacy YAML path.
 
   Args:
     data     (dict): Deserialized pkl contents.
@@ -5229,25 +5270,7 @@ def _resolve_new_model_pth(data, fmt, pkl_path):
     return data.get('config_cross_space_projection', {}).get('new_model_pth')
 
   search_root = os.path.dirname(os.path.dirname(pkl_path))
-  cfg_txt = os.path.join(search_root, 'best_config.txt')
-  if not os.path.isfile(cfg_txt):
-    return None
-  config_path = None
-  with open(cfg_txt) as f:
-    for line in f:
-      if not line.startswith('script_cmd:'):
-        continue
-      tokens = line.split()
-      for i, tok in enumerate(tokens):
-        if tok == '--new_model_pth' and i + 1 < len(tokens):
-          return tokens[i + 1]
-        if tok == '--config' and i + 1 < len(tokens):
-          config_path = tokens[i + 1]
-  # Grid searches launched from a YAML (--config) carry no --new_model_pth token;
-  # recover it from the YAML's top-level new_model_pth key.
-  if config_path:
-    return _new_model_pth_from_config(config_path, search_root)
-  return None
+  return _model_pth_from_best_config(search_root, 'new_model_pth')
 
 
 def _resolve_new_features_path(data, fmt, new_model_pth, pkl_path=None):
@@ -5298,20 +5321,7 @@ def _resolve_new_features_path(data, fmt, new_model_pth, pkl_path=None):
     new_features_native = new_cfg['model_advanced_params']['features_folder_saving_path']
     old_model_pth = data.get('config_cross_space_projection', {}).get('old_model_pth')
     if old_model_pth is None:
-      # Try parsing search root's best_config.txt
-      search_root = os.path.dirname(os.path.dirname(pkl_path)) if pkl_path else ''
-      cfg_txt = os.path.join(search_root, 'best_config.txt') if search_root else ''
-      old_model_pth = None
-      if cfg_txt and os.path.isfile(cfg_txt):
-        with open(cfg_txt) as f:
-          for line in f:
-            if line.startswith('script_cmd:'):
-              tokens = line.split()
-              for i, tok in enumerate(tokens):
-                if tok == '--old_model_pth' and i + 1 < len(tokens):
-                  old_model_pth = tokens[i + 1]
-                  break
-              break
+      old_model_pth = _resolve_old_model_pth(data, fmt, pkl_path)
     if old_model_pth is None:
       return None
     old_cfg = _load_config(old_model_pth)
@@ -5334,9 +5344,9 @@ def _resolve_old_model_pth(data, fmt, pkl_path):
 
   Mirrors _resolve_new_model_pth for the old model: standalone pkls store it under
   config_cross_space_projection; grid trial pkls recover --old_model_pth from the
-  search root's best_config.txt script_cmd, falling back to the referenced
-  --config YAML's top-level old_model_pth key (searches launched from a YAML carry
-  no explicit --old_model_pth token).
+  search root's best_config.txt script_cmd, falling back first to the run-local
+  config_snapshot and then to the referenced --config YAML's top-level
+  old_model_pth key.
 
   Args:
     data     (dict): Deserialized pkl contents.
@@ -5351,31 +5361,7 @@ def _resolve_old_model_pth(data, fmt, pkl_path):
   if not pkl_path:
     return None
   search_root = os.path.dirname(os.path.dirname(pkl_path))
-  cfg_txt = os.path.join(search_root, 'best_config.txt')
-  if not os.path.isfile(cfg_txt):
-    return None
-  config_path = None
-  with open(cfg_txt) as f:
-    for line in f:
-      if not line.startswith('script_cmd:'):
-        continue
-      tokens = line.split()
-      for i, tok in enumerate(tokens):
-        if tok == '--old_model_pth' and i + 1 < len(tokens):
-          return tokens[i + 1]
-        if tok == '--config' and i + 1 < len(tokens):
-          config_path = tokens[i + 1]
-  if config_path:
-    import yaml
-    for candidate in (config_path, os.path.join(search_root, config_path)):
-      if candidate and os.path.isfile(candidate):
-        try:
-          with open(candidate) as f:
-            return (yaml.safe_load(f) or {}).get('old_model_pth')
-        except Exception as exc:
-          print(f'[cross_space_logs] failed to read old_model_pth from {candidate}: {exc}')
-          return None
-  return None
+  return _model_pth_from_best_config(search_root, 'old_model_pth')
 
 
 @lru_cache(maxsize=None)
