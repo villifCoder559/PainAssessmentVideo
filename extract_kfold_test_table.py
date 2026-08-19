@@ -35,7 +35,7 @@ def recompute_raw_fold_metrics(pkl_path: str, data: dict, final_keys: list, ffsp
 
   Returns:
     Dict keyed by fold with raw MAE plus freshly evaluated fold/subject L1
-    and accuracy metrics.
+    and fold/class/subject accuracy metrics.
   """
   import custom.helper as helper
   from custom.model import Model_Advanced
@@ -103,6 +103,7 @@ def recompute_raw_fold_metrics(pkl_path: str, data: dict, final_keys: list, ffsp
       'raw_mae_per_class': per_class,
       'recomputed_l1': float(dict_test['test_l1_error']),
       'recomputed_accuracy': float(dict_test['test_accuracy']),
+      'recomputed_accuracy_per_class': to_numpy(dict_test['test_accuracy_per_class']).astype(float),
       'recomputed_loss_per_subject': to_numpy(dict_test['test_loss_per_subject']).astype(float),
       'recomputed_accuracy_per_subject': to_numpy(dict_test['test_accuracy_per_subject']).astype(float),
       'recomputed_subject_ids': to_numpy(dict_test['test_unique_subject_ids']),
@@ -113,26 +114,35 @@ def recompute_raw_fold_metrics(pkl_path: str, data: dict, final_keys: list, ffsp
   return out
 
 
-def extract_table(pkl_path: str, raw: bool = False, ffsp_override: str = None) -> pd.DataFrame:
+def extract_table(
+  pkl_path: str,
+  raw: bool = False,
+  ffsp_override: str = None,
+  metric: str = 'mae',
+) -> pd.DataFrame:
   """
   Build a per-fold test summary table from a k_fold_results.pkl file.
 
   Args:
     pkl_path:      Path to k_fold_results.pkl produced by train_model.py.
     raw:           If True, re-run each fold's best checkpoint to compute per-class MAE
-                   from raw per-sample predictions (same pipeline as test_l1_error).
+                   or accuracy from fresh predictions.
     ffsp_override: Optional replacement for the cached-features folder path.
+    metric:        Metric to report: 'mae' or 'accuracy'. Accuracy is reported
+                   as a percentage.
 
   Returns:
-    DataFrame with one row per fold (columns: fold, test_MAE, MAE_class_<c>,
-    n_class_<c>, n_samples, n_subjects; plus test_MAE_raw when raw=True)
-    plus mean/std summary rows.
+    DataFrame with one row per fold, class/sample/subject counts, and mean/std
+    summary rows. Metric columns depend on ``metric`` and ``raw``.
   """
+  if metric not in ('mae', 'accuracy'):
+    raise ValueError("metric must be 'mae' or 'accuracy'")
+
   with open(pkl_path, 'rb') as f:
     data = pickle.load(f)
 
   criterion = str(data.get('config', {}).get('criterion', ''))
-  if 'L1Loss' not in criterion:
+  if metric == 'mae' and 'L1Loss' not in criterion:
     print(f"WARNING: criterion is {criterion!r}, not L1Loss -> per-class columns are per-class loss, not MAE.")
 
   final_keys = sorted(
@@ -145,10 +155,8 @@ def extract_table(pkl_path: str, raw: bool = False, ffsp_override: str = None) -
   for key in final_keys:
     test = data['results'][key]['test']
     fold = key.split('_')[0]
-    mae = float(test['test_l1_error'])
     classes = to_numpy(test['test_unique_y']).astype(int)
     count_y = to_numpy(test['test_count_y']).astype(int)
-    loss_per_class = to_numpy(test['test_loss_per_class']).astype(float)
     count_subjects = to_numpy(test['test_count_subject_ids']).astype(int)
 
     n_samples = int(count_y.sum())
@@ -156,33 +164,60 @@ def extract_table(pkl_path: str, raw: bool = False, ffsp_override: str = None) -
     if n_samples != int(count_subjects.sum()):
       print(f"WARNING {fold}: sum(test_count_y)={n_samples} != sum(test_count_subject_ids)={int(count_subjects.sum())}")
 
-    if raw_metrics is not None:
-      rm = raw_metrics[key]
-      if rm['n_samples'] != n_samples:
-        print(f"WARNING {fold}: re-run test set has {rm['n_samples']} samples, pkl says {n_samples}")
-      if abs(rm['recomputed_l1'] - mae) > 1e-6:
-        print(f"WARNING {fold}: recomputed test_l1_error {rm['recomputed_l1']:.6f} != stored {mae:.6f}")
-      row = {'fold': fold, 'test_MAE': mae, 'test_MAE_raw': rm['raw_mae']}
-      per_class = rm['raw_mae_per_class']
+    rm = raw_metrics[key] if raw_metrics is not None else None
+    if rm is not None and rm['n_samples'] != n_samples:
+      print(f"WARNING {fold}: re-run test set has {rm['n_samples']} samples, pkl says {n_samples}")
+
+    if metric == 'mae':
+      mae = float(test['test_l1_error'])
+      loss_per_class = to_numpy(test['test_loss_per_class']).astype(float)
+      if rm is not None:
+        if abs(rm['recomputed_l1'] - mae) > 1e-6:
+          print(f"WARNING {fold}: recomputed test_l1_error {rm['recomputed_l1']:.6f} != stored {mae:.6f}")
+        row = {'fold': fold, 'test_MAE': mae, 'test_MAE_raw': rm['raw_mae']}
+        per_class = rm['raw_mae_per_class']
+      else:
+        weighted = float((loss_per_class * count_y).sum() / count_y.sum())
+        if abs(weighted - mae) > 1e-3:
+          print(f"INFO {fold}: weighted per-class MAE {weighted:.4f} vs test_l1_error {mae:.4f} (diff {abs(weighted - mae):.4f})")
+        row = {'fold': fold, 'test_MAE': mae, 'test_MAE_weighted': weighted}
+        per_class = dict(zip(classes.tolist(), loss_per_class.tolist()))
+      class_column_template = 'MAE_class_{}'
     else:
-      weighted = float((loss_per_class * count_y).sum() / count_y.sum())
-      if abs(weighted - mae) > 1e-3:
-        print(f"INFO {fold}: weighted per-class MAE {weighted:.4f} vs test_l1_error {mae:.4f} (diff {abs(weighted - mae):.4f})")
-      row = {'fold': fold, 'test_MAE': mae, 'test_MAE_weighted': weighted}
-      per_class = dict(zip(classes.tolist(), loss_per_class.tolist()))
+      accuracy = float(test['test_accuracy'])
+      accuracy_per_class = to_numpy(test['test_accuracy_per_class']).astype(float)
+      if rm is not None:
+        if abs(rm['recomputed_accuracy'] - accuracy) > 1e-6:
+          print(f"WARNING {fold}: recomputed test_accuracy {rm['recomputed_accuracy']:.6f} != stored {accuracy:.6f}")
+        row = {
+          'fold': fold,
+          'test_accuracy_pct': accuracy * 100,
+          'test_accuracy_raw_pct': rm['recomputed_accuracy'] * 100,
+        }
+        accuracy_per_class = to_numpy(rm['recomputed_accuracy_per_class']).astype(float)
+      else:
+        row = {'fold': fold, 'test_accuracy_pct': accuracy * 100}
+      per_class = dict(zip(classes.tolist(), (accuracy_per_class * 100).tolist()))
+      class_column_template = 'accuracy_class_{}_pct'
 
     for c, n in zip(classes, count_y):
-      row[f'MAE_class_{c}'] = float(per_class[int(c)])
+      row[class_column_template.format(c)] = float(per_class[int(c)])
       row[f'n_class_{c}'] = int(n)
     row['n_samples'] = n_samples
     row['n_subjects'] = n_subjects
     rows.append(row)
 
   df = pd.DataFrame(rows)
-  extra_col = 'test_MAE_raw' if raw else 'test_MAE_weighted'
-  mae_cols = ['test_MAE', extra_col] + [c for c in df.columns if c.startswith('MAE_class_')]
-  mean_row = {'fold': 'mean', **df[mae_cols].mean().to_dict()}
-  std_row = {'fold': 'std', **df[mae_cols].std().to_dict()}
+  if metric == 'mae':
+    extra_col = 'test_MAE_raw' if raw else 'test_MAE_weighted'
+    metric_cols = ['test_MAE', extra_col] + [c for c in df.columns if c.startswith('MAE_class_')]
+  else:
+    metric_cols = ['test_accuracy_pct']
+    if raw:
+      metric_cols.append('test_accuracy_raw_pct')
+    metric_cols.extend(c for c in df.columns if c.startswith('accuracy_class_'))
+  mean_row = {'fold': 'mean', **df[metric_cols].mean().to_dict()}
+  std_row = {'fold': 'std', **df[metric_cols].std().to_dict()}
   return pd.concat([df, pd.DataFrame([mean_row, std_row])], ignore_index=True)
 
 
@@ -198,15 +233,19 @@ def main():
   """
   parser = argparse.ArgumentParser(description='Extract per-fold test metrics from k_fold_results.pkl into a CSV.')
   parser.add_argument('--pkl', required=True, help='Path to k_fold_results.pkl')
-  parser.add_argument('--out', default=None, help='Output CSV path (default: test_table.csv next to the pkl)')
+  parser.add_argument('--out', default=None,
+                      help='Output CSV path (default: metric-specific name next to the pkl)')
+  parser.add_argument('--metric', choices=('mae', 'accuracy'), default='mae',
+                      help='Metric to report (default: mae)')
   parser.add_argument('--raw', action='store_true',
-                      help='Re-run each fold best checkpoint to compute per-class MAE from raw per-sample predictions')
+                      help='Re-run each fold best checkpoint to recompute the selected metric')
   parser.add_argument('--ffsp', default=None, help='Override features_folder_saving_path for re-inference')
   args = parser.parse_args()
 
-  default_name = 'test_table_raw.csv' if args.raw else 'test_table.csv'
+  raw_suffix = '_raw' if args.raw else ''
+  default_name = f'test_table_{args.metric}{raw_suffix}.csv'
   out = args.out or os.path.join(os.path.dirname(args.pkl), default_name)
-  df = extract_table(args.pkl, raw=args.raw, ffsp_override=args.ffsp)
+  df = extract_table(args.pkl, raw=args.raw, ffsp_override=args.ffsp, metric=args.metric)
   df.to_csv(out, index=False, float_format='%.4f')
   print(df.to_string(index=False))
   print(f"\nSaved to {out}")
