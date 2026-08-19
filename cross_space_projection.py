@@ -45,8 +45,25 @@ from custom.model import Model_Advanced
 from log_cross_attention_from_model import clean_csv_from_augmentations
 
 _SEED = 42
+_LAUNCH_CONFIG_FILENAME = 'launch_config.yaml'
 _ZERO_ANCHOR_KEY    = (None,  0, None)  # anchor_cache sentinel for the num_anchors=0 identity case
 _NEG_ONE_ANCHOR_KEY = (None, -1, None)  # anchor_cache sentinel for num_anchors=-1 oracle case
+
+
+def _write_launch_config_snapshot(args, out_dir):
+  """Write the exact YAML launch bytes into a durable run directory when present."""
+  launch_bytes = getattr(args, '_launch_config_bytes', None)
+  if launch_bytes is None:
+    return None
+  snapshot_path = os.path.join(out_dir, _LAUNCH_CONFIG_FILENAME)
+  try:
+    with open(snapshot_path, 'wb') as f:
+      f.write(launch_bytes)
+  except OSError as exc:
+    raise RuntimeError(
+      f'Failed to save YAML launch snapshot to {snapshot_path}: {exc}'
+    ) from exc
+  return _LAUNCH_CONFIG_FILENAME
 
 
 def _set_global_seed(seed):
@@ -3984,6 +4001,7 @@ def run_optuna(args, out_root=None):
   )
   precomputed_dir = os.path.join(out_dir, 'precomputed')
   os.makedirs(precomputed_dir, exist_ok=True)
+  _write_launch_config_snapshot(args, out_dir)
   print(f'[run_optuna] Output: {out_dir}  n_trials={args.n_trials}  sampler={args.optuna_sampler}')
 
   print('Loading configs...')
@@ -4224,6 +4242,8 @@ def run_optuna(args, out_root=None):
 
   with open(os.path.join(out_dir, 'best_config.txt'), 'w') as f:
     f.write(f'script_cmd: {" ".join(sys.argv)}\n')
+    if getattr(args, '_launch_config_bytes', None) is not None:
+      f.write(f'config_snapshot: {_LAUNCH_CONFIG_FILENAME}\n')
     f.write(f'best_trial: {best.number}\n')
     f.write(f'mae: {best.value:.6f}\n')
     for k, v in best.params.items():
@@ -4287,6 +4307,7 @@ def cross_space_projection(args, out_root=None):
   base = out_root if out_root is not None else os.getcwd()
   out_dir = os.path.join(base, 'Cross_projection', group, f'cross_space_projection_{tag_prefix}{args_tag}_{uid}')
   os.makedirs(out_dir, exist_ok=True)
+  _write_launch_config_snapshot(args, out_dir)
   print(f'[cross_space_projection] Output: {out_dir}')
 
   # --- Step 1: Load configs and build models ---
@@ -4897,6 +4918,7 @@ def _aggregate_model_combo_pkls(records, out_dir, args, output_filename=None):
     str: Path to the aggregated results pkl.
   """
   os.makedirs(out_dir, exist_ok=True)
+  _write_launch_config_snapshot(args, out_dir)
   uid = int(time.time())
 
   def _cat(dicts, group, key, dtype=np.float32):
@@ -5194,8 +5216,9 @@ if __name__ == '__main__':
     # --- YAML-only mode: the file is the sole source of args ---
     if _rest:
       _pre.error(f"--config is YAML-only; remove the other CLI flag(s): {_rest}")
-    with open(_pre_args.config) as _f:
-      _ycfg = yaml.safe_load(_f) or {}
+    with open(_pre_args.config, 'rb') as _f:
+      _launch_config_bytes = _f.read()
+    _ycfg = yaml.safe_load(_launch_config_bytes) or {}
     if not isinstance(_ycfg, dict):
       parser.error(f"--config {_pre_args.config!r} must contain a top-level mapping")
     _unknown = set(_ycfg) - _ALLOWED_YAML_KEYS
@@ -5213,6 +5236,7 @@ if __name__ == '__main__':
       LINEAR_PROJECTOR_CONFIG, _ycfg.get('linear_projector'), _PROJECTOR_SWEEPABLE, 'linear_projector')
     args.refinement_recipes = _expand_recipes(
       REFINEMENT_CONFIG, _ycfg.get('refinement_config'), _REFINEMENT_SWEEPABLE, 'refinement_config')
+    args._launch_config_bytes = _launch_config_bytes
   else:
     args = parser.parse_args()
     args.projector_recipes  = [copy.deepcopy(LINEAR_PROJECTOR_CONFIG)]
