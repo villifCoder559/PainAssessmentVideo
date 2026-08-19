@@ -103,6 +103,86 @@ class TestFindSubtrialPkls(unittest.TestCase):
                 csl._find_subtrial_pkls([root], ['1_2'])
 
 
+class TestGridCheckpointResolution(unittest.TestCase):
+    def _grid_result(self, root):
+        pkl = Path(root) / 'trial0000_example' / 'results.pkl'
+        pkl.parent.mkdir(parents=True)
+        pkl.touch()
+        return pkl
+
+    def test_uses_run_local_snapshot_after_temporary_yaml_is_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'search'
+            pkl = self._grid_result(root)
+            deleted_config = Path(tmp) / 'deleted-generated.yaml'
+            (root / 'launch_config.yaml').write_text(
+                'new_model_pth: snapshot-new.pt\nold_model_pth: snapshot-old.pt\n',
+                encoding='utf-8',
+            )
+            (root / 'best_config.txt').write_text(
+                f'script_cmd: python cross_space_projection.py --config {deleted_config}\n'
+                'config_snapshot: launch_config.yaml\n',
+                encoding='utf-8',
+            )
+
+            self.assertFalse(deleted_config.exists())
+            self.assertEqual(
+                csl._resolve_new_model_pth({}, 'grid', str(pkl)),
+                'snapshot-new.pt',
+            )
+            self.assertEqual(
+                csl._resolve_old_model_pth({}, 'grid', str(pkl)),
+                'snapshot-old.pt',
+            )
+
+    def test_explicit_script_paths_take_precedence_over_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'search'
+            pkl = self._grid_result(root)
+            (root / 'launch_config.yaml').write_text(
+                'new_model_pth: snapshot-new.pt\nold_model_pth: snapshot-old.pt\n',
+                encoding='utf-8',
+            )
+            (root / 'best_config.txt').write_text(
+                'script_cmd: python cross_space_projection.py '
+                '--new_model_pth explicit-new.pt --old_model_pth explicit-old.pt\n'
+                'config_snapshot: launch_config.yaml\n',
+                encoding='utf-8',
+            )
+
+            self.assertEqual(
+                csl._resolve_new_model_pth({}, 'grid', str(pkl)),
+                'explicit-new.pt',
+            )
+            self.assertEqual(
+                csl._resolve_old_model_pth({}, 'grid', str(pkl)),
+                'explicit-old.pt',
+            )
+
+    def test_legacy_persistent_yaml_still_resolves_without_snapshot_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'search'
+            pkl = self._grid_result(root)
+            legacy_config = Path(tmp) / 'persistent.yaml'
+            legacy_config.write_text(
+                'new_model_pth: legacy-new.pt\nold_model_pth: legacy-old.pt\n',
+                encoding='utf-8',
+            )
+            (root / 'best_config.txt').write_text(
+                f'script_cmd: python cross_space_projection.py --config {legacy_config}\n',
+                encoding='utf-8',
+            )
+
+            self.assertEqual(
+                csl._resolve_new_model_pth({}, 'grid', str(pkl)),
+                'legacy-new.pt',
+            )
+            self.assertEqual(
+                csl._resolve_old_model_pth({}, 'grid', str(pkl)),
+                'legacy-old.pt',
+            )
+
+
 class TestGenerateLogsSubtrialIndices(unittest.TestCase):
     def test_processes_matches_warns_for_missing_and_forwards_plot_modifiers(self):
         with tempfile.TemporaryDirectory() as tmp:
