@@ -22,6 +22,7 @@ class FakeModel:
       'history_test_sample_predictions': {1: [0.25], 2: [1.75]},
       'test_l1_error': 0.25,
       'test_accuracy': 0.5,
+      'test_accuracy_per_class': np.array([0.75, 0.25]),
       'test_loss_per_subject': np.array([0.2, 0.3]),
       'test_accuracy_per_subject': np.array([0.4, 0.6]),
       'test_unique_subject_ids': np.array([10, 11]),
@@ -71,6 +72,7 @@ class TestRecomputedMetricContract(unittest.TestCase):
 
     self.assertEqual(result['recomputed_l1'], 0.25)
     self.assertEqual(result['recomputed_accuracy'], 0.5)
+    self.assertTrue(np.array_equal(result['recomputed_accuracy_per_class'], [0.75, 0.25]))
     self.assertTrue(np.array_equal(result['recomputed_loss_per_subject'], [0.2, 0.3]))
     self.assertTrue(np.array_equal(result['recomputed_accuracy_per_subject'], [0.4, 0.6]))
     self.assertTrue(np.array_equal(result['recomputed_subject_ids'], [10, 11]))
