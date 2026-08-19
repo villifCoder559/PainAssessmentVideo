@@ -78,6 +78,7 @@ class TestPlotRunDetailsCsvMode(unittest.TestCase):
       'plot_losses',
       'plot_separated_losses_adversarial',
       'plot_hsic_per_epoch',
+      'plot_grouped_accuracy_per_class',
       'plot_grouped_confusion_matrix',
       'plot_confusion_matrices',
       'plot_lr_wd_across_epochs',
@@ -107,6 +108,7 @@ class TestPlotRunDetailsCsvMode(unittest.TestCase):
     self.assertIsNone(result)
     generate_row.assert_not_called()
     patched_plots['plot_grouped_k_fold'].assert_called_once()
+    patched_plots['plot_grouped_accuracy_per_class'].assert_called_once()
     self.assertEqual(
       data['results']['k0_cross_val_sub_0']['train_val']['best_model_idx'],
       1,
@@ -137,6 +139,50 @@ class TestPlotRunDetailsCsvMode(unittest.TestCase):
         Path(output_root, 'summary.csv').read_text().splitlines(),
         ['test_id,metric', 'test1,1.0'],
       )
+
+  def test_loss_only_worker_does_not_dispatch_grouped_accuracy(self):
+    file_path = '/tmp/grid/test1_run/k_fold_results.pkl'
+    data = {
+      'results': {
+        'k0_cross_val_sub_0': {
+          'train_val': {'val_losses': [1.0], 'best_model_idx': 0},
+        },
+      },
+      'config': {
+        'path_csv_dataset': ['biovid.csv'],
+        'model_type': SimpleNamespace(name='model'),
+      },
+      'time': 0,
+    }
+    always_run_plots = [
+      'clean_data',
+      'plot_grouped_k_fold',
+      'plot_losses',
+      'plot_separated_losses_adversarial',
+      'plot_hsic_per_epoch',
+      'link_attention_logs',
+    ]
+
+    with ExitStack() as stack:
+      stack.enter_context(mock.patch.object(plots, 'load_results', return_value=data))
+      patched_always_run = {
+        name: stack.enter_context(mock.patch.object(plots, name))
+        for name in always_run_plots
+      }
+      grouped_accuracy = stack.enter_context(
+        mock.patch.object(plots, 'plot_grouped_accuracy_per_class')
+      )
+      plots._process_single_run((
+        file_path,
+        '/tmp/output',
+        False,
+        {'loss_plot_type': 'loss', 'test_as_validation': 0},
+        True,
+        False,
+      ))
+
+    patched_always_run['plot_grouped_k_fold'].assert_called_once()
+    grouped_accuracy.assert_not_called()
 
 
 if __name__ == '__main__':
