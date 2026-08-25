@@ -1279,7 +1279,7 @@ if __name__ == '__main__':
   parser.add_argument('--multitask_training', type=int, nargs='*', default=[0], help='Enable multitask classification head as regularizer (1=on). Only ATTENTIVE_JEPA + pure regression loss.')
   parser.add_argument('--lambda_multitask', type=float, nargs='*', default=[0.0], help='Fixed weight for auxiliary multitask CE loss.')
   parser.add_argument('--load_idxs_splits', type=int, default=0, help='Load idxs splits.')
-  parser.add_argument('--scheduler_name', type=str, nargs='*', default=['cosine'], help='Scheduler name.')
+  parser.add_argument('--scheduler_name', type=str, nargs='*', default=['cosine'], help='Learning-rate scheduler. Choices: cosine, cosine_restart, step, onecycle, lambda. Default: cosine.')
   parser.add_argument('--wd_scheduler_name', type=str, nargs='*', default=[None], help='WD scheduler.')
   parser.add_argument('--exclude_bias_wd', type=int, choices=[0, 1], nargs='*', default=[1], help='Exclude bias wd. Default 1 (True)S')
   parser.add_argument('--min_lr', type=float, nargs='*', default=[1e-7], help='Min lr.')
