@@ -85,6 +85,71 @@ class ClosedFormSanityTest(unittest.TestCase):
             atol=2e-6,
         )
 
+    def test_checkpoint_guard_accepts_exact_formula_parameter_quantization(self):
+        """Large cancellation must not reject correctly quantized OLS parameters."""
+        with mock.patch("multiprocessing.Manager") as manager:
+            manager.return_value.dict.return_value = {}
+            from cross_space_projection import (
+                _assert_linear_ckpt_matches_quantized_formula,
+                _fit_linear_closed_form,
+            )
+
+        rng = np.random.default_rng(0)
+        left, _ = np.linalg.qr(rng.normal(size=(12, 12)))
+        right, _ = np.linalg.qr(rng.normal(size=(12, 12)))
+        singular_values = np.geomspace(1.0, 1e-5, 12)
+        x = (0.01 + (left * singular_values) @ right.T).astype(np.float32)
+        y = rng.normal(size=(12, 20)).astype(np.float32)
+
+        solution = _fit_linear_closed_form(x, y, rcond=1e-5)
+
+        x64 = x.astype(np.float64)
+        y64 = y.astype(np.float64)
+        x_mean = x64.mean(axis=0)
+        y_mean = y64.mean(axis=0)
+        expected_weight_t = np.linalg.lstsq(
+            x64 - x_mean, y64 - y_mean, rcond=1e-5,
+        )[0]
+        expected_weight = expected_weight_t.T
+        expected_bias = y_mean - x_mean @ expected_weight_t
+        expected_prediction = (x64 - x_mean) @ expected_weight_t + y_mean
+        checkpoint_prediction = (
+            x64 @ solution["weight"].astype(np.float64).T
+            + solution["bias"].astype(np.float64)
+        )
+        relative_output_error = (
+            np.max(np.abs(checkpoint_prediction - expected_prediction))
+            / np.max(np.abs(expected_prediction))
+        )
+
+        self.assertGreater(relative_output_error, 1e-4)
+        np.testing.assert_allclose(
+            solution["weight_float64"], expected_weight, rtol=0, atol=1e-12,
+        )
+        np.testing.assert_allclose(
+            solution["bias_float64"], expected_bias, rtol=0, atol=1e-12,
+        )
+        _assert_linear_ckpt_matches_quantized_formula(
+            solution["weight"],
+            solution["bias"],
+            solution["weight_float64"],
+            solution["bias_float64"],
+            "linear_close",
+            "cancellation_regression",
+        )
+
+        wrong_bias = solution["bias"].copy()
+        wrong_bias[0] = np.nextafter(wrong_bias[0], np.float32(np.inf))
+        with self.assertRaises(AssertionError):
+            _assert_linear_ckpt_matches_quantized_formula(
+                solution["weight"],
+                wrong_bias,
+                solution["weight_float64"],
+                solution["bias_float64"],
+                "linear_close",
+                "cancellation_regression",
+            )
+
 
 class RegularizationSanityTest(unittest.TestCase):
     """Break caught: ridge accidentally regularizes the intercept or increases unstable weights."""
