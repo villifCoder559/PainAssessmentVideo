@@ -9,7 +9,8 @@ so any dataset pair supported by _FEATURES_MAP works (e.g. UNBC→BIOVID, BIOVID
 AgeDB-split-A→AgeDB-split-B, etc.).
 
 Pipeline:
-  1. Select K anchor samples from the new model domain.
+  1. Select K anchor samples from the new model domain. For
+     balance_class_quality, first score the complete candidate pool with the new model.
   2. Extract K embeddings with old model (new-domain features) → old_model_anchors (K, D_old).
   3. Extract K embeddings with new model (new-domain features) → new_model_anchors (K, D_new).
   4. Extract N embeddings with old model (old-domain features) → old_model_tensors (N, D_old).
@@ -48,6 +49,15 @@ _SEED = 42
 _LAUNCH_CONFIG_FILENAME = 'launch_config.yaml'
 _ZERO_ANCHOR_KEY    = (None,  0, None)  # anchor_cache sentinel for the num_anchors=0 identity case
 _NEG_ONE_ANCHOR_KEY = (None, -1, None)  # anchor_cache sentinel for num_anchors=-1 oracle case
+_ANCHOR_SELECTION_TYPES = (
+  'random',
+  'balance_class_random',
+  'balance_class_quality',
+  'balance_subject_random',
+  'balance_class_random_capped',
+  'balance_subject_random_capped',
+  'balance_class_subject',
+)
 
 
 def _write_launch_config_snapshot(args, out_dir):
@@ -2425,18 +2435,17 @@ def _assert_linear_ckpt_matches_formula(weight, bias, x_norm, y_formula,
   Evaluates the nn.Linear map Y = x_norm @ weight.T + bias in float64 (so the
   check is deterministic and independent of GPU/TF32/backend float32 rounding)
   and compares it to the raw closed-form prediction y_formula with a scale-aware
-  (relative) tolerance. This guards against real coding errors (wrong transpose /
-  wrong bias formula) without false-failing on benign float32 differences. Both
-  inputs derive from the same float32 closed-form solution, so the relative error
-  is ~1e-6 in practice; rtol=1e-4 leaves headroom while still tripping on a
-  genuine bug (which produces order-1+ relative error).
+  (relative) tolerance. This guard is appropriate for the well-conditioned
+  Procrustes solution. Ill-conditioned OLS uses the exact parameter-quantization
+  guard below because cancellation can make a fixed output-relative tolerance
+  reject a correctly stored float32 checkpoint.
 
   Args:
     weight         (np.ndarray): nn.Linear weight, shape (D_new, D_old).
     bias           (np.ndarray): nn.Linear bias, shape (D_new,).
     x_norm         (np.ndarray): Input embeddings (normalized space), shape (N, D_old).
     y_formula      (np.ndarray): Raw closed-form prediction, shape (N, D_new).
-    kind           (str):        'procrustes' | 'linear_close' (for the message).
+    kind           (str):        'procrustes' (for the message).
     anchor_key_tag (str):        Short slug for the message.
     rtol           (float):      Relative tolerance on the max abs error.
 
@@ -2454,6 +2463,36 @@ def _assert_linear_ckpt_matches_formula(weight, bias, x_norm, y_formula,
   assert rel < rtol, (
     f"[{kind}:{anchor_key_tag}] nn.Linear ckpt diverges from raw {kind} "
     f"formula (max abs err={max_abs:.3e}, rel err={rel:.3e}, rtol={rtol})"
+  )
+
+
+def _assert_linear_ckpt_matches_quantized_formula(
+  weight, bias, expected_weight_float64, expected_bias_float64,
+  kind, anchor_key_tag,
+):
+  """Verify nn.Linear parameters are exact dtype quantizations of an affine formula.
+
+  Comparing outputs is unreliable for ill-conditioned OLS: large weights and
+  intercepts can cancel to small predictions, amplifying unavoidable float32
+  parameter rounding. Exact parameter casting directly catches transpose and
+  intercept-materialization bugs without depending on output conditioning.
+  """
+  actual_weight = np.asarray(weight)
+  actual_bias = np.asarray(bias)
+  expected_weight = np.asarray(expected_weight_float64, dtype=actual_weight.dtype)
+  expected_bias = np.asarray(expected_bias_float64, dtype=actual_bias.dtype)
+  weight_matches = (
+    actual_weight.shape == expected_weight.shape
+    and np.array_equal(actual_weight, expected_weight)
+  )
+  bias_matches = (
+    actual_bias.shape == expected_bias.shape
+    and np.array_equal(actual_bias, expected_bias)
+  )
+  assert weight_matches and bias_matches, (
+    f"[{kind}:{anchor_key_tag}] nn.Linear ckpt parameters are not exact "
+    f"{actual_weight.dtype}/{actual_bias.dtype} quantizations of the raw {kind} formula "
+    f"(weight_match={weight_matches}, bias_match={bias_matches})"
   )
 
 
@@ -2921,6 +2960,8 @@ def _fit_linear_closed_form(A, B, rcond=None):
       'weight' (np.ndarray): Shape (D_new, D_old), nn.Linear weight.
       'bias'   (np.ndarray): Shape (D_new,),       nn.Linear bias.
       'rank'   (int):        Effective rank of A_c after rcond truncation.
+      'weight_float64' (np.ndarray): Raw float64 nn.Linear weight before checkpoint casting.
+      'bias_float64' (np.ndarray): Raw float64 nn.Linear bias before checkpoint casting.
   """
   A = np.asarray(A, dtype=np.float64)
   B = np.asarray(B, dtype=np.float64)
@@ -2929,8 +2970,10 @@ def _fit_linear_closed_form(A, B, rcond=None):
   A_c = A - mu_A
   B_c = B - mu_B
   Wt, _residuals, rank, _sv = np.linalg.lstsq(A_c, B_c, rcond=rcond)  # (D_old, D_new)
-  weight = Wt.T.astype(np.float32)                 # (D_new, D_old)
-  bias   = (mu_B - mu_A @ Wt).astype(np.float32)   # (D_new,)
+  weight_float64 = Wt.T                            # (D_new, D_old)
+  bias_float64 = mu_B - mu_A @ Wt                  # (D_new,)
+  weight = weight_float64.astype(np.float32)
+  bias = bias_float64.astype(np.float32)
   return {
     'mu_A':   mu_A.astype(np.float32),
     'mu_B':   mu_B.astype(np.float32),
@@ -2938,6 +2981,8 @@ def _fit_linear_closed_form(A, B, rcond=None):
     'weight': weight,
     'bias':   bias,
     'rank':   int(rank),
+    'weight_float64': weight_float64,
+    'bias_float64': bias_float64,
   }
 
 
@@ -3070,17 +3115,13 @@ def _train_linear_closed_projector(old_anchors, new_anchors, df_anch, val_pool, 
     projector.bias.copy_(torch.from_numpy(sol['bias']))
   projector.eval()
 
-  # Numerical equivalence check on training anchors (normalized space): the saved
-  # weight/bias must encode Y_hat = (X - mu_A) @ Wt + mu_B. Done in float64 so it
-  # is deterministic and not tripped by GPU/TF32 float32 rounding (see
-  # _assert_linear_ckpt_matches_formula).
-  y_formula = (
-    (split_arrays['train']['old_norm'].astype(np.float64) - sol['mu_A']) @ sol['Wt']
-    + sol['mu_B']
-  )
-  _assert_linear_ckpt_matches_formula(
-    sol['weight'], sol['bias'], split_arrays['train']['old_norm'],
-    y_formula, 'linear_close', anchor_key_tag,
+  # Materialization check: the saved float32 weight/bias must be exact dtype
+  # quantizations of the raw float64 OLS affine formula. Comparing projected
+  # outputs is unreliable here because ill-conditioned fits can amplify benign
+  # parameter rounding through cancellation.
+  _assert_linear_ckpt_matches_quantized_formula(
+    sol['weight'], sol['bias'], sol['weight_float64'], sol['bias_float64'],
+    'linear_close', anchor_key_tag,
   )
 
   # --- Single-shot metrics on train/val/test ---
@@ -3219,19 +3260,73 @@ def _balance_random_anchors(df_full, num_anchors, key_col, unit, cap):
   return pd.concat(dfs, ignore_index=True)
 
 
-def _select_anchors(df_full, num_anchors, selection_type):
+def _anchor_quality_scores(inference):
+  """
+  Return absolute new-model prediction errors keyed by sample_id.
+
+  `_extract_embeddings` records original labels and denormalized predictions, so
+  the absolute difference here is already in the dataset's label scale.
+  """
+  sample_ids = np.asarray(inference['sample_ids'], dtype=np.int64).reshape(-1)
+  unique_sample_ids, counts = np.unique(sample_ids, return_counts=True)
+  duplicates = unique_sample_ids[counts > 1].tolist()
+  if duplicates:
+    raise ValueError(
+      f'balance_class_quality received duplicate sample_id(s) {duplicates}'
+    )
+  labels = np.asarray(inference['labels'], dtype=np.float32).reshape(-1)
+  predictions = np.asarray(inference['predictions'], dtype=np.float32)
+  if predictions.ndim == 2 and predictions.shape[1] == 1:
+    predictions = predictions[:, 0]
+  elif predictions.ndim != 1:
+    raise ValueError(
+      'balance_class_quality requires one scalar prediction per candidate anchor.'
+    )
+  if not (len(sample_ids) == len(labels) == len(predictions)):
+    raise ValueError(
+      'balance_class_quality requires matching numbers of sample_ids, labels, and predictions.'
+    )
+  non_finite = ~(np.isfinite(labels) & np.isfinite(predictions))
+  if np.any(non_finite):
+    bad_sample_ids = sample_ids[non_finite].tolist()
+    raise ValueError(
+      'balance_class_quality received a non-finite label or prediction for '
+      f'sample_id(s) {bad_sample_ids}'
+    )
+  errors = np.abs(labels - predictions)
+  return {int(sample_id): float(error) for sample_id, error in zip(sample_ids, errors)}
+
+
+def _extract_anchor_quality_pool(
+  new_model, new_model_pth, new_config, df_candidates, candidates_csv,
+):
+  """Run the base new-model checkpoint on every candidate and return inference plus errors."""
+  df_candidates.to_csv(candidates_csv, index=False, sep='\t')
+  print(f'  [balance_class_quality] scoring all {len(df_candidates)} candidate anchors '
+        f'with the new model → {candidates_csv}')
+  inference = _extract_embeddings(
+    new_model, new_model_pth, str(candidates_csv), new_config,
+  )
+  return inference, _anchor_quality_scores(inference)
+
+
+def _select_anchors(df_full, num_anchors, selection_type, quality_scores=None):
   """
   Select anchor samples from a DataFrame according to the given strategy.
 
   Args:
     df_full        (pd.DataFrame): Full pool of candidate anchor samples.
-    num_anchors    (int): Total anchor budget for 'random', 'balance_class_random', and
-                          'balance_subject_random'. Per-stratum count for 'balance_class_subject'.
+    num_anchors    (int): Total anchor budget for 'random', 'balance_class_random',
+                          'balance_class_quality', and 'balance_subject_random'.
+                          Per-stratum count for 'balance_class_subject'.
     selection_type (str): One of:
       'random'               — sample num_anchors uniformly at random.
       'balance_class_random' — num_anchors is the total budget; at least 1 anchor per
                                class_id (hard requirement, may exceed budget); remaining
                                budget distributed to maximise the minimum per-class count.
+      'balance_class_quality' — same balanced allocation as 'balance_class_random', but
+                               choose the lowest absolute new-model prediction errors in
+                               each class instead of sampling randomly.
       'balance_subject_random' — same as above but keyed on subject_id.
       'balance_class_random_capped' — like 'balance_class_random' when
                                num_anchors >= num_classes, but when num_anchors < num_classes
@@ -3242,10 +3337,12 @@ def _select_anchors(df_full, num_anchors, selection_type):
       'balance_class_subject' — sample num_anchors per (class_id, subject_id) pair,
                                skipping empty combos (with a warning);
                                total ≤ num_anchors × num_classes × num_subjects.
+    quality_scores (Mapping | None): Per-sample absolute prediction errors keyed by
+                                    sample_id. Required by 'balance_class_quality'.
 
   Returns:
     pd.DataFrame: Selected rows, reset index. Total rows may exceed num_anchors when
-                  coverage forces it (balance_class/subject_random only); the *_capped
+                  coverage forces it (balanced class/subject variants); the *_capped
                   variants return exactly num_anchors when num_anchors < num_strata.
 
   Raises:
@@ -3269,6 +3366,40 @@ def _select_anchors(df_full, num_anchors, selection_type):
 
   if selection_type == 'balance_class_random':
     return _balance_random_anchors(df_full, num_anchors, 'class_id', 'class', cap=False)
+
+  if selection_type == 'balance_class_quality':
+    if quality_scores is None:
+      raise ValueError('balance_class_quality requires quality scores for every candidate anchor.')
+    ranked = df_full.assign(
+      _quality_error=df_full['sample_id'].map(quality_scores)
+    )
+    missing = ranked.loc[ranked['_quality_error'].isna(), 'sample_id'].tolist()
+    if missing:
+      raise ValueError(
+        f'balance_class_quality: missing quality scores for sample_id(s) {missing}'
+      )
+    try:
+      finite_quality = np.isfinite(ranked['_quality_error'].to_numpy(dtype=np.float64))
+    except (TypeError, ValueError) as exc:
+      raise ValueError('balance_class_quality requires numeric quality scores.') from exc
+    if not np.all(finite_quality):
+      bad_sample_ids = ranked.loc[~finite_quality, 'sample_id'].tolist()
+      raise ValueError(
+        f'balance_class_quality: non-finite quality scores for sample_id(s) {bad_sample_ids}'
+      )
+    strata = sorted(ranked['class_id'].unique())
+    sizes = {cid: len(ranked[ranked['class_id'] == cid]) for cid in strata}
+    allocations = _allocate_balanced(sizes, num_anchors)
+    dfs = [
+      ranked[ranked['class_id'] == cid]
+        .sort_values(['_quality_error', 'sample_id'])
+        .head(allocations[cid])
+        .drop(columns='_quality_error')
+      for cid in strata
+    ]
+    print(f'  [balance_class_quality] per-class allocations: '
+          f'{ {cid: allocations[cid] for cid in strata} }')
+    return pd.concat(dfs, ignore_index=True)
 
   if selection_type == 'balance_subject_random':
     return _balance_random_anchors(df_full, num_anchors, 'subject_id', 'subject', cap=False)
@@ -3508,6 +3639,7 @@ def _precompute_embeddings(
   anchor_combos = list(itertools.product(
     args.csv_anchor_selection, args.num_anchors, args.anchor_selection_type,
   ))
+  quality_pool_cache = {}
   for csv_sel, num_anch, sel_type in anchor_combos:
     key = (csv_sel, num_anch, sel_type)
     if key in anchor_cache:
@@ -3524,7 +3656,19 @@ def _precompute_embeddings(
       pd.concat(anchor_dfs, ignore_index=True).drop_duplicates(subset='sample_id')
       if len(anchor_dfs) > 1 else anchor_dfs[0]
     )
-    df_anch = _select_anchors(df_full, num_anch, sel_type)
+    quality_inference = quality_scores = None
+    if sel_type == 'balance_class_quality':
+      if csv_sel not in quality_pool_cache:
+        quality_candidates_csv = os.path.join(
+          precomputed_dir, f'anchor_candidates_{csv_sel}_balance_class_quality.csv',
+        )
+        quality_pool_cache[csv_sel] = _extract_anchor_quality_pool(
+          new_model, new_model_pth, new_config, df_full, quality_candidates_csv,
+        )
+      quality_inference, quality_scores = quality_pool_cache[csv_sel]
+    df_anch = _select_anchors(
+      df_full, num_anch, sel_type, quality_scores=quality_scores,
+    )
     anchors_csv = os.path.join(precomputed_dir, f'anchors_{csv_sel}_{num_anch}_{sel_type}.csv')
     df_anch.to_csv(anchors_csv, index=False, sep='\t')
     print(f'[precompute] anchor key={key} ({len(df_anch)} rows) → {anchors_csv}')
@@ -3533,7 +3677,11 @@ def _precompute_embeddings(
       old_model, old_model_pth, anchors_csv, old_config,
       features_path_override=anchor_domain_features_for_old,
     )
-    new_anch = _extract_embeddings(new_model, new_model_pth, anchors_csv, new_config)
+    new_anch = (
+      quality_inference
+      if quality_inference is not None
+      else _extract_embeddings(new_model, new_model_pth, anchors_csv, new_config)
+    )
     new_aligned = _align_by_sample_id(old_anch, new_anch)
     anchor_cache[key] = {
       'old': old_anch,
@@ -4393,7 +4541,19 @@ def cross_space_projection(args, out_root=None):
       pd.concat(anchor_dfs, ignore_index=True).drop_duplicates(subset='sample_id')
       if len(anchor_dfs) > 1 else anchor_dfs[0]
     )
-    df_anchors = _select_anchors(df_anchors_full, args.num_anchors, args.anchor_selection_type)
+    quality_inference = quality_scores = None
+    if args.anchor_selection_type == 'balance_class_quality':
+      quality_candidates_csv = os.path.join(
+        out_dir, 'anchor_candidates_balance_class_quality.csv',
+      )
+      quality_inference, quality_scores = _extract_anchor_quality_pool(
+        new_model, args.new_model_pth, new_config,
+        df_anchors_full, quality_candidates_csv,
+      )
+    df_anchors = _select_anchors(
+      df_anchors_full, args.num_anchors, args.anchor_selection_type,
+      quality_scores=quality_scores,
+    )
     anchors_csv_path = os.path.join(out_dir, 'anchors.csv')
     df_anchors.to_csv(anchors_csv_path, index=False, sep='\t')
     print(f'Anchors ({len(df_anchors)}) saved to {anchors_csv_path}')
@@ -4413,10 +4573,14 @@ def cross_space_projection(args, out_root=None):
     print(f'  old_model_anchors: {old_model_anchors["embeddings"].shape}')
 
     # 4.2 new model on new-domain anchors (no override — new model already uses its own features)
-    print('Extracting new_model_anchors...')
-    new_model_anchors = _extract_embeddings(
-      new_model, args.new_model_pth, anchors_csv_path, new_config,
-    )
+    if quality_inference is not None:
+      print('Reusing new_model_anchors from the full quality-scoring forward pass...')
+      new_model_anchors = quality_inference
+    else:
+      print('Extracting new_model_anchors...')
+      new_model_anchors = _extract_embeddings(
+        new_model, args.new_model_pth, anchors_csv_path, new_config,
+      )
     print(f'  new_model_anchors: {new_model_anchors["embeddings"].shape}')
 
     # --- Step 5: Align anchor embeddings by sample_id ---
@@ -4888,12 +5052,16 @@ def _run_model_combos(args, model_pairs, group_tag):
     pkl_path = cross_space_projection(sub_args)
     records.append({'new_idx': i, 'old_idx': j, 'new_model_pth': new_pth,
                     'old_model_pth': old_pth, 'pkl_path': pkl_path})
+  aggregate_uid = int(time.time())
   agg_dir = os.path.join(os.getcwd(), 'Cross_projection', group_tag,
-                         f'aggregated_{int(time.time())}')
-  return _aggregate_model_combo_pkls(records, agg_dir, args)
+                         f'aggregated_{aggregate_uid}')
+  return _aggregate_model_combo_pkls(
+    records, agg_dir, args, aggregate_uid=aggregate_uid)
 
 
-def _aggregate_model_combo_pkls(records, out_dir, args, output_filename=None):
+def _aggregate_model_combo_pkls(
+  records, out_dir, args, output_filename=None, aggregate_uid=None,
+):
   """
   Pool the per-sample results of several model-pair subtrials into one aggregated pkl.
 
@@ -4913,13 +5081,15 @@ def _aggregate_model_combo_pkls(records, out_dir, args, output_filename=None):
     args    (argparse.Namespace): Parsed args (used only for script_cmd logging).
     output_filename (str | None): Explicit deterministic pkl basename. Fake replay
       callers pass ``results_fake.pkl``; None keeps the timestamped legacy name.
+    aggregate_uid (int | None): UID already used by the aggregate directory. When
+      provided, reuse it for metadata and the default results filename.
 
   Returns:
     str: Path to the aggregated results pkl.
   """
   os.makedirs(out_dir, exist_ok=True)
   _write_launch_config_snapshot(args, out_dir)
-  uid = int(time.time())
+  uid = int(time.time()) if aggregate_uid is None else int(aggregate_uid)
 
   def _cat(dicts, group, key, dtype=np.float32):
     """Concatenate one tensor field across the loaded subtrial dicts (pooled, 1-D)."""
@@ -5113,11 +5283,11 @@ if __name__ == '__main__':
   parser.add_argument('--num_anchors', type=int, nargs='+', required=True,
                       help='Number of anchor samples (one or more values to sweep)')
   parser.add_argument('--anchor_selection_type', type=str, nargs='+', default=['random'],
-                      choices=['random', 'balance_class_random', 'balance_subject_random',
-                               'balance_class_random_capped', 'balance_subject_random_capped',
-                               'balance_class_subject'],
+                      choices=_ANCHOR_SELECTION_TYPES,
                       help='Anchor selection strategy (one or more values to sweep). '
                            'balance_class/subject_random use num_anchors as total budget, guaranteeing >=1 anchor per stratum. '
+                           'balance_class_quality uses the same class-balanced budget but ranks every candidate within its '
+                           'class by increasing absolute error from the base new-model checkpoint. '
                            'balance_class/subject_random_capped return exactly num_anchors anchors from num_anchors distinct '
                            'strata (1 sample each, uniformly chosen) when num_anchors < num_strata, else behave like the '
                            'non-capped balanced variant. '
