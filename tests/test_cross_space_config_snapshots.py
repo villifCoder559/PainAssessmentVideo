@@ -1,6 +1,7 @@
 import argparse
 import copy
 import os
+import pickle
 import runpy
 import sys
 from pathlib import Path
@@ -149,6 +150,47 @@ def test_model_combo_aggregate_gets_an_exact_snapshot_before_reading_subtrials(t
         csp._aggregate_model_combo_pkls(records, str(out_dir), _single_args(run_tag="combo"))
 
     assert (out_dir / "launch_config.yaml").read_bytes() == RAW_CONFIG
+
+
+def test_model_combo_aggregate_reuses_directory_uid_when_clock_advances(
+    tmp_path, monkeypatch
+):
+    subtrial_path = tmp_path / "subtrial.pkl"
+    payload = {
+        "config_cross_space_projection": {},
+        "metrics": {"mae": 0.0, "ccc": 1.0},
+        "old_model_tensors": {
+            "predictions": [0.0, 1.0],
+            "labels": [0.0, 1.0],
+            "sample_ids": [10, 11],
+        },
+        "new_model_tensors": {
+            "predictions": [0.0, 1.0],
+            "labels": [0.0, 1.0],
+            "sample_ids": [10, 11],
+        },
+    }
+    with subtrial_path.open("wb") as stream:
+        pickle.dump(payload, stream)
+
+    clock = iter((100, 101))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(csp.time, "time", lambda: next(clock))
+    monkeypatch.setattr(csp, "cross_space_projection", lambda _args: str(subtrial_path))
+
+    output = Path(
+        csp._run_model_combos(
+            _single_args(run_tag="combo"),
+            [(0, 0, "new.pt", "old.pt")],
+            "anchor_sweep/example/K5",
+        )
+    )
+
+    assert output.parent.name == "aggregated_100"
+    assert output.name == "results_100.pkl"
+    with output.open("rb") as stream:
+        aggregate = pickle.load(stream)
+    assert aggregate["config_cross_space_projection"]["uid"] == 100
 
 
 def test_grid_root_gets_snapshot_and_records_it_in_best_config(tmp_path):
