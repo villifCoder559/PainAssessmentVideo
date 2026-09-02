@@ -19,6 +19,9 @@ from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 import os
 import random
 import custom.loss as losses
+from custom.model_selection import best_metric_index, is_better_metric
+from custom.predefined_training import run_predefined_split
+from custom.targets import TargetSpec
 import copy
 # import wandb
 def check_intersection_splits(k_fold,subject_ids,list_splits_idxs):
@@ -64,7 +67,8 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
   
   # Load dataset
   csv_array, cols = tools.get_array_from_csv(path_csv_dataset)
-  y_labels = csv_array[:, 2].astype(int)
+  target_spec = TargetSpec.from_metadata(kwargs['target_spec']) if kwargs.get('target_spec') else TargetSpec.from_values(csv_array[:, 2])
+  y_labels = target_spec.to_bins(csv_array[:, 2])
   subject_ids = csv_array[:, 0].astype(int)
   sample_ids = csv_array[:, 4].astype(int)
   
@@ -317,6 +321,16 @@ def set_frozen_head_from_pth_folder(model_advanced: Model_Advanced, saving_path_
   else:
     raise ValueError(f'No .pth model found for {saving_kth} in {model_advanced.head_init_path}')
 
+
+def should_replace_best_subfold(current_best, candidate_value, metric_name):
+  if current_best is None:
+    return True
+  return is_better_metric(
+    candidate_value,
+    current_best['val_metric_value'],
+    metric_name,
+  )
+
 def train_subfold_models(fold_idx, sub_k_fold_list, csv_array, cols, sample_ids,
                       saving_path_kth_fold, model_advanced, lr, epochs,
                       concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
@@ -375,13 +389,18 @@ def train_subfold_models(fold_idx, sub_k_fold_list, csv_array, cols, sample_ids,
     best_epoch = dict_train['dict_results']['best_model_idx']
     
     # Save best model info to use in testing
-    if dict_best_model is None or dict_best_model['val_metric_value'] > dict_train['dict_results']['list_val_performance_metric'][best_epoch]:
+    candidate_metric = dict_train['dict_results'][
+      'list_val_performance_metric'
+    ][best_epoch]
+    if should_replace_best_subfold(
+      dict_best_model, candidate_metric, key_for_early_stopping
+    ):
       dict_best_model = {
         'best_model_idx': best_epoch,
         'best_model_state': copy.deepcopy(dict_train['dict_results']['best_model_state']),
         'metric_for_stopping': key_for_early_stopping,
         'train_metric_value':  dict_train['dict_results']['list_train_performance_metric'][best_epoch],
-        'val_metric_value':  dict_train['dict_results']['list_val_performance_metric'][best_epoch],
+        'val_metric_value': candidate_metric,
         'fold_sub_fold_idx': (fold_idx, sub_idx)
       }
     # Remove unnecessary data to save space
@@ -447,18 +466,16 @@ def select_best_model(fold_results_kth, target_metric_best_model, saving_path_kt
   # Get best model indices for each sub-fold
   best_results_idx = [fold_results_kth[i]['dict_results']['best_model_idx'] for i in range(len(fold_results_kth))]
   best_results_state_dict = [fold_results_kth[i]['dict_results']['best_model_state'] for i in range(len(fold_results_kth))]
-  
-  # Choose target metric for model selection
-  target_metric_key = 'val_losses' if target_metric_best_model == 'val_loss' else 'list_val_macro_accuracy'
-  list_validation_best_result = [dict_train['dict_results'][target_metric_key] for dict_train in fold_results_kth]
-  
-  # Find the best sub-fold model
-  if target_metric_key == 'val_losses':
-    best_model_subfolder_idx = np.argmin([metric[best_results_idx[i]] for i, metric in enumerate(list_validation_best_result)])
-  elif target_metric_key == 'list_val_macro_accuracy':
-    best_model_subfolder_idx = np.argmax([metric[best_results_idx[i]] for i, metric in enumerate(list_validation_best_result)])
-  else:
-    raise ValueError('target_metric_best_model must be val_loss or list_val_macro_accuracy')
+
+  best_metric_values = [
+    dict_train['dict_results']['list_val_performance_metric'][
+      best_results_idx[index]
+    ]
+    for index, dict_train in enumerate(fold_results_kth)
+  ]
+  best_model_subfolder_idx = best_metric_index(
+    best_metric_values, target_metric_best_model
+  )
   
   # Get best model epoch
   best_model_epoch = fold_results_kth[best_model_subfolder_idx]['dict_results']['best_model_idx']
@@ -467,7 +484,7 @@ def select_best_model(fold_results_kth, target_metric_best_model, saving_path_kt
   path_model_weights = os.path.join(
     saving_path_kth_fold,
     f'k{fold_idx}_cross_val_sub_{best_model_subfolder_idx}',
-    f'best_model_ep_{best_model_epoch}.pth'
+    f'best_model_ep_{best_model_epoch}.pt'
   )
   
   return {
@@ -787,32 +804,82 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   summary_res['time'] = 0 # for duration of the training phase
   
   # Train the model
-  k_fold_cross_validation(path_csv_dataset=new_csv_path if dict_augmented is not None else new_csv_path,
-                                          train_folder_path=train_folder_path,
-                                          model_advanced=model_advanced,
-                                          k_fold=k_fold,
-                                          seed_random_state=seed_random_state,
-                                          lr=lr,
-                                          epochs=epochs,
-                                          round_output_loss=is_round_output_loss,
-                                          shuffle_training_batch=is_shuffle_training_batch,
-                                          criterion=criterion,
-                                          early_stopping=early_stopping,
-                                          concatenate_temp_dim=concatenate_temp_dim,
-                                          init_network=init_network,
-                                          regularization_lambda_L1=regularization_lambda_L1,
-                                          regularization_lambda_L2=regularization_lambda_L2,
-                                          key_for_early_stopping=key_for_early_stopping,
-                                          clip_grad_norm=clip_grad_norm,
-                                          target_metric_best_model=target_metric_best_model,
-                                          stop_after_kth_fold=stop_after_kth_fold,
-                                          trial=trial,
-                                          summary_res=summary_res,
-                                          run_folder_path=run_folder_path,
-                                          validate=validate,
-                                          dict_augmented=dict_augmented,
-                                          **kwargs
-                                          )
+  predefined_csv_splits = kwargs.get('predefined_csv_splits')
+  runtime_kwargs = {
+    key: value
+    for key, value in kwargs.items()
+    if key != 'predefined_csv_splits'
+  }
+  if predefined_csv_splits is not None:
+    start = time.time()
+    predefined_results = run_predefined_split(
+      model_advanced=model_advanced,
+      predefined_csv_splits=predefined_csv_splits,
+      augmented_train_csv_path=new_csv_path,
+      train_folder_path=train_folder_path,
+      seed_random_state=seed_random_state,
+      train_kwargs={
+        'lr': lr,
+        'num_epochs': epochs,
+        'concatenate_temporal': concatenate_temp_dim,
+        'criterion': criterion,
+        'round_output_loss': is_round_output_loss,
+        'shuffle_training_batch': is_shuffle_training_batch,
+        'init_network': init_network,
+        'regularization_lambda_L1': regularization_lambda_L1,
+        'regularization_lambda_L2': regularization_lambda_L2,
+        'key_for_early_stopping': key_for_early_stopping,
+        'early_stopping': early_stopping,
+        'clip_grad_norm': clip_grad_norm,
+        'trial': trial,
+        'enable_optuna_pruning': True,
+        'dict_augmented': dict_augmented,
+        **runtime_kwargs,
+      },
+      test_kwargs={
+        'criterion': criterion,
+        'concatenate_temporal': concatenate_temp_dim,
+        'dict_augmented': dict_augmented,
+        **runtime_kwargs,
+      },
+      reduce_logs=lambda train_result: reduce_logs_for_subfold(
+        train_result,
+        skip_reduction=isinstance(criterion, losses.RESupConLoss),
+      ),
+      set_seed=set_seed,
+    )
+    summary_res['results'].update(predefined_results)
+    summary_res['time'] += time.time() - start
+    tools.save_dict_k_fold_results(
+      dict_k_fold_results=summary_res,
+      folder_path=run_folder_path,
+    )
+  else:
+    k_fold_cross_validation(path_csv_dataset=new_csv_path,
+                            train_folder_path=train_folder_path,
+                            model_advanced=model_advanced,
+                            k_fold=k_fold,
+                            seed_random_state=seed_random_state,
+                            lr=lr,
+                            epochs=epochs,
+                            round_output_loss=is_round_output_loss,
+                            shuffle_training_batch=is_shuffle_training_batch,
+                            criterion=criterion,
+                            early_stopping=early_stopping,
+                            concatenate_temp_dim=concatenate_temp_dim,
+                            init_network=init_network,
+                            regularization_lambda_L1=regularization_lambda_L1,
+                            regularization_lambda_L2=regularization_lambda_L2,
+                            key_for_early_stopping=key_for_early_stopping,
+                            clip_grad_norm=clip_grad_norm,
+                            target_metric_best_model=target_metric_best_model,
+                            stop_after_kth_fold=stop_after_kth_fold,
+                            trial=trial,
+                            summary_res=summary_res,
+                            run_folder_path=run_folder_path,
+                            validate=validate,
+                            dict_augmented=dict_augmented,
+                            **runtime_kwargs)
   if helper.LOG_CROSS_ATTENTION['enable']:
     summary_res['cross_attention_debug'] = helper.LOG_CROSS_ATTENTION
     helper.LOG_CROSS_ATTENTION = {'enable':helper.LOG_CROSS_ATTENTION['enable'],
@@ -826,4 +893,3 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   torch.cuda.empty_cache()
   return run_folder_path,summary_res 
  
-
