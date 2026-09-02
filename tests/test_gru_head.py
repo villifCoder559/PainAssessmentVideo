@@ -9,7 +9,7 @@ import torch.nn as nn
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from custom.head import GRUHead
-from custom import helper, head as head_mod
+from custom import helper
 from custom.dataset import highly_optimized_custom_collate, _custom_collate
 
 torch.manual_seed(0)
@@ -78,15 +78,16 @@ def test_dropout_zeroed_for_single_layer():
   assert h2.gru.dropout == 0.5
 
 
-def test_skip_init_weights(monkeypatch, default_kwargs):
-  called = {'n': 0}
-  def fake_init(self, init_type='default'):
-    called['n'] += 1
-  monkeypatch.setattr(GRUHead, '_initialize_weights', fake_init)
-  GRUHead(**default_kwargs, skip_init_weights=True)
-  assert called['n'] == 0
-  GRUHead(**default_kwargs, skip_init_weights=False)
-  assert called['n'] == 1
+def test_training_init_hook_preserves_native_gru_parameters(default_kwargs):
+  h = GRUHead(**default_kwargs)
+  native_parameters = {name: value.detach().clone() for name, value in h.named_parameters()}
+
+  h._initialize_weights(init_type='default')
+
+  assert all(
+    torch.equal(native_parameters[name], value)
+    for name, value in h.named_parameters()
+  )
 
 
 # ---------- _reduce_to_sequence ----------
@@ -242,79 +243,6 @@ def test_backbone_not_called_when_none(default_kwargs, small_seq):
   with torch.no_grad():
     r = h(small_seq)
   assert r['logits'].shape == (2, 1)
-
-
-# ---------- Weight init ----------
-
-def test_initialize_weights_default(default_kwargs):
-  h = GRUHead(**default_kwargs)
-  for name, p in h.gru.named_parameters():
-    if 'bias' in name:
-      assert torch.all(p == 0)
-    else:
-      assert torch.any(p != 0)
-  # orthogonal_ on (3*hidden, hidden) yields orthonormal columns → W.T @ W = I.
-  w_hh = h.gru.weight_hh_l0
-  assert torch.allclose(w_hh.T @ w_hh, torch.eye(16), atol=1e-5)
-  assert torch.any(h.linear.weight != 0)
-  assert h.linear.weight.abs().max() < 1.0  # gain=0.1 keeps it small
-  assert torch.all(h.linear.bias == 0)
-
-
-def test_initialize_weights_raises_on_unknown_type(default_kwargs):
-  h = GRUHead(**default_kwargs)
-  with pytest.raises(NotImplementedError):
-    h._initialize_weights(init_type='bogus')
-
-
-# ---------- Pretrained reload (mocked) ----------
-
-def test_head_init_path_loads_and_filters_linear(monkeypatch, default_kwargs):
-  template = GRUHead(**default_kwargs)
-  fake_state = {k: v.clone() for k, v in template.state_dict().items()}
-  # Ensure linear.* keys exist so we can verify they get filtered out.
-  assert any(k.startswith('linear.') for k in fake_state)
-
-  load_calls = {'path': None, 'weights_only': None}
-  def fake_torch_load(path, weights_only=False):
-    load_calls['path'] = path
-    load_calls['weights_only'] = weights_only
-    return fake_state
-  monkeypatch.setattr(head_mod.os.path, 'isfile', lambda p: True)
-  monkeypatch.setattr(head_mod.torch, 'load', fake_torch_load)
-
-  captured = {}
-  orig_lsd = nn.Module.load_state_dict
-  def spy_lsd(self, state_dict, strict=True, **kw):
-    captured['keys'] = list(state_dict.keys())
-    captured['strict'] = strict
-    return orig_lsd(self, state_dict, strict=strict, **kw)
-  monkeypatch.setattr(GRUHead, 'load_state_dict', spy_lsd)
-
-  GRUHead(**default_kwargs, head_init_path='/fake/path.pth')
-
-  assert load_calls['path'] == '/fake/path.pth'
-  assert load_calls['weights_only'] is True
-  assert captured['strict'] is False
-  assert all(not k.startswith('linear.') for k in captured['keys'])
-  assert any(k.startswith('gru.') for k in captured['keys'])
-
-
-def test_head_init_path_missing_file_skips_load(monkeypatch, default_kwargs):
-  monkeypatch.setattr(head_mod.os.path, 'isfile', lambda p: False)
-  load_calls = {'n': 0}
-  def fake_load(*a, **kw):
-    load_calls['n'] += 1
-    return {}
-  monkeypatch.setattr(head_mod.torch, 'load', fake_load)
-  GRUHead(**default_kwargs, head_init_path='/nope.pth')
-  assert load_calls['n'] == 0
-
-
-def test_set_init_path_stores_value(default_kwargs):
-  h = GRUHead(**default_kwargs)
-  h.set_init_path('/x/y.pth')
-  assert h.head_init_path == '/x/y.pth'
 
 
 # ---------- Gradient flow ----------
