@@ -11,6 +11,7 @@ from custom.head import GRUHead, AttentiveHeadJEPA
 from custom.helper import CUSTOM_DATASET_TYPE, MODEL_TYPE, get_shift_for_sample_id
 import pandas as pd
 import custom.helper as helper
+from custom.targets import TargetSpec
 # import wandb
 import tqdm
 
@@ -315,7 +316,9 @@ class Model_Advanced: # Scenario_Advanced
       if nr_values == 0:
         print(f"Sample ID {sample_id} not found in the dataset. set_real_label_from_csv will not work properly.")
       # create a tensor with the same label
-      csv_labels = torch.full((nr_values,),real_csv_label,dtype=helper.dict_data['list_labels'].dtype) 
+      if not helper.dict_data['list_labels'].dtype.is_floating_point:
+        helper.dict_data['list_labels'] = helper.dict_data['list_labels'].float()
+      csv_labels = torch.full((nr_values,), float(real_csv_label), dtype=torch.float32)
       helper.dict_data['list_labels'][mask] = csv_labels
 
   def test_pretrained_model(self,path_model_weights,state_dict, csv_path, criterion, concatenate_temporal,is_test=True,**kwargs):
@@ -477,22 +480,31 @@ class Model_Advanced: # Scenario_Advanced
     if kwargs.get('target_samples_per_class_training') is not None:
       # Use the pre-augmentation df to avoid double-shifting already-augmented sample_ids
       df_original = _original_df
+      target_spec = (
+        TargetSpec.from_metadata(kwargs['target_spec'])
+        if kwargs.get('target_spec')
+        else TargetSpec.from_values(df_original['class_id'])
+      )
+      class_bins = target_spec.to_bins(df_original['class_id'])
       target_samples_per_class = kwargs['target_samples_per_class_training']
       df_final = helper.generate_balanced_dataframe(df_original=df_original,
                                          list_augmentations_available=helper.get_augmentation_availables(self.path_to_extracted_features),
-                                         target_samples_per_class=target_samples_per_class)
+                                         target_samples_per_class=target_samples_per_class,
+                                         class_bins=class_bins)
       if kwargs['perfect_bal_strategy'] is not None:
-        class_counts = df_final['class_id'].value_counts()
+        class_counts = pd.Series(target_spec.to_bins(df_final['class_id'])).value_counts()
         n_classes = len(class_counts)
         batch_size = batch_size * n_classes
         print(f'Adjusted batch size for perfect balancing: {batch_size}')
         assert batch_size % n_classes == 0, "Batch size must be divisible by number of classes for perfect balancing."
         print(f'################ Using perfectly balanced stratification with {target_samples_per_class} samples per class ################')
-        df_final = helper.refine_perfectly_balanced_target_samples_per_class(df_final, target_samples_per_class, kwargs['perfect_bal_strategy'])
+        df_final = helper.refine_perfectly_balanced_target_samples_per_class(
+          df_final, target_samples_per_class, kwargs['perfect_bal_strategy'], target_spec
+        )
       df_original.to_csv(os.path.basename(train_csv_path).replace('.csv', '_original.csv'), index=False, sep='\t')
       df_final.to_csv(train_csv_path, index=False, sep='\t')
-      print(f"Original class distribution:\n{df_original['class_id'].value_counts().sort_index()}")
-      print(f"Stratification completed. New class distribution:\n{df_final['class_id'].value_counts().sort_index()}")
+      print(f"Original bin distribution:\n{pd.Series(class_bins).value_counts().sort_index()}")
+      print(f"Stratification completed. New bin distribution:\n{pd.Series(target_spec.to_bins(df_final['class_id'])).value_counts().sort_index()}")
       final_df = df_final
         
     if kwargs.get('sampler_augmented_only_types', False) and not kwargs.get('stratified_training', False):
@@ -539,9 +551,14 @@ class Model_Advanced: # Scenario_Advanced
                                           **kwargs
                                           )
     
-    count_subject_ids_train, count_y_train = tools.get_unique_subjects_and_classes(train_csv_path)
+    result_target_spec = (
+      TargetSpec.from_metadata(kwargs['target_spec'])
+      if kwargs.get('target_spec')
+      else None
+    )
+    count_subject_ids_train, count_y_train = tools.get_unique_subjects_and_classes(train_csv_path, result_target_spec)
     if val_csv_path is not None:
-      count_subject_ids_val, count_y_val = tools.get_unique_subjects_and_classes(val_csv_path) 
+      count_subject_ids_val, count_y_val = tools.get_unique_subjects_and_classes(val_csv_path, result_target_spec)
     else:
       count_subject_ids_val = None
       count_y_val = None
@@ -551,5 +568,3 @@ class Model_Advanced: # Scenario_Advanced
               'count_subject_ids_train':count_subject_ids_train,
               'count_subject_ids_val':count_subject_ids_val
               }    
-
-
