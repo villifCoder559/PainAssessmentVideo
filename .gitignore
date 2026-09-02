@@ -176,10 +176,11 @@ MIntPAIN*/*
 videos_jitter_comparison/*
 DFER_all_*
 unbc_dfer_*
-PEMF/*
+PEMF*/*
 !PEMF/prepare_pemf.py
 z_latex_tables
 XITE*/*
 !XITE/check_frontalized_videos.py
 !XITE/DATASET_STRUCTURE.md
 analysis/*
+*.csv
