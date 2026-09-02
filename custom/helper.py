@@ -255,8 +255,8 @@ def get_augmentation_availables(fold_feature_path):
   return augment_available
 
 
-def get_perfectly_balanced_target_samples_per_class(df, batch_size, min_target_samples_per_class=0):
-  class_counts = df['class_id'].value_counts()
+def get_perfectly_balanced_target_samples_per_class(df, batch_size, min_target_samples_per_class=0, class_bins=None):
+  class_counts = pd.Series(class_bins if class_bins is not None else df['class_id']).value_counts()
   n_classes = len(class_counts)
   total_samples = len(df)
   assert batch_size % n_classes == 0, "Batch size must be divisible by number of classes for perfect balancing."
@@ -265,19 +265,24 @@ def get_perfectly_balanced_target_samples_per_class(df, batch_size, min_target_s
   return target_class_count
 
 
-def refine_perfectly_balanced_target_samples_per_class(df, target_samples_per_class,strategy='oversample'):
-  class_counts = df['class_id'].value_counts()
+def refine_perfectly_balanced_target_samples_per_class(df, target_samples_per_class,strategy='oversample',target_spec=None):
+  def class_values(frame):
+    return target_spec.to_bins(frame['class_id']) if target_spec is not None else frame['class_id'].to_numpy()
+
+  class_counts = pd.Series(class_values(df)).value_counts()
   new_df = df.copy(deep=True)
   for class_id, count in class_counts.items(): 
+    class_mask = class_values(new_df) == class_id
     if count < target_samples_per_class:
       n_to_add = target_samples_per_class - count
       if strategy == 'oversample':
-        samples_to_add = new_df[new_df['class_id'] == class_id].sample(n=n_to_add, replace=True)
+        samples_to_add = new_df[class_mask].sample(n=n_to_add, replace=True)
         new_df = pd.concat([new_df, samples_to_add], ignore_index=True)
       elif strategy == 'latent_augm':
         while n_to_add > 0:
-          n = min(n_to_add, target_samples_per_class - new_df[new_df['class_id'] == class_id].shape[0])
-          samples_to_add = new_df[new_df['class_id'] == class_id].sample(n=n, replace=True)
+          class_mask = class_values(new_df) == class_id
+          n = min(n_to_add, target_samples_per_class - int(class_mask.sum()))
+          samples_to_add = new_df[class_mask].sample(n=n, replace=True)
           # Apply latent_basic augmentation to samples with sample_id < step_shift (non augmented samples)
           samples_to_add['sample_id'] = samples_to_add['sample_id'].apply(lambda x: transform_sample_id((((x-1)%step_shift) + 1), 'latent_basic'))
           n_to_add -= len(samples_to_add)
@@ -286,16 +291,18 @@ def refine_perfectly_balanced_target_samples_per_class(df, target_samples_per_cl
       else:
         raise ValueError(f"Strategy not recognized: {strategy}")
     elif count > target_samples_per_class:
-      samples_to_remove = new_df[new_df['class_id'] == class_id].sample(n=count-target_samples_per_class, replace=False)
+      samples_to_remove = new_df[class_mask].sample(n=count-target_samples_per_class, replace=False)
       new_df = new_df[~new_df.index.isin(samples_to_remove.index)]
     
   return new_df  
 
-def get_sample_augmented(pain, list_subject, orig_df, dict_augmentation_per_sample, new_df):
+def get_sample_augmented(pain, list_subject, orig_df, dict_augmentation_per_sample, new_df, class_bins=None):
+  class_bins = pd.Series(class_bins, index=orig_df.index) if class_bins is not None else orig_df['class_id']
   for sbj in list_subject:
-    if orig_df[(orig_df['subject_id']==sbj) & (orig_df['class_id']==pain)].shape[0]>0:
+    mask = (orig_df['subject_id'] == sbj) & (class_bins == pain)
+    if mask.any():
       # filter by subject and pain class
-      all_candidate_samples = orig_df[(orig_df['subject_id']==sbj) & (orig_df['class_id']==pain)]
+      all_candidate_samples = orig_df[mask]
       while all_candidate_samples.shape[0]>0:  
         # pick the lowest count existing as selection criteria
         count_existing = (all_candidate_samples['sample_name'].values == new_df['sample_name'].values[:, None]).sum(axis=0)
@@ -315,12 +322,13 @@ def get_sample_augmented(pain, list_subject, orig_df, dict_augmentation_per_samp
           all_candidate_samples = all_candidate_samples[all_candidate_samples['sample_id'] != id_candidate]
   return None
 
-def generate_balanced_dataframe(df_original,list_augmentations_available,target_samples_per_class,):
+def generate_balanced_dataframe(df_original,list_augmentations_available,target_samples_per_class,class_bins=None):
   # Deepcopy to modify each key separately
   dict_augm_available = {id: deepcopy(list_augmentations_available) for id in df_original['sample_id'].values}
-  target_samples_distribution = {class_id: target_samples_per_class for class_id in df_original['class_id'].unique()}
+  grouping = pd.Series(class_bins if class_bins is not None else df_original['class_id'].to_numpy(), index=df_original.index)
+  target_samples_distribution = {class_id: target_samples_per_class for class_id in grouping.unique()}
   dict_class_upsample = {}
-  original_class_distribution = df_original['class_id'].value_counts().sort_index()
+  original_class_distribution = grouping.value_counts().sort_index()
   
   # Determine how many samples to upsample per class
   for class_id, count in original_class_distribution.items():
@@ -337,7 +345,8 @@ def generate_balanced_dataframe(df_original,list_augmentations_available,target_
                                 list_subject,
                                 df_original,
                                 new_df=new_df,
-                                dict_augmentation_per_sample=dict_augm_available)
+                                dict_augmentation_per_sample=dict_augm_available,
+                                class_bins=grouping)
     if sample is not None:
       new_df = pd.concat([new_df, pd.DataFrame([sample])], ignore_index=True)
   return new_df
