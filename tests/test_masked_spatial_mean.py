@@ -27,6 +27,12 @@ class TestMaskedSpatialMeanBasics:
         features = torch.randn(B, T, S, S, C)
         output = masked_spatial_mean(features)
         assert output.shape == (B, T, 1, 1, C)
+
+    def test_output_shape_s10(self):
+        """Test output shape with S=10."""
+        features = torch.randn(2, 8, 10, 10, 256)
+        output = masked_spatial_mean(features)
+        assert output.shape == (2, 8, 1, 1, 256)
     
     def test_batch_size_one(self):
         """Test with batch size 1 (most common case)."""
@@ -195,19 +201,19 @@ class TestMaskedSpatialMeanErrors:
     def test_invalid_s_dimension(self):
         """Test that invalid S dimension raises error."""
         features = torch.randn(1, 8, 15, 15, 256)
-        with pytest.raises(ValueError, match="S must be 14 or 16"):
+        with pytest.raises(ValueError, match="S must be 10, 14, or 16"):
             masked_spatial_mean(features)
     
     def test_invalid_s_too_small(self):
         """Test that S too small raises error."""
         features = torch.randn(1, 8, 8, 8, 256)
-        with pytest.raises(ValueError, match="S must be 14 or 16"):
+        with pytest.raises(ValueError, match="S must be 10, 14, or 16"):
             masked_spatial_mean(features)
     
     def test_invalid_s_too_large(self):
         """Test that S too large raises error."""
         features = torch.randn(1, 8, 32, 32, 256)
-        with pytest.raises(ValueError, match="S must be 14 or 16"):
+        with pytest.raises(ValueError, match="S must be 10, 14, or 16"):
             masked_spatial_mean(features)
     
     def test_non_square_spatial(self):
