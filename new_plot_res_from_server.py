@@ -1,7 +1,9 @@
 import gc
+import copy
 import os
 import pickle
 import re
+import shutil
 import matplotlib.pyplot as plt
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
@@ -13,6 +15,7 @@ import tqdm
 from pathlib import Path
 import argparse
 import logging
+from dataclasses import dataclass
 from custom import helper
 from custom.plot_aggregation import (
   confusion_axis_labels,
@@ -34,6 +37,272 @@ MAX_CLASSES_FOR_CONFUSION_MATRIX = 20
 # Hardcoded y-axis height for the FINAL grouped per-class loss plot.
 # If None, the y-axis auto-scales; if set, this exact value is used.
 GROUPED_LOSS_PER_CLASS_FINAL_YLIM = 5
+
+
+def _copy_plot(source, destination):
+  try:
+    os.remove(destination)
+  except FileNotFoundError:
+    pass
+  shutil.copy2(source, destination)
+
+
+def _saved_best_epoch(result):
+  """Return the training-selected epoch without deriving or mutating it."""
+  best_epoch = result.get('train_val', {}).get('best_model_idx')
+  return int(best_epoch) if best_epoch is not None else None
+
+
+@dataclass(frozen=True)
+class ConfusionResolution:
+  matrix: object
+  requested_epoch: int
+  resolved_epoch: object
+  source: str
+  description: str
+
+
+class BestEpochConfusionResolver:
+  """Resolve saved-best confusion matrices without changing serialized results."""
+
+  def __init__(
+    self,
+    data,
+    run_folder,
+    model_factory=None,
+    evaluate_checkpoint=None,
+    diagnostic=print,
+  ):
+    self.data = data
+    self.config = copy.deepcopy(data.get('config', {}))
+    self.model_advanced_params = copy.deepcopy(
+      data.get('model_advanced_params', {})
+    )
+    self.run_folder = Path(run_folder) if run_folder is not None else None
+    self.model_factory = model_factory or self._default_model_factory
+    self.evaluate_checkpoint = (
+      evaluate_checkpoint or self._default_evaluate_checkpoint
+    )
+    self.diagnostic = diagnostic
+    self._model = None
+    self._model_initialization_attempted = False
+    self._model_initialization_error = None
+    self._cache = {}
+
+  @staticmethod
+  def _default_model_factory(params):
+    from custom.model import Model_Advanced
+    return Model_Advanced(**copy.deepcopy(params))
+
+  def _default_evaluate_checkpoint(
+    self, model, checkpoint_path, csv_path, split
+  ):
+    config = self.config
+    params = self.model_advanced_params
+    excluded = {
+      'criterion', 'concatenate_temporal', 'path_model_weights',
+      'state_dict', 'csv_path', 'is_test',
+    }
+    evaluation_kwargs = {
+      key: value for key, value in config.items() if key not in excluded
+    }
+    result = model.test_pretrained_model(
+      path_model_weights=str(checkpoint_path),
+      state_dict=None,
+      csv_path=str(csv_path),
+      is_test=True,
+      criterion=config['criterion'],
+      concatenate_temporal=params['concatenate_temporal'],
+      **evaluation_kwargs,
+    )
+    return result['test_confusion_matrix']
+
+  @staticmethod
+  def _matrix_mapping(result, split):
+    if split in ('train', 'val'):
+      return result.get('train_val', {}).get(
+        f'{split}_confusion_matricies', {}
+      ) or {}
+    test = result.get('test', {})
+    matrices = test.get('test_confusion_matricies')
+    return matrices if isinstance(matrices, dict) else {}
+
+  @staticmethod
+  def _at_epoch(matrices, epoch):
+    if not isinstance(matrices, dict):
+      return None
+    if epoch in matrices:
+      return matrices[epoch]
+    return matrices.get(str(epoch))
+
+  def _stored_exact(self, result, split, requested_epoch):
+    if split == 'test':
+      matrix = result.get('test', {}).get('test_confusion_matrix')
+      if matrix is not None:
+        return matrix
+    return self._at_epoch(
+      self._matrix_mapping(result, split), requested_epoch
+    )
+
+  def _selected_subfold_key(self, result_key, result):
+    if '_final' not in result_key:
+      return result_key
+    best_model = result.get('best_model', {})
+    fold_subfold = best_model.get('fold_sub_fold_idx')
+    outer_fold = result_key.split('_cross_val')[0]
+    if fold_subfold is not None:
+      return f'{outer_fold}_cross_val_sub_{int(fold_subfold[1])}'
+    shared_train_val = result.get('train_val')
+    for candidate_key, candidate in self.data['results'].items():
+      if '_final' not in candidate_key and (
+        candidate.get('train_val') is shared_train_val
+      ):
+        return candidate_key
+    raise KeyError(f'No selected subfold recorded for {result_key}')
+
+  def _paths(self, result_key, result, split, requested_epoch):
+    if self.run_folder is None:
+      raise FileNotFoundError('run folder is unavailable')
+    head = self.model_advanced_params.get('head')
+    if hasattr(head, 'value'):
+      head = head.value
+    elif hasattr(head, 'name'):
+      head = head.name
+    outer_fold = result_key.split('_cross_val')[0]
+    fold_dir = (
+      self.run_folder / f'train_{head}' / f'{outer_fold}_cross_val'
+    )
+    subfold_key = self._selected_subfold_key(result_key, result)
+    subfold_dir = fold_dir / subfold_key
+    checkpoint = subfold_dir / f'best_model_ep_{requested_epoch}.pt'
+    csv_path = (
+      fold_dir / 'test.csv'
+      if split == 'test'
+      else subfold_dir / f'{split}.csv'
+    )
+    if not checkpoint.is_file():
+      raise FileNotFoundError(f'checkpoint unavailable: {checkpoint}')
+    if not csv_path.is_file():
+      raise FileNotFoundError(f'CSV unavailable: {csv_path}')
+    return checkpoint, csv_path
+
+  def _recompute(self, result_key, result, split, requested_epoch):
+    checkpoint, csv_path = self._paths(
+      result_key, result, split, requested_epoch
+    )
+    if not self._model_initialization_attempted:
+      self._model_initialization_attempted = True
+      try:
+        self._model = self.model_factory(self.model_advanced_params)
+      except Exception as error:
+        self._model_initialization_error = error
+        raise
+    if self._model_initialization_error is not None:
+      raise RuntimeError(
+        'model initialization previously failed: '
+        f'{self._model_initialization_error}'
+      ) from self._model_initialization_error
+    return self.evaluate_checkpoint(
+      self._model, checkpoint, csv_path, split
+    )
+
+  def _nearest_stored(self, result, split, requested_epoch):
+    matrices = self._matrix_mapping(result, split)
+    numeric_epochs = []
+    for epoch in matrices:
+      try:
+        numeric_epochs.append(int(epoch))
+      except (TypeError, ValueError):
+        continue
+    if not numeric_epochs:
+      return None, None
+    resolved_epoch = min(
+      numeric_epochs,
+      key=lambda epoch: (abs(epoch - requested_epoch), epoch),
+    )
+    return self._at_epoch(matrices, resolved_epoch), resolved_epoch
+
+  def resolve(self, result_key, split):
+    result = self.data['results'][result_key]
+    requested_epoch = _saved_best_epoch(result)
+    if requested_epoch is None:
+      raise KeyError(f'No saved best_model_idx for {result_key}')
+    cache_key = (result_key, split, requested_epoch)
+    if cache_key in self._cache:
+      return self._cache[cache_key]
+
+    exact = self._stored_exact(result, split, requested_epoch)
+    if exact is not None:
+      resolution = ConfusionResolution(
+        exact,
+        requested_epoch,
+        requested_epoch,
+        'stored',
+        f'stored best epoch {requested_epoch}',
+      )
+      self._cache[cache_key] = resolution
+      return resolution
+
+    try:
+      recomputed = self._recompute(
+        result_key, result, split, requested_epoch
+      )
+      if recomputed is None:
+        raise ValueError('checkpoint evaluation returned no confusion matrix')
+      recomputed_matrix = _confmat_tensor(recomputed)
+      if (
+        not hasattr(recomputed_matrix, 'ndim')
+        or recomputed_matrix.ndim != 2
+        or recomputed_matrix.shape[0] != recomputed_matrix.shape[1]
+      ):
+        raise ValueError(
+          'checkpoint evaluation returned an invalid confusion matrix'
+        )
+      description = (
+        f'evaluation-mode checkpoint result at best epoch {requested_epoch}'
+        if split == 'train'
+        else f'recomputed checkpoint result at best epoch {requested_epoch}'
+      )
+      resolution = ConfusionResolution(
+        recomputed,
+        requested_epoch,
+        requested_epoch,
+        'recomputed',
+        description,
+      )
+    except Exception as error:
+      nearest, resolved_epoch = self._nearest_stored(
+        result, split, requested_epoch
+      )
+      if nearest is None:
+        self.diagnostic(
+          f'[skip] {result_key} {split} confusion matrix requested epoch '
+          f'{requested_epoch}: recomputation failed ({error}); no stored '
+          'epoch is available'
+        )
+        resolution = ConfusionResolution(
+          None,
+          requested_epoch,
+          None,
+          'unavailable',
+          f'best epoch {requested_epoch} unavailable',
+        )
+      else:
+        self.diagnostic(
+          f'[fallback] {result_key} {split} confusion matrix requested '
+          f'epoch {requested_epoch}; recomputation failed ({error}); '
+          f'substituted stored epoch {resolved_epoch}'
+        )
+        resolution = ConfusionResolution(
+          nearest,
+          requested_epoch,
+          resolved_epoch,
+          'nearest_stored',
+          f'best epoch {requested_epoch}; substituted stored epoch '
+          f'{resolved_epoch}',
+        )
+    self._cache[cache_key] = resolution
+    return resolution
 
 
 def _auto_y_lim(values_list, base_y_lim, margin=1.1):
@@ -216,11 +485,18 @@ def _group_results_by_k_fold(results):
   return grouped
 
 
+def _confmat_tensor(confmat):
+  return confmat.confmat if hasattr(confmat, 'confmat') else confmat
+
+
 def _confmat_accuracy_record(confmat, observed_labels):
   """Return labels, per-class recall, and row supports for one confusion matrix."""
-  matrix = confmat.confmat if hasattr(confmat, 'confmat') else confmat
-  matrix = torch.as_tensor(matrix).float()
-  labels = confusion_axis_labels(matrix, observed_labels)
+  matrix = torch.as_tensor(_confmat_tensor(confmat)).float()
+  labels = (
+    tuple(range(matrix.shape[0]))
+    if observed_labels is None
+    else confusion_axis_labels(matrix, observed_labels)
+  )
   supports = matrix.sum(dim=1)
   valid = supports > 0
   accuracies = torch.diag(matrix)[valid] / supports[valid]
@@ -228,118 +504,102 @@ def _confmat_accuracy_record(confmat, observed_labels):
   return labels, accuracies.tolist(), supports[valid].tolist()
 
 
-def _value_at_epoch(values, epoch):
-  if values is None:
-    return None
-  if isinstance(values, dict):
-    return values.get(str(epoch), values.get(epoch))
-  try:
-    return values[epoch]
-  except (IndexError, KeyError, TypeError):
-    return None
+def _labels_for_split(result, split):
+  upper = result.get('test', {}) if split == 'test' else result.get('train_val', {})
+  return upper.get(f'{split}_unique_y')
 
 
-def _stored_accuracy_record(accuracy, labels, counts):
-  """Build a weighted-mean record from legacy per-class accuracy fields."""
-  if accuracy is None or labels is None or counts is None:
-    return None
-  labels = [label.item() if hasattr(label, 'item') else label for label in labels]
-  values = np.asarray(accuracy, dtype=float).reshape(-1)
-  if isinstance(counts, dict):
-    supports = [counts.get(label) for label in labels]
-  else:
-    supports = np.asarray(counts, dtype=float).reshape(-1).tolist()
-  if not (len(labels) == len(values) == len(supports)):
-    return None
-
-  valid = [
-    idx for idx, (value, support) in enumerate(zip(values, supports))
-    if support is not None and float(support) > 0 and np.isfinite(value)
-  ]
-  if not valid:
-    return None
-  return (
-    [labels[idx] for idx in valid],
-    [values[idx] for idx in valid],
-    [supports[idx] for idx in valid],
+def _accuracy_by_class(confmat, observed_labels):
+  labels, accuracies, _supports = _confmat_accuracy_record(
+    confmat, observed_labels
   )
+  return dict(zip(labels, accuracies))
 
 
-def get_grouped_accuracies(data):
-  """Return sample-pooled per-class accuracy for each grouped fold and split."""
+def get_result_accuracies(data, result_key, resolver=None):
+  """Return saved-best per-class recall derived only from confusion counts."""
+  resolver = resolver or BestEpochConfusionResolver(data, None)
+  result = data['results'][result_key]
+  split_names = ['train', 'val']
+  if result.get('test'):
+    split_names.append('test')
+  accuracies = {}
+  for split in split_names:
+    resolution = resolver.resolve(result_key, split)
+    if resolution.matrix is None:
+      continue
+    accuracies[split] = _accuracy_by_class(
+      resolution.matrix, _labels_for_split(result, split)
+    )
+  return accuracies
+
+
+def get_grouped_accuracies(data, resolver=None):
+  """Pool raw saved-best confusion counts, then compute per-class recall."""
+  resolver = resolver or BestEpochConfusionResolver(data, None)
   grouped_accuracies = {}
   for k_fold, sub_folds in _group_results_by_k_fold(data['results']).items():
-    records = {'train': [], 'val': [], 'test': []}
+    pooled = {'train': None, 'val': None, 'test': None}
     is_final = k_fold == 'final'
-    for result in sub_folds.values():
-      train_val = result.get('train_val', {})
-      best_epoch = train_val.get('best_model_idx')
-      if best_epoch is not None:
-        for split in ('train', 'val'):
-          if split == 'val' and is_final:
-            continue
-          matrices = train_val.get(f'{split}_confusion_matricies', {})
-          matrix = _value_at_epoch(matrices, best_epoch)
-          labels = train_val.get(f'{split}_unique_y')
-          if matrix is not None and labels is not None:
-            records[split].append(_confmat_accuracy_record(matrix, labels))
-          else:
-            record = _stored_accuracy_record(
-              _value_at_epoch(
-                train_val.get(f'list_{split}_accuracy_per_class'), best_epoch
-              ),
-              labels,
-              train_val.get(f'count_y_{split}'),
+    desired_splits = ('train', 'val', 'test') if is_final else ('train', 'val')
+    for result_key, result in sub_folds.items():
+      if _saved_best_epoch(result) is None:
+        continue
+      for split in desired_splits:
+        if split == 'test' and not result.get('test'):
+          continue
+        resolution = resolver.resolve(result_key, split)
+        if resolution.matrix is None:
+          continue
+        pooled[split] = merge_confusion_matrices(
+          pooled[split],
+          _confmat_tensor(resolution.matrix),
+          (
+            tuple(range(
+              _confmat_tensor(resolution.matrix).shape[0]
+            ))
+            if _labels_for_split(result, split) is None
+            else confusion_axis_labels(
+              _confmat_tensor(resolution.matrix),
+              _labels_for_split(result, split),
             )
-            if record is not None:
-              records[split].append(record)
+          ),
+        )
 
-      if is_final:
-        test = result.get('test', {})
-        matrix = test.get('test_confusion_matrix')
-        labels = test.get('test_unique_y')
-        if matrix is not None and labels is not None:
-          records['test'].append(_confmat_accuracy_record(matrix, labels))
-        else:
-          record = _stored_accuracy_record(
-            test.get('test_accuracy_per_class'),
-            labels,
-            test.get('test_count_y'),
-          )
-          if record is not None:
-            records['test'].append(record)
-
-    grouped_accuracies[k_fold] = {
-      split: weighted_means_by_label(split_records) if split_records else {}
-      for split, split_records in records.items()
-    }
+    grouped_accuracies[k_fold] = {}
+    for split, state in pooled.items():
+      if state is None:
+        grouped_accuracies[k_fold][split] = {}
+        continue
+      matrix, labels = state
+      grouped_accuracies[k_fold][split] = _accuracy_by_class(matrix, labels)
   return grouped_accuracies
 
 
 def _plot_grouped_accuracy_per_class(ax, accuracy_by_class, title):
-  """Plot fractional per-class accuracies as percentages on ``ax``."""
+  """Plot per-class recall as fractions on a fixed zero-to-one axis."""
   labels = sorted(accuracy_by_class)
-  percentages = [float(accuracy_by_class[label]) * 100 for label in labels]
+  recalls = [float(accuracy_by_class[label]) for label in labels]
   positions = np.arange(len(labels))
-  bars = ax.bar(positions, percentages, width=0.6, edgecolor='black')
+  bars = ax.bar(positions, recalls, width=0.6, edgecolor='black')
   ax.bar_label(
     bars,
-    labels=[f'{value:.1f}%' for value in percentages],
+    labels=[f'{value:.3f}' for value in recalls],
     fontsize=9,
     padding=2,
   )
   ax.set_xticks(positions)
   ax.set_xticklabels([str(label) for label in labels])
-  ax.set_ylim(0, 100)
-  ax.set_yticks(np.arange(0, 101, 10))
+  ax.set_ylim(0, 1)
+  ax.set_yticks(np.arange(0, 1.01, 0.1))
   ax.set_xlabel('Class')
-  ax.set_ylabel('Accuracy (%)')
-  ax.set_title(title)
+  ax.set_ylabel('Per-class accuracy (recall)')
+  ax.set_title(f'{title} — Per-class accuracy (recall)')
   ax.yaxis.grid(True, linestyle='--', which='major', color='grey', alpha=0.5)
 
 
 def plot_grouped_accuracy_per_class(
-  data, run_output_folder, test_id, additional_info=''
+  data, run_output_folder, test_id, additional_info='', resolver=None
 ):
   """Save grouped TRAIN/VAL or TRAIN/TEST per-class accuracy figures."""
   unsupported_criteria = (
@@ -355,11 +615,11 @@ def plot_grouped_accuracy_per_class(
 
   grouped_output_folder = os.path.join(run_output_folder, test_id)
   os.makedirs(grouped_output_folder, exist_ok=True)
-  grouped_accuracies = get_grouped_accuracies(data)
+  grouped_accuracies = get_grouped_accuracies(data, resolver=resolver)
 
   for k_fold, split_accuracies in grouped_accuracies.items():
     requested_splits = (
-      (('TRAIN', 'train'), ('TEST', 'test'))
+      (('TRAIN', 'train'), ('VAL', 'val'), ('TEST', 'test'))
       if k_fold == 'final'
       else (('TRAIN', 'train'), ('VAL', 'val'))
     )
@@ -499,7 +759,9 @@ def _balanced_accuracy_from_confmat(cm_obj):
   return (torch.diag(t)[mask] / support[mask]).mean().item()
 
 
-def plot_grouped_confusion_matrix(data, run_output_folder, test_id, additional_info=''):
+def plot_grouped_confusion_matrix(
+  data, run_output_folder, test_id, additional_info='', resolver=None
+):
   """
   Aggregates confusion matrices across sub-folds within each k-fold group and
   produces summary plots. For each k-fold, raw counts are summed across all
@@ -518,6 +780,7 @@ def plot_grouped_confusion_matrix(data, run_output_folder, test_id, additional_i
 
   grouped_output_folder = os.path.join(run_output_folder, test_id)
   os.makedirs(grouped_output_folder, exist_ok=True)
+  resolver = resolver or BestEpochConfusionResolver(data, None)
 
   # Build fold grouping (same logic as get_grouped_losses)
   real_k_fold = set([int(key.split('_')[0][1]) for key in data['results'].keys()])
@@ -543,7 +806,11 @@ def plot_grouped_confusion_matrix(data, run_output_folder, test_id, additional_i
 
   def _merge_confmat(accum, cm_obj, observed_labels):
     matrix = _get_confmat_tensor(cm_obj)
-    labels = confusion_axis_labels(matrix, observed_labels)
+    labels = (
+      tuple(range(matrix.shape[0]))
+      if observed_labels is None
+      else confusion_axis_labels(matrix, observed_labels)
+    )
     return merge_confusion_matrices(accum, matrix, labels)
 
   def _plot_heatmap(ax, matrix_tensor, labels, title, fmt, cbar_label):
@@ -582,27 +849,30 @@ def plot_grouped_confusion_matrix(data, run_output_folder, test_id, additional_i
     for sub_k, res in sub_k_dict.items():
       if 'train_val' not in res:
         continue
-      best_epoch = res['train_val']['best_model_idx']
-      epoch_str = str(best_epoch)
-
-      train_cms = res['train_val'].get('train_confusion_matricies', {})
-      if epoch_str in train_cms:
+      train_resolution = resolver.resolve(sub_k, 'train')
+      if train_resolution.matrix is not None:
         sum_train = _merge_confmat(
-          sum_train, train_cms[epoch_str], res['train_val']['train_unique_y']
+          sum_train,
+          train_resolution.matrix,
+          res['train_val'].get('train_unique_y'),
         )
 
-      if not is_final:
-        val_cms = res['train_val'].get('val_confusion_matricies', {})
-        if epoch_str in val_cms:
+      if data['config'].get('validate', True):
+        val_resolution = resolver.resolve(sub_k, 'val')
+        if val_resolution.matrix is not None:
           sum_val = _merge_confmat(
-            sum_val, val_cms[epoch_str], res['train_val']['val_unique_y']
+            sum_val,
+            val_resolution.matrix,
+            res['train_val'].get('val_unique_y'),
           )
 
-      if 'test' in res and res['test']:
-        test_cm = res['test'].get('test_confusion_matrix')
-        if test_cm is not None:
+      if is_final and res.get('test'):
+        test_resolution = resolver.resolve(sub_k, 'test')
+        if test_resolution.matrix is not None:
           sum_test = _merge_confmat(
-            sum_test, test_cm, res['test']['test_unique_y']
+            sum_test,
+            test_resolution.matrix,
+            res['test'].get('test_unique_y'),
           )
 
     if sum_train is None:
@@ -713,6 +983,67 @@ def plot_CCC_ICC_pearson(data, run_output_folder, test_id, additional_info=''):
     plt.close(fig)
 
 
+def _get_loss_y_lim_and_step(data):
+  features_path = str(
+    data.get('model_advanced_params', {}).get('features_folder_saving_path', '')
+  ).lower()
+  dataset_path = str(data.get('config', {}).get('path_csv_dataset', '')).lower()
+
+  if 'xite' in features_path or 'xite' in dataset_path:
+    return 1, 0.1
+
+  if 'unbc' in features_path:
+    y_lim_loss, step_lim = (2, 0.25) if 'opi' in dataset_path else (14.1, 2)
+  elif 'parta' in features_path:
+    y_lim_loss, step_lim = 2.5, 0.25
+  elif 'agedb' in features_path or 'morph' in features_path:
+    y_lim_loss, step_lim = 14.1, 2
+  elif 'mintpain' in features_path:
+    y_lim_loss, step_lim = 2, 0.25
+  else:
+    y_lim_loss, step_lim = 14.1, 2
+
+  criterion = data['config']['criterion']
+  if isinstance(criterion, torch.nn.MSELoss):
+    return 15.1, 3
+  if isinstance(criterion, losses.CDW_CELoss):
+    return 35.1, 6
+  if isinstance(criterion, losses.RESupConLoss):
+    return 20.1, 3
+  if isinstance(criterion, losses.RnCLossV2):
+    return 10.1, 1
+  if isinstance(criterion, losses.DisentangledLoss):
+    return 15.1, 2
+  return y_lim_loss, step_lim
+
+
+def _plot_loss_accuracy_subplot(
+  ax, train_losses, val_accuracy, point_accuracy, y_lim_loss, step_lim
+):
+  tools.plot_losses_and_test_new(
+    list_1=train_losses,
+    list_2=val_accuracy,
+    output_path=None,
+    title='Train loss, validation accuracy, test accuracy',
+    point=point_accuracy,
+    ax=ax,
+    x_label='Epochs',
+    y_label_1='Train loss',
+    y_label_2='Validation accuracy',
+    y_label_3='Test accuracy',
+    y_lim_1=[0, y_lim_loss],
+    y_lim_2=[0, 1],
+    y_lim_3=[0, 1],
+    step_ylim_1=step_lim,
+    step_ylim_2=0.1,
+    step_ylim_3=0.1,
+    dict_to_string=None,
+    color_1='tab:red',
+    color_2='tab:blue',
+    color_3='tab:green',
+  )
+
+
 def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info='', plot_loss_per_subject=True,plot_acc_per_subject=True, plot_loss_per_class=True,plot_train_loss_val_acc=True,**kwargs):
   # Adjust run_output_folder to store plots
   # run_output_folder = Path(run_output_folder).parts[:-3]
@@ -758,13 +1089,13 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         if test_accuracy is not None:
           point_accuracy = {
               'value': test_accuracy,
-              'epoch': data['results'][key]['train_val']['best_model_idx']
+              'epoch': _saved_best_epoch(data['results'][key])
           }
         else:
           point_accuracy = None
         point_loss = {
             'value':test_loss,
-            'epoch':data['results'][key]['train_val']['best_model_idx']
+            'epoch': _saved_best_epoch(data['results'][key])
             }
       else:
         point_accuracy = None
@@ -803,40 +1134,9 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
             
         dict_to_string = dict_to_string.replace('criterion_dict',f"{type(data['config']['criterion']).__name__}")
         # add test_id in dict_to_string
-        def get_y_lim_loss_and_step():
-          if 'unbc' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower():
-            if 'opi' in "".join(data['config']['path_csv_dataset']).lower():
-              return 2, 0.25
-            else:
-              return 14.1, 2
-          elif 'parta' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower():
-            return 2.5, 0.25
-          elif 'agedb' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower():
-            return 14.1, 2
-          elif 'morph' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower():
-            return 14.1, 2
-          elif 'mintpain' in "".join(data['model_advanced_params']['features_folder_saving_path']).lower():
-            return 2, 0.25
-          else:
-            return 14.1, 2
-        y_lim_loss, step_lim = get_y_lim_loss_and_step()
+        y_lim_loss, step_lim = _get_loss_y_lim_and_step(data)
         dict_to_string += f'\nTest ID: {test_id}'
         dict_to_string += f'\nfold_subfold: {key.split("_")[0]}_{key.split("_")[-1]}'
-        if isinstance(data['config']['criterion'],torch.nn.MSELoss):
-          y_lim_loss = 15.1
-          step_lim = 3
-        elif isinstance(data['config']['criterion'],losses.CDW_CELoss):
-          y_lim_loss = 35.1
-          step_lim = 6
-        elif isinstance(data['config']['criterion'],losses.RESupConLoss):
-          y_lim_loss = 20.1
-          step_lim = 3
-        elif isinstance(data['config']['criterion'],losses.RnCLossV2):
-          y_lim_loss = 10.1
-          step_lim = 1
-        elif isinstance(data['config']['criterion'],losses.DisentangledLoss):
-          y_lim_loss = 15.1
-          step_lim = 2
         # y_lim_loss = 15.1 if isinstance(data['config']['criterion'],torch.nn.MSELoss) else 5.1
         x_lim_loss = -1.1 if isinstance(data['config']['criterion'],losses.RESupConLoss) else 0
         
@@ -848,31 +1148,14 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                             key,
                             title=f'Learning Rate and Weight Decay Across Epochs',
                             ax1=axs[1][0])
-          input_dict_loss_acc= {
-          'list_1':train_losses,
-          'list_2':val_accuracy,
-          'output_path':None,
-          'title':f'Train loss, validation accuracy, test accuracy',
-          'point':point_accuracy,
-          'ax':axs[0][1],
-          'x_label':'Epochs',
-          'y_label_1':'Train loss',
-          'y_label_2':'Validation accuracy',
-          'y_label_3':'Test accuracy',
-          'y_lim_1':[0, y_lim_loss],
-          'y_lim_2':[0, 0.5],
-          'y_lim_3':[0, 0.5],
-          'step_ylim_1':step_lim,
-          'step_ylim_2':0.05,
-          'step_ylim_3':0.05,
-          'dict_to_string':None,
-          'color_1':'tab:red',
-          'color_2':'tab:blue',
-          'color_3':'tab:green',
-        }
-        
-          # tools.plot_losses_and_test_new(**input_dict_accuracy_gap)
-          tools.plot_losses_and_test_new(**input_dict_loss_acc)
+          _plot_loss_accuracy_subplot(
+            ax=axs[0][1],
+            train_losses=train_losses,
+            val_accuracy=val_accuracy,
+            point_accuracy=point_accuracy,
+            y_lim_loss=y_lim_loss,
+            step_lim=step_lim,
+          )
         else:
           if loss_plot_type == 'dist':
             dict_count_labels_val = data['results'][key]['train_val']['count_y_val'] if not 'final' in key else dict(zip(data['results'][key]['test']['test_unique_y'].numpy(), data['results'][key]['test']['test_count_y']))
@@ -923,7 +1206,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
                               ax1=axs[0][1])
             
             # axs[1][0]: loss per subject train
-            best_epoch = data['results'][key]['train_val']['best_model_idx']
+            best_epoch = _saved_best_epoch(data['results'][key])
             loss_per_subject_train = data['results'][key]['train_val'].get('train_loss_per_subject', None)
             unique_subject_ids_train=data['results'][key]['train_val']['train_unique_subject_ids']
 
@@ -1128,14 +1411,8 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         axs[0][1].text(1.14, -0.5, dict_to_string, fontsize=12, color='black',transform=axs[0][1].transAxes,ha='left', va='center')
         plot_path = os.path.join(test_output_folder, f'{test_id}{additional_info}_losses_{key}.png')
         fig.savefig(plot_path, bbox_inches='tight')
-        symlink_path = os.path.join(only_losses_folder_per_k, f'{test_id}{additional_info}_losses_{key}.png')
-        # Remove the link if it already exists to avoid errors
-        try:
-          os.remove(symlink_path)
-        except FileNotFoundError:
-          pass
-        # Create a new symlink
-        os.symlink(plot_path, symlink_path)
+        copy_path = os.path.join(only_losses_folder_per_k, f'{test_id}{additional_info}_losses_{key}.png')
+        _copy_plot(plot_path, copy_path)
         
         # Create and save plot for test_as_validation if applicable
         if kwargs.get('test_as_validation', False):
@@ -1145,14 +1422,8 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
             tools.plot_losses_and_test_new(**input_dict_loss) # ax[0][0]
             plot_path = os.path.join(test_output_folder, f'{test_id}{additional_info}_losses_test_as_validation_{key}.png')
             fig.savefig(plot_path, bbox_inches='tight')
-            symlink_path = os.path.join(only_losses_folder_per_k, f'{test_id}{additional_info}_losses_test_as_validation_{key}.png')
-            # Remove the link if it already exists to avoid errors
-            try:
-              os.remove(symlink_path)
-            except FileNotFoundError:
-              pass
-            # Create a new symlink
-            os.symlink(plot_path, symlink_path)
+            copy_path = os.path.join(only_losses_folder_per_k, f'{test_id}{additional_info}_losses_test_as_validation_{key}.png')
+            _copy_plot(plot_path, copy_path)
         ###########
         plt.close(fig)
 
@@ -1183,7 +1454,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         total_plots = sum([1 for loss in loss_list if loss is not None])
         fig, axs = plt.subplots(total_plots, 1, figsize=(20, 20))
         count_axs = 0
-        best_epoch = data['results'][key]['train_val']['best_model_idx']
+        best_epoch = _saved_best_epoch(data['results'][key])
         
         # Train Loss
         if loss_per_subject_train is not None:
@@ -1254,7 +1525,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         total_plots = sum([1 for acc in acc_list if acc is not None])
         count_axs = 0
         fig, axs = plt.subplots(total_plots,1,figsize=(20,20))
-        best_epoch = data['results'][key]['train_val']['best_model_idx']
+        best_epoch = _saved_best_epoch(data['results'][key])
         # Train accuracy
         if accuracy_per_subject_train is not None:
           tools.plot_error_per_subject(loss_per_subject=accuracy_per_subject_train[best_epoch],
@@ -1307,7 +1578,7 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         total_plots = sum([1 for class_loss in class_loss_list if class_loss is not None])
         fig, axs = plt.subplots(total_plots,1,figsize=(14,8))
         count_axs = 0
-        best_epoch = data['results'][key]['train_val']['best_model_idx']
+        best_epoch = _saved_best_epoch(data['results'][key])
 
         _class_values_for_y = []
         if train_loss_per_class is not None:
@@ -1365,55 +1636,41 @@ def plot_losses(data, run_output_folder, test_id, loss_plot_type,additional_info
         fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_mae_per_class_{key}.png'))
         plt.close(fig)
         
-    if not is_unbc and plot_loss_per_class and not isinstance(data['config']['criterion'],losses.RESupConLoss):
-        y_lim = 10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3
-        _train_acc_pc = data['results'][key]['train_val']['list_train_accuracy_per_class']
-        train_accuracy_per_class = _train_acc_pc[best_epoch] if _train_acc_pc else None
-        _val_acc_pc = data['results'][key]['train_val']['list_val_accuracy_per_class']
-        val_accuracy_per_class = _val_acc_pc[best_epoch] if _val_acc_pc else None
-        dict_test = data['results'][key].get('test', None)
-        class_loss_list = [train_accuracy_per_class, val_accuracy_per_class, dict_test]  
-        total_plots = sum([1 for class_loss in class_loss_list if class_loss is not None])
-        fig, axs = plt.subplots(total_plots,1,figsize=(10,8))
-        count_axs = 0
-        best_epoch = data['results'][key]['train_val']['best_model_idx']
-        # Train Loss
-        if train_accuracy_per_class is not None:
-          tools.plot_error_per_class(unique_classes=data['results'][key]['train_val']['train_unique_y'],
-                                      # mae_per_class=train_loss_per_class[best_epoch],
-                                      title=f'TRAIN Epoch_{best_epoch} {key} - {test_id}',
-                                      criterion=data['config']['criterion'],
-                                      accuracy_per_class=train_accuracy_per_class,
-                                      y_lim=y_lim,
-                                      ax=axs[count_axs])
-          count_axs += 1
-        # Val Loss
-        if val_accuracy_per_class is not None and val_accuracy_per_class[0] is not None and val_accuracy_per_class[0].reshape(-1).sum() != 0:
-          if data['results'][key]['train_val']['val_unique_y'].shape[0] != val_loss_per_class[best_epoch].shape[0]:
-            
-            raise ValueError('Number of unique classes does not match number of classes in val_loss_per_class')
-          tools.plot_error_per_class(unique_classes=data['results'][key]['train_val']['val_unique_y'],
-                                    # mae_per_class=val_loss_per_class[best_epoch],
-                                    title=f'VAL Epoch_{best_epoch} {key} - {test_id}',
-                                    criterion=data['config']['criterion'],
-                                    accuracy_per_class=val_accuracy_per_class,
-                                    y_lim=y_lim,
-                                    ax=axs[count_axs])
-          count_axs += 1
-        # Test Loss
-        if dict_test is not None and dict_test != {}:
-          try:
-            tools.plot_error_per_class(unique_classes=data['results'][key]['test']['test_unique_y'],
-                                    # mae_per_class=dict_per_class_test['test_loss_per_class'],
-                                    title=f'TEST {key} - {test_id}',
-                                    criterion=data['config']['criterion'],
-                                    accuracy_per_class=dict_test['test_accuracy_per_class'],
-                                    y_lim=y_lim,
-                                    ax=axs[count_axs])
-          except Exception as e:
-            print(f"Error plotting test accuracy per class for {key} - {test_id}: {e}")
+    if (not is_unbc and plot_loss_per_class
+        and not isinstance(data['config']['criterion'], losses.RESupConLoss)):
+      resolver = kwargs.get('confusion_resolver')
+      if resolver is None:
+        resolver = BestEpochConfusionResolver(
+          data, kwargs.get('run_folder')
+        )
+      accuracies = get_result_accuracies(data, key, resolver=resolver)
+      if accuracies:
+        split_order = [
+          split for split in ('train', 'val', 'test') if split in accuracies
+        ]
+        fig, axs = plt.subplots(
+          len(split_order), 1,
+          figsize=(10, 4.5 * len(split_order)),
+          squeeze=False,
+        )
+        best_epoch = _saved_best_epoch(data['results'][key])
+        for ax, split in zip(axs.flatten(), split_order):
+          resolution = resolver.resolve(key, split)
+          provenance = (
+            '' if resolution.source == 'stored'
+            else f' ({resolution.description})'
+          )
+          _plot_grouped_accuracy_per_class(
+            ax,
+            accuracies[split],
+            f'{split.upper()} - Best epoch {best_epoch}{provenance} - '
+            f'{key} - {test_id}',
+          )
         fig.tight_layout()
-        fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_accuracy_per_class_{key}.png'))
+        fig.savefig(os.path.join(
+          test_output_folder,
+          f'{test_id}{additional_info}_accuracy_per_class_{key}.png',
+        ))
         plt.close(fig)
 
 def plot_gradient_per_module(data, run_output_folder, test_id, additional_info='',):
@@ -1542,7 +1799,7 @@ def plot_history_model_prediction(data, run_output_folder, test_id, root_csv_pat
   for key in data['results'].keys():
     if (not 'train_val' in data['results'][key]) or data['results'][key]['train_val']['history_val_sample_predictions'] is None:
       continue
-    best_epoch = data['results'][key]['train_val']['best_model_idx']
+    best_epoch = _saved_best_epoch(data['results'][key])
     num_epochs = len(data['results'][key]['train_val']['train_losses'])
     # train_history_pred = data['results'][key]['train_val']['history_train_sample_predictions']
     val_history_pred = data['results'][key]['train_val']['history_val_sample_predictions']
@@ -1953,123 +2210,191 @@ def generate_csv_row(data,config,time_, test_id):
   row_dict['path_csv_dataset'] = '/'.join(row_dict['path_csv_dataset'])
   return row_dict
 
-def plot_confusion_matrices(data, root_output_folder, test_id, additional_info=''):
+def plot_confusion_matrices(
+  data, root_output_folder, test_id, additional_info='', resolver=None
+):
   test_output_folder = os.path.join(root_output_folder, test_id)
   os.makedirs(test_output_folder, exist_ok=True)
   if isinstance(data['config']['criterion'],losses.RESupConLoss) or isinstance(data['config']['criterion'],losses.RnCLossV2) or isinstance(data['config']['criterion'],losses.DisentangledLoss):
     return  # No confusion matrix for RESupConLoss
   is_cross_entropy = isinstance(data['config']['criterion'],torch.nn.CrossEntropyLoss) or isinstance(data['config']['criterion'],losses.PHuberCrossEntropy)
-  #### Plot confusion matrix for each epoch ####
-  for key,dict_sub_fold in data['results'].items():
-    
-    # if 'final' not in key:
-    #   continue  # For cross-validation folds, only plot for final model
-    
-    best_epoch_idx =  dict_sub_fold['train_val']['best_model_idx']
-    dict_train_conf_matrix = dict_sub_fold['train_val']['train_confusion_matricies']
+  resolver = resolver or BestEpochConfusionResolver(
+    data, None
+  )
 
-    _first_cm = next(iter(dict_train_conf_matrix.values()), None)
-    if _first_cm is not None:
-      n_classes = _first_cm.confmat.shape[0] if hasattr(_first_cm, 'confmat') else _first_cm.shape[0]
-      if n_classes > MAX_CLASSES_FOR_CONFUSION_MATRIX:
-        print(f'[skip] confusion matrix for {test_id}/{key}: '
-              f'C={n_classes} > {MAX_CLASSES_FOR_CONFUSION_MATRIX}')
+  def render_l1(ax, matrix, title):
+    mae_by_class = compute_mae_per_class(conf_matrix=matrix)
+    tools.plot_error_per_class(
+      mae_per_class=[mae_by_class[i] for i in sorted(mae_by_class)],
+      unique_classes=sorted(mae_by_class),
+      criterion='L1',
+      ax=ax,
+      title=title,
+      y_lim=(
+        10 if 'unbc' in ''.join(
+          data['config']['path_csv_dataset']
+        ).lower() else 3
+      ),
+    )
+
+  for key, dict_sub_fold in data['results'].items():
+    best_epoch_idx = _saved_best_epoch(dict_sub_fold)
+    if best_epoch_idx is None:
+      continue
+    train_matrices = dict_sub_fold.get('train_val', {}).get(
+      'train_confusion_matricies', {}
+    ) or {}
+    val_matrices = dict_sub_fold.get('train_val', {}).get(
+      'val_confusion_matricies', {}
+    ) or {}
+
+    first_cm = next(iter(train_matrices.values()), None)
+    if first_cm is not None:
+      raw_first = first_cm.confmat if hasattr(first_cm, 'confmat') else first_cm
+      if raw_first.shape[0] > MAX_CLASSES_FOR_CONFUSION_MATRIX:
+        print(
+          f'[skip] confusion matrix for {test_id}/{key}: '
+          f'C={raw_first.shape[0]} > {MAX_CLASSES_FOR_CONFUSION_MATRIX}'
+        )
         continue
 
-    dict_val_conf_matrix = dict_sub_fold['train_val'].get('val_confusion_matricies', None)
-    dict_test_conf_matrix = None
-      
-    if 'test' in data['results'][key] and data['results'][key]['test'] != {}:
-      dict_test_conf_matrix = {f'{best_epoch_idx}':dict_sub_fold['test']['test_confusion_matrix']}
-    
-    # Plot confusion matrix for each epoch
-    for epoch in dict_train_conf_matrix.keys():
-      if int(epoch) == best_epoch_idx and dict_test_conf_matrix is not None:
-        fig, axs = plt.subplots(3, 1, figsize=(5, 15))
-        if is_cross_entropy:
-          fig_l1_error, axs_l1_error = plt.subplots(3, 1, figsize=(5, 15))
-      else:
-        fig, axs = plt.subplots(2, 1, figsize=(5, 10))
-        if is_cross_entropy:
-          fig_l1_error, axs_l1_error = plt.subplots(2, 1, figsize=(5, 10))
-      axs_count = 0
-      kk = key.split('_')
-      if len(kk) > 2:
-        kk = f'{kk[0]}_{kk[-1]}'
-      else:
-        kk = key
-      tools.plot_confusion_matrix(dict_train_conf_matrix[epoch], ax=axs[axs_count], title=f'TRAIN - Epoch {epoch} - {test_id} - {kk}')
+    periodic_epochs = []
+    for epoch in train_matrices:
+      try:
+        numeric_epoch = int(epoch)
+      except (TypeError, ValueError):
+        continue
+      if numeric_epoch != best_epoch_idx and numeric_epoch not in periodic_epochs:
+        periodic_epochs.append(numeric_epoch)
+
+    short_key = f'{key.split("_")[0]}_{key.split("_")[-1]}'
+    for epoch in sorted(periodic_epochs):
+      panels = [('TRAIN', BestEpochConfusionResolver._at_epoch(
+        train_matrices, epoch
+      ))]
+      val_matrix = BestEpochConfusionResolver._at_epoch(val_matrices, epoch)
+      if data['config'].get('validate', True) and val_matrix is not None:
+        panels.append(('VAL', val_matrix))
+      panels = [(name, matrix) for name, matrix in panels if matrix is not None]
+      if not panels:
+        continue
+      fig, axes = plt.subplots(
+        len(panels), 1, figsize=(5, 5 * len(panels)), squeeze=False
+      )
+      l1_fig = l1_axes = None
       if is_cross_entropy:
-        dict_mae_per_class = compute_mae_per_class(conf_matrix=dict_train_conf_matrix[epoch])
-        tools.plot_error_per_class(mae_per_class=[dict_mae_per_class[i] for i in sorted(dict_mae_per_class.keys())],
-                                  unique_classes=sorted(dict_mae_per_class.keys()),
-                                  criterion='L1',
-                                  ax=axs_l1_error[0],
-                                  title=f'TRAIN -Loss per class - Epoch {epoch} - {kk} - {test_id}',
-                                  y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
-      axs_count += 1
-      if data['config'].get('validate', True) and dict_val_conf_matrix is not None:
-        tools.plot_confusion_matrix(dict_val_conf_matrix[epoch], ax=axs[axs_count], title=f'VAL - Epoch {epoch} - {test_id} - {kk}')
+        l1_fig, l1_axes = plt.subplots(
+          len(panels), 1, figsize=(5, 5 * len(panels)), squeeze=False
+        )
+      for index, (split, matrix) in enumerate(panels):
+        title = f'{split} - Epoch {epoch} - {test_id} - {short_key}'
+        tools.plot_confusion_matrix(
+          matrix, ax=axes.flatten()[index], title=title
+        )
         if is_cross_entropy:
-          dict_mae_per_class = compute_mae_per_class(conf_matrix=dict_val_conf_matrix[epoch])
-          tools.plot_error_per_class(mae_per_class=[dict_mae_per_class[i] for i in sorted(dict_mae_per_class.keys())],
-                                    unique_classes=sorted(dict_mae_per_class.keys()),
-                                    criterion='L1',
-                                    ax=axs_l1_error[1],
-                                    title=f'VAL -Loss per class - Epoch {epoch} - {kk} - {test_id}',
-                                    y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
-        axs_count += 1
-      if int(epoch) == best_epoch_idx and dict_test_conf_matrix is not None:
-        tools.plot_confusion_matrix(dict_test_conf_matrix[epoch], ax=axs[axs_count], title=f'TEST - Epoch {epoch} - {test_id} - {kk}')
-        if is_cross_entropy:
-          dict_mae_per_class = compute_mae_per_class(conf_matrix=dict_test_conf_matrix[epoch])
-          tools.plot_error_per_class(mae_per_class=[dict_mae_per_class[i] for i in sorted(dict_mae_per_class.keys())],
-                                    unique_classes=sorted(dict_mae_per_class.keys()),
-                                    criterion='L1',
-                                    ax=axs_l1_error[2],
-                                    title=f'TEST -Loss per class - Epoch {epoch} - {kk} - {test_id}',
-                                    y_lim=10 if 'unbc' in "".join(data['config']['path_csv_dataset']).lower() else 3)
+          render_l1(
+            l1_axes.flatten()[index], matrix,
+            f'{split} - Loss per class - Epoch {epoch} - '
+            f'{short_key} - {test_id}',
+          )
       fig.tight_layout()
-      fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_confusion_matrix_{key}_epoch_{epoch}.png'))
+      fig.savefig(os.path.join(
+        test_output_folder,
+        f'{test_id}{additional_info}_confusion_matrix_{key}_epoch_{epoch}.png',
+      ))
       plt.close(fig)
       if is_cross_entropy:
-        fig_l1_error.tight_layout()
-        fig_l1_error.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_loss_per_class_L1_conf_matrix_{key}_epoch_{epoch}.png'))
-        plt.close(fig_l1_error)
-      
-  return # Skipping for now to save time
-  #### Plot only best epoch confusion matrix in percentage ####
-  fig, axs = plt.subplots(3, 1, figsize=(5, 15))
+        l1_fig.tight_layout()
+        l1_fig.savefig(os.path.join(
+          test_output_folder,
+          f'{test_id}{additional_info}_loss_per_class_L1_conf_matrix_'
+          f'{key}_epoch_{epoch}.png',
+        ))
+        plt.close(l1_fig)
 
-  if str(best_epoch_idx) not in dict_train_conf_matrix.keys():
-    print(f"Test id {test_id}:   Best epoch {best_epoch_idx} not in training confusion matrix keys {list(dict_train_conf_matrix.keys())}, skipping best epoch confusion matrix plot")
-    return
+    if '_final' in key:
+      best_splits = ['train', 'val', 'test']
+    else:
+      best_splits = ['train']
+      if data['config'].get('validate', True):
+        best_splits.append('val')
+    resolutions = [
+      (split, resolver.resolve(key, split)) for split in best_splits
+    ]
+    if '_final' not in key:
+      resolutions = [
+        (split, resolution) for split, resolution in resolutions
+        if resolution.matrix is not None
+      ]
+    if not resolutions:
+      continue
 
-  cms = []
-  titles = []
-  conf_matrix_train_percent = convert_conf_matrix_to_percent(dict_train_conf_matrix[str(best_epoch_idx)])
-  cms.append(conf_matrix_train_percent)
-  titles.append(f'TRAIN - Epoch {best_epoch_idx}   - {test_id}')
-  if 'final' not in key and data['config'].get('validate', True):
-    conf_matrix_val_percent = convert_conf_matrix_to_percent(dict_val_conf_matrix[str(best_epoch_idx)])
-    cms.append(conf_matrix_val_percent)
-    titles.append(f'VAL - Epoch {best_epoch_idx}   - {test_id}')
-  if 'final' in key or 'test' in data['results'][key]:
-    conf_matrix_test_percent = convert_conf_matrix_to_percent(dict_test_conf_matrix[str(best_epoch_idx)])
-    cms.append(conf_matrix_test_percent)
-    titles.append(f'TEST {test_id} - {key} - Epoch {best_epoch_idx}')
-  
-  for ax, cm, title in zip(axs, cms, titles):
-    sns.heatmap(cm.cpu().numpy(), annot=True, fmt=".2f", cmap='Blues', cbar_kws={'label': 'Percentage (%)'}, ax=ax,
-                xticklabels=[str(i) for i in range(cm.shape[0])],
-                yticklabels=[str(i) for i in range(cm.shape[0])])
-    ax.set_title(title)
-    ax.set_xlabel('Predicted Label')
-    ax.set_ylabel('True Label')
-  fig.tight_layout()
-  fig.savefig(os.path.join(test_output_folder, f'{test_id}{additional_info}_confusion_matrix_percentage_{key}_best_epoch_{best_epoch_idx}.png'))
-  plt.close(fig)
-    # ##########################################################
+    fig, axes = plt.subplots(
+      len(resolutions), 1,
+      figsize=(5, 5 * len(resolutions)),
+      squeeze=False,
+    )
+    l1_fig = l1_axes = None
+    if is_cross_entropy:
+      l1_fig, l1_axes = plt.subplots(
+        len(resolutions), 1,
+        figsize=(5, 5 * len(resolutions)),
+        squeeze=False,
+      )
+    for index, (split, resolution) in enumerate(resolutions):
+      ax = axes.flatten()[index]
+      l1_ax = l1_axes.flatten()[index] if is_cross_entropy else None
+      provenance = (
+        '' if resolution.source == 'stored'
+        else f' ({resolution.description})'
+      )
+      title = (
+        f'{split.upper()} - Best epoch {best_epoch_idx}{provenance} - '
+        f'{test_id} - {short_key}'
+      )
+      if resolution.matrix is None:
+        ax.set_title(title)
+        ax.text(
+          0.5, 0.5, resolution.description,
+          ha='center', va='center', transform=ax.transAxes,
+        )
+        ax.set_axis_off()
+        if is_cross_entropy:
+          l1_ax.set_title(
+            f'{split.upper()} - Loss per class - Best epoch '
+            f'{best_epoch_idx}{provenance} - {short_key} - {test_id}'
+          )
+          l1_ax.text(
+            0.5, 0.5, resolution.description,
+            ha='center', va='center', transform=l1_ax.transAxes,
+          )
+          l1_ax.set_axis_off()
+        continue
+      tools.plot_confusion_matrix(
+        resolution.matrix, ax=ax, title=title
+      )
+      if is_cross_entropy:
+        render_l1(
+          l1_ax,
+          resolution.matrix,
+          f'{split.upper()} - Loss per class - Best epoch '
+          f'{best_epoch_idx}{provenance} - {short_key} - {test_id}',
+        )
+    fig.tight_layout()
+    fig.savefig(os.path.join(
+      test_output_folder,
+      f'{test_id}{additional_info}_confusion_matrix_{key}_epoch_'
+      f'{best_epoch_idx}.png',
+    ))
+    plt.close(fig)
+    if is_cross_entropy:
+      l1_fig.tight_layout()
+      l1_fig.savefig(os.path.join(
+        test_output_folder,
+        f'{test_id}{additional_info}_loss_per_class_L1_conf_matrix_'
+        f'{key}_epoch_{best_epoch_idx}.png',
+      ))
+      plt.close(l1_fig)
 
 
 def convert_conf_matrix_to_percent(conf_matrix: MulticlassConfusionMatrix):
@@ -2374,21 +2699,44 @@ def _process_single_run(args):
   if data['config']['real_k_fold'] == 0:
     print(f'No TEST file found in {file}')
     return None
-  _prepare_best_model_indices(data['results'])
   grid_search_folder = Path(file).parts[-3]
   is_unbc = 'unbc' in "".join(data['config']['path_csv_dataset']).lower()
-  csv_row = generate_csv_row(data['results'], data['config'], data['time'], test_id) if write_csv else None
+  if write_csv:
+    csv_results = copy.deepcopy(data['results'])
+    _prepare_best_model_indices(csv_results)
+    csv_row = generate_csv_row(
+      csv_results, data['config'], data['time'], test_id
+    )
+  else:
+    csv_row = None
   if not only_csv:
+    confusion_resolver = BestEpochConfusionResolver(
+      data, os.path.dirname(file)
+    )
     clean_data(data['results'], data['config'])
     data['config']['model_type'] = data['config']['model_type'].name
     plot_grouped_k_fold(data, output_root, test_id)
-    plot_losses(data, output_root, test_id, loss_plot_type=dict_args['loss_plot_type'], test_as_validation=dict_args['test_as_validation'])
+    plot_losses(
+      data,
+      output_root,
+      test_id,
+      loss_plot_type=dict_args['loss_plot_type'],
+      test_as_validation=dict_args['test_as_validation'],
+      confusion_resolver=confusion_resolver,
+      run_folder=os.path.dirname(file),
+    )
     plot_separated_losses_adversarial(data, output_root, test_id)
     plot_hsic_per_epoch(data, output_root, test_id)
     if not plot_only_loss:
-      plot_grouped_accuracy_per_class(data, output_root, test_id)
-      plot_grouped_confusion_matrix(data, output_root, test_id)
-      plot_confusion_matrices(data, output_root, test_id)
+      plot_grouped_accuracy_per_class(
+        data, output_root, test_id, resolver=confusion_resolver
+      )
+      plot_grouped_confusion_matrix(
+        data, output_root, test_id, resolver=confusion_resolver
+      )
+      plot_confusion_matrices(
+        data, output_root, test_id, resolver=confusion_resolver
+      )
       plot_lr_wd_across_epochs(data, output_root, test_id)
       if is_unbc:
         generate_video_from_loss_plots(output_root, test_id)
