@@ -39,6 +39,7 @@ def recompute_raw_fold_metrics(pkl_path: str, data: dict, final_keys: list, ffsp
   """
   import custom.helper as helper
   from custom.model import Model_Advanced
+  from custom.targets import TargetSpec
 
   helper.init_log_cross_attention()
   helper.init_log_video_embeddings()
@@ -79,7 +80,7 @@ def recompute_raw_fold_metrics(pkl_path: str, data: dict, final_keys: list, ffsp
       'is_test': True,
       'concatenate_temporal': cfg['concatenate_temp_dim'],
       'concatenate_quadrants': cfg['concatenate_quadrants'],
-      'CCC_loss': cfg['CCC_loss'],
+      'CCC_loss': cfg.get('CCC_loss'),
     }
     kwargs = {k: v for k, v in cfg.items() if k not in test_args.keys()}
     print(f'\n=== Re-running {fold} best model (sub_{sub_idx}, epoch {epoch}) ===')
@@ -88,15 +89,26 @@ def recompute_raw_fold_metrics(pkl_path: str, data: dict, final_keys: list, ffsp
     history = dict_test['history_test_sample_predictions']
     preds = {sid: epochs[0] for sid, epochs in history.items()}
     df_test = pd.read_csv(csv_path, sep='\t', dtype={'sample_name': str})
-    labels = dict(zip(df_test['sample_id'].astype(int), df_test['class_id'].astype(int)))
+    labels = dict(zip(df_test['sample_id'].astype(int), df_test['class_id'].astype(float)))
+    class_values = (
+      TargetSpec.from_metadata(cfg['target_spec']).to_bins(df_test['class_id'])
+      if cfg.get('target_spec')
+      else df_test['class_id'].astype(int)
+    )
+    class_bins = dict(zip(df_test['sample_id'].astype(int), class_values))
     missing = set(labels) - set(preds)
     if missing:
       raise RuntimeError(f'{fold}: {len(missing)} test samples have no logged prediction: {sorted(missing)[:5]}...')
 
     err = {sid: abs(preds[sid] - labels[sid]) for sid in labels}
+    sample_ids = np.asarray(sorted(labels), dtype=int)
+    sample_predictions = np.asarray([
+      float(to_numpy(preds[sid]).reshape(-1)[0]) for sid in sample_ids
+    ], dtype=float)
+    sample_labels = np.asarray([labels[sid] for sid in sample_ids], dtype=float)
     per_class = {}
-    for c in sorted(set(labels.values())):
-      sids = [sid for sid, y in labels.items() if y == c]
+    for c in sorted(set(class_bins.values())):
+      sids = [sid for sid, target_bin in class_bins.items() if target_bin == c]
       per_class[c] = float(np.mean([err[sid] for sid in sids]))
     out[key] = {
       'raw_mae': float(np.mean(list(err.values()))),
@@ -107,6 +119,9 @@ def recompute_raw_fold_metrics(pkl_path: str, data: dict, final_keys: list, ffsp
       'recomputed_loss_per_subject': to_numpy(dict_test['test_loss_per_subject']).astype(float),
       'recomputed_accuracy_per_subject': to_numpy(dict_test['test_accuracy_per_subject']).astype(float),
       'recomputed_subject_ids': to_numpy(dict_test['test_unique_subject_ids']),
+      'recomputed_sample_ids': sample_ids,
+      'recomputed_sample_predictions': sample_predictions,
+      'recomputed_sample_labels': sample_labels,
       'n_samples': len(labels),
     }
   if hasattr(model, 'free_gpu_memory'):
@@ -158,9 +173,22 @@ def extract_table(
     classes = to_numpy(test['test_unique_y']).astype(int)
     count_y = to_numpy(test['test_count_y']).astype(int)
     count_subjects = to_numpy(test['test_count_subject_ids']).astype(int)
-
     n_samples = int(count_y.sum())
     n_subjects = len(count_subjects)
+
+    # Historical result files may predate persisted confusion matrices.
+    confusion_metric = test.get('test_confusion_matrix')
+    macro_f1 = None
+    if confusion_metric is not None:
+      confusion_matrix = to_numpy(confusion_metric.confmat).astype(int)
+      tp = np.diag(confusion_matrix)
+      fp = confusion_matrix.sum(axis=0) - tp
+      fn = confusion_matrix.sum(axis=1) - tp
+      precision = np.divide(tp, tp + fp, out=np.zeros_like(tp, dtype=float), where=(tp + fp) != 0)
+      recall = np.divide(tp, tp + fn, out=np.zeros_like(tp, dtype=float), where=(tp + fn) != 0)
+      f1_per_class = np.divide(2 * precision * recall, precision + recall, out=np.zeros_like(precision, dtype=float), where=(precision + recall) != 0)
+      macro_f1 = float(np.mean(f1_per_class))
+
     if n_samples != int(count_subjects.sum()):
       print(f"WARNING {fold}: sum(test_count_y)={n_samples} != sum(test_count_subject_ids)={int(count_subjects.sum())}")
 
@@ -200,11 +228,14 @@ def extract_table(
       per_class = dict(zip(classes.tolist(), (accuracy_per_class * 100).tolist()))
       class_column_template = 'accuracy_class_{}_pct'
 
+
     for c, n in zip(classes, count_y):
       row[class_column_template.format(c)] = float(per_class[int(c)])
       row[f'n_class_{c}'] = int(n)
     row['n_samples'] = n_samples
     row['n_subjects'] = n_subjects
+    if macro_f1 is not None:
+      row['macro_f1'] = macro_f1
     rows.append(row)
 
   df = pd.DataFrame(rows)
@@ -213,6 +244,8 @@ def extract_table(
     metric_cols = ['test_MAE', extra_col] + [c for c in df.columns if c.startswith('MAE_class_')]
   else:
     metric_cols = ['test_accuracy_pct']
+    if 'macro_f1' in df:
+      metric_cols.append('macro_f1')
     if raw:
       metric_cols.append('test_accuracy_raw_pct')
     metric_cols.extend(c for c in df.columns if c.startswith('accuracy_class_'))
