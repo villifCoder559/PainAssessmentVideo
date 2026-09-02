@@ -1078,14 +1078,13 @@ class DisentangledLoss(nn.Module):
   Loss module for disentangled representation learning with explicit gradient flow control.
   Enforces separation between pain and subject identity features.
   """
-  def __init__(self, loss_fns, split_idx, lambdas, ortho_lambda=0.0, return_dict=True):
+  def __init__(self, loss_fns, split_idx, lambdas, ortho_lambda=0.0):
     """
     Args:
       loss_fns: tuple/list of 2 callables [pain_loss_fn, subject_loss_fn]
       split_idx: int, index to split features at dim 1
       lambdas: tuple/list of 2 floats [pain_weight, subject_weight]
       ortho_lambda: float, weight for orthogonality regularization
-      return_dict: bool, if True returns detailed loss dictionary
     """
     super(DisentangledLoss, self).__init__()
     if len(loss_fns) != 2:
@@ -1099,7 +1098,6 @@ class DisentangledLoss(nn.Module):
     self.lambda_pain = lambdas[0]
     self.lambda_subj = lambdas[1]
     self.ortho_lambda = ortho_lambda
-    self.return_dict = return_dict
 
   def forward(self, features, target_pain, target_subj):
     """
