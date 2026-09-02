@@ -35,10 +35,64 @@ from custom.head import earlyStoppingAccuracy, earlyStoppingLoss, earlyStoppingD
 from custom.tools import plot_masked_attention, get_pth_path_from_project_folder
 from custom.optimizers import OptimizerFactory
 from custom.logger import setup_logger
+from custom.model_selection import (
+  optuna_direction_for_metric,
+  resolve_selection_metric,
+  threshold_pruner_kwargs,
+)
+from custom.predefined_splits import configure_csv_input
+from custom.targets import (
+  REPRESENTATION_LOSSES,
+  SCALAR_REGRESSION_LOSSES,
+  TargetSpec,
+  huber_delta_for_optimization,
+  validate_primary_losses,
+)
 
 os.environ["OPTUNA_DISABLE_TELEMETRY"] = "1"
 
 LOG_SCALE_OPTUNA_HYPERS = ['lr', 'regulariz_lambda_L1', 'regulariz_lambda_L2']
+
+
+def configure_selection_policy(config):
+  metric = resolve_selection_metric(
+    config.get('loss'),
+    config.get('key_early_stopping'),
+  )
+  config['key_early_stopping'] = metric
+  config['target_metric_best_model'] = metric
+  return metric
+
+
+def configure_target_spec(config):
+  split_paths = config.get('predefined_csv_splits')
+  csv_paths = (
+    [split_paths[role] for role in ('train', 'val', 'test')]
+    if split_paths is not None
+    else [config['training_csv']]
+  )
+  spec = TargetSpec.from_csv_paths(
+    csv_paths, normalize=bool(config.get('normalize_labels', 0))
+  )
+  losses_to_validate = config.get('loss') or []
+  if isinstance(losses_to_validate, str):
+    losses_to_validate = [losses_to_validate]
+  else:
+    losses_to_validate = list(losses_to_validate)
+  losses_to_validate.extend(
+    name
+    for value in (config.get('composite_loss') or [])
+    if value is not None
+    for name in value.split(',')
+  )
+  losses_to_validate.extend(
+    value.split(',')[0]
+    for value in (config.get('disent_loss_p_s') or [])
+    if value is not None
+  )
+  validate_primary_losses(losses_to_validate, spec)
+  config['target_spec'] = spec.to_metadata()
+  return spec
 
 def get_optimizer(opt):
   """Get optimizer class from string name.
@@ -235,7 +289,7 @@ def get_disentanglement_loss(loss_type, split_idx, lambdas,ortho_lambda, dict_ar
   return disentanglement_loss
 
 
-def get_class_weights(csv_path):
+def get_class_weights(csv_path, target_spec=None):
   """Calculates inverse class frequency weights from a CSV dataset.
 
   Args:
@@ -245,9 +299,15 @@ def get_class_weights(csv_path):
     numpy.ndarray: Array of weights.
   """
   df = pd.read_csv(csv_path, sep='\t')
-  class_counts = df['class_id'].value_counts(normalize=True).sort_index()
-  class_weights = 1.0 / class_counts.values  # Inverse of frequency
-  return class_weights
+  spec = target_spec or TargetSpec.from_values(df['class_id'])
+  class_counts = pd.Series(spec.to_bins(df['class_id'])).value_counts(normalize=True)
+  class_counts = class_counts.reindex(range(spec.bin_count), fill_value=0.0)
+  return np.divide(
+    1.0,
+    class_counts.to_numpy(),
+    out=np.zeros(spec.bin_count, dtype=float),
+    where=class_counts.to_numpy() > 0,
+  )
 
 
 def get_mean_val_accuracy(results, optuna_direction, use_median=False, min_epoch_threshold=0):
@@ -469,8 +529,6 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   if use_sdpa and not hasattr(torch.nn.functional, "scaled_dot_product_attention"):
     raise ValueError("SDPA is not available in this PyTorch version. Set use_sdpa=0 or update PyTorch")
   
-  add_CCC_loss = _suggest(trial, 'add_CCC_loss', kwargs['add_CCC_loss'], kwargs['optuna_categorical'])
-
   # --- Suggest Augmentation Params ---
   dict_augmented = {
     'hflip': _suggest(trial, 'hflip', kwargs['hflip'], kwargs['optuna_categorical']),
@@ -498,9 +556,10 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   # --- Setup Loss Object ---
   composite_loss = None
   loss = None
+  target_spec = TargetSpec.from_metadata(kwargs['target_spec'])
   loss_args = {
-    'delta_huber': delta_huber,
-    'class_weights': get_class_weights(kwargs['csv']),
+    'delta_huber': huber_delta_for_optimization(delta_huber, target_spec),
+    'class_weights': get_class_weights(kwargs['training_csv'], target_spec),
     'contrastive_loss_temp': contrastive_loss_temp,
     'contrastive_loss_theta': contrastive_loss_theta,
     'contrastive_lambda_weight': contrastive_lambda_weight,
@@ -513,7 +572,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   remove_head = False
   if kwargs['loss']:
     loss = trial.suggest_categorical('loss', kwargs['loss'])
-    remove_head = True if (loss == 'contrastive_reg' or loss == 'rncloss') else False
+    remove_head = loss in REPRESENTATION_LOSSES
   elif kwargs['composite_loss'][0] is not None:
     composite_loss = trial.suggest_categorical('composite_loss', kwargs['composite_loss'])
     composite_loss = composite_loss.split(',')
@@ -545,11 +604,11 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     if 'ce' in [l['type'] for l in composite_loss.config_losses]:
       raise ValueError("Classification loss (ce) not supported in composite loss for regression.")
   elif loss is not None:
-    if loss in ['l1', 'l2', 'huber', 'logcosh']:
+    if loss in SCALAR_REGRESSION_LOSSES or loss in REPRESENTATION_LOSSES:
       num_classes = 1
-      print(f"\nRegression task detected. Setting num_classes to 1 for {loss} loss.")
+      print(f"\nContinuous-target task detected. Setting num_classes to 1 for {loss} loss.")
     else:
-      num_classes = pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique()
+      num_classes = target_spec.bin_count
   
   # --- Head Specific Params ---
   head_name = kwargs['head']
@@ -603,7 +662,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
         raise ValueError("multitask_training cannot be used with composite_loss.")
       if lambda_multitask <= 0.0:
         raise ValueError("lambda_multitask must be > 0.0 when multitask_training is enabled.")
-      multitask_num_classes = pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique()
+      multitask_num_classes = target_spec.bin_count
     else:
       multitask_num_classes = None
     nr_blocks = _suggest(trial, 'nr_blocks', kwargs['nr_blocks'], kwargs['optuna_categorical'])
@@ -723,8 +782,6 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
   
   add_kwargs = {
     'dict_args_loss': dict_args_loss,
-    'add_CCC_loss': add_CCC_loss,
-    'CCC_loss': losses.CCCLoss() if add_CCC_loss > 0 else None,
     'concatenate_quadrants': concatenate_quadrants,
     'stratified_training': stratified_training,
     'target_samples_per_class_training': target_samples_per_class_training,
@@ -753,7 +810,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'HSIC_feat_normalization': HSIC_feat_normalization,
     'lambda_center_loss': lambda_center_loss,
     'ratio_lr_center_loss': ratio_lr_center_loss,
-    'num_classes_center_loss': pd.read_csv(kwargs['csv'], sep='\t')['class_id'].nunique(),
+    'num_classes_center_loss': target_spec.bin_count,
     'feature_merge_type': feature_merge_type,
     'feature_merge_lambda': feature_merge_lambda,
     'feature_merge_orig': feature_merge_orig,
@@ -761,7 +818,8 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     'gaussian_sigma_max': kwargs['gaussian_sigma_max'],
     'gaussian_kernel_size': kwargs['gaussian_kernel_size'],
     'normalize_labels': kwargs['normalize_labels'],
-    'max_label': kwargs['max_label'],
+    'target_spec': target_spec.to_metadata(),
+    'predefined_csv_splits': kwargs['predefined_csv_splits'],
   }
   add_kwargs.update(head_dependent_add_kwargs)
   
@@ -779,7 +837,7 @@ def objective(trial: optuna.trial.Trial, original_kwargs):
     pooling_clips_reduction=kwargs['pooling_clips_reduction'],
     sample_frame_strategy=get_sampling_frame_strategy(sample_frame_strategy),
     num_clips_per_video=num_clips_per_video,
-    path_csv_dataset=kwargs['csv'],
+    path_csv_dataset=kwargs['training_csv'],
     path_video_dataset=kwargs['path_video_dataset'],
     head=head_enum,
     use_sdpa=use_sdpa,
@@ -846,12 +904,15 @@ def hyper_search(kwargs):
     sampler_module = optuna.samplers.TPESampler()
 
   study = optuna.create_study(
-    direction='maximize' if kwargs['key_early_stopping'] == 'val_accuracy' else 'minimize',
+    direction=optuna_direction_for_metric(kwargs['key_early_stopping']),
     sampler=sampler_module,
     storage=f'sqlite:///{os.path.join(kwargs["global_folder_name"], f"{study_name}.db")}',
     study_name=study_name,
     pruner=optuna.pruners.ThresholdPruner(
-      lower=kwargs['pruner_threshold_lower'],
+      **threshold_pruner_kwargs(
+        kwargs['key_early_stopping'],
+        kwargs['pruner_threshold_lower'],
+      ),
       n_warmup_steps=kwargs['pruner_n_warmup_steps'],
       interval_steps=2
     )
@@ -981,7 +1042,7 @@ def validate_arguments(dict_args):
   if any(v != 0 for v in dict_args['undersample_max_per_class']) and 'selective_augm' not in dict_args['sampler_loader_type']:
     raise ValueError("undersample_max_per_class is only used with sampler_loader_type='selective_augm'.")
 
-  if 'caer' in dict_args['csv']:
+  if 'caer' in dict_args['training_csv']:
     print("\n Detected CAER, FORCE SPLIT INDICES FOR TRAINING K-FOLD \n")
     helper.step_shift = 13176
     helper.FORCE_SPLIT_K_FOLD = True
@@ -1000,26 +1061,31 @@ def validate_arguments(dict_args):
     helper.AMP_ENABLED = True
     helper.AMP_DTYPE = dict_args['train_amp_dtype'].lower()
 
-  if dict_args['add_CCC_loss'][0] and dict_args['loss'][0] not in ['l1', 'l2', 'huber']:
-    raise ValueError("CCC loss can only be added to 'l1', 'l2', or 'huber' loss.")
-
   if dict_args.get('normalize_labels', 0):
-    _regression_losses = ['l1', 'l2', 'huber', 'logcosh']
-    if dict_args['loss'] is None or dict_args['loss'][0] not in _regression_losses:
+    selected_losses = set(dict_args.get('loss') or [])
+    composite_losses = {
+      name
+      for value in (dict_args.get('composite_loss') or [])
+      if value is not None
+      for name in value.split(',')
+    }
+    disent_pain_losses = {
+      value.split(',')[0]
+      for value in (dict_args.get('disent_loss_p_s') or [])
+      if value is not None
+    }
+    supported = SCALAR_REGRESSION_LOSSES | REPRESENTATION_LOSSES
+    configured = selected_losses or composite_losses or disent_pain_losses
+    if not configured or not configured <= supported:
       raise ValueError(
-        f"--normalize_labels=1 requires a pure regression loss (one of {_regression_losses}). "
-        f"Got: {dict_args.get('loss')}"
+        f"--normalize_labels=1 requires continuous-target losses. Got: {sorted(configured)}"
       )
-    if dict_args['composite_loss'][0] is not None:
-      raise ValueError("--normalize_labels cannot be used with --composite_loss.")
-    if dict_args['disent_loss_p_s'][0] is not None:
-      raise ValueError("--normalize_labels cannot be used with --disent_loss_p_s.")
 
   for method in dict_args['queries_agg_method']:
     if method not in helper.QUERIES_AGG_METHOD:
        raise ValueError(f"Invalid queries aggregation method: {method}")
 
-  if not None in dict_args['delta_huber'] and 'huber' not in dict_args['loss'][0]:
+  if not None in dict_args['delta_huber'] and 'huber' not in (dict_args.get('loss') or []):
      raise ValueError("delta_huber is set but loss is not 'huber'.")
 
   if dict_args['loss'] is not None and 'huber' in dict_args['loss'] and any(d <= 0 for d in dict_args['delta_huber'] if d is not None):
@@ -1031,6 +1097,20 @@ def validate_arguments(dict_args):
   if dict_args['label_smooth'] and dict_args['soft_labels']:
     if sum(dict_args['label_smooth']) > 0 and sum(dict_args['soft_labels']) > 0:
       raise ValueError("Label smoothing and soft labels cannot be used together.")
+
+  configured_continuous_loss = (
+    bool(set(dict_args.get('loss') or []) & (SCALAR_REGRESSION_LOSSES | REPRESENTATION_LOSSES))
+    or any(value is not None for value in (dict_args.get('composite_loss') or []))
+    or any(
+      value is not None and value.split(',')[0] in (SCALAR_REGRESSION_LOSSES | REPRESENTATION_LOSSES)
+      for value in (dict_args.get('disent_loss_p_s') or [])
+    )
+  )
+  if configured_continuous_loss and (
+    sum(dict_args.get('label_smooth') or [0]) > 0
+    or sum(dict_args.get('soft_labels') or [0]) > 0
+  ):
+    raise ValueError("Label smoothing/soft labels are not supported for continuous-target losses.")
 
   if dict_args['loss'] is not None and dict_args['loss'][0] in ['l1', 'l2'] and (sum(dict_args['label_smooth']) > 0 or sum(dict_args['soft_labels']) > 0):
     raise ValueError("Label smoothing/soft labels not supported for l1/l2.")
@@ -1107,6 +1187,8 @@ if __name__ == '__main__':
   if pre_args.config:
     try:
       yaml_defaults = load_yaml_as_flat_dict(pre_args.config)
+      yaml_defaults.pop('add_CCC_loss', None)
+      yaml_defaults.pop('CCC_loss', None)
     except Exception as e:
       print(f"Failed to load config file {pre_args.config}: {e}", file=sys.stderr)
       sys.exit(2)
@@ -1126,7 +1208,11 @@ if __name__ == '__main__':
   parser.add_argument('--prefetch_factor', type=int, default=2, help='Prefetch factor.')
   parser.add_argument('--embedding_reduction', type=str, default='none', help="Embedding reduction method.")
   parser.add_argument('--gp', action='store_true', help='Use global path prefix.')
-  parser.add_argument('--csv', type=str, default=os.path.join('partA', 'starting_point', 'samples_exc_no_detection.csv'), help='Path to CSV.')
+  parser.add_argument(
+    '--csv', type=str,
+    default=os.path.join('partA', 'starting_point', 'samples_exc_no_detection.csv'),
+    help='Path to a CSV file or to a directory containing predefined train/val/test CSVs.',
+  )
   parser.add_argument('--ffsp', type=str, default="partA/video/features/samples_16_frontalized_new", help='Feature folder saving path.')
   parser.add_argument('--global_folder_name', type=str, default=f'history_run', help='Global folder name.')
   parser.add_argument('--path_video_dataset', type=str, default=os.path.join('partA', 'video', 'video_frontalized_interpolated_mirror'), help='Path to video dataset.')
@@ -1175,7 +1261,6 @@ if __name__ == '__main__':
   parser.add_argument('--HSIC_feat_normalization', type=int, choices=[0, 1], nargs='*', default=[0], help="L2-normalize features before computing HSIC losses. (0 to disable).")
   parser.add_argument('--lambda_center_loss', type=float, nargs='*', default=[0.0], help="Weight for center loss auxiliary term (0 = disabled).")
   parser.add_argument('--ratio_lr_center_loss', type=float, nargs='*', default=[1.0], help="LR ratio for center loss parameters: center_lr = main_lr / ratio.")
-  parser.add_argument('--add_CCC_loss', type=float, nargs='*', default=[0.0], help='Add CCC loss.')
   parser.add_argument('--cdw_ce_alpha', type=float, nargs='*', default=[2], help='Alpha for CDW loss.')
   parser.add_argument('--cdw_ce_transform', type=str, nargs='*', default=['power'], help='Transform for CDW loss.')
   parser.add_argument('--cdw_ce_delta', type=float, nargs='*', default=[0.5], help='Delta for CDW loss.')
@@ -1258,7 +1343,13 @@ if __name__ == '__main__':
   parser.add_argument('--gaussian_sigma_max', type=float, default=2.0, help='Max sigma for Gaussian smooth.')
   parser.add_argument('--gaussian_kernel_size', type=int, default=5, help='Kernel size for Gaussian smooth (must be odd).')
   parser.add_argument('--latent_coefficient', type=float, nargs='*', default=[0.0], help='Latent coeff.')
-  parser.add_argument('--key_early_stopping', type=str, default=None, help='Metric for early stopping.')
+  parser.add_argument(
+    '--key_early_stopping', type=str, default=None,
+    help=(
+      'Metric for early stopping and best-model selection. The loss family '
+      'enforces val_accuracy for CE-family losses and val_loss otherwise.'
+    ),
+  )
   parser.add_argument('--p_early_stop', type=int, default=2000, help='Patience.')
   parser.add_argument('--min_delta', type=float, default=0.001, help='Min delta.')
   parser.add_argument('--threshold_mode', type=str, default='abs', help='Threshold mode.')
@@ -1298,7 +1389,13 @@ if __name__ == '__main__':
   parser.add_argument('--onecycle_anneal_strategy', type=str, nargs='*', default=[None], help='Anneal strategy.')
   parser.add_argument('--optuna_use_median', type=int, default=0, help='Use median.')
   parser.add_argument('--optuna_min_epoch_thr', type=int, default=0, help='Min epoch thr.')
-  parser.add_argument('--pruner_threshold_lower', type=float, default=0.20, help='Pruner threshold.')
+  parser.add_argument(
+    '--pruner_threshold_lower', type=float, default=0.20,
+    help=(
+      'Directional pruning threshold: accuracy below this value or loss '
+      'above this value is pruned.'
+    ),
+  )
   parser.add_argument('--pruner_n_warmup_steps', type=int, default=30, help='Pruner warmup.')
   parser.add_argument('--optuna_categorical', type=int, default=1, help='Use categorical optimization.')
   parser.add_argument('--optuna_sampler', type=str, default='auto', help='Optuna sampler.')
@@ -1310,28 +1407,31 @@ if __name__ == '__main__':
   parser.add_argument('--feature_merge_lambda', type=float, nargs='*', default=[None], help='Scaling factor k for sum mode: orig + k*(top+down).')
   parser.add_argument('--feature_merge_orig', type=int, nargs='*', default=[1], help='Include original features in merge (1) or only top+down (0).')
   parser.add_argument('--normalize_labels', type=int, choices=[0, 1], default=0,
-                      help='Normalize labels to [0,1] by dividing by the global max class_id. '
-                           'Only supported for regression losses (l1, l2, huber, logcosh). '
+                      help='Min-max normalize continuous labels to [0,1] using observed bounds. '
                            'All logged metrics are reported in the original label scale.')
 
   args = parser.parse_args()
   args.timeout = int(args.timeout * 3600)  # Convert hours to seconds
+  if args.gp:
+    args.csv = helper.GLOBAL_PATH.get_global_path(args.csv)
   dict_args = vars(args)
+  configure_csv_input(dict_args)
 
   # --- Global Constants & Side Effects ---
-  if dict_args['key_early_stopping'] is None:
-    if dict_args['loss'] and 'ce' in dict_args['loss'][0]:
-      dict_args['key_early_stopping'] = 'val_accuracy'
-    else:
-      dict_args['key_early_stopping'] = 'val_loss'
+  requested_selection_metric = dict_args['key_early_stopping']
+  configure_selection_policy(dict_args)
+  if requested_selection_metric is None:
     print(f"\n*********key_early_stopping not set. Set: {dict_args['key_early_stopping']}*********\n")
+  target_spec = configure_target_spec(dict_args)
   validate_arguments(dict_args)
 
   if dict_args['normalize_labels']:
-    dict_args['max_label'] = int(pd.read_csv(dict_args['csv'], sep='\t')['class_id'].max())
-    print(f"\nLabel normalization enabled. max_label = {dict_args['max_label']}\n")
+    print(
+      f"\nLabel normalization enabled. observed range = "
+      f"[{target_spec.target_min}, {target_spec.target_max}]\n"
+    )
   else:
-    dict_args['max_label'] = None
+    print(f"\nLabel normalization disabled. observed range = [{target_spec.target_min}, {target_spec.target_max}]\n")
 
   dict_args['pooling_embedding_reduction'] = helper.EMBEDDING_REDUCTION.get_embedding_reduction(
     dict_args['embedding_reduction']
@@ -1369,7 +1469,6 @@ if __name__ == '__main__':
     helper.SAVE_PTH_MODEL = True
   
   if not dict_args['validation_enabled']:
-    helper.SAVE_LAST_EPOCH_MODEL = True
     print("\nValidation is disabled. Last epoch model will be used for testing \n")
 
   if dict_args['log_grad_norm']:
@@ -1385,15 +1484,12 @@ if __name__ == '__main__':
   args.global_folder_name = f'{args.global_folder_name}_{pid}_{args.head}_{server_name}_{timestamp}'
 
   if args.gp:
-    args.csv = helper.GLOBAL_PATH.get_global_path(args.csv)
     args.ffsp = helper.GLOBAL_PATH.get_global_path(args.ffsp)
     args.path_video_dataset = helper.GLOBAL_PATH.get_global_path(args.path_video_dataset)
     args.global_folder_name = helper.GLOBAL_PATH.get_global_path(args.global_folder_name)
 
   # print('\n\nTraining configuration:')
   # print(args)
-
-  dict_args['target_metric_best_model'] = args.key_early_stopping
 
   if args.early_stopping_mode == 'disabled':
     dict_args['early_stopping'] = earlyStoppingDummy()
