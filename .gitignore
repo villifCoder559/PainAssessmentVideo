@@ -184,3 +184,5 @@ XITE*/*
 !XITE/DATASET_STRUCTURE.md
 analysis/*
 *.csv
+*.md
+*.csv
