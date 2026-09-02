@@ -14,6 +14,7 @@ import pickle
 from sklearn.metrics import silhouette_score, davies_bouldin_score
 from scipy.spatial.distance import pdist
 from custom.helper import CUSTOM_DATASET_TYPE,INSTANCE_MODEL_NAME, desired_order_csv
+from custom.targets import TargetSpec
 import av
 import safetensors.torch
 import torch
@@ -672,10 +673,14 @@ def _generate_train_test_validation(csv_path, saving_path,train_size=0.8,val_siz
   - The function attempts to generate splits up to 50 times to ensure each split has at least one sample per class.
   - The input CSV file is expected to have columns separated by tabs ('\t'). 
   """
-  def _check_class_distribution(split_dict,y_unique):
+  source_targets = pd.read_csv(csv_path, sep='\t')['class_id']
+  target_spec = TargetSpec.from_values(source_targets)
+  y_unique = np.unique(target_spec.to_bins(source_targets))
+
+  def _check_class_distribution(split_dict):
     """ Check if each split has at least one sample per class. """
     for split_name, split_data in split_dict.items():
-      classes_in_split = np.unique(split_data[:, 2])
+      classes_in_split = np.unique(target_spec.to_bins(split_data[:, 2]))
       if len(classes_in_split) != len(y_unique):
         # print(f"Error: Not all classes are represented in the {split_name} split. Try another split...")
         return False
@@ -718,9 +723,10 @@ def _generate_train_test_validation(csv_path, saving_path,train_size=0.8,val_siz
       tmp = entry[0].split("\t")
       list_samples.append(tmp)
     list_samples = np.stack(list_samples)
+    target_bins = target_spec.to_bins(list_samples[:, 2])
     split_dict = {}
     X = list_samples
-    y = list_samples[:, 2]  # class ID
+    y = target_bins
     groups = list_samples[:, 0]  # subject ID
 
     gss = GroupShuffleSplit(n_splits=1,
@@ -766,11 +772,9 @@ def _generate_train_test_validation(csv_path, saving_path,train_size=0.8,val_siz
   
   ################################################################################################################
   assert train_size + val_size + test_size == 1, "train_size + validation_size + test_size must be equal to 1"
-  _,classes=get_unique_subjects_and_classes(csv_path)
   for _ in range(50): # attemps to generate a split
     split_dict, video_labels_columns, split_dict_indices = _generate_splits()
-    if _check_class_distribution(split_dict=split_dict, 
-                                 y_unique=classes):
+    if _check_class_distribution(split_dict=split_dict):
       break
   print(f'nr_train_samples: {len(split_dict["train"])}')
   print(f'nr_test_samples: {len(split_dict["test"])}')
@@ -839,7 +843,7 @@ def plot_confusion_matrix(confusion_matrix, title, ax=None, saving_path=None):
     fig.savefig(saving_path)
 
 
-def get_unique_subjects_and_classes(df):
+def get_unique_subjects_and_classes(df, target_spec=None):
   """
   Get the number of times each unique subject ID and class ID appears in video_labels.
 
@@ -852,7 +856,8 @@ def get_unique_subjects_and_classes(df):
   
   list_samples = df.to_numpy()  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
   subject_ids = list_samples[:, 0].astype(int)
-  class_ids = list_samples[:, 2].astype(int)
+  spec = target_spec or TargetSpec.from_values(list_samples[:, 2])
+  class_ids = spec.to_bins(list_samples[:, 2])
   
   subject_counts = {subject_id: np.sum(subject_ids == subject_id) for subject_id in np.unique(subject_ids)}
   class_counts = {class_id: np.sum(class_ids == class_id) for class_id in np.unique(class_ids)}
@@ -913,19 +918,18 @@ def _plot_dataset_distribution(csv_path, total_classes=None,per_class=False, per
       assert total_classes is not None, 'total_classes must be provided having per_class=True and per_partecipant=True'
       unique_subject_id = np.unique(list_samples[:, 0].astype(int)) # subject_id
       # print(f'unique_subject_id: {unique_subject_id}')
-      class_ids =np.unique(list_samples[:, 2].astype(int)) # class_id TODO: use a number of predefinited class to see if there are missing classes
+      class_ids = np.unique(target_bins)
       # class_ids = np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) # class_id
       class_counts = {class_id: np.zeros(len(unique_subject_id)) for class_id in class_ids} # for each class, create a list of zeros for each participant
       for i, subject_id in enumerate(unique_subject_id):
         for class_id in class_ids:
           # Count the number of samples for each class and participant
-          class_counts[class_id][i] = np.sum((list_samples[:, 0].astype(int) == subject_id) & (list_samples[:, 2].astype(int) == class_id))
+          class_counts[class_id][i] = np.sum((list_samples[:, 0].astype(int) == subject_id) & (target_bins == class_id))
       # print(class_counts)
       plot_distribution_stacked(unique_subject_id, 'per participant and class', class_counts, total_classes)
     
     elif per_class:
-      unique_subject_id,count = np.unique(list_samples[:,2],return_counts=True) 
-      unique_subject_id = np.sort(unique_subject_id.astype(int))
+      unique_subject_id,count = np.unique(target_bins,return_counts=True)
       plot_distribution(unique_subject_id,count,'per class')
     
     elif per_partecipant: 
@@ -1229,7 +1233,7 @@ def get_array_from_csv(csv_path):
       - np.ndarray: Array containing the column names from the CSV file.
   """
   print(f'Reading CSV file from: {csv_path}')
-  csv_array = pd.read_csv(csv_path, sep='\t', dtype={'subject_name':str,'sample_name':str,'class_id':int,'sample_id':int,'subject_id':int,'class_name':str})  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
+  csv_array = pd.read_csv(csv_path, sep='\t', dtype={'subject_name':str,'sample_name':str,'class_id':float,'sample_id':int,'subject_id':int,'class_name':str})  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
   csv_array = csv_array[desired_order_csv]
 
   cols_array = csv_array.columns.to_numpy()
@@ -1322,17 +1326,15 @@ def save_frames_as_video(list_input_video_path, list_frame_indices,sample_ids, o
 def _generate_csv_subsampled(csv_dataset_path, nr_samples_per_class=2):
   csv_array, video_labels_columns =get_array_from_csv(csv_dataset_path)
   # ['subject_id', 'subject_name', 'class_id', 'class_name', 'sample_id', 'sample_name']
-  list_samples=[]
-  for entry in (csv_array):
-    tmp = entry[0].split("\t")
-    list_samples.append(tmp)
-  list_samples = np.stack(list_samples)
-  nr_classes = np.max(list_samples[:,2].astype(int))
+  list_samples = csv_array
+  target_bins = TargetSpec.from_values(list_samples[:, 2]).to_bins(list_samples[:, 2])
+  observed_bins = np.unique(target_bins)
+  nr_classes = len(observed_bins)
   print(f'number of classes: {nr_classes}, \ntotal number of samples: {nr_samples_per_class*nr_classes}')
-  for cls in range(nr_classes):
-    samples = list_samples[list_samples[:,2].astype(int) == cls]
+  for bin_idx, cls in enumerate(observed_bins):
+    samples = list_samples[target_bins == cls]
     samples = samples[np.random.choice(samples.shape[0], nr_samples_per_class, replace=False), :]
-    if cls == 0:
+    if bin_idx == 0:
       samples_subsampled = samples
     else:
       samples_subsampled = np.concatenate((samples_subsampled,samples),axis=0)
@@ -1947,6 +1949,8 @@ def compute_loss_per_class_(
   outputs: torch.Tensor,
   class_loss: Optional[torch.Tensor] = None,
   class_accuracy: Optional[torch.Tensor] = None,
+  class_targets: Optional[torch.Tensor] = None,
+  target_spec=None,
 ):
   """
   Aggregates loss and accuracy per class.
@@ -1955,7 +1959,9 @@ def compute_loss_per_class_(
   device = outputs.device
   unique_train_val_classes = unique_train_val_classes.to(device)
 
-  if batch_y.dim() != 1:
+  if class_targets is not None:
+    batch_y_labels = class_targets.to(device)
+  elif batch_y.dim() != 1:
     batch_y_labels = torch.argmax(batch_y, dim=1).to(device)
   else:
     batch_y_labels = batch_y.to(device)
@@ -1974,8 +1980,11 @@ def compute_loss_per_class_(
         out_masked = outputs[mask]
         if out_masked.dim() > 1 and out_masked.size(1) == 1:
           out_masked = out_masked.view(-1)
-        predicted = torch.copysign(torch.floor(torch.abs(out_masked) + 0.5), out_masked)
-        predicted = predicted.clamp(0, unique_train_val_classes.max().item())
+        if target_spec is not None:
+          predicted = target_spec.predictions_to_bins(out_masked)
+        else:
+          predicted = torch.copysign(torch.floor(torch.abs(out_masked) + 0.5), out_masked)
+          predicted = predicted.clamp(0, unique_train_val_classes.max().item())
       else:
         if outputs.dim() == 2:
           predicted = torch.argmax(outputs[mask], dim=1)
@@ -2020,6 +2029,8 @@ def compute_loss_per_subject_v2_(
   subject_loss: Optional[torch.Tensor] = None,
   subject_accuracy: Optional[torch.Tensor] = None,
   unique_train_val_classes: Optional[torch.Tensor] = None,
+  class_targets: Optional[torch.Tensor] = None,
+  target_spec=None,
 ):
   """
   Updated to support CompositeLoss-like criterion.
@@ -2032,7 +2043,9 @@ def compute_loss_per_subject_v2_(
   idx_list = [subj_to_idx[int(s.item())] for s in batch_subjects_cpu]
   idx = torch.tensor(idx_list, dtype=torch.long, device=device)
 
-  if batch_y.dim() != 1:
+  if class_targets is not None:
+    batch_y_labels = class_targets.to(device)
+  elif batch_y.dim() != 1:
     batch_y_labels = torch.argmax(batch_y, dim=1).to(device)
   else:
     batch_y_labels = batch_y.to(device)
@@ -2044,14 +2057,15 @@ def compute_loss_per_subject_v2_(
     if mode == 'ce':
       per_sample_losses = F.cross_entropy(outputs.to(device), batch_y_labels.to(device), reduction='none')
     elif mode == 'reg':
+      regression_targets = batch_y.to(device).float()
       if isinstance(subcrit, nn.MSELoss):
-        per_sample_losses = F.mse_loss(outputs, batch_y_labels.float(), reduction='none')
+        per_sample_losses = F.mse_loss(outputs, regression_targets, reduction='none')
       elif isinstance(subcrit, (nn.L1Loss, nn.SmoothL1Loss)):
-        per_sample_losses = F.l1_loss(outputs, batch_y_labels.float(), reduction='none')
+        per_sample_losses = F.l1_loss(outputs, regression_targets, reduction='none')
       elif isinstance(subcrit, nn.HuberLoss):
-        per_sample_losses = F.l1_loss(outputs, batch_y_labels.float(), reduction='none')
+        per_sample_losses = F.l1_loss(outputs, regression_targets, reduction='none')
       else:
-        per_sample_losses = F.l1_loss(outputs.float(), batch_y_labels.float(), reduction='none')
+        per_sample_losses = F.l1_loss(outputs.float(), regression_targets, reduction='none')
     else:
       if outputs.dim() == 2:
         preds = torch.argmax(outputs, dim=1)
@@ -2065,11 +2079,14 @@ def compute_loss_per_subject_v2_(
   # --- ACCURACY ---
   if subject_accuracy is not None:
     if mode == 'reg':
-      preds = torch.copysign(torch.floor(torch.abs(outputs) + 0.5), outputs)
-      if preds.dim() > 1 and preds.size(1) == 1:
-        preds = preds.view(-1)
-      if unique_train_val_classes is not None:
-        preds = preds.clamp(0, unique_train_val_classes.max().item())
+      if target_spec is not None:
+        preds = target_spec.predictions_to_bins(outputs)
+      else:
+        preds = torch.copysign(torch.floor(torch.abs(outputs) + 0.5), outputs)
+        if preds.dim() > 1 and preds.size(1) == 1:
+          preds = preds.view(-1)
+        if unique_train_val_classes is not None:
+          preds = preds.clamp(0, unique_train_val_classes.max().item())
     else:
       if outputs.dim() == 2:
         preds = torch.argmax(outputs, dim=1)
