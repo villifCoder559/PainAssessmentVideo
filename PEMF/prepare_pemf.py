@@ -118,12 +118,16 @@ def _read_xlsx_rows(workbook_path: Path, sheet_name: str) -> list[list[str]]:
         return rows
 
 
-def _rounded_intensity(raw_intensity: str) -> int:
+def _mean_intensity(raw_intensity: str) -> Decimal:
     mean_text = raw_intensity.split("(", maxsplit=1)[0].strip().replace(",", ".")
     try:
-        mean = Decimal(mean_text)
+        return Decimal(mean_text)
     except InvalidOperation as error:
         raise ValueError(f"Invalid PEMF intensity value: {raw_intensity!r}") from error
+
+
+def _rounded_intensity(raw_intensity: str) -> int:
+    mean = _mean_intensity(raw_intensity)
     rounded = int(mean.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     if not 0 <= rounded <= 8:
         raise ValueError(
@@ -132,8 +136,12 @@ def _rounded_intensity(raw_intensity: str) -> int:
     return rounded
 
 
-def read_workbook_metadata(workbook_path: str | Path) -> dict[str, dict]:
+def read_workbook_metadata(
+    workbook_path: str | Path, *, class_id_type: str = "round_int"
+) -> dict[str, dict]:
     """Return clip metadata keyed by IDs such as ``S001A``."""
+    if class_id_type not in {"round_int", "float"}:
+        raise ValueError(f"Unknown class_id type: {class_id_type!r}")
     workbook_path = Path(workbook_path)
     rows = _read_xlsx_rows(workbook_path, "Articulo")
     if not rows:
@@ -155,8 +163,13 @@ def read_workbook_metadata(workbook_path: str | Path) -> dict[str, dict]:
         if clip in metadata:
             raise ValueError(f"Duplicate clip ID in workbook: {clip}")
         raw_intensity = values[headers["Intensity"]]
+        class_id = (
+            _rounded_intensity(raw_intensity)
+            if class_id_type == "round_int"
+            else _mean_intensity(raw_intensity).quantize(Decimal("0.00"))
+        )
         metadata[clip] = {
-            "class_id": _rounded_intensity(raw_intensity),
+            "class_id": class_id,
             "class_name": clip_match.group(2),
         }
     return metadata
@@ -363,8 +376,10 @@ def prepare_dataset(
     metadata_path: str | Path | None = None,
     validate_expected_counts: bool = True,
     dry_run: bool = False,
+    csv_only: bool = False,
+    class_id_type: str = "round_int",
 ) -> dict[str, object]:
-    """Normalize PEMF videos in place and write ``starting_point/samples.csv``."""
+    """Prepare PEMF video metadata and optionally normalize videos in place."""
     pemf_root = Path(pemf_root).resolve()
     workbook_path = (
         Path(metadata_path).resolve()
@@ -373,25 +388,32 @@ def prepare_dataset(
     )
     original_root = pemf_root / "video" / "Original"
     csv_path = pemf_root / "starting_point" / "samples.csv"
-    metadata = read_workbook_metadata(workbook_path)
+    metadata = read_workbook_metadata(workbook_path, class_id_type=class_id_type)
     rows, moves = _build_rows(original_root, metadata)
     if validate_expected_counts:
         _validate_expected_dataset(rows, metadata)
 
+    moved_count = len(moves) if dry_run else 0
     if not dry_run:
-        completed = _move_videos(moves)
-        try:
+        if csv_only:
             _write_tsv(csv_path, rows)
-        except BaseException:
-            _rollback_moves(completed)
-            raise
-        _remove_empty_source_directories(original_root, moves)
+        else:
+            completed = _move_videos(moves)
+            moved_count = len(completed)
+            try:
+                _write_tsv(csv_path, rows)
+            except BaseException:
+                _rollback_moves(completed)
+                raise
+            _remove_empty_source_directories(original_root, moves)
 
     return {
         "csv_path": csv_path,
         "sample_count": len(rows),
-        "moved_count": len(moves),
+        "moved_count": moved_count,
+        "planned_move_count": len(moves),
         "dry_run": dry_run,
+        "csv_only": csv_only,
     }
 
 
@@ -409,6 +431,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="PEMF dataset root (default: directory containing this script)",
     )
     parser.add_argument(
+        "--csv-only",
+        action="store_true",
+        help="Generate the CSV without moving or renaming videos",
+    )
+    parser.add_argument(
+        "--class-id-type",
+        choices=("round_int", "float"),
+        default="round_int",
+        help="Write rounded integer or two-decimal class_id values (default: round_int)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate and display the planned counts without changing any files",
@@ -418,11 +451,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    result = prepare_dataset(args.pemf_root, dry_run=args.dry_run)
-    action = "Would move" if args.dry_run else "Moved"
+    result = prepare_dataset(
+        args.pemf_root,
+        dry_run=args.dry_run,
+        csv_only=args.csv_only,
+        class_id_type=args.class_id_type,
+    )
+    if args.dry_run:
+        move_summary = f"Would move {result['planned_move_count']} videos."
+    elif args.csv_only:
+        move_summary = f"Left {result['planned_move_count']} videos unchanged."
+    else:
+        move_summary = f"Moved {result['moved_count']} videos."
     print(
         f"Validated {result['sample_count']} samples. "
-        f"{action} {result['moved_count']} videos."
+        f"{move_summary}"
     )
     if args.dry_run:
         print("Dry run only: no videos or CSV files were changed.")
