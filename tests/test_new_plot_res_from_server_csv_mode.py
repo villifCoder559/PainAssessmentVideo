@@ -55,7 +55,7 @@ class TestPlotRunDetailsCsvMode(unittest.TestCase):
       generate_loss_csvs.assert_not_called()
       self.assertEqual(summary_path.read_text(), 'existing summary\n')
 
-  def test_plot_only_worker_skips_summary_row_but_keeps_plot_preparation(self):
+  def test_plot_only_worker_keeps_saved_best_epoch_for_plotting(self):
     file_path = '/tmp/grid/test1_run/k_fold_results.pkl'
     data = {
       'results': {
@@ -111,12 +111,90 @@ class TestPlotRunDetailsCsvMode(unittest.TestCase):
     patched_plots['plot_grouped_accuracy_per_class'].assert_called_once()
     self.assertEqual(
       data['results']['k0_cross_val_sub_0']['train_val']['best_model_idx'],
-      1,
+      0,
     )
     self.assertEqual(
       data['results']['k0_cross_val_final']['train_val']['best_model_idx'],
       0,
     )
+
+  def test_csv_preparation_cannot_mutate_shared_plotting_best_epoch(self):
+    file_path = '/tmp/grid/test1_run/k_fold_results.pkl'
+    shared_train_val = {
+      'val_losses': [2.0] * 18 + [0.1],
+      'best_model_idx': 8,
+    }
+    data = {
+      'results': {
+        'k0_cross_val_sub_0': {'train_val': shared_train_val},
+        'k0_cross_val_final': {
+          'train_val': shared_train_val,
+          'test': {},
+        },
+      },
+      'config': {
+        'path_csv_dataset': ['biovid.csv'],
+        'model_type': SimpleNamespace(name='model'),
+      },
+      'time': 0,
+    }
+    plotted_epochs = []
+
+    def capture_csv_epoch(results, *_):
+      self.assertEqual(
+        results['k0_cross_val_sub_0']['train_val']['best_model_idx'], 18
+      )
+      self.assertEqual(
+        results['k0_cross_val_final']['train_val']['best_model_idx'], 18
+      )
+      return {'test_id': 'test1'}
+
+    def capture_plot_epoch(plot_data, *_args, **_kwargs):
+      plotted_epochs.append(
+        plot_data['results']['k0_cross_val_final']['train_val'][
+          'best_model_idx'
+        ]
+      )
+
+    plot_functions = [
+      'clean_data',
+      'plot_losses',
+      'plot_separated_losses_adversarial',
+      'plot_hsic_per_epoch',
+      'plot_grouped_accuracy_per_class',
+      'plot_grouped_confusion_matrix',
+      'plot_confusion_matrices',
+      'plot_lr_wd_across_epochs',
+      'plot_gradient_per_module',
+      'plot_CCC_ICC_pearson',
+      'plot_history_model_prediction',
+      'plot_accuray_per_class_across_epochs',
+      'link_attention_logs',
+    ]
+
+    with ExitStack() as stack:
+      stack.enter_context(mock.patch.object(plots, 'load_results', return_value=data))
+      stack.enter_context(
+        mock.patch.object(plots, 'generate_csv_row', side_effect=capture_csv_epoch)
+      )
+      stack.enter_context(
+        mock.patch.object(
+          plots, 'plot_grouped_k_fold', side_effect=capture_plot_epoch
+        )
+      )
+      for name in plot_functions:
+        stack.enter_context(mock.patch.object(plots, name))
+      plots._process_single_run((
+        file_path,
+        '/tmp/output',
+        False,
+        {'loss_plot_type': 'loss', 'test_as_validation': 0},
+        False,
+        True,
+      ))
+
+    self.assertEqual(plotted_epochs, [8])
+    self.assertEqual(shared_train_val['best_model_idx'], 8)
 
   def test_default_mode_still_writes_summary_csv(self):
     file_path = '/tmp/test1_run/k_fold_results.pkl'
