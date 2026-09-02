@@ -15,6 +15,10 @@ Expected input columns
 - newtest_mae_micro_after
 - newtest_mae_macro_after
 
+The optional ``num_anchors`` column is preferred when present. For legacy
+inputs without a usable value, the anchor count is extracted from
+``source_pkl``.
+
 The input may contain ``AGGREGATE_MEAN``/``AGGREGATE_STD`` rows. Only the
 mean rows are used. If aggregate rows are absent, the script computes means
 from the available rows for each configuration.
@@ -183,6 +187,8 @@ def select_or_compute_means(df: pd.DataFrame) -> pd.DataFrame:
             "interpolation_similarity",
             "refine_mode",
         ]
+        if "num_anchors" in work.columns:
+            group_columns.append("num_anchors")
         means = (
             work.groupby(group_columns, dropna=False, as_index=False)[METRIC_COLUMNS]
             .mean()
@@ -192,7 +198,16 @@ def select_or_compute_means(df: pd.DataFrame) -> pd.DataFrame:
     if means.empty:
         raise ValueError("No usable rows were found in the input CSV.")
 
-    means["num_anchors"] = means["source_pkl"].map(extract_num_anchors)
+    if "num_anchors" in means.columns:
+        num_anchors = pd.to_numeric(means["num_anchors"], errors="coerce")
+        missing_num_anchors = num_anchors.isna()
+        if missing_num_anchors.any():
+            num_anchors.loc[missing_num_anchors] = means.loc[
+                missing_num_anchors, "source_pkl"
+            ].map(extract_num_anchors)
+        means["num_anchors"] = num_anchors
+    else:
+        means["num_anchors"] = means["source_pkl"].map(extract_num_anchors)
     means["source_pkl_folder"] = means["source_pkl"].map(source_folder)
     return means
 
