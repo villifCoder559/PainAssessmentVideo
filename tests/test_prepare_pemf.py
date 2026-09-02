@@ -52,6 +52,17 @@ def test_workbook_metadata_uses_clip_suffix_and_half_up_intensity_rounding():
     assert metadata["S051P"] == {"class_id": 2, "class_name": "P"}
 
 
+def test_workbook_metadata_can_keep_intensity_as_two_decimal_float():
+    prepare_pemf = _load_prepare_pemf()
+
+    metadata = prepare_pemf.read_workbook_metadata(
+        WORKBOOK_PATH, class_id_type="float"
+    )
+
+    assert str(metadata["S001A"]["class_id"]) == "5.20"
+    assert str(metadata["S029L"]["class_id"]) == "5.62"
+
+
 def test_prepare_dataset_moves_and_renames_duplicates_and_writes_compatible_csv(
     tmp_path,
 ):
@@ -148,6 +159,63 @@ def test_dry_run_does_not_move_videos_or_write_csv(tmp_path):
     assert source.is_file()
     assert not (pemf_root / "video" / "Original" / "S001" / "S001N.mp4").exists()
     assert not (pemf_root / "starting_point" / "samples.csv").exists()
+
+
+def test_csv_only_writes_float_labels_without_moving_videos(tmp_path):
+    prepare_pemf = _load_prepare_pemf()
+    pemf_root = tmp_path / "PEMF"
+    source = _video(
+        pemf_root,
+        "video/Original/S001/Algometer Pain/Algometer Pain S001.mp4",
+    )
+
+    result = prepare_pemf.prepare_dataset(
+        pemf_root,
+        metadata_path=WORKBOOK_PATH,
+        validate_expected_counts=False,
+        csv_only=True,
+        class_id_type="float",
+    )
+
+    assert result["moved_count"] == 0
+    assert source.is_file()
+    assert not (pemf_root / "video" / "Original" / "S001" / "S001A.mp4").exists()
+    columns, rows = _read_tsv(pemf_root / "starting_point" / "samples.csv")
+    assert columns == EXPECTED_COLUMNS
+    assert rows[0]["sample_name"] == "S001A"
+    assert rows[0]["class_id"] == "5.20"
+
+
+def test_csv_only_dry_run_writes_nothing(tmp_path):
+    prepare_pemf = _load_prepare_pemf()
+    pemf_root = tmp_path / "PEMF"
+    source = _video(
+        pemf_root,
+        "video/Original/S001/Neutral/Neutral S001.mp4",
+    )
+
+    result = prepare_pemf.prepare_dataset(
+        pemf_root,
+        metadata_path=WORKBOOK_PATH,
+        validate_expected_counts=False,
+        csv_only=True,
+        dry_run=True,
+    )
+
+    assert result["moved_count"] == 1
+    assert source.is_file()
+    assert not (pemf_root / "starting_point" / "samples.csv").exists()
+
+
+def test_cli_accepts_csv_only_and_class_id_type():
+    prepare_pemf = _load_prepare_pemf()
+
+    args = prepare_pemf._parse_args(
+        ["--csv-only", "--class-id-type", "float"]
+    )
+
+    assert args.csv_only is True
+    assert args.class_id_type == "float"
 
 
 def test_conflict_is_rejected_before_any_video_is_moved(tmp_path):
