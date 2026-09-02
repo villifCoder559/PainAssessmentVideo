@@ -1,147 +1,111 @@
+from pathlib import Path
+import sys
+
+import pytest
 import torch
 import torch.nn as nn
-import sys
-import os
-import unittest
 
-# Add root to path to import custom.loss
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from custom.loss import DisentangledLoss
+from custom.loss import DisentangledLoss, RnCLossV2
 
-class TestDisentangledLoss(unittest.TestCase):
-    def setUp(self):
-        self.B = 4
-        self.C = 10
-        self.split_idx = 4
-        self.V = 1
-        
-        # Simple MSE losses for testing
-        self.loss_fn_pain = nn.MSELoss()
-        self.loss_fn_subj = nn.MSELoss()
-        
-        # Random inputs
-        self.features = torch.randn(self.B, self.C, requires_grad=True)
-        # targets: [B, V, 2]
-        self.targets = torch.randn(self.B, self.V, 2)
 
-    def test_gradient_isolation_pain(self):
-        print("\nTesting Gradient Isolation: Pain Loss Only...")
-        # Weight only on pain, no ortho
-        loss_mod = DisentangledLoss(
-            loss_fns=[self.loss_fn_pain, self.loss_fn_subj],
-            split_idx=self.split_idx,
-            lambdas=[1.0, 0.0],
-            ortho_lambda=0.0
-        )
-        
-        # Reset grad
-        if self.features.grad is not None:
-            self.features.grad.zero_()
-            
-        total_loss = loss_mod(self.features, self.targets)
-        total_loss.backward()
-        
-        grad = self.features.grad
-        grad_pain = grad[:, :self.split_idx]
-        grad_subj = grad[:, self.split_idx:]
-        
-        # Pain gradient should be non-zero
-        self.assertTrue(torch.abs(grad_pain).sum().item() > 0, "Pain features should have gradient")
-        
-        # Subject gradient should be EXACTLY zero
-        self.assertTrue(torch.abs(grad_subj).sum().item() == 0.0, f"Subject features should NOT have gradient, got norm {torch.norm(grad_subj)}")
-        print("✅ Pain loss gradient is isolated correctly.")
+@pytest.fixture
+def features():
+  torch.manual_seed(0)
+  return torch.randn(8, 16, requires_grad=True)
 
-    def test_gradient_isolation_subject(self):
-        print("\nTesting Gradient Isolation: Subject Loss Only...")
-        # Weight only on subject, no ortho
-        loss_mod = DisentangledLoss(
-            loss_fns=[self.loss_fn_pain, self.loss_fn_subj],
-            split_idx=self.split_idx,
-            lambdas=[0.0, 1.0],
-            ortho_lambda=0.0
-        )
-        
-        if self.features.grad is not None:
-            self.features.grad.zero_()
-            
-        total_loss = loss_mod(self.features, self.targets)
-        total_loss.backward()
-        
-        grad = self.features.grad
-        grad_pain = grad[:, :self.split_idx]
-        grad_subj = grad[:, self.split_idx:]
-        
-        # Pain gradient should be EXACTLY zero
-        self.assertTrue(torch.abs(grad_pain).sum().item() == 0.0, "Pain features should NOT have gradient")
-        
-        # Subject gradient should be non-zero
-        self.assertTrue(torch.abs(grad_subj).sum().item() > 0, "Subject features should have gradient")
-        print("✅ Subject loss gradient is isolated correctly.")
 
-    def test_orthogonality_gradient(self):
-        print("\nTesting Orthogonality Gradient Flow...")
-        # Only ortho loss
-        loss_mod = DisentangledLoss(
-            loss_fns=[self.loss_fn_pain, self.loss_fn_subj],
-            split_idx=self.split_idx,
-            lambdas=[0.0, 0.0],
-            ortho_lambda=1.0
-        )
-        
-        if self.features.grad is not None:
-            self.features.grad.zero_()
-            
-        total_loss = loss_mod(self.features, self.targets)
-        total_loss.backward()
-        
-        grad = self.features.grad
-        grad_pain = grad[:, :self.split_idx]
-        grad_subj = grad[:, self.split_idx:]
-        
-        # Both should have gradients because they interact in the covariance term
-        self.assertTrue(torch.abs(grad_pain).sum().item() > 0, "Pain features should have gradient from ortho loss")
-        self.assertTrue(torch.abs(grad_subj).sum().item() > 0, "Subject features should have gradient from ortho loss")
-        print("✅ Orthogonality loss flows to both slices.")
+@pytest.mark.parametrize(
+  'lambdas,active_slice,inactive_slice',
+  [
+    ((1.0, 0.0), slice(None, 8), slice(8, None)),
+    ((0.0, 1.0), slice(8, None), slice(None, 8)),
+  ],
+)
+def test_component_losses_isolate_gradients(
+  features, lambdas, active_slice, inactive_slice
+):
+  criterion = DisentangledLoss(
+    loss_fns=(nn.MSELoss(), nn.MSELoss()),
+    split_idx=8,
+    lambdas=lambdas,
+  )
 
-    def test_combined_gradients(self):
-        print("\nTesting Combined Gradients...")
-        loss_mod = DisentangledLoss(
-            loss_fns=[self.loss_fn_pain, self.loss_fn_subj],
-            split_idx=self.split_idx,
-            lambdas=[1.0, 1.0],
-            ortho_lambda=0.0
-        )
-        
-        if self.features.grad is not None:
-            self.features.grad.zero_()
-            
-        total_loss = loss_mod(self.features, self.targets)
-        total_loss.backward()
-        
-        grad = self.features.grad
-        # Both should be active
-        self.assertTrue(torch.abs(grad).sum().item() > 0)
-        print("✅ Combined loss produces valid gradients.")
+  loss, _ = criterion(
+    features,
+    target_pain=torch.randn(8, 8),
+    target_subj=torch.randn(8, 8),
+  )
+  loss.backward()
 
-    def test_return_dict(self):
-        print("\nTesting Return Dict...")
-        loss_mod = DisentangledLoss(
-            loss_fns=[self.loss_fn_pain, self.loss_fn_subj],
-            split_idx=self.split_idx,
-            lambdas=[1.0, 1.0],
-            ortho_lambda=0.5,
-            return_dict=True
-        )
-        
-        out = loss_mod(self.features, self.targets)
-        self.assertIsInstance(out, dict)
-        self.assertIn('total', out)
-        self.assertIn('pain', out)
-        self.assertIn('subject', out)
-        self.assertIn('ortho', out)
-        print("✅ Return dict format is correct.")
+  assert features.grad[:, active_slice].abs().sum() > 0
+  assert features.grad[:, inactive_slice].abs().sum() == 0
 
-if __name__ == '__main__':
-    unittest.main()
+
+def test_orthogonality_loss_reaches_both_feature_slices(features):
+  criterion = DisentangledLoss(
+    loss_fns=(nn.MSELoss(), nn.MSELoss()),
+    split_idx=8,
+    lambdas=(0.0, 0.0),
+    ortho_lambda=1.0,
+  )
+
+  loss, log = criterion(
+    features,
+    target_pain=torch.randn(8, 8),
+    target_subj=torch.randn(8, 8),
+  )
+  loss.backward()
+
+  assert features.grad[:, :8].abs().sum() > 0
+  assert features.grad[:, 8:].abs().sum() > 0
+  assert log['ortho_loss'] > 0
+
+
+def test_returns_trainable_loss_and_scalar_log_contract(features):
+  criterion = DisentangledLoss(
+    loss_fns=(nn.MSELoss(), nn.MSELoss()),
+    split_idx=8,
+    lambdas=(0.7, 0.3),
+    ortho_lambda=0.5,
+  )
+
+  loss, log = criterion(
+    features,
+    target_pain=torch.randn(8, 8),
+    target_subj=torch.randn(8, 8),
+  )
+
+  assert loss.ndim == 0
+  assert loss.requires_grad
+  assert set(log) == {
+    'total_loss',
+    'loss_pain',
+    'loss_subj',
+    'lambda_pain',
+    'lambda_subj',
+    'ortho_loss',
+    'ortho_lambda',
+  }
+  assert log['lambda_pain'] == 0.7
+  assert log['lambda_subj'] == 0.3
+
+
+def test_supports_rnc_as_the_pain_component(features):
+  criterion = DisentangledLoss(
+    loss_fns=(RnCLossV2(), nn.MSELoss()),
+    split_idx=8,
+    lambdas=(1.0, 1.0),
+    ortho_lambda=0.1,
+  )
+
+  loss, _ = criterion(
+    features,
+    target_pain=torch.randn(8, 1),
+    target_subj=torch.randn(8, 8),
+  )
+  loss.backward()
+
+  assert torch.isfinite(loss)
+  assert torch.isfinite(features.grad).all()
