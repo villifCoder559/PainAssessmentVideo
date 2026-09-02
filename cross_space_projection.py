@@ -43,6 +43,7 @@ import yaml
 import custom.helper as helper
 import custom.tools as tools
 from custom.model import Model_Advanced
+from custom.targets import TargetSpec, resolve_target_spec
 from log_cross_attention_from_model import clean_csv_from_augmentations
 
 _SEED = 42
@@ -58,6 +59,21 @@ _ANCHOR_SELECTION_TYPES = (
   'balance_subject_random_capped',
   'balance_class_subject',
 )
+
+
+def _label_transform_from_config(config_model):
+  cfg = config_model.get('config', config_model)
+  return resolve_target_spec(
+    metadata=cfg.get('target_spec'),
+    normalize=bool(cfg.get('normalize_labels', 0)),
+    legacy_max_label=cfg.get('max_label'),
+  )
+
+
+def _inverse_label_values(values, transform):
+  if isinstance(transform, TargetSpec):
+    return transform.inverse(values)
+  return values * transform
 
 
 def _write_launch_config_snapshot(args, out_dir):
@@ -768,7 +784,7 @@ def _extract_embeddings(model, model_pth, csv_path, config_model, features_path_
       'is_test': True,
       'concatenate_temporal': cfg['concatenate_temp_dim'],
       'concatenate_quadrants': cfg['concatenate_quadrants'],
-      'CCC_loss': cfg['CCC_loss'],
+      'CCC_loss': cfg.get('CCC_loss'),
     }
     extra_kwargs = {k: v for k, v in cfg.items() if k not in test_args}
     extra_kwargs['split_chunks'] = 0
@@ -1637,7 +1653,7 @@ def _evaluate_projection_inputs(
     device = next(classify_linear.parameters()).device
     with torch.no_grad():
       logits = classify_linear(torch.tensor(projected, dtype=torch.float32).to(device)).cpu()
-    predictions = (logits.numpy() * label_denorm).astype(np.float32)
+    predictions = np.asarray(_inverse_label_values(logits.numpy(), label_denorm), dtype=np.float32)
     preds_flat = predictions.reshape(-1)
     return {
       'source_embeddings': np.asarray(source_embeddings, dtype=np.float32),
@@ -1801,7 +1817,10 @@ def _linear_preds(emb, linear, label_denorm):
   device = next(linear.parameters()).device
   with torch.no_grad():
     logits = linear(torch.as_tensor(emb, dtype=torch.float32, device=device)).cpu().numpy()
-  preds = (logits.squeeze(-1) if logits.ndim > 1 else logits) * label_denorm
+  preds = _inverse_label_values(
+    logits.squeeze(-1) if logits.ndim > 1 else logits,
+    label_denorm,
+  )
   return np.asarray(preds, dtype=np.float32).reshape(-1)
 
 
@@ -2052,7 +2071,7 @@ def _refine_projector_and_linear(projector, norm_stats, head_linear,
   def _pred_real(linear, emb):
     out = linear(emb)
     out = out.squeeze(-1) if out.dim() > 1 else out
-    return out * label_denorm
+    return _inverse_label_values(out, label_denorm)
 
   def _proj_anchor_loss(proj):
     # Projector embedding-MSE in normalized space (matches the projector's own loss).
@@ -3610,11 +3629,8 @@ def _precompute_embeddings(
     if 'linear_only' in _grid_refine_modes else []
   )
   refine_emb_B = refine_emb_B_val = refine_new_eval = refine_new_test = None
-  refine_label_denorm = 1.0
+  refine_label_denorm = _label_transform_from_config(new_config)
   if REFINEMENT_CONFIG['enabled'] and (projector_specs or _refine_distance_specs):
-    _nl = bool(new_config['config'].get('normalize_labels', 0))
-    _ml = new_config['config'].get('max_label', None)
-    refine_label_denorm = float(_ml) if _nl and _ml else 1.0
     b_csv = _resolve_split_csv(old_model_pth, REFINEMENT_CONFIG['refine_split'])
     assert os.path.isfile(b_csv), f'Refinement model-B split CSV not found: {b_csv}'
     helper.set_step_shift(old_features_path)
@@ -3913,9 +3929,7 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
 
   real_projected = projected
 
-  normalize_labels = bool(new_config['config'].get('normalize_labels', 0))
-  max_label = new_config['config'].get('max_label', None)
-  label_denorm = float(max_label) if normalize_labels and max_label else 1.0
+  label_denorm = _label_transform_from_config(new_config)
 
   labels_true = old_model_tensors['labels']
   if fake_projection:
@@ -3948,7 +3962,7 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
       logits = classify_linear(
         torch.tensor(projected, dtype=torch.float32).to(device)
       ).cpu()
-    predictions = (logits.numpy() * label_denorm).astype(np.float32)
+    predictions = np.asarray(_inverse_label_values(logits.numpy(), label_denorm), dtype=np.float32)
     preds_flat = predictions.squeeze(-1) if predictions.ndim > 1 else predictions
     mae = float(np.mean(np.abs(preds_flat - labels_true)))
     ccc = float(tools.concordance_ccc(y_true=labels_true, y_pred=preds_flat))
@@ -4640,9 +4654,7 @@ def cross_space_projection(args, out_root=None):
   }
 
   # --- Step 8: Classify with new model's linear layer ---
-  normalize_labels = bool(new_config['config'].get('normalize_labels', 0))
-  max_label = new_config['config'].get('max_label', None)
-  label_denorm = float(max_label) if normalize_labels and max_label else 1.0
+  label_denorm = _label_transform_from_config(new_config)
 
   # --- Step 8a: Optional post-projection refinement. --refinement selects which mode(s) run
   #     for this test (see _applicable_refine_modes): 1=linear_only (projection FIXED, refine a
@@ -4733,7 +4745,7 @@ def cross_space_projection(args, out_root=None):
       logits = classify_linear(
         torch.tensor(projected, dtype=torch.float32).to(device)
       ).cpu()
-    predictions = (logits.numpy() * label_denorm).astype(np.float32)
+    predictions = np.asarray(_inverse_label_values(logits.numpy(), label_denorm), dtype=np.float32)
     preds_flat = predictions.squeeze(-1) if predictions.ndim > 1 else predictions
     mae = float(np.mean(np.abs(preds_flat - labels_true)))
     ccc = float(tools.concordance_ccc(y_true=labels_true, y_pred=preds_flat))
