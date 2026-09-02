@@ -158,7 +158,7 @@ def log_cross_attention_from_model(model_pth_path, split_chunks=0, csv_path=None
     'is_test': True,
     'concatenate_temporal': config_model['config']['concatenate_temp_dim'],
     'concatenate_quadrants': config_model['config']['concatenate_quadrants'],
-    'CCC_loss': config_model['config']['CCC_loss']
+    'CCC_loss': config_model['config'].get('CCC_loss')
   }
   kwargs = {k: v for k, v in kwargs.items() if k not in test_pretarined_args.keys()}
   kwargs['split_chunks'] = split_chunks
