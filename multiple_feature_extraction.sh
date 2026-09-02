@@ -9,6 +9,7 @@
 #   ./multiple_feature_extraction.sh 0 5 --dataset biovid --model G all
 #   ./multiple_feature_extraction.sh 0 5 --dataset biovid --model G --prefix my_feats_G --emb_red none shift
 #   ./multiple_feature_extraction.sh 0 5 --dataset mintpain --model S all
+#   ./multiple_feature_extraction.sh 0 5 --dataset pemf --model S all
 #   ./multiple_feature_extraction.sh 0 5 --dataset xite --split train --model S all
 #   ./multiple_feature_extraction.sh 0 1 --dataset xite --split test --model S shift
 
@@ -76,6 +77,14 @@ case "$DATASET" in
     SAVING_NAME_PREFIX="all_pooled_features_${DATASET_TAG}"
     EMB_RED="all"
     ;;
+  pemf)
+    PATH_DATASET="PEMF/video/video_frontalized"
+    PATH_LABELS="PEMF/starting_point/samples.csv"
+    SAVING_BASE="PEMF/video/features"
+    DATASET_TAG="PEMF" #PEMF/video/features/VideoMaev2_S/spatial_pooled_features_PEMF_B_last143_stride16_interpol_all
+    SAVING_NAME_PREFIX="spatial_pooled_features_${DATASET_TAG}_B_last143_stride16_interpol_all"
+    EMB_RED="spatial"
+    ;;
   xite)
     PATH_DATASET="XITE/video/video_frontalized"
     case "$SPLIT" in
@@ -93,7 +102,7 @@ case "$DATASET" in
     EMB_RED="spatial"
     ;;
   *)
-    echo "Unknown dataset: $DATASET (valid: biovid, unbc, mintpain, agedb, xite)"
+    echo "Unknown dataset: $DATASET (valid: biovid, unbc, mintpain, agedb, pemf, xite)"
     exit 1
     ;;
 esac
