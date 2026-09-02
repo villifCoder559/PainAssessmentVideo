@@ -30,7 +30,7 @@ class FakeModel:
 
 
 class TestRecomputedMetricContract(unittest.TestCase):
-  def test_returns_fold_and_subject_l1_and_accuracy(self):
+  def test_returns_metrics_and_preserves_legacy_class_ids(self):
     fake_helper = types.ModuleType('custom.helper')
     fake_helper.init_log_cross_attention = lambda: None
     fake_helper.init_log_video_embeddings = lambda: None
@@ -45,7 +45,7 @@ class TestRecomputedMetricContract(unittest.TestCase):
       checkpoint = fold_dir / 'k0_cross_val_sub_0' / 'best_model_ep_2.pt'
       checkpoint.parent.mkdir(parents=True)
       checkpoint.touch()
-      pd.DataFrame({'sample_id': [1, 2], 'class_id': [0, 2]}).to_csv(
+      pd.DataFrame({'sample_id': [1, 2], 'class_id': [1, 3]}).to_csv(
         fold_dir / 'test_cleaned.csv', sep='\t', index=False
       )
       data = {
@@ -76,6 +76,10 @@ class TestRecomputedMetricContract(unittest.TestCase):
     self.assertTrue(np.array_equal(result['recomputed_loss_per_subject'], [0.2, 0.3]))
     self.assertTrue(np.array_equal(result['recomputed_accuracy_per_subject'], [0.4, 0.6]))
     self.assertTrue(np.array_equal(result['recomputed_subject_ids'], [10, 11]))
+    self.assertEqual(result['raw_mae_per_class'], {1: 0.75, 3: 1.25})
+    self.assertTrue(np.array_equal(result['recomputed_sample_ids'], [1, 2]))
+    self.assertTrue(np.allclose(result['recomputed_sample_predictions'], [0.25, 1.75]))
+    self.assertTrue(np.array_equal(result['recomputed_sample_labels'], [1, 3]))
 
 
 if __name__ == '__main__':
