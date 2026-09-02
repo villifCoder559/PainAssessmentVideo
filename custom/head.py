@@ -2,6 +2,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 import time
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -39,6 +40,13 @@ import custom.backbone as custom_backbone
 import multiprocessing as mp
 import torch.nn.functional as F
 import custom.loss as losses
+from custom.model_selection import should_select_epoch
+from custom.targets import (
+  TargetSpec,
+  loss_uses_class_bins,
+  prepare_batch_targets,
+  resolve_target_spec,
+)
 
 
 @dataclass
@@ -61,6 +69,32 @@ class _SplitTracker:
   confidence_wrong_mean: list = field(default_factory=list)
   confidence_right_std: list = field(default_factory=list)
   confidence_wrong_std: list = field(default_factory=list)
+
+
+def save_selected_checkpoints(
+  saving_path,
+  *,
+  best_model_state,
+  best_model_epoch,
+  last_model_state,
+  last_model_epoch,
+  save_best,
+  save_last,
+):
+  saved_paths = {}
+  if save_best:
+    best_path = os.path.join(
+      saving_path, f'best_model_ep_{best_model_epoch}.pt'
+    )
+    torch.save(best_model_state, best_path)
+    saved_paths['best'] = best_path
+  if save_last:
+    last_path = os.path.join(
+      saving_path, f'last_model_ep_{last_model_epoch}.pt'
+    )
+    torch.save(last_model_state, last_path)
+    saved_paths['last'] = last_path
+  return saved_paths
 
 
 class GradientReversalFunction(torch.autograd.Function):
@@ -132,6 +166,10 @@ class BaseHead(nn.Module):
   def __init__(self, is_classification):
     super(BaseHead, self).__init__()
     self.is_classification = is_classification
+
+  def _initialize_weights(self, init_type='default'):
+    """Keep PyTorch's native initialization unless a head overrides this hook."""
+    pass
       
   def log_performance(self, stage, loss, accuracy,epoch=-1,dict_kwarg=None,num_epochs=-1,list_grad_norm=None,wds=None,lrs=None):
       if epoch>-1:
@@ -297,6 +335,18 @@ class BaseHead(nn.Module):
                   regularization_lambda_L2,trial,enable_optuna_pruning,prefetch_factor,soft_labels,is_coral_loss,sample_frame_strategy,stride_inside_window,
                   num_clips_per_video, **kwargs):
     
+    target_values = pd.concat([
+      pd.read_csv(path, sep='\t')['class_id']
+      for path in (train_csv_path, val_csv_path)
+      if path
+    ])
+    target_spec = resolve_target_spec(
+      metadata=kwargs.get('target_spec'),
+      values=target_values,
+      normalize=bool(kwargs.get('normalize_labels', 0)),
+      legacy_max_label=kwargs.get('max_label'),
+    )
+
     # Generate Thread for smooth stopping 
     stop_event = threading.Event()
     def _wait_for_s():
@@ -515,17 +565,18 @@ class BaseHead(nn.Module):
       print('The criterion requires to return the video embeddings from the model during training\n')
     is_composite_loss = isinstance(criterion, losses.CompositeLoss)
     is_resupcon_loss = isinstance(criterion, losses.RESupConLoss)
+    is_only_contrastive_loss = isinstance(criterion, losses.SupConLossModified)
     is_disentangled_loss = isinstance(criterion, losses.DisentangledLoss)
     is_rnc_loss = isinstance(criterion, losses.RnCLossV2) or isinstance(criterion, losses.RnCLoss)
+    is_representation_loss = is_resupcon_loss or is_only_contrastive_loss or is_rnc_loss
+    use_exact_targets = not self.is_classification or is_representation_loss
+    if is_disentangled_loss:
+      use_exact_targets = not loss_uses_class_bins(criterion.loss_pain_fn)
     debug_grad_flow = bool(kwargs.get('debug_grad_flow', 0))
     debug_grad_flow_batches = int(kwargs.get('debug_grad_flow_batches', 1))
-    normalize_labels = bool(kwargs.get('normalize_labels', 0))
-    max_label = kwargs.get('max_label', None)
-    _label_denorm = float(max_label) if normalize_labels and max_label else 1.0
-    
     # save .pt model before the traingn for the future logs of the untrained model
     torch.save(self.state_dict(), os.path.join(saving_path, f'model_epoch_-1.pt'))
-    max_train_class = train_unique_classes.max().item() + 1 # start from 0
+    max_train_class = target_spec.bin_count
     train_loader_len = len(train_loader)
     grad_adv_norm_epoch = []
     grad_task_norm_epoch = []
@@ -540,6 +591,7 @@ class BaseHead(nn.Module):
     val_epoch_mean_hsic_pain = []
     train_epoch_mean_center_loss = []
     val_epoch_mean_center_loss = []
+    best_eval_metric = None
     for epoch in range(num_epochs):
       start_epoch = time.perf_counter()
       self.train() 
@@ -592,19 +644,20 @@ class BaseHead(nn.Module):
         sample_per_subject_count[tmp] += count_sample_per_subject
         dict_log_time['count_subjects'] = dict_log_time.get('count_subjects',0) + time.perf_counter() - time_to_count_subjects
         transfer_to_device = time.perf_counter()
-        # HuberLoss requires float32 inputs
-        if batch_y.dtype == torch.int32: # if ce not has label smoothing
-          if isinstance(criterion, (torch.nn.HuberLoss, torch.nn.MSELoss, torch.nn.L1Loss)):
-            batch_y = batch_y.float()
-          elif isinstance(criterion, torch.nn.CrossEntropyLoss) or isinstance(criterion, losses.PHuberCrossEntropy):
-            batch_y = batch_y.long()
+        batch_exact_targets = batch_y.detach().clone() if batch_y.ndim == 1 else None
+        batch_y, batch_class_targets = prepare_batch_targets(
+          dict_batch_X, batch_y, target_spec, use_exact_targets
+        )
         batch_y = batch_y.to(device)
+        batch_class_targets = batch_class_targets.to(device)
         
         if adv_criterion is not None:
           batch_subjects = batch_subjects.to(torch.long).to(device)
-        batch_y_original = batch_y.detach().clone()  # original integer labels for metric logging
-        if normalize_labels and max_label:
-          batch_y = batch_y.float() / max_label
+        batch_y_original = (
+          batch_exact_targets.to(device)
+          if use_exact_targets and batch_exact_targets is not None
+          else batch_class_targets
+        )
         dict_batch_X = {key: value.to(device) if value is not None else None for key, value in dict_batch_X.items()}
         dict_log_time['transfer_to_device'] = dict_log_time.get('transfer_to_device',0) + time.perf_counter() - transfer_to_device
         optimizer.zero_grad()
@@ -671,7 +724,7 @@ class BaseHead(nn.Module):
 
           if mt_criterion is not None:
             mt_logits = dict_out['mt_logits']
-            mt_loss = mt_criterion(mt_logits, batch_y.long())
+            mt_loss = mt_criterion(mt_logits, batch_class_targets)
             batch_mt_loss += mt_loss.item()
             loss = loss + mt_loss * lambda_multitask
 
@@ -692,14 +745,14 @@ class BaseHead(nn.Module):
           if kwargs['HSIC_pain_lambda'] > 0:
             hsic_pain = losses.marginal_hsic_loss(
                     z=dict_out['embeddings'],
-                    id_labels=batch_y,
+                    id_labels=batch_class_targets,
                     normalize_features=bool(kwargs['HSIC_feat_normalization']),
                     )
             # enforce similarity between samples of the same pain class by maximizing hsic_pain, which is equivalent to minimizing -hsic_pain
             loss = loss - kwargs['HSIC_pain_lambda'] * hsic_pain
             batch_mean_hsic_pain.append(hsic_pain.item())
           if center_loss_fn is not None and lambda_center_loss > 0:
-            center_loss_val = center_loss_fn(dict_out['embeddings'], batch_y.long())
+            center_loss_val = center_loss_fn(dict_out['embeddings'], batch_class_targets)
             loss = loss + lambda_center_loss * center_loss_val
             batch_mean_center_loss.append(center_loss_val.item())
 
@@ -731,7 +784,7 @@ class BaseHead(nn.Module):
         if helper.PROFILING_GPU_SYNC and torch.cuda.is_available():
           torch.cuda.synchronize()
         dict_log_time['optimizer'] = dict_log_time.get('optimizer',0) + time.perf_counter()-start_optimizer
-        train_loss += loss.item() * _label_denorm
+        train_loss += loss.item()
         
         # Log learning rate and weight decay
         monitoring_values = OptimizerFactory.get_monitoring_values(optimizer)
@@ -749,9 +802,9 @@ class BaseHead(nn.Module):
           
         start_logs = time.perf_counter()
         # De-normalize outputs for all metric logging when label normalization is active
-        _outputs_for_log = (outputs * max_label) if normalize_labels and max_label else outputs
-        _batch_y_for_log = batch_y_original  # always original integer scale
-        if not is_resupcon_loss and not is_rnc_loss and (helper.LOG_PER_CLASS or helper.LOG_PER_SUBJECT or helper.LOG_CONFIDENCE_PREDICTION):
+        _outputs_for_log = target_spec.inverse(outputs)
+        _batch_y_for_log = batch_y_original
+        if not is_representation_loss and (helper.LOG_PER_CLASS or helper.LOG_PER_SUBJECT or helper.LOG_CONFIDENCE_PREDICTION):
           if is_coral_loss:
             _outputs_for_log = proba_to_label(torch.sigmoid(outputs)) # convert probabilities to labels for coral loss
             _batch_y_for_log = torch.sum(batch_y, dim=1) # convert levels to labels for coral loss
@@ -761,7 +814,9 @@ class BaseHead(nn.Module):
                                         unique_train_val_classes=train_unique_classes,
                                         outputs=_outputs_for_log,
                                         class_accuracy=class_accuracy,
-                                        criterion=criterion)
+                                        criterion=criterion,
+                                        class_targets=batch_class_targets,
+                                        target_spec=target_spec)
           if helper.LOG_PER_SUBJECT:
             tools.compute_loss_per_subject_v2_(batch_subjects=batch_subjects,
                                           criterion=criterion,
@@ -770,7 +825,9 @@ class BaseHead(nn.Module):
                                           subject_loss=subject_loss if not is_coral_loss else None,
                                           subject_accuracy=subject_accuracy,
                                           unique_train_val_subjects=train_unique_subjects,
-                                          unique_train_val_classes=train_unique_classes)
+                                          unique_train_val_classes=train_unique_classes,
+                                          class_targets=batch_class_targets,
+                                          target_spec=target_spec)
           if helper.LOG_CONFIDENCE_PREDICTION:
             if self.is_classification and not is_coral_loss:
               tools.compute_confidence_predictions_(list_prediction_right_mean=batch_train_confidence_prediction_right_mean,
@@ -790,7 +847,7 @@ class BaseHead(nn.Module):
 
         count_batch+=1
 
-        if not is_resupcon_loss and not is_disentangled_loss and not is_rnc_loss:
+        if not is_representation_loss and not is_disentangled_loss:
           if self.is_classification:
             if is_coral_loss:
               predictions = _outputs_for_log.detach().cpu() # outputs are already labels for coral loss
@@ -800,18 +857,17 @@ class BaseHead(nn.Module):
             # RAW continuous prediction (de-normalized, un-rounded) for the train regression metrics
             predictions = _outputs_for_log.detach().cpu().float().reshape(-1)
 
-          batch_y = _batch_y_for_log.detach().cpu()
-          if batch_y.dim() > 1:
-            batch_y = torch.argmax(batch_y, dim=1).reshape(-1)
+          metric_targets = _batch_y_for_log.detach().cpu().reshape(-1)
+          diagnostic_targets = batch_class_targets.detach().cpu()
 
           list_train_epoch_predictions.append(predictions.numpy())
-          list_train_ground_truths.append(batch_y.numpy())
+          list_train_ground_truths.append(metric_targets.numpy())
 
           try:
             # Round + clamp ONLY for the integer-class confusion matrix (regression branch only)
             if not self.is_classification:
-              predictions = torch.copysign(torch.floor(torch.abs(predictions) + 0.5), predictions).clamp(0, train_unique_classes.max().item()) # to avoid the banker's rounding implemented as IEEE standard
-            train_confusion_matrix.update(predictions, batch_y)
+              predictions = target_spec.predictions_to_bins(predictions)
+            train_confusion_matrix.update(predictions, diagnostic_targets)
           except Exception as e:
             print(f"Error updating confusion matrix: {e}")
             print(f"  predictions: {predictions}")
@@ -879,14 +935,16 @@ class BaseHead(nn.Module):
       
       epoch_log_time = time.perf_counter()
       
-      if epoch == 0 or \
-         helper.SAVE_LAST_EPOCH_MODEL or \
-         (  epoch >= min(1, num_epochs//2) 
-            and dict_eval is not None 
-            and (dict_eval[key_for_early_stopping] < best_eval_loss 
-                  if key_for_early_stopping == 'val_loss' 
-                  else dict_eval[key_for_early_stopping] > best_eval_loss)):
-        best_eval_loss = dict_eval[key_for_early_stopping] if dict_eval is not None else 0.0
+      candidate_eval_metric = (
+        dict_eval[key_for_early_stopping] if dict_eval is not None else None
+      )
+      if should_select_epoch(
+        best_eval_metric,
+        candidate_eval_metric,
+        key_for_early_stopping,
+        has_validation=dict_eval is not None,
+      ):
+        best_eval_metric = candidate_eval_metric
         best_model_state = copy.deepcopy(self.state_dict())
         best_model_state = {key: value.cpu() for key, value in best_model_state.items()}
         best_model_epoch = epoch
@@ -897,8 +955,8 @@ class BaseHead(nn.Module):
         perf_key=key_for_early_stopping,
         log_per_class=helper.LOG_PER_CLASS,
         log_per_subject=helper.LOG_PER_SUBJECT,
-        log_confidence=helper.LOG_CONFIDENCE_PREDICTION and not is_resupcon_loss and not is_disentangled_loss,
-        log_correlation=not is_resupcon_loss and not is_disentangled_loss and not is_rnc_loss,
+        log_confidence=helper.LOG_CONFIDENCE_PREDICTION and not is_representation_loss and not is_disentangled_loss,
+        log_correlation=not is_representation_loss and not is_disentangled_loss,
         save_this_epoch=epoch % helper.saving_rate_training_logs == 0 or best_epoch,
       )
       if dict_eval is not None:
@@ -974,7 +1032,7 @@ class BaseHead(nn.Module):
         plt.close(fig)
         print(f'Checkpoint saved at epoch {epoch} to {model_path_epoch} and plotted the loss.')
       
-      if not is_resupcon_loss and not is_disentangled_loss and not is_rnc_loss:
+      if not is_representation_loss and not is_disentangled_loss:
         np_list_train_epoch_predictions = np.concatenate(list_train_epoch_predictions, axis=0)
         np_list_train_ground_truths = np.concatenate(list_train_ground_truths, axis=0)
         list_train_ICC.append(tools.intraclass_icc(np.column_stack((np_list_train_ground_truths, np_list_train_epoch_predictions))))
@@ -989,7 +1047,7 @@ class BaseHead(nn.Module):
         train_dict_precision_recall = {}
         list_train_performance_metric.append(list_train_losses[-1])
 
-      if helper.LOG_CONFIDENCE_PREDICTION and not is_resupcon_loss and not is_disentangled_loss:
+      if helper.LOG_CONFIDENCE_PREDICTION and not is_representation_loss and not is_disentangled_loss:
         list_train_confidence_prediction_right_mean.append(np.mean(batch_train_confidence_prediction_right_mean) if len(batch_train_confidence_prediction_right_mean) > 0 else 0)
         list_train_confidence_prediction_wrong_mean.append(np.mean(batch_train_confidence_prediction_wrong_mean) if len(batch_train_confidence_prediction_wrong_mean) > 0 else 0)
         list_train_confidence_prediction_right_std.append(np.std(batch_train_confidence_prediction_right_mean) if len(batch_train_confidence_prediction_right_mean) > 0 else 0)
@@ -1100,9 +1158,22 @@ class BaseHead(nn.Module):
         break
       
     if saving_path and helper.SAVE_PTH_MODEL:
-      print('Load and save best model for next steps...')
-      torch.save(best_model_state, os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pt'))
-      print(f"Best model weights saved to {os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pt')}")
+      last_model_state = {
+        key: value.detach().cpu()
+        for key, value in self.state_dict().items()
+      }
+      saved_checkpoint_paths = save_selected_checkpoints(
+        saving_path,
+        best_model_state=best_model_state,
+        best_model_epoch=best_model_epoch,
+        last_model_state=last_model_state,
+        last_model_epoch=epoch,
+        save_best=True,
+        save_last=helper.SAVE_LAST_EPOCH_MODEL,
+      )
+      print(f"Best model weights saved to {saved_checkpoint_paths['best']}")
+      if 'last' in saved_checkpoint_paths:
+        print(f"Last model weights saved to {saved_checkpoint_paths['last']}")
     
     train_dict_log_loss_epochs = {}
     if train_dict_log_loss_steps != []:
@@ -1222,8 +1293,26 @@ class BaseHead(nn.Module):
     self.eval() 
     is_composite_loss = isinstance(criterion, losses.CompositeLoss)
     is_resupcon_loss = isinstance(criterion, losses.RESupConLoss)
+    is_only_contrastive_loss = isinstance(criterion, losses.SupConLossModified)
     is_disentangled_loss = isinstance(criterion, losses.DisentangledLoss)
     is_rnc_loss = isinstance(criterion, losses.RnCLossV2) or isinstance(criterion, losses.RnCLoss)
+    is_representation_loss = is_resupcon_loss or is_only_contrastive_loss or is_rnc_loss
+    use_exact_targets = not self.is_classification or is_representation_loss
+    if is_disentangled_loss:
+      use_exact_targets = not loss_uses_class_bins(criterion.loss_pain_fn)
+    dataset_spec = getattr(val_loader.dataset, 'target_spec', None)
+    target_values = (
+      val_loader.dataset.df['class_id']
+      if hasattr(val_loader.dataset, 'df') and 'class_id' in val_loader.dataset.df
+      else unique_val_classes
+    )
+    target_spec = resolve_target_spec(
+      metadata=kwargs.get('target_spec'),
+      values=target_values,
+      normalize=bool(kwargs.get('normalize_labels', 0)),
+      legacy_max_label=kwargs.get('max_label'),
+      fallback=dataset_spec,
+    )
     list_val_epoch_predictions = []
     list_val_ground_truths = []
     l1_error = 0.0
@@ -1241,7 +1330,7 @@ class BaseHead(nn.Module):
       accuracy_per_subject = torch.zeros(unique_val_subjects.shape[0])
       # subject_batch_count = torch.zeros(unique_val_subjects.shape[0])
       sample_per_subject_count = torch.zeros(unique_val_subjects.shape[0])
-      val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=val_loader.dataset.get_unique_classes().max().item()+1) # start from 0, so +1
+      val_confusion_matricies = ConfusionMatrix(task="multiclass",num_classes=target_spec.bin_count)
       batch_confidence_prediction_right_mean = []
       batch_confidence_prediction_wrong_mean = []
       batch_confidence_prediction_right_std = []
@@ -1251,9 +1340,6 @@ class BaseHead(nn.Module):
       
       amp_dtype = torch.bfloat16 if helper.AMP_DTYPE == 'bfloat16' else torch.float16
       enable_autocast = helper.AMP_ENABLED
-      normalize_labels = bool(kwargs.get('normalize_labels', 0))
-      max_label = kwargs.get('max_label', None)
-      _label_denorm = float(max_label) if normalize_labels and max_label else 1.0
       return_embeddings = getattr(criterion, 'return_embeddings', False) or \
                           helper.LOG_VIDEO_EMBEDDINGS['enable']
       hsic_enabled = kwargs['HSIC_subject_lambda'] > 0 or kwargs['HSIC_pain_lambda'] > 0
@@ -1266,16 +1352,18 @@ class BaseHead(nn.Module):
         tmp = torch.isin(unique_val_subjects,batch_subjects)
         _,count_sample_per_subject = torch.unique(batch_subjects, return_counts=True)
         sample_per_subject_count[tmp] += count_sample_per_subject
-        if isinstance(criterion, torch.nn.HuberLoss):
-          batch_y = batch_y.float()
-        elif isinstance(criterion, torch.nn.CrossEntropyLoss) or isinstance(criterion, losses.PHuberCrossEntropy):
-          batch_y = batch_y.long()
-        
+        batch_exact_targets = batch_y.detach().clone() if batch_y.ndim == 1 else None
+        batch_y, batch_class_targets = prepare_batch_targets(
+          dict_batch_X, batch_y, target_spec, use_exact_targets
+        )
         dict_batch_X = {key: value.to(device) if value is not None else None for key, value in dict_batch_X.items()}
         batch_y = batch_y.to(device)
-        batch_y_original = batch_y.detach().clone()  # original integer labels for metric logging
-        if normalize_labels and max_label:
-          batch_y = batch_y.float() / max_label
+        batch_class_targets = batch_class_targets.to(device)
+        batch_y_original = (
+          batch_exact_targets.to(device)
+          if use_exact_targets and batch_exact_targets is not None
+          else batch_class_targets
+        )
         if kwargs.get('adv_criterion') is not None:
           batch_subjects = batch_subjects.to(torch.long).to(device)
         # subject_batch_count[tmp] += 1
@@ -1295,11 +1383,7 @@ class BaseHead(nn.Module):
           helper.LOG_VIDEO_EMBEDDINGS['embeddings'].append(dict_out['embeddings'].detach().cpu())
           helper.LOG_VIDEO_EMBEDDINGS['labels'].extend(batch_y_original.detach().cpu().numpy().tolist())
           helper.LOG_VIDEO_EMBEDDINGS['sample_ids'].extend(sample_id.cpu().numpy().tolist())
-          helper.LOG_VIDEO_EMBEDDINGS['predictions'].extend((dict_out['logits'] * _label_denorm).detach().cpu().numpy().tolist())
-        # if kwargs['CCC_loss']:
-        #   loss = criterion(outputs, batch_y) + (kwargs['add_CCC_loss'] * kwargs['CCC_loss'](outputs, batch_y) if kwargs['CCC_loss'] else 0.0)
-        # else:
-        #   loss = criterion(outputs, batch_y)
+          helper.LOG_VIDEO_EMBEDDINGS['predictions'].extend(target_spec.inverse(dict_out['logits']).detach().cpu().numpy().tolist())
         dict_out['targets'] = batch_y
         if is_composite_loss:
           loss = criterion(**dict_out)
@@ -1329,23 +1413,23 @@ class BaseHead(nn.Module):
         if kwargs['HSIC_pain_lambda'] > 0:
           hsic_pain = losses.marginal_hsic_loss(
                   z=dict_out['embeddings'],
-                  id_labels=batch_y,
+                  id_labels=batch_class_targets,
                   normalize_features=bool(kwargs['HSIC_feat_normalization']),
                   )
           # loss = loss - kwargs['HSIC_pain_lambda'] * hsic_pain
           epoch_mean_hsic_pain.append(hsic_pain.item())
         if center_loss_enabled:
-          _cl_eval = kwargs['center_loss_fn'](dict_out['embeddings'], batch_y.long())
+          _cl_eval = kwargs['center_loss_fn'](dict_out['embeddings'], batch_class_targets)
           epoch_center_loss.append(_cl_eval.item())
         #   adv_logits = dict_out['adv_logits']
         #   adv_loss = kwargs['adv_criterion'](adv_logits, batch_subjects)
         #   loss = loss + adv_loss * kwargs['adversarial_loss_lambda']
-        val_loss += loss.item() * _label_denorm
+        val_loss += loss.item()
         
-        if not is_resupcon_loss and not is_disentangled_loss and not is_rnc_loss:
+        if not is_representation_loss and not is_disentangled_loss:
           # De-normalize outputs for all metric logging when label normalization is active
-          _outputs_for_log = (outputs * max_label) if normalize_labels and max_label else outputs
-          _batch_y_for_log = batch_y_original  # always original integer scale
+          _outputs_for_log = target_spec.inverse(outputs)
+          _batch_y_for_log = batch_y_original
           if is_coral_loss:
             _outputs_for_log = proba_to_label(torch.sigmoid(outputs)) # convert probabilities to labels for coral loss
             _batch_y_for_log = torch.sum(batch_y, dim=1) # convert levels to labels for coral loss
@@ -1356,7 +1440,9 @@ class BaseHead(nn.Module):
                                             unique_train_val_classes=unique_val_classes,
                                             outputs=_outputs_for_log,
                                             criterion=criterion,
-                                            class_accuracy=accuracy_per_class)
+                                            class_accuracy=accuracy_per_class,
+                                            class_targets=batch_class_targets,
+                                            target_spec=target_spec)
           if save_log and helper.LOG_PER_SUBJECT:
             tools.compute_loss_per_subject_v2_(batch_subjects=batch_subjects,
                                               criterion=criterion,
@@ -1365,7 +1451,9 @@ class BaseHead(nn.Module):
                                               subject_loss=subject_loss if not is_coral_loss else None,
                                               unique_train_val_subjects=unique_val_subjects,
                                               subject_accuracy=accuracy_per_subject,
-                                              unique_train_val_classes=unique_val_classes)
+                                              unique_train_val_classes=unique_val_classes,
+                                              class_targets=batch_class_targets,
+                                              target_spec=target_spec)
           if save_log and helper.LOG_CONFIDENCE_PREDICTION:
             if self.is_classification and not is_coral_loss:
                 tools.compute_confidence_predictions_(list_prediction_right_mean=batch_confidence_prediction_right_mean,
@@ -1388,22 +1476,21 @@ class BaseHead(nn.Module):
                                               tensor_sample_id=sample_id,
                                               tensor_predictions=predictions,
                                               epoch=epoch)
-          batch_y = _batch_y_for_log.detach().cpu()
-          if batch_y.dim() > 1:
-            batch_y = torch.argmax(batch_y, dim=1).reshape(-1)
+          metric_targets = _batch_y_for_log.detach().cpu().reshape(-1)
+          diagnostic_targets = batch_class_targets.detach().cpu()
 
           list_val_epoch_predictions.append(predictions.numpy())
-          list_val_ground_truths.append(batch_y.numpy())
+          list_val_ground_truths.append(metric_targets.numpy())
 
           # Round + clamp ONLY for the integer-class confusion matrix (regression branch only)
           if not self.is_classification:
-            predictions = torch.copysign(torch.floor(torch.abs(predictions) + 0.5), predictions).clamp(0, unique_val_classes.max().item()) # to avoid the banker's rounding implemented as IEEE standard
+            predictions = target_spec.predictions_to_bins(predictions)
 
-          val_confusion_matricies.update(predictions, batch_y)
+          val_confusion_matricies.update(predictions, diagnostic_targets)
         count += 1
       
       val_loss = val_loss / len(val_loader)
-      if not is_resupcon_loss and not is_disentangled_loss and not is_rnc_loss:
+      if not is_representation_loss and not is_disentangled_loss:
         val_confusion_matricies.compute()
         if save_log and helper.LOG_PER_CLASS:
           loss_per_class = loss_per_class[0] / loss_per_class[1] # loss_per_class[0] is loss per class, loss_per_class[1] is total number of samples
@@ -1926,11 +2013,9 @@ class GRUHead(BaseHead):
                layer_norm=False,
                bidirectional=False,
                embedding_reduction=None,
-               head_init_path=None,
                backbone: custom_backbone.BackboneBase = None,
                train_backbone=False,
                unfreeze_layers=0,
-               skip_init_weights=False,
                num_classes=None,
                **kwargs):
     """
@@ -1947,7 +2032,6 @@ class GRUHead(BaseHead):
       bidirectional:       If True, use a bidirectional GRU (output doubles).
       embedding_reduction: helper.EMBEDDING_REDUCTION enum; reduces spatial/temporal
                            axes of backbone features before the GRU.
-      head_init_path:      Optional path to a .pt state_dict to warm-start from.
       backbone:            Backbone module (only when dataset_type == BASE).
       num_classes:         Alias of output_size forwarded by the pipeline; takes
                            precedence over output_size when explicitly > 1.
@@ -1962,7 +2046,6 @@ class GRUHead(BaseHead):
     self.output_size = output_size
     self.bidirectional = bidirectional
     self.embedding_reduction = embedding_reduction if embedding_reduction is not None else helper.EMBEDDING_REDUCTION.NONE
-    self.head_init_path = head_init_path
     self.backbone = backbone
 
     self.gru = nn.GRU(
@@ -1979,11 +2062,6 @@ class GRUHead(BaseHead):
     out_dim = hidden_size * (2 if bidirectional else 1)
     self.norm = nn.LayerNorm(out_dim) if layer_norm else nn.Identity()
     self.linear = nn.Linear(out_dim, output_size, bias=True)
-
-    # if not skip_init_weights:
-    #   print('\nInitializing GRUHead weights...\n')
-    #   self._initialize_weights(init_type='default')
-    #   print('GRUHead weights initialization complete.\n')
 
   def _reduce_to_sequence(self, x):
     """
@@ -2043,35 +2121,6 @@ class GRUHead(BaseHead):
     result = {'logits': logits}
     result['embeddings'] = pooled if return_video_emb else None
     return result
-
-  def set_init_path(self, head_init_path):
-    """Record a pretrained-weights path to load during _initialize_weights."""
-    self.head_init_path = head_init_path
-
-  def _initialize_weights(self, init_type='default'):
-    """Orthogonal init for GRU recurrent weights, xavier for the final linear."""
-    if init_type == 'default':
-      for name, param in self.gru.named_parameters():
-        if 'weight_ih' in name:
-          nn.init.xavier_uniform_(param)
-        elif 'weight_hh' in name:
-          nn.init.orthogonal_(param)
-        elif 'bias' in name:
-          nn.init.zeros_(param)
-      nn.init.xavier_uniform_(self.linear.weight, gain=0.1)
-      if self.linear.bias is not None:
-        nn.init.zeros_(self.linear.bias)
-
-      if self.head_init_path is not None and os.path.isfile(self.head_init_path):
-        state_dict = torch.load(self.head_init_path, weights_only=True)
-        state_dict = {k: v for k, v in state_dict.items() if not k.startswith('linear.')}
-        missing, unexpected = self.load_state_dict(state_dict, strict=False)
-        print(f'LOADED GRUHead weights from {self.head_init_path}')
-        print(f'  missing: {missing}\n  unexpected: {unexpected}')
-      print(f'All trainable params sum: {sum(p.numel() for p in self.parameters() if p.requires_grad)}')
-    else:
-      raise NotImplementedError(f'Initialization method {init_type} not implemented')
-
 
 class EarlyStopping:
   def __init__(self, best, patience=5, min_delta=0,threshold_mode='rel'):
@@ -2223,4 +2272,3 @@ class MeanMaxAggregator(nn.Module):
     else:  # 'max'
       # elementwise max
       return pooled_feats.max(dim=1)[0]  # [B, C]
-
