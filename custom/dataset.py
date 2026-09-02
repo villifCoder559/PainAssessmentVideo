@@ -31,6 +31,22 @@ from torch.utils.data import BatchSampler
 from making_better_mistakes.better_mistakes.model import labels as soft_labels_generator
 from coral_pytorch.dataset import levels_from_labelbatch
 import multiprocessing as mp
+from custom.targets import TargetSpec, resolve_target_spec
+
+
+def _target_spec(spec, values):
+  if isinstance(spec, TargetSpec):
+    return spec
+  if isinstance(spec, dict):
+    return TargetSpec.from_metadata(spec)
+  return TargetSpec.from_values(values)
+
+
+def _class_bin_series(df, class_bins=None):
+  values = class_bins if class_bins is not None else TargetSpec.from_values(df['class_id']).to_bins(df['class_id'])
+  if len(values) != len(df):
+    raise ValueError("class_bins must contain one value per dataframe row")
+  return pd.Series(np.asarray(values, dtype=np.int64), index=df.index)
 
 
 class customDataset(torch.utils.data.Dataset):
@@ -78,6 +94,7 @@ class customDataset(torch.utils.data.Dataset):
       backbone_type='video',
       image_mean=None,
       image_std=None,
+      target_spec=None,
       **kwargs
   ):
     """
@@ -172,10 +189,14 @@ class customDataset(torch.utils.data.Dataset):
       self.set_path_labels(path_labels)
     else:
       self.video_labels = video_labels[helper.desired_order_csv]
+    self.df = self.video_labels
+    self.target_spec = _target_spec(target_spec, self.video_labels['class_id'])
+    self.class_bins = self.target_spec.to_bins(self.video_labels['class_id'])
+    self.num_classes = self.target_spec.bin_count
         
     # Get unique subjects and classes
-    tmp = tools.get_unique_subjects_and_classes(self.video_labels)
-    self.total_subjects, self.total_classes = len(tmp[0]), len(tmp[1])
+    tmp = tools.get_unique_subjects_and_classes(self.video_labels, self.target_spec)
+    self.total_subjects, self.total_classes = len(tmp[0]), self.target_spec.bin_count
     
     # Initialize face processing components
     self.face_extractor = None # TODO: None for testing more workers during training, REAL => extractor.FaceExtractor()
@@ -194,7 +215,7 @@ class customDataset(torch.utils.data.Dataset):
     helper.set_step_shift(path_dataset)
     print(f"\ncustomDataset: Using step shift = {helper.step_shift} for dataset {path_dataset}\n")
     self.coral_loss = coral_loss
-    self.num_classes = len(self.get_unique_classes())
+    self.num_classes = self.target_spec.bin_count
   
   def _set_sampling_strategy(self, strategy):
     """
@@ -530,7 +551,7 @@ class customDataset(torch.utils.data.Dataset):
     # Create metadata tensors
     time_metadata = time.perf_counter()
     sample_id = torch.full((nr_clips,), int(self.video_labels.iloc[idx]['sample_id']), dtype=torch.int32)
-    labels = torch.full((nr_clips,), int(self.video_labels.iloc[idx]['class_id']), dtype=torch.int32)
+    labels = torch.full((nr_clips,), float(self.video_labels.iloc[idx]['class_id']), dtype=torch.float32)
     subject_id = torch.full((nr_clips,), int(self.video_labels.iloc[idx]['subject_id']), dtype=torch.int32)
     path = np.repeat(video_path, nr_clips)
     helper.time_profile_dict[f'{pid}_metadata_time'] = helper.time_profile_dict.get(f'{pid}_metadata_time', 0) + (time.perf_counter() - time_metadata)
@@ -724,6 +745,7 @@ class customDataset(torch.utils.data.Dataset):
   def _custom_collate(self, batch):
     time_custom_collate = time.perf_counter()
     labels = torch.stack([item['labels'][0] for item in batch], dim=0)
+    class_targets = self.target_spec.to_bin_tensor(labels)
     subject_id = torch.stack([item['subject_id'][0] for item in batch], dim=0)
     sample_id = torch.stack([item['sample_id'] for item in batch], dim=0)
     data = torch.cat([item['features'] for item in batch], dim=0)
@@ -735,11 +757,11 @@ class customDataset(torch.utils.data.Dataset):
     # key_padding_mask = ~key_padding_mask # set True for attention, if True means use the token to compute the attention, otherwise don't use it 
       
     if self.smooth_labels > 0.0: # and model.output_size > 1:
-      labels = smooth_labels_batch(gt_classes=labels, num_classes=self.num_classes, smoothing=self.smooth_labels)
+      labels = smooth_labels_batch(gt_classes=class_targets, num_classes=self.num_classes, smoothing=self.smooth_labels)
     elif self.soft_labels != None:
-      labels = self.soft_labels[labels].to(torch.float32) # soft labels
+      labels = self.soft_labels[class_targets].to(torch.float32) # soft labels
     elif self.coral_loss:
-      labels = levels_from_labelbatch(labels, self.num_classes, dtype=torch.float32)
+      labels = levels_from_labelbatch(class_targets, self.num_classes, dtype=torch.float32)
     
     pid = os.getpid()
     helper.time_profile_dict[f'{pid}_custom_collate_time'] = helper.time_profile_dict.get(f'{pid}_custom_collate_time', 0) + (time.perf_counter() - time_custom_collate)
@@ -747,6 +769,7 @@ class customDataset(torch.utils.data.Dataset):
     return {'x':data, 
            'key_padding_mask': None,
            'lengths': lengths, 
+           'class_targets': class_targets,
            }, \
             labels, \
             subject_id, \
@@ -869,9 +892,9 @@ class customDataset(torch.utils.data.Dataset):
   def get_count_subjects(self):
     return np.unique(self.video_labels['subject_id'],return_counts=True)[1]
   def get_count_classes(self):
-    return np.unique(self.video_labels['class_id'],return_counts=True)[1]
+    return np.unique(self.class_bins, return_counts=True)[1]
   def get_unique_classes(self):
-    return np.sort(self.video_labels['class_id'].unique().tolist())
+    return np.unique(self.class_bins)
 
   def generate_csv_augmented(self,original_csv_path,out_csv_path,dict_augmentation,stratified_training=False):
     return helper.generate_csv_augmented(original_csv_path=original_csv_path,
@@ -880,7 +903,7 @@ class customDataset(torch.utils.data.Dataset):
                            stratified_training=stratified_training)
 
 class customDatasetAggregated(torch.utils.data.Dataset):
-  def __init__(self,root_folder_features,concatenate_temporal,concatenate_quadrants,model,is_train,csv_path,smooth_labels,soft_labels,coral_loss,latent_coefficient,consider_only_lasts_n_chunks=None):
+  def __init__(self,root_folder_features,concatenate_temporal,concatenate_quadrants,model,is_train,csv_path,smooth_labels,soft_labels,coral_loss,latent_coefficient,consider_only_lasts_n_chunks=None,target_spec=None):
     self.root_folder_feature = root_folder_features
     self.csv_path = csv_path
     helper.set_step_shift(root_folder_features)
@@ -889,7 +912,6 @@ class customDatasetAggregated(torch.utils.data.Dataset):
     self.concatenate_quadrants = concatenate_quadrants
     self.latent_coefficient = latent_coefficient
     self.df = pd.read_csv(csv_path,sep='\t')
-    self.num_classes = len(self.get_unique_classes())
     self.is_quadrant = True if 'combined' in root_folder_features else False
     if not is_train:
       # Keep only original samples if validation/test (sample_id<=8700)
@@ -899,6 +921,9 @@ class customDatasetAggregated(torch.utils.data.Dataset):
       self.df = self.df[filter_mask]
       self.df.to_csv(csv_path,sep='\t',index=False)
       print(f"Filtered DataFrame saved to {csv_path}")
+    self.target_spec = _target_spec(target_spec, self.df['class_id'])
+    self.class_bins = self.target_spec.to_bins(self.df['class_id'])
+    self.num_classes = self.target_spec.bin_count
     # Save mask to use to filter helper.dict_data
     # self.mask = np.isin(helper.dict_data['list_sample_id'],self.df['sample_id'].to_list())
     self.model = model
@@ -956,7 +981,9 @@ class customDatasetAggregated(torch.utils.data.Dataset):
           if nr_values == 0:
             print(f"Sample ID {sample_id} not found in the dataset. populate_feature_dict will not work properly.")
           # create a tensor with the same label
-          csv_labels = torch.full((nr_values,),real_csv_label,dtype=dict_data['list_labels'].dtype) 
+          if not dict_data['list_labels'].dtype.is_floating_point:
+            dict_data['list_labels'] = dict_data['list_labels'].float()
+          csv_labels = torch.full((nr_values,), float(real_csv_label), dtype=torch.float32)
           dict_data['list_labels'][mask] = csv_labels
         list_dict_data.append(dict_data)
     merged_dict_data = {}
@@ -992,16 +1019,17 @@ class customDatasetAggregated(torch.utils.data.Dataset):
                            self.smooth_labels,
                            self.soft_labels,
                            self.coral_loss,
-                           self.concatenate_quadrants)
+                           self.concatenate_quadrants,
+                           target_spec=self.target_spec)
   
   def get_unique_subjects(self):
     return np.sort(self.df['subject_id'].unique().tolist())
   def get_count_subjects(self):
     return np.unique(self.df['subject_id'],return_counts=True)[1]
   def get_count_classes(self):
-    return np.unique(self.df['class_id'],return_counts=True)[1]
+    return np.unique(self.class_bins, return_counts=True)[1]
   def get_unique_classes(self):
-    return np.sort(self.df['class_id'].unique().tolist())
+    return np.unique(self.class_bins)
   def get_all_sample_ids(self):
     return self.df['sample_id'].tolist()
   
@@ -1014,13 +1042,15 @@ class customDatasetAggregated(torch.utils.data.Dataset):
 
 class customDatasetWhole(torch.utils.data.Dataset):
   def __init__(self,csv_path,root_folder_features,concatenate_temporal,concatenate_quadrants,model,smooth_labels,soft_labels,coral_loss, xattn_mask,latent_coefficient,split_chunks=False, consider_only_lasts_n_chunks=None,
-               feature_merge_type=None,feature_merge_lambda=None,feature_merge_orig=1):
+               feature_merge_type=None,feature_merge_lambda=None,feature_merge_orig=1,target_spec=None):
     self.csv_path = csv_path
     helper.set_step_shift(root_folder_features)
     print(f"\n CustomDatasetWhole: Using step shift = {helper.step_shift} for dataset {root_folder_features} \n")
     self.xattn_mask = xattn_mask
     self.root_folder_features = root_folder_features
     self.df = pd.read_csv(csv_path,sep='\t',dtype={'sample_name':str,'subject_name':str}) # subject_id, subject_name, class_id, class_name, sample_id, sample_name
+    self.target_spec = _target_spec(target_spec, self.df['class_id'])
+    self.class_bins = self.target_spec.to_bins(self.df['class_id'])
     # count subject_id uniqueness
     unique_subject_ids, counts = np.unique(self.df['subject_id'], return_counts=True)
     print(f"\nUnique subject_ids: {len(unique_subject_ids)}, Total entries: {len(self.df)}")
@@ -1035,7 +1065,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
     self.is_quadrant = True if 'combined' in root_folder_features else False
     self.instance_model_name = tools.get_instace_model_name(model)
     self.smooth_labels = smooth_labels
-    self.num_classes = len(self.get_unique_classes())
+    self.num_classes = self.target_spec.bin_count
     self.split_chunks = split_chunks
     self.consider_only_lasts_n_chunks = consider_only_lasts_n_chunks
     if soft_labels:
@@ -1197,21 +1227,19 @@ class customDatasetWhole(torch.utils.data.Dataset):
                            self.coral_loss,
                            self.concatenate_quadrants,
                            self.xattn_mask,
-                           self.split_chunks)  
+                           self.split_chunks,
+                           target_spec=self.target_spec)
 
   def get_unique_subjects(self):
     return np.sort(self.df['subject_id'].unique().tolist())
   def get_count_subjects(self):
     return np.unique(self.df['subject_id'],return_counts=True)[1]
   def get_count_classes(self):
-    return np.unique(self.df['class_id'],return_counts=True)[1]
+    return np.unique(self.class_bins, return_counts=True)[1]
   def get_unique_classes(self,return_all=False):
-    list_unique_classes = self.df['class_id'].unique().tolist()
-    max_class = max(list_unique_classes)
     if not return_all:
-      return np.sort(list_unique_classes)
-    else:
-      return np.sort(list(range(max_class+1))) # in case some class is missing
+      return np.unique(self.class_bins)
+    return np.arange(self.target_spec.bin_count)
   def get_all_sample_ids(self):
     return self.df['sample_id'].tolist()
 
@@ -1223,7 +1251,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
   
 # Alternative version with even more optimizations for large batches
 def highly_optimized_custom_collate(batch, pid, is_training,concatenate_temporal=False, smooth_labels=0.0,
-  soft_labels_mat=None, coral_loss=False, num_classes=None,concatenate_quadrants=False, split_chunks=False,xattn_mask=None):
+  soft_labels_mat=None, coral_loss=False, num_classes=None,concatenate_quadrants=False, split_chunks=False,xattn_mask=None,target_spec=None):
   """Highly optimized version using vectorized operations where possible"""
   
   batch_size = len(batch)
@@ -1327,7 +1355,9 @@ def highly_optimized_custom_collate(batch, pid, is_training,concatenate_temporal
         key_padding_mask = key_padding_mask.unsqueeze(1).unsqueeze(1) # [B,1,1,nr_chunks*T*S*S]
 
   # Vectorized extraction of labels, subject_ids, and sample_ids
-  labels = torch.tensor([sample['labels'][0] for sample in batch], dtype=torch.int32)
+  labels = torch.tensor([sample['labels'][0] for sample in batch], dtype=torch.float32)
+  spec = _target_spec(target_spec, labels.numpy())
+  class_targets = spec.to_bin_tensor(labels)
   subject_id = torch.tensor([sample['subject_id'][0] for sample in batch], dtype=torch.int32)
   sample_id = torch.tensor([sample['sample_id'] for sample in batch], dtype=torch.int32)
   
@@ -1336,22 +1366,24 @@ def highly_optimized_custom_collate(batch, pid, is_training,concatenate_temporal
     subject_id = torch.repeat_interleave(subject_id, repeats=repeats, dim=0)
     sample_id = torch.repeat_interleave(sample_id, repeats=repeats, dim=0)
     labels = torch.repeat_interleave(labels, repeats=repeats, dim=0)
+    class_targets = torch.repeat_interleave(class_targets, repeats=repeats, dim=0)
   
   # Handle label smoothing when in training mode
   if is_training and smooth_labels > 0.0:
-    labels = smooth_labels_batch(gt_classes=labels, num_classes=num_classes,
+    labels = smooth_labels_batch(gt_classes=class_targets, num_classes=num_classes,
       smoothing=smooth_labels)
   
   # Handle label transformations (same as before)
   if soft_labels_mat is not None:
-    labels = soft_labels_mat[labels].to(torch.float32)
+    labels = soft_labels_mat[class_targets].to(torch.float32)
   elif coral_loss:
-    labels = levels_from_labelbatch(labels, num_classes, dtype=torch.float32)
+    labels = levels_from_labelbatch(class_targets, num_classes, dtype=torch.float32)
     
   return {
     'features': features,
     'lengths': lengths,
     'labels': labels,
+    'class_targets': class_targets,
     'subject_id': subject_id,
     'sample_id': sample_id,
     'key_padding_mask': key_padding_mask,
@@ -1359,7 +1391,7 @@ def highly_optimized_custom_collate(batch, pid, is_training,concatenate_temporal
   }
 
 
-def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_classes,smooth_labels, soft_labels_mat,coral_loss,concatenate_quadrants,xattn_mask=None,split_chunks=False):
+def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_classes,smooth_labels, soft_labels_mat,coral_loss,concatenate_quadrants,xattn_mask=None,split_chunks=False,target_spec=None):
   # Pre-flatten features: reshape each sample to (sequence_length, emb_dim)
   pid = os.getpid()
   # if pid not in helper.time_profile_dict:
@@ -1376,11 +1408,12 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_cla
                                               split_chunks=split_chunks,
                                               concatenate_quadrants=concatenate_quadrants,
                                               xattn_mask=xattn_mask,
-                                              num_classes=num_classes)
+                                              num_classes=num_classes,
+                                              target_spec=target_spec)
       
   if instance_model_name == helper.INSTANCE_MODEL_NAME.AttentiveClassifier or instance_model_name == helper.INSTANCE_MODEL_NAME.GRUHead:
 
-    return {'x':dict_res['features'], 'key_padding_mask': dict_res['key_padding_mask']},\
+    return {'x':dict_res['features'], 'key_padding_mask': dict_res['key_padding_mask'], 'class_targets': dict_res['class_targets']},\
             dict_res['labels'],\
             dict_res['subject_id'],\
             dict_res['sample_id']
@@ -1398,13 +1431,16 @@ def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_cla
 
 
 class balancedBatchSampler(BatchSampler):
-  def __init__(self, batch_size, shuffle,path_cvs_dataset=None, random_state=42,df=None):
+  def __init__(self, batch_size, shuffle,path_cvs_dataset=None, random_state=42,df=None,class_bins=None):
     if df is None:
       csv_array,_ = tools.get_array_from_csv(path_cvs_dataset)
     else:
       csv_array = df.to_numpy()
     # self.y_labels = np.array(csv_array[:,2]).astype(int)
-    self.y_labels = df['class_id'].to_numpy().astype(int) if df is not None else np.array(csv_array[:,2]).astype(int)
+    if df is not None:
+      self.y_labels = _class_bin_series(df, class_bins).to_numpy()
+    else:
+      self.y_labels = TargetSpec.from_values(csv_array[:, 2]).to_bins(csv_array[:, 2])
     self.n_batch_size = batch_size
     self.random_state = random_state
     self.shuffle = shuffle
@@ -1467,7 +1503,7 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
                              -1 = cap every class at the minority class group count, N > 0 = absolute cap.
                              The subset of groups kept for over-represented classes is redrawn each epoch.
   """
-  def __init__(self, df, batch_size, shuffle, n_keep_augmentations, augmentation_strategy, root_folder_features=None, drop_last=False, keep_original=1.0, undersample_max_per_class=0):
+  def __init__(self, df, batch_size, shuffle, n_keep_augmentations, augmentation_strategy, root_folder_features=None, drop_last=False, keep_original=1.0, undersample_max_per_class=0,class_bins=None):
     """
     Args:
       df:                      DataFrame with at least 'sample_id' and 'class_id' columns; index used as dataset indices.
@@ -1510,6 +1546,7 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
       except Exception as e:
         print(f"Warning: Could not get available augmentations from folder: {e}")
     
+    bin_series = _class_bin_series(df, class_bins)
     for idx, row in df.iterrows():
       sample_id = row['sample_id']
       if sample_id <= helper.step_shift:
@@ -1530,7 +1567,7 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
         self.base_id_groups[base_id]['original'] = idx
       elif aug_type:
         self.base_id_groups[base_id]['augmented'][aug_type] = idx
-      self.class_of_base_id[base_id] = row['class_id']
+      self.class_of_base_id[base_id] = int(bin_series.loc[idx])
 
     self.available_augmentation_types = sorted(list(self.available_augmentation_types))
 
@@ -1711,7 +1748,7 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
 
 
 class AugmentedOnlyBatchSampler(BatchSampler):
-  def __init__(self, df, batch_size, augmentations, shuffle=True, random_state=42, balance_batch=True,root_folder_features=None):
+  def __init__(self, df, batch_size, augmentations, shuffle=True, random_state=42, balance_batch=True,root_folder_features=None,class_bins=None):
     """
     BatchSampler that creates batches containing ONLY augmented versions of samples.
     
@@ -1790,7 +1827,7 @@ class AugmentedOnlyBatchSampler(BatchSampler):
     if len(self.original_df) == 0:
         raise ValueError("No original samples (sample_id <= step_shift) found in the dataframe.")
         
-    self.y_labels = self.original_df['class_id'].to_numpy().astype(int)
+    self.y_labels = _class_bin_series(df, class_bins).loc[self.original_df.index].to_numpy()
     self.original_indices = self.original_df.index.to_numpy() # Indices in the global df
     
     # 2. Create lookup map: sample_id -> global dataframe index
@@ -1902,7 +1939,7 @@ class SubjectBatchSampler(BatchSampler):
 
   def __init__(self, df, batch_size, min_subjects_per_level,
                include_augmented=True, require_all_levels=True,
-               shuffle=True, random_state=42):
+               shuffle=True, random_state=42, class_bins=None):
     self.df = df
     self.batch_size = batch_size
     self.min_subjects_per_level = min_subjects_per_level
@@ -1916,15 +1953,16 @@ class SubjectBatchSampler(BatchSampler):
       self.working_df = df[df['sample_id'] <= helper.step_shift].copy()
     else:
       self.working_df = df.copy()
+    working_bins = _class_bin_series(df, class_bins).loc[self.working_df.index]
 
     # Extract pain levels
-    self.pain_levels = sorted(self.working_df['class_id'].unique())
+    self.pain_levels = sorted(working_bins.unique())
     self.n_levels = len(self.pain_levels)
 
     # Build lookup: {class_id: {subject_id: [df_indices]}}
     self.level_subject_map = {}
     for level in self.pain_levels:
-      level_df = self.working_df[self.working_df['class_id'] == level]
+      level_df = self.working_df[working_bins == level]
       subjects = level_df['subject_id'].unique()
       self.level_subject_map[level] = {}
       for subj in subjects:
@@ -2096,6 +2134,13 @@ def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: f
  
 def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_training_batch,is_training,dataset_type,concatenate_temporal,model,
                            label_smooth,soft_labels,is_coral_loss,stride_inside_window=1,num_clips_per_video=1,sample_frame_strategy=None,n_workers=None,backbone_dict=None,split_chunks=False,prefetch_factor=None,**kwargs):
+  target_values = pd.read_csv(csv_path, sep='\t')['class_id']
+  runtime_target_spec = resolve_target_spec(
+    metadata=kwargs.get('target_spec'),
+    values=target_values,
+    normalize=bool(kwargs.get('normalize_labels', 0)),
+    legacy_max_label=kwargs.get('max_label'),
+  )
   if dataset_type.value == CUSTOM_DATASET_TYPE.WHOLE.value:
     dataset_ = customDatasetWhole(csv_path,root_folder_features=root_folder_features,
                                   concatenate_temporal=concatenate_temporal,
@@ -2109,7 +2154,8 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                   coral_loss=is_coral_loss,
                                   feature_merge_type=kwargs.get('feature_merge_type',None),
                                   feature_merge_lambda=kwargs.get('feature_merge_lambda',None),
-                                  feature_merge_orig=kwargs.get('feature_merge_orig',1))
+                                  feature_merge_orig=kwargs.get('feature_merge_orig',1),
+                                  target_spec=runtime_target_spec)
     if 'caer' in csv_path.lower() or 'combined' in root_folder_features.lower():
       pin_memory = False
     else:
@@ -2127,7 +2173,8 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                         concatenate_quadrants=kwargs['concatenate_quadrants'],
                                         smooth_labels=label_smooth,
                                         coral_loss=is_coral_loss,
-                                        soft_labels=soft_labels)
+                                        soft_labels=soft_labels,
+                                        target_spec=runtime_target_spec)
     pin_memory = True
     persistent_workers = False
     prefetch_factor = 2 if prefetch_factor is None else prefetch_factor
@@ -2152,6 +2199,7 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                               coral_loss=is_coral_loss,
                               soft_labels=soft_labels,
                               smooth_labels=label_smooth,
+                              target_spec=runtime_target_spec,
                               **kwargs['dict_augmented'])
       pin_memory = False
       persistent_workers = True
@@ -2172,7 +2220,8 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                                   root_folder_features=root_folder_features,
                                                   drop_last=False,
                                                   keep_original=kwargs.get('keep_original', 1.0),
-                                                  undersample_max_per_class=kwargs.get('undersample_max_per_class', 0))
+                                                  undersample_max_per_class=kwargs.get('undersample_max_per_class', 0),
+                                                  class_bins=dataset_.class_bins)
       print(f'Use FilteredAugmentationBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
     elif kwargs['sampler_loader_type'] == 'augmented_only':
       sampler = AugmentedOnlyBatchSampler(df=dataset_.df,
@@ -2180,12 +2229,14 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                           augmentations=kwargs['sampler_augmented_only_types'],
                                           shuffle=shuffle_training_batch,
                                           balance_batch=False,
-                                          root_folder_features=root_folder_features)
+                                          root_folder_features=root_folder_features,
+                                          class_bins=dataset_.class_bins)
       print(f'Use AugmentedOnlyBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
     elif kwargs['sampler_loader_type'] == 'balanced':
       sampler = balancedBatchSampler(df=dataset_.df, 
                                       batch_size=batch_size,
-                                      shuffle=shuffle_training_batch)
+                                      shuffle=shuffle_training_batch,
+                                      class_bins=dataset_.class_bins)
       print(f'Use balancedBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
     elif kwargs['sampler_loader_type'] == 'subject_batch':
       sampler = SubjectBatchSampler(
@@ -2195,7 +2246,8 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
         include_augmented=True,
         require_all_levels=True,
         shuffle=shuffle_training_batch,
-        random_state=42
+        random_state=42,
+        class_bins=dataset_.class_bins,
       )
       print(f'Use SubjectBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers}\nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
     elif kwargs['sampler_loader_type'] == 'standard':
@@ -2246,7 +2298,7 @@ def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,consider_only
   with profile_workers(f'{pid}_get_element_time',helper.time_profiling_enabled,helper.time_profile_dict):
     csv_row = df.iloc[idx]
     sample_id = csv_row['sample_id']
-    csv_label = torch.tensor(csv_row['class_id'])
+    csv_label = torch.tensor(csv_row['class_id'], dtype=torch.float32)
     subject_id = torch.tensor([csv_row['subject_id']])
     # If AGGREGATED or WHOLE dataset, sample_id is the real sample_id
     # start_time_mask = time.perf_counter()
