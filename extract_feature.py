@@ -25,7 +25,7 @@ def masked_spatial_mean(features, excluded_positions_s14=None):
         features (torch.Tensor): Tensor of shape [B, T, S, S, C] where:
             - B: batch size
             - T: temporal dimension
-            - S: spatial dimension (height and width, must be 14 or 16)
+            - S: spatial dimension (height and width, must be 10, 14, or 16)
             - C: number of channels
         excluded_positions_s14 (list, optional): List of (row, col) tuples to exclude for S=14.
             If None, uses default face boundary exclusions.
@@ -36,7 +36,7 @@ def masked_spatial_mean(features, excluded_positions_s14=None):
                      non-excluded positions.
     
     Raises:
-        ValueError: If S is not 14 or 16, or if input shape is invalid.
+        ValueError: If S is not 10, 14, or 16, or if input shape is invalid.
     
     Examples:
         >>> features = torch.randn(2, 8, 14, 14, 256)  # batch_size=2, temporal=8, spatial=14, channels=256
@@ -581,4 +581,3 @@ if __name__ == "__main__":
       #  image_resize=args.image_resize,
       #  **dict_args
        )
-  
