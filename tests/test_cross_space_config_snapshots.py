@@ -118,6 +118,21 @@ def test_direct_cli_namespace_does_not_create_a_snapshot(tmp_path):
     assert not list(tmp_path.rglob("launch_config.yaml"))
 
 
+def test_filtered_run_directory_names_the_class_cutoff(tmp_path):
+    args = _single_args(run_tag="filtered", launch_bytes=None)
+    args.remove_classes_greater = 7
+
+    with (
+        mock.patch.object(csp, "_load_config", side_effect=RuntimeError("stop after output setup")),
+        pytest.raises(RuntimeError, match="stop after output setup"),
+    ):
+        csp.cross_space_projection(args, out_root=tmp_path)
+
+    run_dirs = list((tmp_path / "Cross_projection").glob("cross_space_projection_*"))
+    assert len(run_dirs) == 1
+    assert "classmax7" in run_dirs[0].name
+
+
 def test_model_combo_subtrial_gets_its_own_exact_snapshot(tmp_path):
     args = _single_args(run_tag="combo/subtrial_0_0")
 
@@ -152,12 +167,18 @@ def test_model_combo_aggregate_gets_an_exact_snapshot_before_reading_subtrials(t
     assert (out_dir / "launch_config.yaml").read_bytes() == RAW_CONFIG
 
 
-def test_model_combo_aggregate_reuses_directory_uid_when_clock_advances(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    ("cutoff", "expected_dir"),
+    [(None, "aggregated_100"), (7, "aggregated_100_classmax7")],
+)
+def test_model_combo_aggregate_reuses_directory_uid_and_names_class_cutoff(
+    tmp_path, monkeypatch, cutoff, expected_dir
 ):
     subtrial_path = tmp_path / "subtrial.pkl"
     payload = {
-        "config_cross_space_projection": {},
+        "config_cross_space_projection": (
+            {} if cutoff is None else {"remove_classes_greater": cutoff}
+        ),
         "metrics": {"mae": 0.0, "ccc": 1.0},
         "old_model_tensors": {
             "predictions": [0.0, 1.0],
@@ -178,19 +199,24 @@ def test_model_combo_aggregate_reuses_directory_uid_when_clock_advances(
     monkeypatch.setattr(csp.time, "time", lambda: next(clock))
     monkeypatch.setattr(csp, "cross_space_projection", lambda _args: str(subtrial_path))
 
+    args = _single_args(run_tag="combo")
+    if cutoff is not None:
+        args.remove_classes_greater = cutoff
+
     output = Path(
         csp._run_model_combos(
-            _single_args(run_tag="combo"),
+            args,
             [(0, 0, "new.pt", "old.pt")],
             "anchor_sweep/example/K5",
         )
     )
 
-    assert output.parent.name == "aggregated_100"
+    assert output.parent.name == expected_dir
     assert output.name == "results_100.pkl"
     with output.open("rb") as stream:
         aggregate = pickle.load(stream)
     assert aggregate["config_cross_space_projection"]["uid"] == 100
+    assert aggregate["config_cross_space_projection"]["remove_classes_greater"] == cutoff
 
 
 def test_grid_root_gets_snapshot_and_records_it_in_best_config(tmp_path):
