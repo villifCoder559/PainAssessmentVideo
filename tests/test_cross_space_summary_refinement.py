@@ -2,13 +2,16 @@ import math
 import unittest
 import sys
 import os
+from unittest import mock
 
 import numpy as np
 
 # Add root to path to import cross_space_logs
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import cross_space_logs as csl
+with mock.patch('multiprocessing.Manager') as manager:
+    manager.return_value.dict.return_value = {}
+    import cross_space_logs as csl
 
 
 def _refine_block(mode):
@@ -184,6 +187,64 @@ class TestCollectSummaryRows(unittest.TestCase):
         self.assertTrue(math.isnan(r['srctest_mae_micro_before']))
         # srctest *_old always comes from the direct old-model MAE, not the refinement block.
         self.assertTrue(math.isfinite(r['srctest_mae_micro_old']))
+
+    def test_class_cutoff_is_reported_and_legacy_grid_results_default_to_none(self):
+        legacy_row = csl._collect_summary_rows(_grid_data(), 'legacy.pkl')[0]
+        self.assertIsNone(legacy_row['remove_classes_greater'])
+
+        filtered = _grid_data()
+        filtered['trial_params']['remove_classes_greater'] = 7
+        filtered_row = csl._collect_summary_rows(filtered, 'filtered.pkl')[0]
+        self.assertEqual(filtered_row['remove_classes_greater'], 7)
+
+
+class TestClassFilterMetadata(unittest.TestCase):
+    def test_standalone_and_grid_metadata_are_optional(self):
+        self.assertIsNone(csl._remove_classes_greater_from_data({}, 'standalone'))
+        self.assertIsNone(csl._remove_classes_greater_from_data({}, 'grid'))
+        self.assertEqual(csl._remove_classes_greater_from_data({
+            'config_cross_space_projection': {'remove_classes_greater': 7},
+        }, 'standalone'), 7)
+        self.assertEqual(csl._remove_classes_greater_from_data({
+            'trial_params': {'remove_classes_greater': 7},
+        }, 'grid'), 7)
+
+    def test_plot_label_is_absent_for_legacy_results(self):
+        self.assertEqual(csl._class_filter_label({}, 'standalone'), '')
+        self.assertEqual(csl._class_filter_label({
+            'trial_params': {'remove_classes_greater': 7},
+        }, 'grid'), 'class_id <= 7')
+
+    def test_log_dataset_filter_uses_run_cutoff_and_legacy_is_unchanged(self):
+        frame = csl.pd.DataFrame({
+            'class_id': [7, 8],
+            'sample_id': [10, 11],
+        })
+        legacy = csl._filter_dataset_frame_for_run(
+            frame, {}, 'standalone', 'test.csv',
+        )
+        self.assertEqual(legacy['sample_id'].tolist(), [10, 11])
+
+        filtered = csl._filter_dataset_frame_for_run(frame, {
+            'trial_params': {'remove_classes_greater': 7},
+        }, 'grid', 'test.csv')
+        self.assertEqual(filtered['sample_id'].tolist(), [10])
+
+    def test_fake_dashboard_displays_class_filter_label(self):
+        evaluation = {
+            'labels': np.array([0., 1.]),
+            'real_predictions': np.array([0., 1.]),
+            'fake_predictions': np.array([.5, .5]),
+            'real_metrics': {'mae_micro': 0., 'mae_macro': 0., 'ccc': 1.},
+            'fake_metrics': {'mae_micro': .5, 'mae_macro': .5, 'ccc': 0.},
+        }
+        with mock.patch.object(csl.plt, 'close'), \
+             mock.patch('matplotlib.figure.Figure.savefig'):
+            csl.plot_fake_vs_real_dashboard(
+                evaluation, '/tmp', run_label='class_id <= 7',
+            )
+            self.assertIn('class_id <= 7', csl.plt.gcf()._suptitle.get_text())
+            csl.plt.close(csl.plt.gcf())
 
 
 class TestAggregatedSummaryRows(unittest.TestCase):
