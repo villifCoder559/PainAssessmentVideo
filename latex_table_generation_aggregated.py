@@ -73,7 +73,7 @@ METHOD_ORDER = [
 METHOD_DISPLAY_NAMES = {
     "procrustes": "Procrustes",
     "linear_close": "Linear layer (closed form)",
-    "linear": "Linear layer (SGD)",
+    "linear": "Linear layer",
     "mlp": "MLP",
     "autoencoder": "Autoencoder",
 }
@@ -83,7 +83,7 @@ REFINE_MODE_DESCRIPTIONS = {
     "projector_linear": "both the projector and the regressor head are fine-tuned",
 }
 
-
+# summary_filtered.csv is expected to be generated in: 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
