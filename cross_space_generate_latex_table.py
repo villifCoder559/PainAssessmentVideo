@@ -1,9 +1,10 @@
-"""Generate a two-direction LaTeX table from cross-projection aggregates."""
+"""Generate LaTeX tables from cross-projection aggregate results."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import pickle
 import re
 import time
@@ -14,20 +15,28 @@ import pandas as pd
 
 METHOD_ORDER = ["linear", "mlp", "procrustes", "linear_close", "autoencoder"]
 METHOD_NAMES = {
-  "linear": "Linear (SGD)",
+  "linear": "Linear",
   "mlp": "MLP",
   "procrustes": "Procrustes",
   "linear_close": "Linear (closed form)",
-  "autoencoder": "Autoencoder",
+  "autoencoder": "EncDec",
 }
 MODEL_NAMES = {
   "VIDEOMAE_v2_S": "VMAEv2-S",
 }
-STAGES = ("projector_only", "linear_only", "projector_linear")
+STAGES = (
+  "projector_only",
+  "linear_only",
+  "projector_linear",
+  "random_projector_linear",
+)
 STAGE_CAPTIONS = {
   "projector_only": "Projector-only cross-projection results",
   "linear_only": "Linear-only refinement cross-projection results",
   "projector_linear": "Projector-and-linear refinement cross-projection results",
+  "random_projector_linear": (
+    "Frozen-random-projector linear-head refinement cross-projection results"
+  ),
 }
 BASELINE_COLUMNS = [
   "srctest_mae_micro_old",
@@ -52,6 +61,12 @@ STAGE_COLUMNS = {
     "newtest_mae_micro_after",
     "newtest_mae_macro_after",
   ],
+  "random_projector_linear": [
+    "srctest_mae_micro_after",
+    "srctest_mae_macro_after",
+    "newtest_mae_micro_after",
+    "newtest_mae_macro_after",
+  ],
 }
 RESULT_COLUMNS = {
   "projector_only": (
@@ -67,6 +82,12 @@ RESULT_COLUMNS = {
     "newtest_mae_macro_after",
   ),
   "projector_linear": (
+    "srctest_mae_micro_after",
+    "srctest_mae_macro_after",
+    "newtest_mae_micro_after",
+    "newtest_mae_macro_after",
+  ),
+  "random_projector_linear": (
     "srctest_mae_micro_after",
     "srctest_mae_macro_after",
     "newtest_mae_micro_after",
@@ -110,10 +131,12 @@ def _dataset_name(config: dict) -> str:
   """Extract the trained dataset name from a model configuration."""
   value = config.get("path_csv_dataset") or config.get("path_video_dataset")
   if isinstance(value, (list, tuple)) and value:
-    return str(value[0])
-  if isinstance(value, str) and value:
-    return Path(value).parts[0]
-  raise ValueError("Model config has no usable dataset path.")
+    name = str(value[0])
+  elif isinstance(value, str) and value:
+    name = Path(value).parts[0]
+  else:
+    raise ValueError("Model config has no usable dataset path.")
+  return "BIOVID" if name == "partA" else name
 
 
 def _model_metadata(checkpoints: object) -> tuple[str, str]:
@@ -141,10 +164,19 @@ def _selected_aggregate(
     data.get("fake_projection_distribution")
     or config.get("fake_projection_distribution")
   )
-  is_fake = bool(config.get("fake_projection") or distribution)
+  metadata = data.get("fake_projection_metadata") or {}
+  control = (
+    data.get("fake_projection_control")
+    or metadata.get("control")
+    or config.get("fake_projection_control")
+  )
+  is_fake = bool(config.get("fake_projection") or distribution or control)
   if projection == "real":
     return not is_fake
-  return is_fake and distribution == fake_distribution
+  if projection == "fake_adapter":
+    return is_fake and control == "fake_adapter"
+  return (is_fake and control in (None, "fake_embeddings")
+          and distribution == fake_distribution)
 
 
 def _method_sort_key(method: str) -> tuple[int, str]:
@@ -153,6 +185,26 @@ def _method_sort_key(method: str) -> tuple[int, str]:
     return METHOD_ORDER.index(method), method
   except ValueError:
     return len(METHOD_ORDER), method
+
+
+def _fake_adapter_identity(config: dict, row: dict, stage: str) -> str:
+  """Return the seed-invariant experiment identity used before averaging."""
+  identity = {
+    "old_model_pth": _path_list(config.get("old_model_pth")),
+    "new_model_pth": _path_list(config.get("new_model_pth")),
+    "method": row.get("method"),
+    "num_anchors": row.get("num_anchors"),
+    "refine_mode": row.get("refine_mode") if stage != "projector_only" else None,
+  }
+  for key in (
+    "anchor_selection_type", "csv_anchor_selection", "old_model_csv",
+    "remove_classes_greater", "mlp_activation", "mlp_num_layers",
+    "weighting_method", "temperature", "rbf_sigma", "linear_projector",
+    "refinement_config",
+  ):
+    if key in config:
+      identity[key] = config[key]
+  return json.dumps(identity, sort_keys=True, default=str)
 
 
 def _load_direction(
@@ -210,7 +262,9 @@ def _load_direction(
       for column in RESULT_COLUMNS[stage]:
         values = pd.to_numeric(aggregate_mean[column], errors="coerce")
         if not skip_consistency_checks and (
-          values.isna().any() or values.max() - values.min() > 1e-10
+          values.isna().any() or not math.isclose(
+            values.min(), values.max(), rel_tol=1e-7, abs_tol=1e-8
+          )
         ):
           raise ValueError(
             f"Inconsistent projector_only column {column} in {summary_path}."
@@ -245,19 +299,57 @@ def _load_direction(
       "method": method,
       "source_pkl": str(pkl_path.relative_to(root)),
     })
+    if projection == "fake_adapter":
+      metadata = data.get("fake_projection_metadata") or {}
+      seed = metadata.get(
+        "seed", data.get("fake_projection_seed", config.get("fake_projection_seed"))
+      )
+      if seed is None:
+        raise ValueError(f"Missing fake-adapter seed in aggregate: {pkl_path}")
+      row["_adapter_seed"] = str(seed)
+      row["_adapter_identity"] = _fake_adapter_identity(config, row, stage)
     rows.append(row)
     old_metadata_values.add(_model_metadata(config.get("old_model_pth")))
     new_metadata_values.add(_model_metadata(config.get("new_model_pth")))
 
   if not rows:
     detail = (
-      f"fake/{fake_distribution}" if projection == "fake" else "real"
+      f"fake/{fake_distribution}" if projection == "fake" else projection
     )
     raise ValueError(f"No {detail} aggregate PKLs found under: {root}")
   if len(old_metadata_values) != 1 or len(new_metadata_values) != 1:
     raise ValueError(f"Conflicting model metadata across aggregates under: {root}")
   old_metadata = old_metadata_values.pop()
   new_metadata = new_metadata_values.pop()
+  if projection == "fake_adapter":
+    seed_rows = rows
+    rows = []
+    for method in sorted({row["method"] for row in seed_rows}, key=_method_sort_key):
+      parts = [row for row in seed_rows if row["method"] == method]
+      seeds = [part["_adapter_seed"] for part in parts]
+      if len(seeds) != len(set(seeds)):
+        raise ValueError(
+          f"Duplicate fake-adapter seed for method {method} under: {root}"
+        )
+      if len({part["_adapter_identity"] for part in parts}) != 1:
+        raise ValueError(
+          f"Inconsistent fake-adapter configuration for method {method} under: {root}"
+        )
+      row = dict(parts[0])
+      numeric = set(BASELINE_COLUMNS)
+      for columns in STAGE_COLUMNS.values():
+        numeric.update(columns)
+      for column in numeric:
+        values = pd.to_numeric(
+          pd.Series([part.get(column) for part in parts]), errors="coerce")
+        if values.notna().any():
+          row[column] = float(values.mean())
+      row["source_pkl"] = ";".join(part["source_pkl"] for part in parts)
+      row["adapter_seed_count"] = len(parts)
+      row.pop("_adapter_seed", None)
+      row.pop("_adapter_identity", None)
+      rows.append(row)
+
   methods = [row["method"] for row in rows]
   duplicates = sorted({
     method for method in methods if methods.count(method) > 1
@@ -272,7 +364,9 @@ def _load_direction(
       pd.Series([row[column] for row in rows]), errors="coerce"
     )
     if not skip_consistency_checks and (
-      values.isna().any() or values.max() - values.min() > 1e-10
+      values.isna().any() or not math.isclose(
+        values.min(), values.max(), rel_tol=1e-7, abs_tol=1e-8
+      )
     ):
       raise ValueError(f"Inconsistent baseline column {column} under: {root}")
   rows.sort(key=lambda row: _method_sort_key(row["method"]))
@@ -286,6 +380,132 @@ def _load_direction(
     "stage_available": not unavailable,
     "stage_reason": "; ".join(unavailable),
   }
+
+
+def _root_summary_directions(
+  root: Path,
+  projection: str,
+  stage: str,
+  fake_distribution: str | None,
+  *,
+  skip_consistency_checks: bool = False,
+) -> list[dict]:
+  """Load one consolidated summary and return directions containing ``stage``."""
+  summary_path = root / "aggregated_summary.csv"
+  if not summary_path.is_file():
+    raise ValueError(f"Missing consolidated summary: {summary_path}")
+  summary = pd.read_csv(summary_path)
+  required = [
+    "source_pkl",
+    "old_model_pth",
+    "new_model_pth",
+    "subtrial_index",
+    "interpolation_similarity",
+    "num_anchors",
+    *BASELINE_COLUMNS,
+    *STAGE_COLUMNS[stage],
+  ]
+  if stage != "projector_only":
+    required.append("refine_mode")
+  missing = [column for column in required if column not in summary.columns]
+  if missing:
+    raise ValueError(
+      f"Missing summary columns in {summary_path}: {', '.join(missing)}"
+    )
+  rows = summary.loc[
+    summary["subtrial_index"].astype(str).eq("AGGREGATE_MEAN")
+  ]
+  if stage != "projector_only":
+    rows = rows.loc[rows["refine_mode"].astype(str).eq(stage)]
+
+  grouped: dict[tuple[tuple[str, str], tuple[str, str]], list[dict]] = {}
+  pkl_cache: dict[Path, dict] = {}
+  for row in rows.to_dict("records"):
+    pkl_path = Path(str(row["source_pkl"]))
+    if not pkl_path.is_absolute():
+      pkl_path = root / pkl_path
+    if not pkl_path.is_file():
+      raise ValueError(
+        f"Missing aggregate PKL referenced by {summary_path}: {pkl_path}"
+      )
+    if pkl_path not in pkl_cache:
+      pkl_cache[pkl_path] = _load_pkl(pkl_path)
+    data = pkl_cache[pkl_path]
+    if not _selected_aggregate(data, projection, fake_distribution):
+      continue
+    config = data.get("config_cross_space_projection") or {}
+    old_metadata = _model_metadata(row["old_model_pth"])
+    new_metadata = _model_metadata(row["new_model_pth"])
+    if (
+      old_metadata != _model_metadata(config.get("old_model_pth"))
+      or new_metadata != _model_metadata(config.get("new_model_pth"))
+    ):
+      raise ValueError(f"Checkpoint metadata mismatch for aggregate: {pkl_path}")
+    row["method"] = str(row["interpolation_similarity"])
+    row["source_pkl"] = str(pkl_path.relative_to(root))
+    grouped.setdefault((old_metadata, new_metadata), []).append(row)
+
+  directions = []
+  for (old_metadata, new_metadata), direction_rows in grouped.items():
+    by_method: dict[str, list[dict]] = {}
+    for row in direction_rows:
+      by_method.setdefault(row["method"], []).append(row)
+    collapsed = []
+    for method, method_rows in by_method.items():
+      if len(method_rows) > 1:
+        if stage != "projector_only":
+          raise ValueError(
+            f"Duplicate aggregate method {method} for "
+            f"{old_metadata[0]} -> {new_metadata[0]} in {summary_path}"
+          )
+        for column in RESULT_COLUMNS[stage]:
+          values = pd.to_numeric(
+            pd.Series([item[column] for item in method_rows]), errors="coerce"
+          )
+          if not skip_consistency_checks and (
+            values.isna().any() or not math.isclose(
+              values.min(), values.max(), rel_tol=1e-7, abs_tol=1e-8
+            )
+          ):
+            raise ValueError(
+              f"Inconsistent projector_only column {column} in {summary_path}."
+            )
+      collapsed.append(method_rows[0])
+    for column in BASELINE_COLUMNS:
+      values = pd.to_numeric(
+        pd.Series([row[column] for row in collapsed]), errors="coerce"
+      )
+      if not skip_consistency_checks and (
+        values.isna().any() or not math.isclose(
+          values.min(), values.max(), rel_tol=1e-7, abs_tol=1e-8
+        )
+      ):
+        raise ValueError(
+          f"Inconsistent baseline column {column} for "
+          f"{old_metadata[0]} -> {new_metadata[0]} in {summary_path}"
+        )
+    collapsed.sort(key=lambda row: _method_sort_key(row["method"]))
+    directions.append({
+      "root": root,
+      "source_dataset": old_metadata[0],
+      "old_model": old_metadata[1],
+      "target_dataset": new_metadata[0],
+      "new_model": new_metadata[1],
+      "rows": collapsed,
+      "stage_available": True,
+      "stage_reason": "",
+    })
+
+  return sorted(
+    directions,
+    key=lambda direction: (
+      tuple(sorted((direction["source_dataset"], direction["target_dataset"]))),
+      direction["source_dataset"],
+      direction["target_dataset"],
+      direction["old_model"],
+      direction["new_model"],
+    ),
+  )
 
 
 def _escape(value: object) -> str:
@@ -310,10 +530,10 @@ def _metric(value: object, decimals: int) -> str:
 
 def _metric_cells(
   values: dict[str, tuple[object, object]],
-  datasets: tuple[str, str],
+  datasets: tuple[str, ...],
   decimals: int,
 ) -> str:
-  """Render two MAE/macro-MAE dataset pairs, using X when absent."""
+  """Render MAE/macro-MAE pairs for every dataset, using X when absent."""
   cells = []
   for dataset in datasets:
     pair = values.get(dataset)
@@ -327,7 +547,7 @@ def _metric_cells(
 
 def _render_direction(
   direction: dict,
-  datasets: tuple[str, str],
+  datasets: tuple[str, ...],
   stage: str,
   decimals: int,
   *,
@@ -357,7 +577,7 @@ def _render_direction(
       rf"\\ % ({row['source_pkl']})"
     )
 
-  lines.append(r"    \cmidrule(lr){2-7}")
+  lines.append(rf"    \cmidrule(lr){{2-{3 + 2 * len(datasets)}}}")
   old_values = {} if unavailable else {
     direction["source_dataset"]: (
       direction["rows"][0]["srctest_mae_micro_old"],
@@ -424,8 +644,107 @@ def _default_output_path(
       str(int(time.time())),
     ))
     return Path(__file__).resolve().parent / "z_latex_tables" / f"{filename}.tex"
-  detail = f"fake/{fake_distribution}" if projection == "fake" else "real"
+  detail = f"fake/{fake_distribution}" if projection == "fake" else projection
   raise ValueError(f"No {detail} aggregate PKLs found under: {first_root}")
+
+
+def _default_root_output_path(
+  root: Path,
+  projection: str,
+  stage: str,
+  fake_distribution: str | None,
+) -> Path:
+  """Build a default filename for a consolidated multi-direction root."""
+  config_name = "-".join(
+    part for part in (
+      projection,
+      fake_distribution if projection == "fake" else None,
+      stage,
+    )
+    if part
+  )
+  filename = "_".join((
+    _filename_component(root.name),
+    _filename_component(config_name),
+    str(int(time.time())),
+  ))
+  return Path(__file__).resolve().parent / "z_latex_tables" / f"{filename}.tex"
+
+
+def _render_stage_table(
+  directions: list[dict],
+  datasets: tuple[str, ...],
+  *,
+  projection: str,
+  stage: str,
+  decimals: int,
+  unavailable_all: bool = False,
+) -> str:
+  """Render one table for an already validated list of directions."""
+  label = "_".join([
+    "tab_cross_projection",
+    *(_label_slug(dataset) for dataset in datasets),
+    projection,
+    stage,
+  ])
+  reasons = [
+    f"{direction['source_dataset']} to {direction['target_dataset']}: "
+    f"{direction['stage_reason']}"
+    for direction in directions
+    if not direction["stage_available"]
+  ]
+  caption = STAGE_CAPTIONS[stage]
+  if projection == "fake_adapter":
+    caption += " — random adapter control"
+  if unavailable_all:
+    caption += f" (unavailable: {'; '.join(reasons)})"
+  column_end = 3 + 2 * len(datasets)
+  header = " & ".join(
+    rf"\multicolumn{{2}}{{c}}{{\textbf{{{_escape(dataset)}}}}}"
+    for dataset in datasets
+  )
+  cmidrules = "".join(
+    rf"\cmidrule(lr){{{start}-{start + 1}}}"
+    for start in range(4, column_end + 1, 2)
+  )
+  metric_headers = " & ".join(
+    (r"\textbf{MAE}", r"\textbf{macro-MAE}") * len(datasets)
+  )
+  lines = [
+    r"\begin{table}[H]",
+    r"\centering",
+    rf"\caption{{{_escape(caption)}}}",
+    rf"\label{{{label}}}",
+  ]
+  if len(datasets) > 2:
+    lines.append(r"\resizebox{\textwidth}{!}{%")
+  lines.extend([
+    rf"\begin{{tabular}}{{clc{'cc' * len(datasets)}}}",
+    r"    \toprule",
+    f"    & & & {header} " + r"\\",
+    f"    {cmidrules}",
+    r"    \textbf{Direction} & \textbf{Mapping method} & "
+    rf"\textbf{{anchors}} & {metric_headers} " + r"\\",
+    r"    \midrule",
+  ])
+  for index, direction in enumerate(directions):
+    if index:
+      lines.append(
+        r"    \midrule\midrule\midrule"
+        if len(directions) == 2 else r"    \midrule"
+      )
+    lines.extend(_render_direction(
+      direction,
+      datasets,
+      stage,
+      decimals,
+      unavailable=unavailable_all,
+    ))
+  lines.extend([r"    \bottomrule", r"\end{tabular}"])
+  if len(datasets) > 2:
+    lines.append("}")
+  lines.append(r"\end{table}")
+  return "\n".join(lines) + "\n"
 
 
 def _generate_stage_table(
@@ -466,57 +785,55 @@ def _generate_stage_table(
       f"{first['source_dataset']} -> {first['target_dataset']} and "
       f"{second['source_dataset']} -> {second['target_dataset']}."
     )
-  datasets = (first["source_dataset"], first["target_dataset"])
-  label = "_".join([
-    "tab_cross_projection",
-    _label_slug(datasets[0]),
-    _label_slug(datasets[1]),
+  unavailable = not first["stage_available"] or not second["stage_available"]
+  return _render_stage_table(
+    [first, second],
+    (first["source_dataset"], first["target_dataset"]),
+    projection=projection,
+    stage=stage,
+    decimals=decimals,
+    unavailable_all=unavailable,
+  )
+
+
+def _generate_root_stage_table(
+  root: str | Path,
+  *,
+  projection: str,
+  stage: str,
+  decimals: int,
+  fake_distribution: str | None = None,
+  skip_consistency_checks: bool = False,
+) -> str:
+  """Generate one stage table from a root-level consolidated summary."""
+  directions = _root_summary_directions(
+    Path(root),
     projection,
     stage,
-  ])
-  unavailable = not first["stage_available"] or not second["stage_available"]
-  reasons = [
-    f"{direction['source_dataset']} to {direction['target_dataset']}: "
-    f"{direction['stage_reason']}"
-    for direction in (first, second)
-    if not direction["stage_available"]
-  ]
-  caption = STAGE_CAPTIONS[stage]
-  if unavailable:
-    caption += f" (unavailable: {'; '.join(reasons)})"
-  lines = [
-    r"\begin{table}[H]",
-    r"\centering",
-    rf"\caption{{{_escape(caption)}}}",
-    rf"\label{{{label}}}",
-    r"\begin{tabular}{clccccc}",
-    r"    \toprule",
-    "    & & & "
-    rf"\multicolumn{{2}}{{c}}{{\textbf{{{_escape(datasets[0])}}}}}"
-    " & "
-    rf"\multicolumn{{2}}{{c}}{{\textbf{{{_escape(datasets[1])}}}}} \\",
-    r"    \cmidrule(lr){4-5}\cmidrule(lr){6-7}",
-    r"    \textbf{Direction} & \textbf{Mapping method} & "
-    r"\textbf{anchors} & \textbf{MAE} & \textbf{macro-MAE} & "
-    r"\textbf{MAE} & \textbf{macro-MAE} \\",
-    r"    \midrule",
-    *_render_direction(
-      first, datasets, stage, decimals, unavailable=unavailable
-    ),
-    r"    \midrule\midrule\midrule",
-    *_render_direction(
-      second, datasets, stage, decimals, unavailable=unavailable
-    ),
-    r"    \bottomrule",
-    r"\end{tabular}",
-    r"\end{table}",
-  ]
-  return "\n".join(lines) + "\n"
+    fake_distribution,
+    skip_consistency_checks=skip_consistency_checks,
+  )
+  if not directions:
+    return ""
+  datasets = tuple(sorted({
+    dataset
+    for direction in directions
+    for dataset in (
+      direction["source_dataset"], direction["target_dataset"]
+    )
+  }))
+  return _render_stage_table(
+    directions,
+    datasets,
+    projection=projection,
+    stage=stage,
+    decimals=decimals,
+  )
 
 
 def generate_table(
   first_root: str | Path,
-  second_root: str | Path,
+  second_root: str | Path | None = None,
   *,
   projection: str,
   stage: str,
@@ -529,6 +846,27 @@ def generate_table(
     raise ValueError("decimals must be non-negative.")
   if stage not in (*STAGES, "all"):
     raise ValueError(f"Unknown stage: {stage}")
+  if second_root is None:
+    stages = STAGES if stage == "all" else (stage,)
+    tables = []
+    for current in stages:
+      table = _generate_root_stage_table(
+        first_root,
+        projection=projection,
+        stage=current,
+        decimals=decimals,
+        fake_distribution=fake_distribution,
+        skip_consistency_checks=skip_consistency_checks,
+      )
+      if table:
+        tables.append(table)
+    if not tables:
+      detail = f"fake/{fake_distribution}" if projection == "fake" else projection
+      raise ValueError(
+        f"No {detail}/{stage} aggregate rows found in "
+        f"{Path(first_root) / 'aggregated_summary.csv'}"
+      )
+    return "\n".join(tables)
   if stage != "all":
     return _generate_stage_table(
       first_root,
@@ -557,11 +895,17 @@ def generate_table(
 def parse_args() -> argparse.Namespace:
   """Parse command-line arguments."""
   parser = argparse.ArgumentParser(
-    description="Generate a two-direction cross-projection LaTeX table."
+    description="Generate a cross-projection LaTeX table."
   )
   parser.add_argument("first_root", type=Path)
-  parser.add_argument("second_root", type=Path)
-  parser.add_argument("--projection", choices=("real", "fake"), required=True)
+  parser.add_argument(
+    "second_root",
+    type=Path,
+    nargs="?",
+    help="Inverse direction root; omit for consolidated-summary root mode.",
+  )
+  parser.add_argument(
+    "--projection", choices=("real", "fake", "fake_adapter"), required=True)
   parser.add_argument(
     "--fake-distribution",
     choices=("matched_gaussian", "standard_normal"),
@@ -586,7 +930,7 @@ def main() -> None:
   args = parse_args()
   if args.projection == "fake" and not args.fake_distribution:
     raise SystemExit("--fake-distribution is required for fake projections.")
-  if args.projection == "real" and args.fake_distribution:
+  if args.projection != "fake" and args.fake_distribution:
     raise SystemExit("--fake-distribution is only valid for fake projections.")
   try:
     latex = generate_table(
@@ -601,11 +945,20 @@ def main() -> None:
   except ValueError as exc:
     raise SystemExit(f"error: {exc}") from None
   try:
-    output = args.output or _default_output_path(
-      args.first_root,
-      args.projection,
-      args.stage,
-      args.fake_distribution,
+    output = args.output or (
+      _default_output_path(
+        args.first_root,
+        args.projection,
+        args.stage,
+        args.fake_distribution,
+      )
+      if args.second_root is not None
+      else _default_root_output_path(
+        args.first_root,
+        args.projection,
+        args.stage,
+        args.fake_distribution,
+      )
     )
   except ValueError as exc:
     raise SystemExit(f"error: {exc}") from None
