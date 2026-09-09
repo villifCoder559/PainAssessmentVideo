@@ -18,8 +18,12 @@ RESULT_FIELDS = [
   'metric',
   'n_pairs',
   'metric_source',
+  'pkl_path_0',
+  'pkl_path_1',
   'pkl_0_mean',
+  'pkl_0_std',
   'pkl_1_mean',
+  'pkl_1_std',
   'mean_effect_pkl0_better',
   'ttest_statistic',
   'ttest_p_raw',
@@ -296,7 +300,9 @@ def compare_paired_values(paired, analysis_level, measure, metric_source):
         'n_pairs': len(differences),
         'metric_source': metric_source,
         'pkl_0_mean': float(np.mean(values_0)),
+        'pkl_0_std': float(np.std(values_0, ddof=1)),
         'pkl_1_mean': float(np.mean(values_1)),
+        'pkl_1_std': float(np.std(values_1, ddof=1)),
         'mean_effect_pkl0_better': float(np.mean(differences)),
         'ttest_statistic': ttest_stat,
         'ttest_p_raw': ttest_p,
@@ -369,6 +375,8 @@ def _dataset_name(data):
     return 'biovid'
   elif 'mint' in csv_path.lower():
     return 'mint'
+  elif 'pemf' in csv_path.lower():
+    return 'pemf'
   else:
     raise ValueError(f'Cannot infer dataset name from {csv_path}')
 
@@ -532,6 +540,9 @@ def run_comparison(pkl_path_0, pkl_path_1, output, analysis_level, measure='both
   rows = compare_paired_values(
     paired, analysis_level=analysis_level, measure=measure, metric_source=source
   )
+  for row in rows:
+    row['pkl_path_0'] = str(Path(pkl_path_0).resolve())
+    row['pkl_path_1'] = str(Path(pkl_path_1).resolve())
   write_rows(output, rows)
   print(f'\nSaved to {output}')
   return rows, sanity_rows
