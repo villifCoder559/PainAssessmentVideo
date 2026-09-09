@@ -111,6 +111,42 @@ class TestMetricSelection(unittest.TestCase):
 
     pd.testing.assert_frame_equal(default_table, explicit_table)
 
+  def test_macro_mae_averages_classes_and_summarizes_folds(self):
+    for use_raw, expected in [
+      (False, [1.0, 0.5, 0.75, 0.3535533906]),
+      (True, [0.9, 0.45, 0.675, 0.3181980515]),
+    ]:
+      with self.subTest(raw=use_raw), mock.patch(
+        'extract_kfold_test_table.recompute_raw_fold_metrics', return_value=raw_metrics()
+      ):
+        table = extract_table(str(self.pkl_path), raw=use_raw)
+        self.assertIn('test_MAE_macro', table.columns)
+        np.testing.assert_allclose(table['test_MAE_macro'], expected)
+
+  def test_macro_mae_uses_present_classes_and_single_fold_std_is_nan(self):
+    with self.pkl_path.open('rb') as file:
+      data = pickle.load(file)
+    test = data['results']['k1_cross_val_final']['test']
+    test.update({
+      'test_unique_y': np.array([1]),
+      'test_loss_per_class': np.array([0.75]),
+      'test_count_y': np.array([3]),
+      'test_count_subject_ids': np.array([3]),
+      'test_l1_error': 0.75,
+    })
+    with self.pkl_path.open('wb') as file:
+      pickle.dump(data, file)
+    table = extract_table(str(self.pkl_path))
+    self.assertIn('test_MAE_macro', table.columns)
+    np.testing.assert_allclose(table['test_MAE_macro'][:3], [1.0, 0.75, 0.875])
+
+    del data['results']['k0_cross_val_final']
+    with self.pkl_path.open('wb') as file:
+      pickle.dump(data, file)
+    table = extract_table(str(self.pkl_path)).set_index('fold')
+    self.assertEqual(table.loc['mean', 'test_MAE_macro'], 0.75)
+    self.assertTrue(pd.isna(table.loc['std', 'test_MAE_macro']))
+
   def test_unknown_metric_is_rejected(self):
     with self.assertRaisesRegex(ValueError, "metric must be 'mae' or 'accuracy'"):
       extract_table(str(self.pkl_path), metric='rmse')
@@ -150,6 +186,13 @@ class TestMetricSelection(unittest.TestCase):
           with mock.patch.object(sys, 'argv', argv):
             main()
           self.assertTrue(output_path.is_file())
+          csv = pd.read_csv(output_path)
+          if metric == 'accuracy':
+            self.assertNotIn('test_MAE_macro', csv.columns)
+          else:
+            self.assertIn('test_MAE_macro', csv.columns)
+            expected = [0.9, 0.45, 0.675, 0.3182] if use_raw else [1.0, 0.5, 0.75, 0.3536]
+            np.testing.assert_allclose(csv['test_MAE_macro'], expected)
 
 
 if __name__ == '__main__':
