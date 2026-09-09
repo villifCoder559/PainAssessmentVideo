@@ -186,3 +186,7 @@ analysis/*
 *.csv
 *.md
 *.csv
+fake_projection*
+paper*
+*.txt
+*.tex
