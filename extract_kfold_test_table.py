@@ -149,6 +149,9 @@ def extract_table(
   Returns:
     DataFrame with one row per fold, class/sample/subject counts, and mean/std
     summary rows. Metric columns depend on ``metric`` and ``raw``.
+    For MAE, test_MAE_macro averages the reported class MAEs equally within
+    each fold (recomputed with raw=True). Summary rows weight folds equally
+    and use sample standard deviation (ddof=1).
   """
   if metric not in ('mae', 'accuracy'):
     raise ValueError("metric must be 'mae' or 'accuracy'")
@@ -210,6 +213,7 @@ def extract_table(
           print(f"INFO {fold}: weighted per-class MAE {weighted:.4f} vs test_l1_error {mae:.4f} (diff {abs(weighted - mae):.4f})")
         row = {'fold': fold, 'test_MAE': mae, 'test_MAE_weighted': weighted}
         per_class = dict(zip(classes.tolist(), loss_per_class.tolist()))
+      row['test_MAE_macro'] = float(np.mean([per_class[int(c)] for c in classes]))
       class_column_template = 'MAE_class_{}'
     else:
       accuracy = float(test['test_accuracy'])
@@ -241,7 +245,7 @@ def extract_table(
   df = pd.DataFrame(rows)
   if metric == 'mae':
     extra_col = 'test_MAE_raw' if raw else 'test_MAE_weighted'
-    metric_cols = ['test_MAE', extra_col] + [c for c in df.columns if c.startswith('MAE_class_')]
+    metric_cols = ['test_MAE', extra_col, 'test_MAE_macro'] + [c for c in df.columns if c.startswith('MAE_class_')]
   else:
     metric_cols = ['test_accuracy_pct']
     if 'macro_f1' in df:
