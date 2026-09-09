@@ -17,6 +17,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from cross_space_fake_projection import (
   _projector_from_state,
+  _random_projector_from_state,
   ReplayError,
   discover_results,
   generate_fake_embeddings,
@@ -44,7 +45,11 @@ with mock.patch('multiprocessing.Manager') as manager:
     REFINEMENT_CONFIG,
   )
 
-from cross_space_logs import generate_logs, plot_fake_vs_real_dashboard
+from cross_space_logs import (
+  _fake_replay_labels,
+  generate_logs,
+  plot_fake_vs_real_dashboard,
+)
 
 
 class FakeEmbeddingTest(unittest.TestCase):
@@ -604,6 +609,165 @@ def _write_replay_fixture(folder, modes=('linear_only',), *, distance=False,
 
 
 class RetrospectiveFakeProjectionTest(unittest.TestCase):
+  def test_cli_forwards_fast_mode_for_both_controls(self):
+    for control in ('fake_embeddings', 'fake_adapter'):
+      with self.subTest(control=control), mock.patch(
+          'cross_space_fake_projection.run', return_value=0) as called:
+        self.assertEqual(replay_main([
+          'experiment', '--control', control, '--fast-mode']), 0)
+        called.assert_called_once_with(
+          'experiment', None, 42, control=control, adapter_seeds=None, fast_mode=True)
+
+  def test_fast_mode_filters_metadata_before_replay_and_aggregation(self):
+    modes = ('linear_only', 'projector_linear')
+    for control, distribution in (
+        ('fake_embeddings', 'standard_normal'),
+        ('fake_embeddings', 'matched_gaussian'),
+        ('fake_adapter', None)):
+      with self.subTest(control=control, distribution=distribution), tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for index, family in enumerate((
+            'linear', 'mlp', 'autoencoder', 'linear_close', 'procrustes',
+            'l2', 'cosine', 'l1', 'unknown')):
+          source = _write_replay_fixture(root / f'trial{index:04d}', modes=modes)
+          data = pickle.loads(source.read_bytes())
+          cfg = data['config_cross_space_projection']
+          cfg['interpolation_similarity'] = family
+          if family == 'mlp':
+            data['trial_params'] = dict(cfg)
+            cfg['interpolation_similarity'] = 'l2'
+          if family == 'autoencoder':
+            del cfg['interpolation_similarity']
+            data['linear_projector']['kind'] = family
+          source.write_bytes(pickle.dumps(data))
+        originals = {path: path.read_bytes() for path in discover_results(root)}
+        with mock.patch('builtins.print') as printed:
+          self.assertEqual(run(root, distribution=distribution, control=control,
+                               adapter_seeds=(7, 8), fast_mode=True), 0)
+        self.assertTrue(any('3 of 9' in str(call) for call in printed.call_args_list))
+        output_root = root / ('fake_adapter_random_init_fast' if control == 'fake_adapter'
+                              else f'fake_projection_{distribution}_fast')
+        replay_root = output_root / 'seed_7' if control == 'fake_adapter' else output_root
+        leaves = sorted(path for path in replay_root.rglob('results_7.pkl'))
+        self.assertEqual([path.parent.name for path in leaves],
+                         ['trial0000', 'trial0001', 'trial0002'])
+        aggregate = pickle.loads((replay_root / 'aggregated_fake' / 'results_fake.pkl').read_bytes())
+        self.assertEqual(len(aggregate['subtrial_pkls']), 3)
+        self.assertEqual(set(aggregate['fake_projection_evaluations']), set(modes))
+        summary_name = ('aggregated_summary_fake_adapter_fast.csv' if control == 'fake_adapter'
+                        else f'aggregated_summary_fake_{distribution}_fast.csv')
+        summary = pd.read_csv(root / summary_name)
+        self.assertEqual(set(summary['refinement_mode']), set(modes))
+        self.assertEqual(set(summary['status']), {'success'})
+        self.assertEqual(set(summary['success_count']), {3})
+        self.assertFalse((root / 'aggregated_summary_fake.csv').exists())
+        self.assertFalse((root / 'aggregated_summary_fake_adapter.csv').exists())
+        if control == 'fake_adapter':
+          seeds = pd.read_csv(root / 'fake_adapter_seed_results_fast.csv')
+          self.assertEqual(set(seeds['fake_projection_seed']), {7, 8})
+          self.assertEqual(len(seeds), 12)
+          self.assertTrue((root / 'fake_adapter_seed_variability_fast.png').is_file())
+          self.assertFalse((root / 'fake_adapter_seed_results.csv').exists())
+        self.assertEqual(discover_results(root), list(originals))
+        for path, original in originals.items():
+          self.assertEqual(path.read_bytes(), original)
+
+  def test_fast_mode_reports_no_eligible_and_unreadable_artifacts(self):
+    for control in ('fake_embeddings', 'fake_adapter'):
+      with self.subTest(control=control), tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source = _write_replay_fixture(root, distance=True)
+        summary_path = root / ('aggregated_summary_fake_adapter_fast.csv'
+          if control == 'fake_adapter' else 'aggregated_summary_fake_matched_gaussian_fast.csv')
+        self.assertEqual(run(root, control=control, fast_mode=True), 1)
+        summary = pd.read_csv(summary_path)
+        self.assertEqual(summary['summary_row'].tolist(), ['ERROR'])
+        self.assertIn('No eligible', summary.iloc[0]['replay_error'])
+        source.write_bytes(b'not a pickle')
+        self.assertEqual(run(root, control=control, fast_mode=True), 1)
+        summary = pd.read_csv(summary_path)
+        self.assertEqual(summary['failure_count'].tolist(), [1])
+        self.assertIn(str(source), summary.iloc[0]['source_pkl_path'])
+        self.assertNotIn('No eligible', summary.iloc[0]['replay_error'])
+        if control == 'fake_adapter':
+          seeds = pd.read_csv(root / 'fake_adapter_seed_results_fast.csv')
+          self.assertEqual(seeds['fake_projection_seed'].tolist(), [42, 43, 44, 45, 46])
+
+  def test_fake_adapter_reporting_labels_do_not_call_real_embeddings_fake(self):
+    self.assertEqual(
+      _fake_replay_labels({'control': 'fake_adapter'}),
+      ('Trained adapter', 'Random adapter', 'Random adapter control'),
+    )
+    self.assertEqual(
+      _fake_replay_labels({'distribution': 'standard_normal'}),
+      ('Real embeddings', 'Fake embeddings', 'Fake embedding control'),
+    )
+
+  def test_random_projector_is_seeded_fresh_and_preserves_global_rng(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      learned = torch.nn.Sequential(
+        torch.nn.Linear(2, 3), torch.nn.ReLU(), torch.nn.Linear(3, 2))
+      path = Path(tmp) / 'projector.pt'
+      torch.save(learned.state_dict(), path)
+      before = torch.random.get_rng_state().clone()
+
+      first = _random_projector_from_state(path, activation='relu', seed=42)
+      second = _random_projector_from_state(path, activation='relu', seed=42)
+      third = _random_projector_from_state(path, activation='relu', seed=43)
+
+      self.assertTrue(torch.equal(before, torch.random.get_rng_state()))
+      for left, right in zip(first.parameters(), second.parameters()):
+        self.assertTrue(torch.equal(left, right))
+      self.assertTrue(any(
+        not torch.equal(left, right)
+        for left, right in zip(first.parameters(), third.parameters())))
+      self.assertTrue(any(
+        not torch.equal(random, saved)
+        for random, saved in zip(first.parameters(), learned.parameters())))
+
+  def test_random_projector_rejects_checkpoint_without_linear_weights(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      path = Path(tmp) / 'invalid_projector.pt'
+      torch.save({'running_mean': torch.zeros(2)}, path)
+
+      with self.assertRaisesRegex(ReplayError, 'no linear weights'):
+        _random_projector_from_state(path, seed=42)
+
+  def test_fake_adapter_replay_uses_real_embeddings_and_fresh_projector(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      source = _write_replay_fixture(Path(tmp) / 'trial')
+      output = Path(tmp) / 'fake_adapter' / source.name
+
+      rows = replay_result(
+        source, output, control='fake_adapter', seed=42)
+
+      with output.open('rb') as stream:
+        replayed = pickle.load(stream)
+      evaluation = replayed['fake_projection_evaluations']['linear_only']
+      self.assertEqual(replayed['fake_projection_control'], 'fake_adapter')
+      self.assertEqual(
+        replayed['fake_projection_metadata']['initialization'], 'pytorch_default')
+      self.assertNotIn('fake_source_embeddings', replayed)
+      self.assertNotIn('control_source_embeddings', evaluation)
+      np.testing.assert_array_equal(evaluation['real_predictions'], [0., 1., 1., 2.])
+      self.assertFalse(np.array_equal(
+        evaluation['fake_predictions'], evaluation['real_predictions']))
+      self.assertEqual(rows[0]['fake_projection_control'], 'fake_adapter')
+      self.assertTrue((output.parent /
+                       'predictions_random_adapter_before_refinement.csv').is_file())
+      self.assertTrue((output.parent /
+                       'predictions_random_adapter_after_refinement_linear_only.csv').is_file())
+      self.assertFalse((output.parent / 'predictions_fake.csv').exists())
+
+  def test_fake_adapter_rejects_distance_projection_without_learned_weights(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      source = _write_replay_fixture(Path(tmp) / 'distance', distance=True)
+
+      with self.assertRaisesRegex(ReplayError, 'no learned adapter weights'):
+        replay_result(
+          source, Path(tmp) / 'fake_adapter' / source.name,
+          control='fake_adapter', seed=42)
+
   def test_rebuilds_mlp_autoencoder_and_plain_linear_projector_state_dicts(self):
     modules = {
       'mlp': torch.nn.Sequential(
@@ -639,6 +803,7 @@ class RetrospectiveFakeProjectionTest(unittest.TestCase):
           root / 'precomputed' / 'results.pkl',
           root / 'aggregated_old' / 'results_1.pkl',
           root / 'fake_projection_matched_gaussian' / 'trial' / 'results.pkl',
+          root / 'fake_adapter_random_init' / 'seed_42' / 'trial' / 'results.pkl',
           root / 'cv_a' / 'trial0002_x' / 'results_fake.pkl'):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b'generated')
@@ -648,6 +813,106 @@ class RetrospectiveFakeProjectionTest(unittest.TestCase):
       self.assertEqual(found, wanted)
       grouped = group_results(root, found)
       self.assertEqual(list(grouped), [root / 'cv_a', root / 'cv_b'])
+
+  def test_cli_accepts_fake_adapter_seed_list_and_rejects_mixed_options(self):
+    with mock.patch('cross_space_fake_projection.run', return_value=0) as called:
+      self.assertEqual(replay_main([
+        'experiment', '--control', 'fake_adapter', '--adapter-seeds', '7', '8',
+      ]), 0)
+    called.assert_called_once_with(
+      'experiment', None, 42, control='fake_adapter', adapter_seeds=(7, 8), fast_mode=False)
+
+    with self.assertRaises(SystemExit):
+      replay_main([
+        'experiment', '--control', 'fake_adapter',
+        '--distribution', 'standard_normal',
+      ])
+    with self.assertRaises(SystemExit):
+      replay_main([
+        'experiment', '--control', 'fake_embeddings', '--adapter-seeds', '7',
+      ])
+
+  def test_run_averages_adapter_seeds_before_writing_single_trial_summary(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      root = Path(tmp)
+      source = _write_replay_fixture(root)
+
+      self.assertEqual(run(
+        root, control='fake_adapter', adapter_seeds=(7, 8)), 0)
+
+      seed_metrics = []
+      for seed in (7, 8):
+        output = root / 'fake_adapter_random_init' / f'seed_{seed}' / source.name
+        self.assertTrue(output.is_file())
+        with output.open('rb') as stream:
+          data = pickle.load(stream)
+        seed_metrics.append(data['fake_projection_evaluations']['linear_only'][
+          'fake_mae_micro'])
+      summary = pd.read_csv(root / 'aggregated_summary_fake_adapter.csv')
+      seed_results = pd.read_csv(root / 'fake_adapter_seed_results.csv')
+      self.assertEqual(len(summary), 1)
+      self.assertEqual(len(seed_results), 2)
+      self.assertEqual(seed_results['fake_projection_seed'].tolist(), [7, 8])
+      self.assertIn('random_adapter_mae_micro', seed_results)
+      self.assertIn('random_adapter_mae_micro', summary)
+      self.assertTrue((root / 'fake_adapter_seed_variability.png').is_file())
+      self.assertEqual(summary.loc[0, 'adapter_seed_count'], 2)
+      self.assertEqual(summary.loc[0, 'adapter_seeds'], '7;8')
+      self.assertAlmostEqual(
+        summary.loc[0, 'fake_mae_micro'], float(np.mean(seed_metrics)))
+      self.assertAlmostEqual(
+        summary.loc[0, 'random_adapter_mae_micro'], float(np.mean(seed_metrics)))
+
+  def test_fake_adapter_cv_aggregate_keeps_control_metadata_and_csv_names(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      root = Path(tmp) / 'cv'
+      _write_replay_fixture(root / 'trial0001')
+      _write_replay_fixture(root / 'trial0002')
+
+      self.assertEqual(run(
+        root, control='fake_adapter', adapter_seeds=(7,)), 0)
+
+      aggregate_dir = (root / 'fake_adapter_random_init' / 'seed_7' /
+                       'aggregated_fake')
+      aggregate = pickle.loads((aggregate_dir / 'results_fake.pkl').read_bytes())
+      self.assertEqual(aggregate['fake_projection_control'], 'fake_adapter')
+      self.assertEqual(
+        aggregate['config_cross_space_projection']['fake_projection_control'],
+        'fake_adapter')
+      self.assertNotIn('fake_projection_distribution', aggregate)
+      self.assertTrue((aggregate_dir / 'predictions_random_adapter.csv').is_file())
+      self.assertFalse((aggregate_dir / 'predictions_fake.csv').exists())
+      config_log = (aggregate_dir / 'config_logging.txt').read_text()
+      self.assertIn('fake_projection_control: fake_adapter', config_log)
+      self.assertNotIn('fake_projection_distribution: matched_gaussian', config_log)
+
+  def test_fake_adapter_logs_do_not_replay_trained_adapter_for_embedding_plots(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      root = Path(tmp)
+      source = _write_replay_fixture(root / 'trial')
+      output = root / 'fake_adapter' / source.name
+      replay_result(source, output, control='fake_adapter', seed=42)
+
+      with mock.patch(
+        'cross_space_logs._refined_projected_embeddings', return_value=None,
+      ) as refined_embeddings, mock.patch(
+        'cross_space_logs._projected_before_refinement_embeddings', return_value=None,
+      ) as projected_embeddings, mock.patch(
+        'cross_space_logs.plot_projector_diagnostics',
+      ) as projector_diagnostics, mock.patch(
+        'cross_space_logs.plot_refinement_diagnostics',
+      ) as refinement_diagnostics, mock.patch(
+        'cross_space_logs.log_embedding_reconstruction',
+      ) as embedding_reconstruction:
+        generate_logs(str(output), skip_umap=True, out_dir_override=root / 'logs')
+
+      refined_embeddings.assert_not_called()
+      projected_embeddings.assert_not_called()
+      projector_diagnostics.assert_not_called()
+      refinement_diagnostics.assert_not_called()
+      self.assertEqual(embedding_reconstruction.call_count, 1)
+      self.assertIsNotNone(
+        embedding_reconstruction.call_args.kwargs['projected_override'])
 
   def test_run_reports_progress_for_each_result(self):
     with tempfile.TemporaryDirectory() as tmp:
