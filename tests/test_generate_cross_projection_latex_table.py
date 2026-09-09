@@ -85,18 +85,22 @@ def _write_aggregate(
   rows: list[dict],
   *,
   fake_distribution: str | None = None,
+  fake_control: str | None = None,
+  adapter_seed: int | None = None,
   aggregate_name: str | None = None,
-) -> None:
+) -> Path:
   """Create one aggregate PKL and its adjacent summary CSV."""
   base = root
-  if fake_distribution:
+  if fake_control == "fake_adapter":
+    base = base / "fake_adapter_random_init" / f"seed_{adapter_seed}"
+  elif fake_distribution:
     base = base / f"fake_projection_{fake_distribution}"
   aggregate = (
     base
     / f"refinement3_{method}-cross-validation"
     / (
       aggregate_name
-      or ("aggregated_fake" if fake_distribution else "aggregated_1")
+      or ("aggregated_fake" if fake_distribution or fake_control else "aggregated_1")
     )
   )
   aggregate.mkdir(parents=True)
@@ -107,15 +111,41 @@ def _write_aggregate(
       "interpolation_similarity": method,
       "fake_projection": bool(fake_distribution),
       "fake_projection_distribution": fake_distribution,
+      "fake_projection_control": fake_control,
     },
   }
   if fake_distribution:
     data["fake_projection_distribution"] = fake_distribution
-  with (aggregate / "results.pkl").open("wb") as handle:
+  if fake_control:
+    data["fake_projection_control"] = fake_control
+    data["fake_projection_metadata"] = {
+      "control": fake_control,
+      "initialization": "pytorch_default",
+      "seed": adapter_seed,
+    }
+  pkl_path = aggregate / "results.pkl"
+  with pkl_path.open("wb") as handle:
     pickle.dump(data, handle)
   logs = aggregate / "logs"
   logs.mkdir()
   pd.DataFrame(rows).to_csv(logs / "summary.csv", index=False)
+  return pkl_path
+
+
+def _write_root_summary(root: Path, pkl_paths: list[Path]) -> None:
+  """Build the production-shaped consolidated summary used by root mode."""
+  frames = []
+  for pkl_path in pkl_paths:
+    with pkl_path.open("rb") as handle:
+      config = pickle.load(handle)["config_cross_space_projection"]
+    frame = pd.read_csv(pkl_path.parent / "logs" / "summary.csv")
+    frame["source_pkl"] = str(pkl_path.relative_to(root))
+    frame["old_model_pth"] = ";".join(config["old_model_pth"])
+    frame["new_model_pth"] = ";".join(config["new_model_pth"])
+    frames.append(frame)
+  pd.concat(frames, ignore_index=True).to_csv(
+    root / "aggregated_summary.csv", index=False
+  )
 
 
 def _canonical_rows(latex: str) -> list[list[tuple[str, ...]]]:
@@ -134,7 +164,9 @@ def _canonical_rows(latex: str) -> list[list[tuple[str, ...]]]:
       fields[-1] = fields[-1].removesuffix(r"\\").strip()
       fields[1] = (
         fields[1]
-        .replace("Linear layer (SGD)", "Linear (SGD)")
+        .replace("Linear layer (SGD)", "Linear")
+        .replace("Linear (SGD)", "Linear")
+        .replace("Autoencoder", "EncDec")
         .replace("Linear layer (closed form)", "Linear (closed form)")
         .replace("VMae-S", "VMAEv2-S")
       )
@@ -203,16 +235,184 @@ class TestGenerateTable(unittest.TestCase):
       latex,
     )
     self.assertIn(
-      r"Linear (SGD) & 100 & 0.87 & 0.90 & 1.27 & 1.27", latex
+      r"Linear & 100 & 0.87 & 0.90 & 1.27 & 1.27", latex
     )
     self.assertIn(
-      r"Linear (SGD) & 100 & 0.80 & 0.87 & 1.30 & 1.38", latex
+      r"Linear & 100 & 0.80 & 0.87 & 1.30 & 1.38", latex
     )
     self.assertIn(r"VMAEv2-S (UNBC) & X & 0.80 & 0.90 & X & X", latex)
     self.assertIn(r"DFER (MIntPAIN) & X & X & X & 1.14 & 1.45", latex)
     first_section, second_section = latex.split(r"\midrule\midrule\midrule")
-    self.assertLess(first_section.index("Linear (SGD)"), first_section.index("MLP"))
-    self.assertLess(second_section.index("Linear (SGD)"), second_section.index("MLP"))
+    self.assertLess(first_section.index("Linear"), first_section.index("MLP"))
+    self.assertLess(second_section.index("Linear"), second_section.index("MLP"))
+
+  def test_random_projector_linear_stage_uses_post_refinement_metrics(self):
+    """Catch selecting the new mode with the legacy projector-linear stage."""
+    with tempfile.TemporaryDirectory() as tmp:
+      workspace = Path(tmp)
+      first = workspace / "unbc_to_mint"
+      second = workspace / "mint_to_unbc"
+      unbc_vmae = _write_model(
+        workspace, "unbc_vmae", "UNBC", "VIDEOMAE_v2_S"
+      )
+      mint_dfer = _write_model(workspace, "mint_dfer", "MIntPAIN", "DFER")
+      mint_vmae = _write_model(
+        workspace, "mint_vmae", "MIntPAIN", "VIDEOMAE_v2_S"
+      )
+      unbc_dfer = _write_model(workspace, "unbc_dfer", "UNBC", "DFER")
+      values = (0.61, 0.62, 0.63, 0.64, 0.7, 0.8, 1.0, 1.1)
+      for root, old_model, new_model in (
+        (first, unbc_vmae, mint_dfer),
+        (second, mint_vmae, unbc_dfer),
+      ):
+        _write_aggregate(
+          root,
+          "linear",
+          old_model,
+          new_model,
+          [_summary_row("linear", "random_projector_linear", values)],
+        )
+
+      latex = generate_table(
+        first,
+        second,
+        projection="real",
+        stage="random_projector_linear",
+      )
+
+    self.assertIn("Frozen-random-projector linear-head refinement", latex)
+    self.assertIn("Linear & 100 & 0.61 & 0.62 & 0.63 & 0.64", latex)
+
+  def test_one_root_renders_three_datasets_with_inverse_directions_paired(self):
+    """Catch treating a consolidated root as one conflicting direction."""
+    with tempfile.TemporaryDirectory() as tmp:
+      root = Path(tmp)
+      datasets = ("BIOVID", "MIntPAIN", "UNBC")
+      old_models = {
+        dataset: _write_model(
+          root, f"{dataset}_old", dataset, "VIDEOMAE_v2_S"
+        )
+        for dataset in datasets
+      }
+      new_models = {
+        dataset: _write_model(root, f"{dataset}_new", dataset, "DFER")
+        for dataset in datasets
+      }
+      values = (0.61, 0.62, 0.63, 0.64, 0.7, 0.8, 1.0, 1.1)
+      pkl_paths = []
+      directions = (
+        ("UNBC", "MIntPAIN"),
+        ("BIOVID", "UNBC"),
+        ("MIntPAIN", "BIOVID"),
+        ("MIntPAIN", "UNBC"),
+        ("UNBC", "BIOVID"),
+        ("BIOVID", "MIntPAIN"),
+      )
+      for source, target in directions:
+        direction_root = root / f"cross-validation_{source}-to-{target}"
+        pkl_paths.append(_write_aggregate(
+          direction_root,
+          "linear",
+          old_models[source],
+          new_models[target],
+          [_summary_row("linear", "random_projector_linear", values)],
+        ))
+      pkl_paths.append(_write_aggregate(
+        root / "cross-validation_BIOVID-to-MIntPAIN",
+        "mlp",
+        old_models["BIOVID"],
+        new_models["MIntPAIN"],
+        [_summary_row("mlp", "random_projector_linear", values)],
+      ))
+      _write_root_summary(root, pkl_paths)
+
+      latex = generate_table(
+        root,
+        projection="real",
+        stage="random_projector_linear",
+      )
+
+    self.assertIn(r"\resizebox{\textwidth}{!}{%", latex)
+    self.assertIn(r"\begin{tabular}{clccccccc}", latex)
+    for dataset in datasets:
+      self.assertIn(
+        rf"\multicolumn{{2}}{{c}}{{\textbf{{{dataset}}}}}", latex
+      )
+    self.assertIn(
+      r"\multicolumn{2}{c}{\textbf{UNBC}} \\",
+      latex,
+    )
+    ordered_directions = (
+      r"BIOVID $\to$ MIntPAIN",
+      r"MIntPAIN $\to$ BIOVID",
+      r"BIOVID $\to$ UNBC",
+      r"UNBC $\to$ BIOVID",
+      r"MIntPAIN $\to$ UNBC",
+      r"UNBC $\to$ MIntPAIN",
+    )
+    positions = [latex.index(direction) for direction in ordered_directions]
+    self.assertEqual(positions, sorted(positions))
+    first_direction = latex.split(ordered_directions[1], 1)[0]
+    self.assertIn("Linear & 100", first_direction)
+    self.assertIn("MLP & 100", first_direction)
+
+  def test_one_root_all_skips_stage_tables_without_matching_directions(self):
+    """Catch emitting empty or placeholder legacy tables for a new-mode root."""
+    with tempfile.TemporaryDirectory() as tmp:
+      root = Path(tmp)
+      old_model = _write_model(root, "old", "UNBC", "VIDEOMAE_v2_S")
+      new_model = _write_model(root, "new", "MIntPAIN", "DFER")
+      values = (0.61, 0.62, 0.63, 0.64, 0.7, 0.8, 1.0, 1.1)
+      pkl_path = _write_aggregate(
+        root / "cross-validation_UNBC-to-MIntPAIN",
+        "linear",
+        old_model,
+        new_model,
+        [_summary_row("linear", "random_projector_linear", values)],
+      )
+      _write_root_summary(root, [pkl_path])
+
+      latex = generate_table(root, projection="real", stage="all")
+
+    self.assertEqual(latex.count(r"\begin{table}[H]"), 2)
+    self.assertIn("Projector-only cross-projection results", latex)
+    self.assertIn("Frozen-random-projector linear-head refinement", latex)
+    self.assertNotIn("Linear-only refinement cross-projection results", latex)
+    self.assertNotIn("Projector-and-linear refinement cross-projection results", latex)
+
+  def test_one_root_filters_rows_using_referenced_pkl_projection_metadata(self):
+    """Catch trusting a mixed consolidated CSV without checking its PKLs."""
+    with tempfile.TemporaryDirectory() as tmp:
+      root = Path(tmp)
+      old_model = _write_model(root, "old", "UNBC", "VIDEOMAE_v2_S")
+      new_model = _write_model(root, "new", "MIntPAIN", "DFER")
+      values = (0.61, 0.62, 0.63, 0.64, 0.7, 0.8, 1.0, 1.1)
+      direction_root = root / "cross-validation_UNBC-to-MIntPAIN"
+      real_pkl = _write_aggregate(
+        direction_root,
+        "linear",
+        old_model,
+        new_model,
+        [_summary_row("linear", "random_projector_linear", values)],
+      )
+      fake_pkl = _write_aggregate(
+        direction_root,
+        "mlp",
+        old_model,
+        new_model,
+        [_summary_row("mlp", "random_projector_linear", values)],
+        fake_distribution="standard_normal",
+      )
+      _write_root_summary(root, [real_pkl, fake_pkl])
+
+      latex = generate_table(
+        root,
+        projection="real",
+        stage="random_projector_linear",
+      )
+
+    self.assertIn("Linear & 100", latex)
+    self.assertNotIn("MLP & 100", latex)
 
   def test_rejects_incomplete_method_set(self):
     """Reject a direction that is missing a method present in its inverse."""
@@ -330,6 +530,47 @@ class TestGenerateTable(unittest.TestCase):
           projection="real",
           stage="projector_linear",
         )
+
+  def test_metric_consistency_tolerates_roundoff_but_rejects_invalid_values(self):
+    """Accept float32-scale noise without hiding missing or conflicting metrics."""
+    for check in ("projector_only", "baseline"):
+      for first_value, second_value, accepted in (
+        (4.38866149044037, 4.38866148662567, True),
+        (4.0, 4.0000002, True),
+        (0.0, 5e-9, True),
+        (4.0, 4.01, False),
+        (4.0, float("nan"), False),
+      ):
+        with self.subTest(check=check, values=(first_value, second_value)):
+          with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = _write_model(root, "old", "UNBC", "VIDEOMAE_v2_S")
+            new = _write_model(root, "new", "MIntPAIN", "DFER")
+            rows = [
+              _summary_row("linear", mode, (0.6,) * 8)
+              for mode in ("linear_only", "projector_linear")
+            ]
+            column = (
+              "srctest_mae_macro_before" if check == "projector_only"
+              else "srctest_mae_micro_old"
+            )
+            for row, value in zip(rows, (first_value, second_value)):
+              row[column] = value
+            if check == "projector_only":
+              _write_aggregate(root, "linear", old, new, rows)
+            else:
+              rows[1]["interpolation_similarity"] = "mlp"
+              rows[1]["refine_mode"] = "linear_only"
+              for method, row in zip(("linear", "mlp"), rows):
+                _write_aggregate(root, method, old, new, [row])
+            stage = "projector_only" if check == "projector_only" else "linear_only"
+            if accepted:
+              direction = latex_table._load_direction(root, "real", stage, None)
+              self.assertEqual(direction["rows"][0][column], first_value)
+              self.assertTrue(direction["stage_available"])
+            else:
+              with self.assertRaisesRegex(ValueError, f"Inconsistent {check}"):
+                latex_table._load_direction(root, "real", stage, None)
 
   def test_rejects_inconsistent_baselines(self):
     """Reject method summaries that disagree about a native baseline."""
@@ -494,6 +735,88 @@ class TestGenerateTable(unittest.TestCase):
     self.assertIn("fake_projection_standard_normal", fake)
     self.assertNotIn("0.81 & 0.82 & 0.83 & 0.84", fake)
 
+  def test_fake_adapter_selection_averages_seed_aggregates(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      workspace = Path(tmp)
+      first = workspace / "first"
+      second = workspace / "second"
+      first_old = _write_model(workspace, "first_old", "BioVid", "VIDEOMAE_v2_S")
+      first_new = _write_model(workspace, "first_new", "MIntPAIN", "DFER")
+      second_old = _write_model(workspace, "second_old", "MIntPAIN", "VIDEOMAE_v2_S")
+      second_new = _write_model(workspace, "second_new", "BioVid", "DFER")
+      for root, old_model, new_model in (
+        (first, first_old, first_new),
+        (second, second_old, second_new),
+      ):
+        for seed, micro in ((42, 0.8), (43, 1.0)):
+          values = (micro, 0.9, 1.2, 1.3, 0.7, 0.8, 1.0, 1.1)
+          _write_aggregate(
+            root, "linear", old_model, new_model,
+            [_summary_row("linear", "projector_linear", values)],
+            fake_control="fake_adapter", adapter_seed=seed,
+          )
+
+      latex = generate_table(
+        first, second, projection="fake_adapter", stage="projector_linear")
+
+    self.assertIn("0.90 & 0.90 & 1.20 & 1.30", latex)
+    self.assertIn("fake_adapter_random_init", latex)
+
+  def test_fake_adapter_rejects_duplicate_aggregate_for_one_seed(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      workspace = Path(tmp)
+      first = workspace / "first"
+      second = workspace / "second"
+      first_old = _write_model(workspace, "first_old", "BioVid", "VIDEOMAE_v2_S")
+      first_new = _write_model(workspace, "first_new", "MIntPAIN", "DFER")
+      second_old = _write_model(workspace, "second_old", "MIntPAIN", "VIDEOMAE_v2_S")
+      second_new = _write_model(workspace, "second_new", "BioVid", "DFER")
+      values = (0.8, 0.9, 1.2, 1.3, 0.7, 0.8, 1.0, 1.1)
+      for aggregate_name in ("aggregated_fake_a", "aggregated_fake_b"):
+        _write_aggregate(
+          first, "linear", first_old, first_new,
+          [_summary_row("linear", "projector_linear", values)],
+          fake_control="fake_adapter", adapter_seed=42,
+          aggregate_name=aggregate_name,
+        )
+      _write_aggregate(
+        second, "linear", second_old, second_new,
+        [_summary_row("linear", "projector_linear", values)],
+        fake_control="fake_adapter", adapter_seed=42,
+      )
+
+      with self.assertRaisesRegex(ValueError, "Duplicate fake-adapter seed"):
+        generate_table(
+          first, second, projection="fake_adapter", stage="projector_linear")
+
+  def test_fake_adapter_rejects_inconsistent_seed_configuration(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      workspace = Path(tmp)
+      first = workspace / "first"
+      second = workspace / "second"
+      first_old = _write_model(workspace, "first_old", "BioVid", "VIDEOMAE_v2_S")
+      first_new = _write_model(workspace, "first_new", "MIntPAIN", "DFER")
+      second_old = _write_model(workspace, "second_old", "MIntPAIN", "VIDEOMAE_v2_S")
+      second_new = _write_model(workspace, "second_new", "BioVid", "DFER")
+      values = (0.8, 0.9, 1.2, 1.3, 0.7, 0.8, 1.0, 1.1)
+      for root, old_model, new_model in (
+        (first, first_old, first_new),
+        (second, second_old, second_new),
+      ):
+        for seed, num_anchors in ((42, 100), (43, 50)):
+          row = _summary_row("linear", "projector_linear", values)
+          row["num_anchors"] = num_anchors
+          _write_aggregate(
+            root, "linear", old_model, new_model, [row],
+            fake_control="fake_adapter", adapter_seed=seed,
+          )
+
+      with self.assertRaisesRegex(
+        ValueError, "Inconsistent fake-adapter configuration",
+      ):
+        generate_table(
+          first, second, projection="fake_adapter", stage="projector_linear")
+
   def test_projector_only_uses_matching_before_values(self):
     """Collapse matching pre-refinement rows instead of selecting either refinement."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -539,7 +862,7 @@ class TestGenerateTable(unittest.TestCase):
         decimals=3,
       )
 
-    self.assertIn("Linear (SGD) & 100 & 0.710 & 0.720 & 1.000 & 1.100", latex)
+    self.assertIn("Linear & 100 & 0.710 & 0.720 & 1.000 & 1.100", latex)
     self.assertNotIn("0.610 & 0.620", latex)
     self.assertNotIn("0.510 & 0.520", latex)
 
@@ -626,16 +949,17 @@ class TestGenerateTable(unittest.TestCase):
         decimals=1,
       )
 
-    self.assertEqual(latex.count(r"\begin{table}[H]"), 3)
+    self.assertEqual(latex.count(r"\begin{table}[H]"), 4)
     captions = [
       "Projector-only cross-projection results",
       "Linear-only refinement cross-projection results",
       "Projector-and-linear refinement cross-projection results",
+      "Frozen-random-projector linear-head refinement cross-projection results",
     ]
     self.assertEqual([latex.index(caption) for caption in captions],
                      sorted(latex.index(caption) for caption in captions))
     for stage, caption in zip(
-      ("projector_only", "linear_only", "projector_linear"),
+      latex_table.STAGES,
       captions,
     ):
       self.assertIn(f"real_{stage}", latex)
@@ -686,7 +1010,7 @@ class TestGenerateTable(unittest.TestCase):
     projector_linear = latex.split(
       r"\label{tab_cross_projection_unbc_mintpain_real_projector_linear}"
     )[1]
-    self.assertIn("Linear (SGD) & 100 & X & X & X & X", projector_linear)
+    self.assertIn("Linear & 100 & X & X & X & X", projector_linear)
 
   def test_rejects_negative_decimal_count(self):
     """Require a non-negative output precision."""
@@ -793,6 +1117,44 @@ class TestGenerateTable(unittest.TestCase):
         "real",
         "--stage",
         "projector_linear",
+      ]
+      with (
+        mock.patch.object(latex_table, "__file__", str(workspace / "script.py")),
+        mock.patch.object(latex_table.time, "time", return_value=1234567890),
+        mock.patch.object(sys, "argv", argv),
+      ):
+        latex_table.main()
+
+      self.assertTrue(expected.is_file())
+
+  def test_cli_accepts_one_root_and_uses_a_root_based_default_filename(self):
+    """Catch requiring a second positional root in consolidated-summary mode."""
+    with tempfile.TemporaryDirectory() as tmp:
+      workspace = Path(tmp)
+      root = workspace / "experiment_root"
+      root.mkdir()
+      old_model = _write_model(root, "old", "UNBC", "VIDEOMAE_v2_S")
+      new_model = _write_model(root, "new", "MIntPAIN", "DFER")
+      values = (0.61, 0.62, 0.63, 0.64, 0.7, 0.8, 1.0, 1.1)
+      pkl_path = _write_aggregate(
+        root / "cross-validation_UNBC-to-MIntPAIN",
+        "linear",
+        old_model,
+        new_model,
+        [_summary_row("linear", "random_projector_linear", values)],
+      )
+      _write_root_summary(root, [pkl_path])
+      expected = (
+        workspace / "z_latex_tables"
+        / "experiment_root_real-random_projector_linear_1234567890.tex"
+      )
+      argv = [
+        "cross_space_generate_latex_table.py",
+        str(root),
+        "--projection",
+        "real",
+        "--stage",
+        "random_projector_linear",
       ]
       with (
         mock.patch.object(latex_table, "__file__", str(workspace / "script.py")),
