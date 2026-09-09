@@ -711,6 +711,30 @@ def _detect_format(data):
   return 'grid' if 'trial_params' in data else 'standalone'
 
 
+def _remove_classes_greater_from_data(data, fmt):
+  """Return a run's optional inclusive class_id cutoff, including legacy PKLs."""
+  if fmt == 'grid':
+    return (data.get('trial_params') or {}).get('remove_classes_greater')
+  return (data.get('config_cross_space_projection') or {}).get(
+    'remove_classes_greater'
+  )
+
+
+def _class_filter_label(data, fmt):
+  """Build the plot-label suffix for filtered runs; legacy runs have no suffix."""
+  cutoff = _remove_classes_greater_from_data(data, fmt)
+  return '' if cutoff is None else f'class_id <= {cutoff}'
+
+
+def _filter_dataset_frame_for_run(df, data, fmt, csv_path):
+  """Apply a result PKL's optional class cutoff to a CSV reloaded by the logger."""
+  cutoff = _remove_classes_greater_from_data(data, fmt)
+  if cutoff is None:
+    return df
+  from cross_space_projection import _filter_classes_by_max
+  return _filter_classes_by_max(df, cutoff, csv_path)
+
+
 def _anchor_count_from_data(data):
   """
   Real number of anchors actually used by a single run, from its anchor embeddings.
@@ -965,6 +989,7 @@ def _collect_summary_row(data, pkl_path, refine_block=None, refine_mode=None):
     'anchor_selection_type':    p['anchor_selection_type'],
     'csv_anchor_selection':     p['csv_anchor_selection'],
     'old_model_csv':            p['old_model_csv'],
+    'remove_classes_greater':   p.get('remove_classes_greater'),
     'interpolation_similarity': p['interpolation_similarity'],
     'mlp_activation':           p.get('mlp_activation'),
     'mlp_num_layers':           p.get('mlp_num_layers'),
@@ -986,6 +1011,8 @@ def _collect_summary_row(data, pkl_path, refine_block=None, refine_mode=None):
   if data.get('fake_projection_evaluations'):
     row.update({
       'fake_projection': True,
+      'fake_projection_control': fake_meta.get(
+        'control', data.get('fake_projection_control', 'fake_embeddings')),
       'fake_projection_distribution': fake_meta.get(
         'distribution', data.get('fake_projection_distribution')),
       'fake_projection_seed': fake_meta.get('seed', data.get('fake_projection_seed')),
@@ -1154,6 +1181,7 @@ def _synth_trial_params_from_cfg(cfg):
     'anchor_selection_type':    cfg.get('anchor_selection_type'),
     'csv_anchor_selection':     cfg.get('csv_anchor_selection'),
     'old_model_csv':            cfg.get('old_model_csv'),
+    'remove_classes_greater':   cfg.get('remove_classes_greater'),
     'interpolation_similarity': cfg.get('interpolation_similarity'),
     'mlp_activation':           cfg.get('mlp_activation'),
     'mlp_num_layers':           cfg.get('mlp_num_layers'),
@@ -4041,7 +4069,18 @@ def generate_search_summary_plots(df, search_dir):
   return summary_dir
 
 
-def plot_fake_vs_real_dashboard(evaluation, out_dir, mode=None, filename_suffix=''):
+def _fake_replay_labels(metadata):
+  """Return unambiguous baseline/control labels for a replay artifact."""
+  if metadata.get('control') == 'fake_adapter':
+    return 'Trained adapter', 'Random adapter', 'Random adapter control'
+  return 'Real embeddings', 'Fake embeddings', 'Fake embedding control'
+
+
+def plot_fake_vs_real_dashboard(evaluation, out_dir, mode=None, filename_suffix='',
+                                run_label='', baseline_label='Real replay',
+                                control_label='Fake replay',
+                                comparison_title='Fake vs real projection replay',
+                                filename_stem='fake_vs_real_dashboard'):
   """Plot paired real/fake replay predictions on shared axes and return the PNG path."""
   labels = np.asarray(evaluation['labels'], dtype=np.float32).reshape(-1)
   real = np.asarray(evaluation['real_predictions'], dtype=np.float32).reshape(-1)
@@ -4054,16 +4093,16 @@ def plot_fake_vs_real_dashboard(evaluation, out_dir, mode=None, filename_suffix=
 
   fig, axes = plt.subplots(2, 2, figsize=(15, 12))
   for ax, predictions, name, color in (
-      (axes[0, 0], real, 'Real replay', '#4C72B0'),
-      (axes[0, 1], fake, 'Fake replay', '#DD8452')):
+      (axes[0, 0], real, baseline_label, '#4C72B0'),
+      (axes[0, 1], fake, control_label, '#DD8452')):
     ax.scatter(labels, predictions, alpha=.65, color=color, edgecolor='white', linewidth=.3)
     ax.plot(limits, limits, '--', color='#555555', linewidth=1)
     ax.set(xlim=limits, ylim=limits, xlabel='Ground truth', ylabel='Prediction', title=name)
     ax.grid(alpha=.25)
 
   bins = np.linspace(limits[0], limits[1], 20)
-  axes[1, 0].hist(real, bins=bins, alpha=.65, label='Real replay', color='#4C72B0')
-  axes[1, 0].hist(fake, bins=bins, alpha=.65, label='Fake replay', color='#DD8452')
+  axes[1, 0].hist(real, bins=bins, alpha=.65, label=baseline_label, color='#4C72B0')
+  axes[1, 0].hist(fake, bins=bins, alpha=.65, label=control_label, color='#DD8452')
   axes[1, 0].set(title='Prediction distributions', xlabel='Prediction', ylabel='Count')
   axes[1, 0].legend()
   axes[1, 0].grid(axis='y', alpha=.25)
@@ -4074,22 +4113,25 @@ def plot_fake_vs_real_dashboard(evaluation, out_dir, mode=None, filename_suffix=
   fake_mae = [float(np.abs(fake[classes == cls] - labels[classes == cls]).mean())
               for cls in class_ids]
   x = np.arange(len(class_ids))
-  axes[1, 1].bar(x - .2, real_mae, .4, label='Real replay', color='#4C72B0')
-  axes[1, 1].bar(x + .2, fake_mae, .4, label='Fake replay', color='#DD8452')
+  axes[1, 1].bar(x - .2, real_mae, .4, label=baseline_label, color='#4C72B0')
+  axes[1, 1].bar(x + .2, fake_mae, .4, label=control_label, color='#DD8452')
   axes[1, 1].set(title='MAE per class', xlabel='Class', ylabel='MAE',
                  xticks=x, xticklabels=[str(cls) for cls in class_ids])
   axes[1, 1].legend()
   axes[1, 1].grid(axis='y', alpha=.25)
 
   rm, fm = evaluation['real_metrics'], evaluation['fake_metrics']
-  title = f'Fake vs real projection replay{f" — {mode}" if mode else ""}'
+  title = f'{comparison_title}{f" — {mode}" if mode else ""}'
   subtitle = (
-    f"Real: micro MAE {rm['mae_micro']:.4f}, macro MAE {rm['mae_macro']:.4f}, CCC {rm['ccc']:.4f}"
-    f"   |   Fake: micro MAE {fm['mae_micro']:.4f}, macro MAE {fm['mae_macro']:.4f}, "
+    f"{baseline_label}: micro MAE {rm['mae_micro']:.4f}, "
+    f"macro MAE {rm['mae_macro']:.4f}, CCC {rm['ccc']:.4f}"
+    f"   |   {control_label}: micro MAE {fm['mae_micro']:.4f}, "
+    f"macro MAE {fm['mae_macro']:.4f}, "
     f"CCC {fm['ccc']:.4f}")
-  fig.suptitle(f'{title}\n{subtitle}', fontsize=13, fontweight='bold')
+  label_line = f'\n{run_label}' if run_label else ''
+  fig.suptitle(f'{title}\n{subtitle}{label_line}', fontsize=13, fontweight='bold')
   fig.tight_layout(rect=(0, 0, 1, .94))
-  path = os.path.join(out_dir, f'fake_vs_real_dashboard{filename_suffix}.png')
+  path = os.path.join(out_dir, f'{filename_stem}{filename_suffix}.png')
   fig.savefig(path, dpi=150, bbox_inches='tight')
   plt.close(fig)
   print(f'Saved: {path}')
@@ -4612,6 +4654,7 @@ def _load_split_embeddings(data, fmt, pkl_path, split_name, out_dir):
     # --- Subsample CSV rows BEFORE extraction to manage cost ---
     df = pd.read_csv(csv_path, sep='\t',
                      dtype={'sample_name': str, 'subject_name': str})
+    df = _filter_dataset_frame_for_run(df, data, fmt, csv_path)
     if SPLIT_SUBSAMPLE_FRAC < 1.0:
       df = df.sample(frac=SPLIT_SUBSAMPLE_FRAC, random_state=SPLIT_SUBSAMPLE_SEED)
     if len(df) < 5:
@@ -6507,6 +6550,9 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
   fake_evaluations = data.get('fake_projection_evaluations') or {}
   fake_metadata = data.get('fake_projection_metadata') or {}
   is_fake_replay = bool(fake_evaluations)
+  fake_control = fake_metadata.get(
+    'control', data.get('fake_projection_control', 'fake_embeddings'))
+  is_random_adapter = is_fake_replay and fake_control == 'fake_adapter'
   # Aggregated (multi-model subtrial) pkls pool per-sample predictions across models but
   # drop embeddings (different spaces can't be pooled): skip every embedding-based plot
   # (UMAP / split-impact / anchor-UMAP / norm-cosine / reconstruction) and instead emit a
@@ -6526,7 +6572,9 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
     src_csv = (data['trial_params']['old_model_csv'] if fmt == 'grid'
                else cfg.get('old_model_csv'))
     src_dataset = _resolve_old_dataset(data, fmt, pkl_path)
-    src_tag = ' · '.join(str(p) for p in (src_dataset, src_csv) if p)
+    src_tag = ' · '.join(
+      str(p) for p in (src_dataset, src_csv, _class_filter_label(data, fmt)) if p
+    )
     if src_tag:
       run_label = f'{run_label}\n{src_tag}'
     plot_projector_diagnostics(_extract_linear_bundle(data), out_dir, run_label=run_label)
@@ -6556,6 +6604,7 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
       'num_anchors_real':         _anchor_count_from_data(data),
       'anchor_selection_type':    cfg.get('anchor_selection_type'),
       'old_model_csv':            cfg.get('old_model_csv'),
+      'remove_classes_greater':   cfg.get('remove_classes_greater'),
       'interpolation_similarity': cfg.get('interpolation_similarity'),
       'mlp_activation':           cfg.get('mlp_activation'),
       'mlp_num_layers':           cfg.get('mlp_num_layers'),
@@ -6569,21 +6618,35 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
   elif num_anchors_val == -1:
     run_label += ' | K=-1 (original_video)'
   if is_fake_replay:
+    control = fake_control
     distribution = fake_metadata.get(
       'distribution', data.get('fake_projection_distribution', 'unknown'))
     fake_seed = fake_metadata.get('seed', data.get('fake_projection_seed'))
-    run_label += f' | FAKE {distribution}' + (f' (seed {fake_seed})' if fake_seed is not None else '')
+    control_name = ('RANDOM ADAPTER' if control == 'fake_adapter'
+                    else f'FAKE EMBEDDINGS {distribution}')
+    run_label += f' | {control_name}' + (f' (seed {fake_seed})' if fake_seed is not None else '')
     summary_row.update({
       'fake_projection': True,
+      'fake_projection_control': control,
       'fake_projection_distribution': distribution,
       'fake_projection_seed': fake_seed,
     })
 
   os.makedirs(out_dir, exist_ok=True)
   print(f'[cross_space_logs] Output: {out_dir}')
+  baseline_label, control_label, comparison_title = _fake_replay_labels(fake_metadata)
+  filename_stem = ('random_adapter_vs_trained_dashboard'
+                   if fake_metadata.get('control') == 'fake_adapter'
+                   else 'fake_vs_real_dashboard')
   for mode, evaluation in fake_evaluations.items():
     suffix = f'_{mode}' if len(fake_evaluations) > 1 else ''
-    plot_fake_vs_real_dashboard(evaluation, out_dir, mode=mode, filename_suffix=suffix)
+    plot_fake_vs_real_dashboard(
+      evaluation, out_dir, mode=mode, filename_suffix=suffix,
+      run_label=_class_filter_label(data, fmt),
+      baseline_label=baseline_label, control_label=control_label,
+      comparison_title=comparison_title,
+      filename_stem=filename_stem,
+    )
 
   # Source-set CSV name, surfaced into the confusion-matrix titles so the dataset is explicit.
   src_csv = (data['trial_params']['old_model_csv'] if fmt == 'grid'
@@ -6593,7 +6656,10 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
   # every per-run plot EXCEPT the confusion matrices (whose titles already carry it). The
   # dataset name is best-effort; when unresolved the tag is the split alone.
   src_dataset = _resolve_old_dataset(data, fmt, pkl_path)
-  src_tag     = ' · '.join(str(p) for p in (src_dataset, src_csv) if p)
+  class_filter_label = _class_filter_label(data, fmt)
+  src_tag     = ' · '.join(
+    str(p) for p in (src_dataset, src_csv, class_filter_label) if p
+  )
 
   def _with_src(lbl):
     """Append the 'dataset · split' source tag on its own line below a run label."""
@@ -6603,7 +6669,9 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
   # the new-model confusion matrices) whose data lives in the new space, not the
   # source one. Best-effort; None ⇒ titles fall back to the generic 'new-model dataset'.
   new_dataset     = _resolve_new_dataset(data, fmt, pkl_path)
-  new_dataset_lbl = new_dataset or 'new-model dataset'
+  new_dataset_lbl = ' · '.join(
+    p for p in (new_dataset or 'new-model dataset', class_filter_label) if p
+  )
 
   new_t      = data['new_model_tensors']
   old_t      = data['old_model_tensors']
@@ -6669,7 +6737,8 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
 
   old_emb_src = (None if is_aggregated else
                  np.asarray(data.get('fake_source_embeddings'), dtype=np.float32)
-                 if is_fake_replay else np.asarray(old_t['embeddings'], dtype=np.float32))
+                 if is_fake_replay and not is_random_adapter
+                 else np.asarray(old_t['embeddings'], dtype=np.float32))
 
   # Recompute per-mode (before, after) predictions + after-refinement embeddings once;
   # reused by the projected/refined plots, UMAPs, dashboards and comparison below.
@@ -6689,12 +6758,13 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
         refine_preds_by_mode[_mode] = _rp
     except Exception as exc:
       print(f'[WARN] refinement predictions ({_mode or "refinement"}) failed: {exc}')
-    try:
-      _re = _refined_projected_embeddings(data, old_emb_src, refine_block=_block)
-      if _re is not None:
-        refined_emb_by_mode[_mode] = _re
-    except Exception as exc:
-      print(f'[WARN] refined embeddings ({_mode or "refinement"}) failed: {exc}')
+    if not is_random_adapter:
+      try:
+        _re = _refined_projected_embeddings(data, old_emb_src, refine_block=_block)
+        if _re is not None:
+          refined_emb_by_mode[_mode] = _re
+      except Exception as exc:
+        print(f'[WARN] refined embeddings ({_mode or "refinement"}) failed: {exc}')
 
   aggregate_modes = []
   aggregate_refine_preds = {}
@@ -6711,13 +6781,19 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
   single_block = refine_items[0][1] if len(refine_items) == 1 else None
   proj_preds = new_preds
   proj_emb   = None if is_aggregated else np.asarray(new_t['embeddings'], dtype=np.float32)
+  if is_random_adapter and len(refine_items) == 1:
+    # A single-mode replay stores the random adapter's after-refinement embeddings.
+    # Its before-refinement embeddings are not persisted, so do not regenerate them
+    # with the trained adapter or label the after-refinement values as "projected".
+    refined_emb_by_mode[refine_items[0][0]] = proj_emb
+    proj_emb = None
   if refine_items:
     _rp = refine_preds_by_mode.get(refine_items[0][0])
     if _rp is not None:
       proj_preds = _rp[0]
   if aggregate_refine_preds:
     proj_preds = next(iter(aggregate_refine_preds.values()))[0]
-  if single_block is not None:
+  if single_block is not None and not is_random_adapter:
     _be = _projected_before_refinement_embeddings(data, old_emb_src, refine_block=single_block)
     if _be is not None:
       proj_emb = _be
@@ -6747,7 +6823,10 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
   # Titles are two-line: line 1 = pipeline step, line 2 = dataset · split. The standalone
   # PNGs use the full 'Confusion matrix — ...' titles (cm_*); the combined figure reuses the
   # short stage/dataset/split panel titles (pt_*) since its suptitle already carries the run.
-  src_set_lbl   = f'{src_dataset or "old-model dataset"} · source set [{src_csv}]'
+  src_set_lbl = ' · '.join(p for p in (
+    f'{src_dataset or "old-model dataset"} · source set [{src_csv}]',
+    class_filter_label,
+  ) if p)
   proj_step     = 'After projection (before refinement)' if refine_items else 'After projection (new model)'
   cm_old_title  = f'Confusion matrix — Old model (original)\n{src_set_lbl}'
   cm_proj_title = f'Confusion matrix — {proj_step}\n{src_set_lbl}'
@@ -6779,7 +6858,7 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
   # Embedding-space plots (UMAP + split-impact): pooled aggregates have no embeddings, skip.
   # skip_umap additionally suppresses these (the slow plots) regardless of format.
   split_data = None
-  if not is_aggregated and not skip_umap:
+  if not is_aggregated and not skip_umap and proj_emb is not None:
     plot_umap(proj_emb, labels, sample_ids, subject_map, out_dir, run_label=_with_src(run_label),
               filename_suffix='_projected')
     plot_umap_space_comparison(
@@ -6806,7 +6885,7 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
 
   plot_prediction_scatter(proj_preds, old_preds, labels, out_dir, run_label=_with_src(run_label))
   plot_prediction_by_class_boxplot(proj_preds, old_preds, labels, out_dir, run_label=_with_src(run_label))
-  if not is_aggregated:
+  if not is_aggregated and proj_emb is not None:
     try:
       plot_embedding_norm_cosine_per_class(proj_emb, old_emb_src, labels, out_dir, run_label=_with_src(run_label))
     except Exception as exc:
@@ -7017,27 +7096,32 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
     except Exception as exc:
       print(f'[WARN] refinement modes comparison failed: {exc}')
 
-  plot_projector_diagnostics(_extract_linear_bundle(data), out_dir, run_label=_with_src(run_label))
+  if is_random_adapter:
+    print('[cross_space_logs] Random adapter has no training history; '
+          'skipping trained-projector/refinement diagnostics.')
+  else:
+    plot_projector_diagnostics(
+      _extract_linear_bundle(data), out_dir, run_label=_with_src(run_label))
 
-  for _mode, _block in refine_items:
-    base_rl = f'{run_label} | {_mode}' if multi_refine else run_label
-    # The '*newtest*' per-class plot is computed on the new model's own test split,
-    # so it carries the new-model 'dataset · split' tag instead of the source one.
-    nt_split    = ((_block or {}).get('new_test_eval') or {}).get('split', 'test')
-    newtest_tag = f'{new_dataset_lbl} · {nt_split} split'
-    plot_refinement_diagnostics(
-      _block, out_dir,
-      run_label=_with_src(base_rl),
-      filename_suffix=_mode_sfx(_mode),
-      newtest_run_label=f'{base_rl}\n{newtest_tag}',
-      src_dataset=src_dataset, new_dataset=new_dataset,
-    )
+    for _mode, _block in refine_items:
+      base_rl = f'{run_label} | {_mode}' if multi_refine else run_label
+      # The '*newtest*' per-class plot is computed on the new model's own test split,
+      # so it carries the new-model 'dataset · split' tag instead of the source one.
+      nt_split    = ((_block or {}).get('new_test_eval') or {}).get('split', 'test')
+      newtest_tag = f'{new_dataset_lbl} · {nt_split} split'
+      plot_refinement_diagnostics(
+        _block, out_dir,
+        run_label=_with_src(base_rl),
+        filename_suffix=_mode_sfx(_mode),
+        newtest_run_label=f'{base_rl}\n{newtest_tag}',
+        src_dataset=src_dataset, new_dataset=new_dataset,
+      )
 
   # Embedding reconstruction (projected vs real new-model embeddings). The projected
   # stage is the before-refinement projection; refinement runs additionally get one
   # after-refinement variant per mode. Stage tags keep the CSV/PNG names distinct.
   # Skipped for aggregates (no pooled embeddings).
-  if not is_aggregated:
+  if not is_aggregated and (not is_random_adapter or proj_emb is not None):
     try:
       log_embedding_reconstruction(data, fmt, pkl_path, out_dir, run_label=_with_src(run_label),
                                    projected_override=proj_emb,
