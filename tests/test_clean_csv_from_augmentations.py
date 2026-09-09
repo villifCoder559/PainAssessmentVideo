@@ -2,6 +2,7 @@ import threading
 from pathlib import Path
 import os
 import sys
+from unittest import mock
 
 import pandas as pd
 import pytest
@@ -10,9 +11,11 @@ import torch
 # Match the repository's standalone-test import convention.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import custom.helper as helper
-import cross_space_projection as csp
-from log_cross_attention_from_model import clean_csv_from_augmentations
+with mock.patch('multiprocessing.Manager') as manager:
+  manager.return_value.dict.return_value = {}
+  import custom.helper as helper
+  import cross_space_projection as csp
+  from log_cross_attention_from_model import clean_csv_from_augmentations
 
 
 def _write_source_csv(path):
@@ -231,4 +234,30 @@ def test_extract_embeddings_removes_unique_cleaned_csv_after_failure(tmp_path, m
     )
 
   assert unique_requests == [True]
+  assert not private_csv.exists()
+
+
+def test_extract_embeddings_filters_private_csv_by_class_cutoff(tmp_path, monkeypatch):
+  private_csv = tmp_path / '.val_cleaned_private.csv'
+
+  def fake_cleaner(csv_path, *, unique=False):
+    pd.DataFrame({
+      'class_id': [7.0, 8.0],
+      'sample_id': [7, 8],
+    }).to_csv(private_csv, sep='\t', index=False)
+    return str(private_csv)
+
+  class FilteringModel(_EmbeddingModelStub):
+    def test_pretrained_model(self, **kwargs):
+      seen = pd.read_csv(kwargs['csv_path'], sep='\t')
+      assert seen['sample_id'].tolist() == [7]
+      super().test_pretrained_model(**kwargs)
+
+  monkeypatch.setattr(csp, 'clean_csv_from_augmentations', fake_cleaner)
+
+  csp._extract_embeddings(
+    FilteringModel(), 'model.pt', 'val.csv', _embedding_config(),
+    remove_classes_greater=7,
+  )
+
   assert not private_csv.exists()
