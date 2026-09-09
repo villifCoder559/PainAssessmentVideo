@@ -204,6 +204,26 @@ class TestKfoldComparison(unittest.TestCase):
     self.assertEqual(len(written), 1)
     self.assertEqual(written[0]['metric'], 'accuracy')
 
+  def test_reports_sample_standard_deviations_to_csv(self):
+    paired = {
+      'mae': (
+        np.array([1.0, 2.0, 3.0, 4.0]),
+        np.array([2.0, 4.0, 6.0, 8.0]),
+      ),
+    }
+    rows = comparison.compare_paired_values(
+      paired, analysis_level='video', measure='mae', metric_source='stored'
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+      output = Path(tmp, 'comparison.csv')
+      comparison.write_rows(output, rows)
+      with output.open(newline='') as handle:
+        written = list(csv.DictReader(handle))
+
+    self.assertAlmostEqual(float(written[0]['pkl_0_std']), 1.2909944487358056)
+    self.assertAlmostEqual(float(written[0]['pkl_1_std']), 2.581988897471611)
+
   def test_default_output_contains_models_level_measure_and_source(self):
     output = comparison.resolve_output_path(
       None,
@@ -366,6 +386,11 @@ class TestKfoldComparison(unittest.TestCase):
       self.assertTrue(Path(tmp, 'result_sanity.csv').is_file())
       self.assertTrue(all(row['metric_source'] == 'recomputed' for row in rows))
       self.assertEqual(len(sanity_rows), 24)
+      with output.open(newline='') as handle:
+        written = list(csv.DictReader(handle))
+      for row in [*rows, *written]:
+        self.assertEqual(row['pkl_path_0'], str(Path('zero.pkl').resolve()))
+        self.assertEqual(row['pkl_path_1'], str(Path('one.pkl').resolve()))
 
 
 if __name__ == '__main__':
