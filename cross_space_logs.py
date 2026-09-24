@@ -66,6 +66,8 @@ Plots generated:
       umap_space_comparison_*.png — 2×2 UMAP comparing aligned old-model test
                                       embeddings before and after projection, colored by
                                       label and by subject
+      umap_split_impact_test_*.png — 1×3 UMAP of projected source-test and real
+                                     target-test embeddings (when both tests exist)
   6.  anchor_weights.png            — weight entropy histogram + top-20 anchor usage
   7.  anchor_umap.png               — old vs new anchor embeddings in UMAP space
   9.  anchor_norm_comparison.png    — 3-panel: scatter (old_norm vs new_norm), overlaid
@@ -790,6 +792,8 @@ def _real_anchor_freq_from_subtrials(data, pkl_path):
 # defaults so summary.csv keeps a stable schema across mixed sweeps.
 _REFINEMENT_SUMMARY_KEYS = (
   'refine_enabled', 'refine_best_epoch',
+  'refinement_sample_budget', 'num_refinement_samples_real',
+  'refinement_samples_csv_path',
   'refine_val_selection', 'refine_best_val_total',
   'proj_anchor_loss_before', 'proj_anchor_loss_after',
   'mae_micro_old_oncsv_before', 'mae_macro_old_oncsv_before',
@@ -850,7 +854,7 @@ def _refinement_columns(data, refine_block=None):
     elif k == 'refine_enabled':
       out[k] = False
     elif k.endswith('_pth') or k in ('refine_old_model_csv', 'refine_new_eval_split',
-                                     'refine_val_selection'):
+                                     'refine_val_selection', 'refinement_samples_csv_path'):
       out[k] = None
     else:
       out[k] = float('nan')
@@ -985,6 +989,7 @@ def _collect_summary_row(data, pkl_path, refine_block=None, refine_mode=None):
     'trial_number':             data['trial_number'],
     'seed':                     data.get('seed'),
     'num_anchors':              p['num_anchors'],
+    'num_refinement_samples':   p.get('num_refinement_samples'),
     'num_anchors_real':         _anchor_count_from_data(data),
     'anchor_selection_type':    p['anchor_selection_type'],
     'csv_anchor_selection':     p['csv_anchor_selection'],
@@ -1178,6 +1183,7 @@ def _synth_trial_params_from_cfg(cfg):
   """
   return {
     'num_anchors':              cfg.get('num_anchors'),
+    'num_refinement_samples':   cfg.get('num_refinement_samples'),
     'anchor_selection_type':    cfg.get('anchor_selection_type'),
     'csv_anchor_selection':     cfg.get('csv_anchor_selection'),
     'old_model_csv':            cfg.get('old_model_csv'),
@@ -2031,6 +2037,44 @@ def plot_umap_split_impact(projected_emb, projected_labels, split_emb, split_lab
   fig.savefig(path, dpi=150)
   plt.close(fig)
   print(f'Saved: {path}')
+
+
+def _plot_umap_split_impacts(data, fmt, pkl_path, source_split, stages, labels,
+                             out_dir, new_dataset=None, src_dataset=None):
+  """Plot the configured target split, plus test vs test when the source is truly test."""
+  split_names = [SPLIT_TO_COMPARE]
+  if source_split == 'test':
+    old_model_pth = _resolve_old_model_pth(data, fmt, pkl_path)
+    source_test_csv = (os.path.join(os.path.dirname(os.path.dirname(old_model_pth)),
+                                    'test.csv') if old_model_pth else None)
+    if source_test_csv and os.path.isfile(source_test_csv):
+      if 'test' not in split_names:
+        split_names.append('test')
+    else:
+      split_names = [name for name in split_names if name != 'test']
+      print('[WARN] split-impact UMAP: source test.csv unavailable — test vs test skipped.')
+
+  for split_name in split_names:
+    try:
+      split_data = _load_split_embeddings(data, fmt, pkl_path, split_name, out_dir)
+    except Exception as exc:
+      print(f'[WARN] split-impact UMAP: {split_name!r} extraction failed: {exc}')
+      continue
+    if split_data is None:
+      print(f'[WARN] split-impact UMAP: could not load {split_name!r} embeddings — skipped.')
+      continue
+    split_emb, split_labels = split_data
+    for embeddings, run_label, filename_suffix in stages:
+      if embeddings is None:
+        continue
+      try:
+        plot_umap_split_impact(
+          embeddings, labels, split_emb, split_labels, split_name, out_dir,
+          run_label=run_label, filename_suffix=filename_suffix,
+          new_dataset=new_dataset, src_dataset=src_dataset,
+        )
+      except Exception as exc:
+        print(f'[WARN] split-impact UMAP ({split_name}{filename_suffix}) failed: {exc}')
 
 
 def plot_anchor_weights(weights, out_dir, run_label: str = ''):
@@ -4623,8 +4667,22 @@ def _load_split_embeddings(data, fmt, pkl_path, split_name, out_dir):
   """
   from safetensors.numpy import load_file as st_load, save_file as st_save
 
+  # A test plot must use test.csv, even when a prior run cached the resolver's
+  # test→val fallback under the old cache name.
+  if split_name == 'test':
+    from cross_space_projection import _resolve_test_csv_strict
+    new_model_pth = _resolve_new_model_pth(data, fmt, pkl_path)
+    if new_model_pth is None:
+      print('[split-impact] no new-model checkpoint resolvable — cannot extract test.')
+      return None
+    try:
+      csv_path = _resolve_test_csv_strict(new_model_pth)
+    except FileNotFoundError as exc:
+      print(f'[split-impact] {exc} — test split unavailable.')
+      return None
+  cache_tag = '_strict' if split_name == 'test' else ''
   cache_path = os.path.join(
-    out_dir, f'split_impact_emb_{split_name}_f{SPLIT_SUBSAMPLE_FRAC:g}.safetensors')
+    out_dir, f'split_impact_emb_{split_name}{cache_tag}_f{SPLIT_SUBSAMPLE_FRAC:g}.safetensors')
   if os.path.isfile(cache_path):
     try:
       cached = st_load(cache_path)
@@ -4640,12 +4698,14 @@ def _load_split_embeddings(data, fmt, pkl_path, split_name, out_dir):
     from cross_space_projection import (
       _build_model, _extract_embeddings, _load_config, _resolve_split_csv,
     )
-    new_model_pth = _resolve_new_model_pth(data, fmt, pkl_path)
+    if split_name != 'test':
+      new_model_pth = _resolve_new_model_pth(data, fmt, pkl_path)
     if new_model_pth is None:
       print(f'[split-impact] no new-model checkpoint resolvable — cannot extract '
             f'{split_name!r}.')
       return None
-    csv_path = _resolve_split_csv(new_model_pth, split_name)
+    if split_name != 'test':
+      csv_path = _resolve_split_csv(new_model_pth, split_name)
     if not os.path.isfile(csv_path):
       print(f'[split-impact] split CSV not found: {csv_path} — cannot extract '
             f'{split_name!r}.')
@@ -6857,7 +6917,6 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
     plot_confusion_matrices_combined(panels, out_dir, run_label=run_label)
   # Embedding-space plots (UMAP + split-impact): pooled aggregates have no embeddings, skip.
   # skip_umap additionally suppresses these (the slow plots) regardless of format.
-  split_data = None
   if not is_aggregated and not skip_umap and proj_emb is not None:
     plot_umap(proj_emb, labels, sample_ids, subject_map, out_dir, run_label=_with_src(run_label),
               filename_suffix='_projected')
@@ -6867,21 +6926,16 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
                    else 'After projection (new-model space)'),
       filename_suffix='_projected', run_label=_with_src(run_label),
     )
-    try:
-      split_data = _load_split_embeddings(data, fmt, pkl_path, SPLIT_TO_COMPARE, out_dir)
-      if split_data is not None:
-        s_emb, s_lab = split_data
-        plot_umap_split_impact(
-          np.asarray(proj_emb, dtype=np.float32), labels,
-          s_emb, s_lab, SPLIT_TO_COMPARE, out_dir, run_label=_with_src(run_label),
-          filename_suffix='_projected',
-          new_dataset=new_dataset, src_dataset=src_dataset,
-        )
-      else:
-        print(f'[WARN] split-impact UMAP: could not load {SPLIT_TO_COMPARE!r} '
-              f'embeddings — skipped.')
-    except Exception as exc:
-      print(f'[WARN] split-impact UMAP failed: {exc}')
+    split_impact_stages = [(proj_emb, _with_src(run_label), '_projected')]
+    for _mode, _block in refine_items:
+      comparison_emb = _umap_comparison_embedding(_mode, proj_emb, refined_emb_by_mode)
+      if comparison_emb is not None:
+        split_impact_stages.append((comparison_emb, _with_src(_ref_title(_mode)),
+                                    f'_refined{_mode_sfx(_mode)}'))
+    _plot_umap_split_impacts(
+      data, fmt, pkl_path, src_csv, split_impact_stages, labels, out_dir,
+      new_dataset=new_dataset, src_dataset=src_dataset,
+    )
 
   plot_prediction_scatter(proj_preds, old_preds, labels, out_dir, run_label=_with_src(run_label))
   plot_prediction_by_class_boxplot(proj_preds, old_preds, labels, out_dir, run_label=_with_src(run_label))
@@ -6925,13 +6979,6 @@ def generate_logs(pkl_path, plot_only_top_k=None, only_projector_plots=False,
         try:
           plot_umap(refined_emb, labels, sample_ids, subject_map, out_dir,
                     run_label=rl_src, filename_suffix=f'_refined{msfx}')
-          if split_data is not None:
-            s_emb, s_lab = split_data
-            plot_umap_split_impact(refined_emb, labels, s_emb, s_lab, SPLIT_TO_COMPARE,
-                                   out_dir, run_label=rl_src, filename_suffix=f'_refined{msfx}',
-                                   new_dataset=new_dataset, src_dataset=src_dataset)
-          else:
-            print(f'[WARN] after-refinement split-impact UMAP: {SPLIT_TO_COMPARE!r} split unavailable — skipped.')
         except Exception as exc:
           print(f'[WARN] after-refinement UMAP ({_mode or "refinement"}) failed: {exc}')
       try:
@@ -7249,7 +7296,7 @@ def main(argv=None):
     ),
   )
   parser.add_argument(
-    '--plot_only_top_k', type=int, default=5,
+    '--plot_only_top_k', type=int, default=1,
     help=(
       'When pkl_path is a folder, generate diagnostic plots only for the '
       'top K trials ranked by MAE ascending. Metrics are still collected '
