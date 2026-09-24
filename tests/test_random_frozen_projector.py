@@ -217,7 +217,13 @@ def test_optuna_trial_uses_random_bundle_and_refined_head(tmp_path):
             "metrics": refine_metrics,
             "new_test_eval": None,
         },
+        ("random_projector_linear", refinement_tag, 3): {
+            "refine_bundle": refine_bundle,
+            "metrics": {**refine_metrics, "projector_before_pth": "chosen.pt"},
+            "new_test_eval": None,
+        },
     }
+    random_bundle["ckpt_path"] = "other-count.pt"
     key = ("train", 6, "random")
     random_key = csp._random_projector_bundle_key("linear", None, recipe)
     anchor_cache = {
@@ -239,6 +245,7 @@ def test_optuna_trial_uses_random_bundle_and_refined_head(tmp_path):
     model = SimpleNamespace(head=head_module)
     params = {
         "num_anchors": 6,
+        "num_refinement_samples": 3,
         "anchor_selection_type": "random",
         "csv_anchor_selection": "train",
         "old_model_csv": "test",
@@ -270,4 +277,5 @@ def test_optuna_trial_uses_random_bundle_and_refined_head(tmp_path):
     np.testing.assert_allclose(result["new_model_tensors"]["embeddings"], expected_projection)
     assert result["linear_projector"]["projector_trained"] is False
     assert result["linear_projector"]["random_seed"] == random_bundle["random_seed"]
+    assert result["linear_projector"]["ckpt_path"] == "chosen.pt"
     assert result["refinement"]["refine_mode"] == "random_projector_linear"
