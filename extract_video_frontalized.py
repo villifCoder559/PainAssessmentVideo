@@ -131,6 +131,7 @@ def process_one_video(video_path):
         extra_landmark_smoothing=landmark_smoother,
         stabilize=worker_config.get('stabilize', True),
         plot_debug=worker_config.get('plot_flag', False),
+        plot_video=worker_config.get('plot_video', False),
         plot_every=worker_config.get('plot_every', 30),
         plot_output_dir=worker_config.get('plot_output_dir'),
         preprocess=worker_config['preprocess']
@@ -190,7 +191,7 @@ def main(generate_video, csv_path, path_folder_output, list_target_video,
          path_ref_landmarks, global_path, from_, to_, interpolation_mod_chunk,
          video_folder_path, align_before_front, log_error_path=None,
          only_oval=False, workers=4, face_confidence=0.1,
-         plot_flag=False, plot_every=30, plot_output_dir=None,
+         plot_flag=False, plot_every=30, plot_output_dir=None, plot_video=False,
          single_video_path=None, explicit_video_paths=None, preprocess=True,
          skip_existing=False, landmark_smoothing_method='savgol',
          landmark_smoothing_window=5, stabilize=True):
@@ -245,6 +246,7 @@ def main(generate_video, csv_path, path_folder_output, list_target_video,
     'global_path': global_path,
     'face_confidence': face_confidence,
     'plot_flag': plot_flag,
+    'plot_video': plot_video,
     'plot_every': plot_every,
     'plot_output_dir': plot_output_dir if plot_output_dir is not None else os.path.join(path_folder_output, 'debug_plots'),
     'preprocess': preprocess,
@@ -349,10 +351,12 @@ if __name__ == '__main__':
                       help='Minimum confidence for face detection/tracking')
   parser.add_argument('--plot_flag', action='store_true',
                       help='Save a 2x2 frontalization debug figure every --plot_every frames (frontalization path only)')
+  parser.add_argument('--plot_video', action='store_true',
+                      help='With --plot_flag, save every debug figure to one MP4 per input video instead of PNGs')
   parser.add_argument('--plot_every', type=int, default=30,
-                      help='Interval (in frames) between debug figures when --plot_flag is set')
+                      help='Interval (in frames) between debug PNGs; ignored with --plot_video')
   parser.add_argument('--plot_output_dir', type=str, default=None,
-                      help='Directory for debug PNGs. Defaults to <pfo>/debug_plots')
+                      help='Directory for debug PNGs or MP4s. Defaults to <pfo>/debug_plots')
   parser.add_argument('--video_path', type=str, default=None,
                       help='Process a single explicit video path, bypassing the --csv/--vfp/--ltv lookup')
   parser.add_argument('--skip_existing', action='store_true',
@@ -374,6 +378,9 @@ if __name__ == '__main__':
                            'crops every frame to a stable face ROI before frontalization/oval extraction, '
                            'which helps when the face is small relative to the frame.')
   args = parser.parse_args()
+
+  if args.plot_video and not args.plot_flag:
+    parser.error('--plot_video requires --plot_flag')
 
   ltv_explicit_paths = None
   if args.ltv and args.ltv[0].endswith('.txt'):
@@ -422,6 +429,7 @@ if __name__ == '__main__':
        video_folder_path=args.vfp,
        face_confidence=args.face_confidence,
        plot_flag=args.plot_flag,
+       plot_video=args.plot_video,
        plot_every=args.plot_every,
        plot_output_dir=args.plot_output_dir,
        single_video_path=args.video_path,
