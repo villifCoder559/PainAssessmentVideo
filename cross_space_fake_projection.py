@@ -29,7 +29,7 @@ SUMMARY_METRICS = (
 )
 CONFIG_KEYS = (
   'trial_number', 'uid', 'seed', 'new_model_pth', 'old_model_pth',
-  'num_anchors', 'anchor_selection_type',
+  'num_anchors', 'num_refinement_samples', 'anchor_selection_type',
   'csv_anchor_selection', 'old_model_csv', 'interpolation_similarity',
   'mlp_activation', 'mlp_num_layers', 'weighting_method', 'rbf_sigma',
   'temperature', 'projector_config', 'refinement_config', 'refine_mode',
