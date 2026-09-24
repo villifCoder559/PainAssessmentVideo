@@ -66,6 +66,7 @@ def _grid_data(refinement=None, refinements=None):
         'seed': 42,
         'trial_params': {
             'num_anchors': 250,
+            'num_refinement_samples': 12,
             'anchor_selection_type': 'balance_class_random',
             'csv_anchor_selection': 'train',
             'old_model_csv': 'test',
@@ -96,6 +97,7 @@ def _standalone_data(refinement=None, refinements=None):
         'seed': 42,
         'config_cross_space_projection': {
             'num_anchors': 250,
+            'num_refinement_samples': 12,
             'anchor_selection_type': 'balance_class_random',
             'csv_anchor_selection': 'train',
             'old_model_csv': 'test',
@@ -196,6 +198,25 @@ class TestCollectSummaryRows(unittest.TestCase):
         filtered['trial_params']['remove_classes_greater'] = 7
         filtered_row = csl._collect_summary_rows(filtered, 'filtered.pkl')[0]
         self.assertEqual(filtered_row['remove_classes_greater'], 7)
+
+    def test_refinement_sample_count_is_reported_for_grid_and_standalone_results(self):
+        refinement = {
+            'refinement_sample_budget': 12,
+            'num_refinement_samples_real': 15,
+            'refinement_samples_csv_path': 'selected.csv',
+        }
+        grid_row = csl._collect_summary_rows(
+            _grid_data(refinement=refinement), 'grid.pkl'
+        )[0]
+        self.assertEqual(grid_row['num_refinement_samples'], 12)
+        self.assertEqual(grid_row['refinement_sample_budget'], 12)
+        self.assertEqual(grid_row['num_refinement_samples_real'], 15)
+        self.assertEqual(grid_row['refinement_samples_csv_path'], 'selected.csv')
+
+        standalone_params = csl._synth_trial_params_from_cfg(
+            _standalone_data()['config_cross_space_projection']
+        )
+        self.assertEqual(standalone_params['num_refinement_samples'], 12)
 
 
 class TestClassFilterMetadata(unittest.TestCase):
