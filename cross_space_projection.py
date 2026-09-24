@@ -295,7 +295,8 @@ LINEAR_PROJECTOR_CONFIG = {
 #
 # Loss = lambda_B * reg(linear(proj(emb_B)),     labels_B)        # improve source (model B)
 #      + lambda_A * reg(linear(new_anchor_emb),  anchor_labels)   # preserve new-domain (model A)
-# where emb_B are old-model embeddings on the old model's `refine_split` split, proj() is
+# where emb_B are selected old-model embeddings from the old model's `refine_split` split
+# (--num_refinement_samples controls the budget and reuses --anchor_selection_type), proj() is
 # the (fixed in linear_only) old→new projection, new_anchor_emb are the REAL new-model
 # anchor embeddings (D_new), reg() is `loss`, and predictions are compared in the real
 # (denormalized) label scale.
@@ -2393,7 +2394,9 @@ def _run_refinement_stage(old_model, new_model, old_model_pth, new_model_pth,
                           old_model_tensors, old_model_csv, label_denorm, refine_dir, tag,
                           emb_B=None, new_eval=None, new_test=None, emb_B_val=None,
                           mode=None, sim_type=None, rbf_sigma=None, cfg=None,
-                          remove_classes_greater=None):
+                          remove_classes_greater=None, source_df=None,
+                          num_refinement_samples=0, num_anchors=None,
+                          anchor_selection_type='random'):
   """
   Orchestrate the refinement stage end to end: extract the model-B training embeddings
   and the new-model evaluation embeddings (unless supplied pre-computed), run
@@ -2445,6 +2448,14 @@ def _run_refinement_stage(old_model, new_model, old_model_pth, new_model_pth,
                             fixed split fields are read here. Defaults to the global.
     remove_classes_greater (int | None): Inclusive maximum class_id for CSVs extracted
                             inside this stage; None preserves all rows.
+    source_df (pd.DataFrame | None): Clean source refinement-split rows matching emb_B.
+                            Loaded from refine_split when omitted.
+    num_refinement_samples (int): -1 uses every source row, 0 uses num_anchors,
+                            and a positive value supplies an explicit selection budget.
+    num_anchors (int | None): Configured anchor budget used when
+                            num_refinement_samples=0. Inferred from the real anchors only
+                            for backward-compatible direct calls that omit it.
+    anchor_selection_type (str): Existing anchor strategy reused for source selection.
 
   Returns:
     dict: 'refine_bundle' (the _refine_projector_and_linear output), a flat 'metrics' dict ready
@@ -2466,14 +2477,32 @@ def _run_refinement_stage(old_model, new_model, old_model_pth, new_model_pth,
   os.makedirs(refine_dir, exist_ok=True)
 
   # --- model-B training embeddings (old model, old domain, refine_split) ---
+  b_csv = _resolve_split_csv(old_model_pth, cfg['refine_split'])
   if emb_B is None:
-    b_csv = _resolve_split_csv(old_model_pth, cfg['refine_split'])
     assert os.path.isfile(b_csv), f'Refinement model-B split CSV not found: {b_csv}'
     helper.set_step_shift(old_features_path)
     emb_B = _extract_embeddings(
       old_model, old_model_pth, b_csv, old_config,
       **_class_filter_kwargs(remove_classes_greater),
     )
+  if source_df is None:
+    assert os.path.isfile(b_csv), f'Refinement model-B split CSV not found: {b_csv}'
+    clean_b_csv = clean_csv_from_augmentations(b_csv)
+    source_df = pd.read_csv(clean_b_csv, sep='\t', dtype={'sample_name': str})
+    source_df = _filter_classes_by_max(source_df, remove_classes_greater, b_csv)
+  if num_anchors is None:
+    num_anchors = len(old_model_anchors['sample_ids'])
+  source_df, emb_B, source_sample_meta = _select_refinement_source_subset(
+    source_df, emb_B, num_refinement_samples, num_anchors, anchor_selection_type,
+  )
+  refinement_samples_csv_path = os.path.join(refine_dir, 'refinement_source_samples.csv')
+  source_df.to_csv(refinement_samples_csv_path, index=False, sep='\t')
+  print(
+    f'  [refine:{tag}] source samples: requested={num_refinement_samples} '
+    f'budget={source_sample_meta["refinement_sample_budget"]} '
+    f'actual={source_sample_meta["num_refinement_samples_real"]} '
+    f'→ {refinement_samples_csv_path}'
+  )
 
   # --- model-B held-out validation embeddings (old model, refine_val_split) ---
   if emb_B_val is None:
@@ -2635,8 +2664,11 @@ def _run_refinement_stage(old_model, new_model, old_model_pth, new_model_pth,
     'projector_random_init':      random_frozen,
     'random_projector_seed':      (projector_bundle.get('random_seed')
                                    if random_frozen else None),
+    **source_sample_meta,
+    'refinement_samples_csv_path': refinement_samples_csv_path,
   }
-  return {'refine_bundle': refine, 'metrics': metrics, 'emb_B': emb_B, 'emb_B_val': emb_B_val,
+  return {'refine_bundle': refine, 'metrics': metrics, 'emb_B': emb_B,
+          'source_df': source_df, 'emb_B_val': emb_B_val,
           'new_eval': new_eval, 'new_test_eval': new_test_eval}
 
 
@@ -3644,6 +3676,56 @@ def _select_anchors(df_full, num_anchors, selection_type, quality_scores=None):
   raise ValueError(f'Unknown anchor_selection_type: {selection_type!r}')
 
 
+def _validate_num_refinement_samples(num_refinement_samples):
+  """Validate refinement source-sample settings (-1=all, 0=num_anchors, >0=fixed)."""
+  values = (num_refinement_samples if isinstance(num_refinement_samples, (list, tuple))
+            else [num_refinement_samples])
+  invalid = [value for value in values if value < -1]
+  if invalid:
+    raise ValueError(
+      '--num_refinement_samples must contain only -1, 0, or a positive integer; '
+      f'got {invalid}'
+    )
+
+
+def _select_refinement_source_subset(
+  df_full, source_inference, num_refinement_samples, num_anchors, selection_type,
+):
+  """Select and align the source-domain samples used by refinement."""
+  _validate_num_refinement_samples(num_refinement_samples)
+  df_full = _align_df_to_sample_ids(
+    df_full, source_inference['sample_ids'], 'refinement source df',
+  )
+  if num_refinement_samples == -1:
+    return df_full, source_inference, {
+      'num_refinement_samples': -1,
+      'refinement_sample_budget': len(df_full),
+      'num_refinement_samples_real': len(df_full),
+    }
+
+  budget = num_anchors if num_refinement_samples == 0 else num_refinement_samples
+  if budget <= 0:
+    raise ValueError(
+      'effective refinement sample budget must be positive; '
+      f'got num_refinement_samples={num_refinement_samples}, num_anchors={num_anchors}'
+    )
+  quality_scores = (
+    _anchor_quality_scores(source_inference)
+    if selection_type == 'balance_class_quality' else None
+  )
+  selected_df = _select_anchors(
+    df_full, budget, selection_type, quality_scores=quality_scores,
+  )
+  selected_source = _align_by_sample_id(
+    {'sample_ids': selected_df['sample_id'].to_numpy(dtype=np.int64)}, source_inference,
+  )
+  return selected_df, selected_source, {
+    'num_refinement_samples': num_refinement_samples,
+    'refinement_sample_budget': budget,
+    'num_refinement_samples_real': len(selected_df),
+  }
+
+
 # ---------------------------------------------------------------------------
 # Optuna helpers
 # ---------------------------------------------------------------------------
@@ -3713,6 +3795,7 @@ def _build_search_space(args):
   proj_map, ref_map = _recipe_id_maps(args)
   return {
     'num_anchors':              args.num_anchors,
+    'num_refinement_samples':   getattr(args, 'num_refinement_samples', [0]),
     'anchor_selection_type':    args.anchor_selection_type,
     'csv_anchor_selection':     args.csv_anchor_selection,
     'old_model_csv':            args.old_model_csv,
@@ -3773,8 +3856,10 @@ def _precompute_embeddings(
   # Swept projector / refinement recipes (one element each in CLI mode → no sweep).
   projector_recipes  = getattr(args, 'projector_recipes',  None) or [LINEAR_PROJECTOR_CONFIG]
   refinement_recipes = getattr(args, 'refinement_recipes', None) or [REFINEMENT_CONFIG]
+  refinement_sample_values = getattr(args, 'num_refinement_samples', [0])
   multi_proj_recipe = len(projector_recipes) > 1
   multi_ref_recipe  = len(refinement_recipes) > 1
+  multi_ref_samples = len(refinement_sample_values) > 1
   _grid_refine_modes = _REFINE_FLAG_TO_MODES.get(args.refinement, [])
   _multi_mode = len(_grid_refine_modes) > 1
   fit_learned_projectors = _should_fit_projector(args.refinement)
@@ -3837,6 +3922,7 @@ def _precompute_embeddings(
     [m for m in args.interpolation_similarity if m not in _PROJECTOR_KINDS]
     if 'linear_only' in _grid_refine_modes else []
   )
+  refine_source_df = None
   refine_emb_B = refine_emb_B_val = refine_new_eval = refine_new_test = None
   refine_label_denorm = _label_transform_from_config(new_config)
   if REFINEMENT_CONFIG['enabled'] and (
@@ -3849,6 +3935,11 @@ def _precompute_embeddings(
     refine_emb_B = _extract_embeddings(
       old_model, old_model_pth, b_csv, old_config,
       **_class_filter_kwargs(remove_classes_greater),
+    )
+    clean_b_csv = clean_csv_from_augmentations(b_csv)
+    refine_source_df = pd.read_csv(clean_b_csv, sep='\t', dtype={'sample_name': str})
+    refine_source_df = _filter_classes_by_max(
+      refine_source_df, remove_classes_greater, b_csv,
     )
     bv_csv = _resolve_split_csv(old_model_pth, REFINEMENT_CONFIG['refine_val_split'])
     assert os.path.isfile(bv_csv), f'Refinement model-B val split CSV not found: {bv_csv}'
@@ -3937,7 +4028,8 @@ def _precompute_embeddings(
       'anchors_df': df_anch,
       'projectors': {},
       'random_projectors': {},
-      'refine_distance': {},  # (sim_type, rbf_sigma, mode, refine_tag) → linear_only refinement (distance metrics)
+      # (sim_type, rbf_sigma, mode, refine_tag, num_refinement_samples) → result
+      'refine_distance': {},
     }
     for kind, activation, num_layers, recipe, bkey in (
         projector_specs if fit_learned_projectors else []
@@ -3970,31 +4062,40 @@ def _precompute_embeddings(
       # old_model_csv splits (the per-split old-on-csv before/after metrics are filled in
       # _run_trial). _run_refinement_stage deep-copies new_model.head.linear, so the shared
       # head is never mutated. Every applicable mode runs (linear_only and/or projector_linear,
-      # per --refinement); bundles are keyed by (mode, rtag). In linear_only the projector is
-      # frozen and only head.linear is refined.
+      # per --refinement); bundles are keyed by (mode, rtag, source-sample setting).
+      # In linear_only the projector is frozen and only head.linear is refined.
       bundle['refinements'] = {}
       if REFINEMENT_CONFIG['enabled'] and refine_emb_B is not None:
         for _mode in _grid_refine_modes:
           if _mode == 'random_projector_linear':
             continue
           for ref_recipe in refinement_recipes:
-            rtag = _refinement_tag(ref_recipe)
-            rdir = os.path.join(projector_dir, f'refinement_{_mode}' if _multi_mode else 'refinement')
-            if multi_ref_recipe:
-              rdir = os.path.join(rdir, rtag)
-            bundle['refinements'][(_mode, rtag)] = _run_refinement_stage(
-              old_model=old_model, new_model=new_model,
-              old_model_pth=old_model_pth, new_model_pth=new_model_pth,
-              old_config=old_config, new_config=new_config, old_features_path=old_features_path,
-              old_model_anchors=old_anch, new_model_anchors_aligned=new_aligned,
-              projector_bundle=bundle, old_model_tensors=None, old_model_csv=None,
-              label_denorm=refine_label_denorm,
-              refine_dir=rdir,
-              tag=f'{csv_sel}_{num_anch}_{sel_type}_{bkey}_{_mode}_{rtag}', mode=_mode,
-              emb_B=refine_emb_B, new_eval=refine_new_eval, new_test=refine_new_test,
-              emb_B_val=refine_emb_B_val, cfg=ref_recipe,
-              **_class_filter_kwargs(remove_classes_greater),
-            )
+            for ref_samples in refinement_sample_values:
+              rtag = _refinement_tag(ref_recipe)
+              rdir = os.path.join(
+                projector_dir, f'refinement_{_mode}' if _multi_mode else 'refinement',
+              )
+              if multi_ref_recipe:
+                rdir = os.path.join(rdir, rtag)
+              if multi_ref_samples:
+                rdir = os.path.join(rdir, f'samples_{ref_samples}')
+              bundle['refinements'][(_mode, rtag, ref_samples)] = _run_refinement_stage(
+                old_model=old_model, new_model=new_model,
+                old_model_pth=old_model_pth, new_model_pth=new_model_pth,
+                old_config=old_config, new_config=new_config,
+                old_features_path=old_features_path,
+                old_model_anchors=old_anch, new_model_anchors_aligned=new_aligned,
+                projector_bundle=bundle, old_model_tensors=None, old_model_csv=None,
+                label_denorm=refine_label_denorm, refine_dir=rdir,
+                tag=(f'{csv_sel}_{num_anch}_{sel_type}_{bkey}_{_mode}_{rtag}'
+                     f'_samples{ref_samples}'),
+                mode=_mode, emb_B=refine_emb_B, source_df=refine_source_df,
+                new_eval=refine_new_eval, new_test=refine_new_test,
+                emb_B_val=refine_emb_B_val, cfg=ref_recipe,
+                num_refinement_samples=ref_samples, num_anchors=num_anch,
+                anchor_selection_type=sel_type,
+                **_class_filter_kwargs(remove_classes_greater),
+              )
       anchor_cache[key]['projectors'][bkey] = bundle
 
     # Random-projector ablation bundles use the same architecture and anchor-derived
@@ -4010,25 +4111,36 @@ def _precompute_embeddings(
       )
       if REFINEMENT_CONFIG['enabled'] and refine_emb_B is not None:
         for ref_recipe in refinement_recipes:
-          rtag = _refinement_tag(ref_recipe)
-          rdir = os.path.join(projector_dir, 'refinement')
-          if multi_ref_recipe:
-            rdir = os.path.join(rdir, rtag)
-          random_refine = _run_refinement_stage(
-            old_model=old_model, new_model=new_model,
-            old_model_pth=old_model_pth, new_model_pth=new_model_pth,
-            old_config=old_config, new_config=new_config, old_features_path=old_features_path,
-            old_model_anchors=old_anch, new_model_anchors_aligned=new_aligned,
-            projector_bundle=random_bundle, old_model_tensors=None, old_model_csv=None,
-            label_denorm=refine_label_denorm, refine_dir=rdir,
-            tag=f'{csv_sel}_{num_anch}_{sel_type}_{bkey}_random_projector_linear_{rtag}',
-            mode='random_projector_linear', emb_B=refine_emb_B,
-            new_eval=refine_new_eval, new_test=refine_new_test,
-            emb_B_val=refine_emb_B_val, cfg=ref_recipe,
-            **_class_filter_kwargs(remove_classes_greater),
-          )
-          random_bundle['refinements'][('random_projector_linear', rtag)] = random_refine
-          random_bundle['ckpt_path'] = random_refine['refine_bundle']['ckpt_paths']['projector_before']
+          for ref_samples in refinement_sample_values:
+            rtag = _refinement_tag(ref_recipe)
+            rdir = os.path.join(projector_dir, 'refinement')
+            if multi_ref_recipe:
+              rdir = os.path.join(rdir, rtag)
+            if multi_ref_samples:
+              rdir = os.path.join(rdir, f'samples_{ref_samples}')
+            random_refine = _run_refinement_stage(
+              old_model=old_model, new_model=new_model,
+              old_model_pth=old_model_pth, new_model_pth=new_model_pth,
+              old_config=old_config, new_config=new_config,
+              old_features_path=old_features_path,
+              old_model_anchors=old_anch, new_model_anchors_aligned=new_aligned,
+              projector_bundle=random_bundle, old_model_tensors=None, old_model_csv=None,
+              label_denorm=refine_label_denorm, refine_dir=rdir,
+              tag=(f'{csv_sel}_{num_anch}_{sel_type}_{bkey}'
+                   f'_random_projector_linear_{rtag}_samples{ref_samples}'),
+              mode='random_projector_linear', emb_B=refine_emb_B,
+              source_df=refine_source_df, new_eval=refine_new_eval,
+              new_test=refine_new_test, emb_B_val=refine_emb_B_val, cfg=ref_recipe,
+              num_refinement_samples=ref_samples, num_anchors=num_anch,
+              anchor_selection_type=sel_type,
+              **_class_filter_kwargs(remove_classes_greater),
+            )
+            random_bundle['refinements'][
+              ('random_projector_linear', rtag, ref_samples)
+            ] = random_refine
+            random_bundle['ckpt_path'] = (
+              random_refine['refine_bundle']['ckpt_paths']['projector_before']
+            )
       anchor_cache[key]['random_projectors'][bkey] = random_bundle
 
     # --- Distance-metric linear_only refinements: one per (sim_type, rbf_sigma, refine_recipe)
@@ -4038,25 +4150,34 @@ def _precompute_embeddings(
       for sim_type in _refine_distance_specs:
         for sigma in args.rbf_sigma:
           for ref_recipe in refinement_recipes:
-            rtag = _refinement_tag(ref_recipe)
-            rd_dir = os.path.join(
-              precomputed_dir, 'refine_distance', f'{csv_sel}_{num_anch}_{sel_type}',
-              f'{sim_type}_s{sigma}')
-            if multi_ref_recipe:
-              rd_dir = os.path.join(rd_dir, rtag)
-            anchor_cache[key]['refine_distance'][(sim_type, sigma, 'linear_only', rtag)] = _run_refinement_stage(
-              old_model=old_model, new_model=new_model,
-              old_model_pth=old_model_pth, new_model_pth=new_model_pth,
-              old_config=old_config, new_config=new_config, old_features_path=old_features_path,
-              old_model_anchors=old_anch, new_model_anchors_aligned=new_aligned,
-              projector_bundle=None, old_model_tensors=None, old_model_csv=None,
-              label_denorm=refine_label_denorm, refine_dir=rd_dir,
-              tag=f'{csv_sel}_{num_anch}_{sel_type}_{sim_type}_s{sigma}_{rtag}',
-              mode='linear_only', sim_type=sim_type, rbf_sigma=sigma,
-              emb_B=refine_emb_B, new_eval=refine_new_eval, new_test=refine_new_test,
-              emb_B_val=refine_emb_B_val, cfg=ref_recipe,
-              **_class_filter_kwargs(remove_classes_greater),
-            )
+            for ref_samples in refinement_sample_values:
+              rtag = _refinement_tag(ref_recipe)
+              rd_dir = os.path.join(
+                precomputed_dir, 'refine_distance', f'{csv_sel}_{num_anch}_{sel_type}',
+                f'{sim_type}_s{sigma}')
+              if multi_ref_recipe:
+                rd_dir = os.path.join(rd_dir, rtag)
+              if multi_ref_samples:
+                rd_dir = os.path.join(rd_dir, f'samples_{ref_samples}')
+              rd_key = (sim_type, sigma, 'linear_only', rtag, ref_samples)
+              anchor_cache[key]['refine_distance'][rd_key] = _run_refinement_stage(
+                old_model=old_model, new_model=new_model,
+                old_model_pth=old_model_pth, new_model_pth=new_model_pth,
+                old_config=old_config, new_config=new_config,
+                old_features_path=old_features_path,
+                old_model_anchors=old_anch, new_model_anchors_aligned=new_aligned,
+                projector_bundle=None, old_model_tensors=None, old_model_csv=None,
+                label_denorm=refine_label_denorm, refine_dir=rd_dir,
+                tag=(f'{csv_sel}_{num_anch}_{sel_type}_{sim_type}_s{sigma}_{rtag}'
+                     f'_samples{ref_samples}'),
+                mode='linear_only', sim_type=sim_type, rbf_sigma=sigma,
+                emb_B=refine_emb_B, source_df=refine_source_df,
+                new_eval=refine_new_eval, new_test=refine_new_test,
+                emb_B_val=refine_emb_B_val, cfg=ref_recipe,
+                num_refinement_samples=ref_samples, num_anchors=num_anch,
+                anchor_selection_type=sel_type,
+                **_class_filter_kwargs(remove_classes_greater),
+              )
 
   if 0 in args.num_anchors:
     anchor_cache[_ZERO_ANCHOR_KEY] = {'old': None, 'new': None, 'anchors_csv': None}
@@ -4134,8 +4255,10 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
   _proj_recipe = projector_recipe_map[trial_params['projector_config']]
   _ref_tag     = _refinement_tag(refinement_recipe_map[trial_params['refinement_config']])
   # Which refinement mode this trial applies (a swept axis under --refinement 3/5; a single
-  # fixed value for 1/2/4; 'none' when off). Bundles are keyed by (mode, rtag).
+  # fixed value for 1/2/4; 'none' when off). Bundles are keyed by
+  # (mode, rtag, num_refinement_samples).
   _rmode       = trial_params.get('refine_mode', 'none')
+  _ref_samples = trial_params.get('num_refinement_samples', 0)
   old_model_tensors = tensor_cache[trial_params['old_model_csv']]['old_tensors']
   classify_linear = new_model.head.linear  # overridden below when refinement is applied
   eval_projector = eval_norm_stats = None
@@ -4178,7 +4301,11 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
           trial_params.get('mlp_num_layers', 1),
         )
         bundle = anchor_cache[anchor_key]['projectors'][bkey]
-      _refine = bundle.get('refinements', {}).get((_rmode, _ref_tag))
+      _refinements = bundle.get('refinements', {})
+      _refine = _refinements.get(
+        (_rmode, _ref_tag, _ref_samples),
+        _refinements.get((_rmode, _ref_tag)),  # legacy in-memory/test bundles
+      )
       _use_refined = (REFINEMENT_CONFIG['enabled'] and _refine is not None
                       and REFINEMENT_CONFIG['report_after_refinement'])
       _linear_only = _rmode == 'linear_only'
@@ -4207,8 +4334,15 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
       # Distance metrics support linear_only refinement (fixed interpolation, refined head.linear).
       if (REFINEMENT_CONFIG['enabled'] and _rmode == 'linear_only'
           and REFINEMENT_CONFIG['report_after_refinement']):
-        _rd = anchor_cache[anchor_key]['refine_distance'].get(
-          (trial_params['interpolation_similarity'], trial_params['rbf_sigma'], _rmode, _ref_tag))
+        _distance_refinements = anchor_cache[anchor_key]['refine_distance']
+        _rd = _distance_refinements.get(
+          (trial_params['interpolation_similarity'], trial_params['rbf_sigma'],
+           _rmode, _ref_tag, _ref_samples),
+          _distance_refinements.get(
+            (trial_params['interpolation_similarity'], trial_params['rbf_sigma'],
+             _rmode, _ref_tag),
+          ),
+        )
         if _rd is not None:
           classify_linear = _rd['refine_bundle']['linear_after']
           print(f"  [trial {trial_number}] interpolation_similarity="
@@ -4299,6 +4433,11 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
         trial_params.get('mlp_num_layers', 1),
       )
       bundle = anchor_cache[anchor_key]['projectors'][bkey]
+    projector_ckpt_path = bundle['ckpt_path']
+    if _rmode == 'random_projector_linear' and _refine is not None:
+      projector_ckpt_path = (
+        _refine['metrics'].get('projector_before_pth') or projector_ckpt_path
+      )
     trial_result['linear_projector'] = {
       'config':               bundle['config'],
       'norm_stats':           bundle['norm_stats'],
@@ -4306,7 +4445,7 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
       'best_val_mse':         bundle['best_val_mse'],
       'best_val_metric':      bundle['best_val_metric'],
       'best_val_metric_name': bundle['best_val_metric_name'],
-      'ckpt_path':            bundle['ckpt_path'],
+      'ckpt_path':            projector_ckpt_path,
       'metrics':              bundle['metrics'],
       'splits':               bundle['splits'],
       'kind':                 bundle.get('kind', kind),
@@ -4315,7 +4454,7 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
       'procrustes_params':    bundle.get('procrustes_params'),
       'closed_form_params':   bundle.get('closed_form_params'),
     }
-    refine = bundle.get('refinements', {}).get((_rmode, _ref_tag))
+    refine = _refine
     if refine is not None:
       # Per-bundle metrics (new-test + projector-drift loss + ckpts) were computed once
       # in precompute; fill the per-split old-on-csv before/after here for this trial.
@@ -4349,8 +4488,15 @@ def _run_trial(trial_params, trial_number, anchor_cache, tensor_cache, new_model
       trial_params['num_anchors'],
       trial_params['anchor_selection_type'],
     )
-    _rd = anchor_cache[anchor_key]['refine_distance'].get(
-      (trial_params['interpolation_similarity'], trial_params['rbf_sigma'], _rmode, _ref_tag))
+    _distance_refinements = anchor_cache[anchor_key]['refine_distance']
+    _rd = _distance_refinements.get(
+      (trial_params['interpolation_similarity'], trial_params['rbf_sigma'],
+       _rmode, _ref_tag, _ref_samples),
+      _distance_refinements.get(
+        (trial_params['interpolation_similarity'], trial_params['rbf_sigma'],
+         _rmode, _ref_tag),
+      ),
+    )
     if _rd is not None:
       rb = _rd['refine_bundle']
       old_lab = old_model_tensors['labels']
@@ -4403,7 +4549,9 @@ def run_optuna(args, out_root=None):
   fake_projection_distribution = getattr(
     args, 'fake_projection_distribution', 'matched_gaussian')
   remove_classes_greater = getattr(args, 'remove_classes_greater', None)
+  args.num_refinement_samples = getattr(args, 'num_refinement_samples', [0])
   _validate_fake_projection(fake_projection, args.num_anchors)
+  _validate_num_refinement_samples(args.num_refinement_samples)
   if remove_classes_greater is not None and remove_classes_greater < 0:
     raise ValueError(
       f'--remove_classes_greater must be non-negative, got {remove_classes_greater}'
@@ -4418,6 +4566,7 @@ def run_optuna(args, out_root=None):
   mode_ids = _grid_refine_mode_ids(args.refinement)  # refine_mode axis values
   multi_proj_recipe = len(proj_ids) > 1
   multi_ref_recipe  = len(ref_ids) > 1
+  multi_ref_samples = len(args.num_refinement_samples) > 1
   multi_mode        = len(mode_ids) > 1  # True under --refinement 3/5
 
   def _fmt(vals):
@@ -4444,6 +4593,7 @@ def run_optuna(args, out_root=None):
     _recipe_suffix += f'_ref{len(ref_ids)}'
   args_tag = (
     f'K{_fmt(args.num_anchors)}'
+    f'_R{_fmt(args.num_refinement_samples)}'
     f'_{_fmt(args.anchor_selection_type)}'
     f'_{_fmt(args.csv_anchor_selection)}'
     f'_{_fmt(args.old_model_csv)}'
@@ -4493,13 +4643,15 @@ def run_optuna(args, out_root=None):
   _zero_anchor_mae_cache:    dict = {}
   _neg_one_anchor_mae_cache: dict = {}
   # Cache for projector modes (linear/mlp/procrustes): output is determined by
-  # (anchor_key, old_model_csv, projector_bundle_key, refinement_config, refine_mode);
+  # (anchor_key, old_model_csv, projector_bundle_key, refinement_config, refine_mode,
+  # num_refinement_samples);
   # weighting_method/rbf_sigma are ignored.
   _closed_form_mae_cache:    dict = {}
 
   def objective(trial):
     params = {
       'num_anchors':              trial.suggest_categorical('num_anchors',              args.num_anchors),
+      'num_refinement_samples':   trial.suggest_categorical('num_refinement_samples',   args.num_refinement_samples),
       'anchor_selection_type':    trial.suggest_categorical('anchor_selection_type',    args.anchor_selection_type),
       'csv_anchor_selection':     trial.suggest_categorical('csv_anchor_selection',     args.csv_anchor_selection),
       'old_model_csv':            trial.suggest_categorical('old_model_csv',            args.old_model_csv),
@@ -4586,6 +4738,11 @@ def run_optuna(args, out_root=None):
       raise optuna.TrialPruned(
         f"refinement_config={params['refinement_config']!r} irrelevant for this trial"
       )
+    if not _ref_runs and params['num_refinement_samples'] != args.num_refinement_samples[0]:
+      raise optuna.TrialPruned(
+        f"num_refinement_samples={params['num_refinement_samples']!r} irrelevant "
+        'when refinement does not run for this trial'
+      )
     if params['num_anchors'] == 0:
       old_csv = params['old_model_csv']
       if old_csv in _zero_anchor_mae_cache:
@@ -4606,6 +4763,7 @@ def run_optuna(args, out_root=None):
         _cache_key_fn(interp, params['mlp_activation'],
                       proj_map[params['projector_config']], params['mlp_num_layers']),
         params['refinement_config'], params['refine_mode'],
+        params['num_refinement_samples'],
       )
       if cf_key in _closed_form_mae_cache:
         print(f'  [trial {trial.number}] interpolation_similarity={interp}, '
@@ -4623,6 +4781,8 @@ def run_optuna(args, out_root=None):
       _proj_tag_t += f'_{params["refinement_config"]}'
     if multi_mode and REFINEMENT_CONFIG['enabled']:
       _proj_tag_t += f'_{params["refine_mode"]}'
+    if multi_ref_samples and REFINEMENT_CONFIG['enabled']:
+      _proj_tag_t += f'_R{params["num_refinement_samples"]}'
     trial_tag = (
       f'K{params["num_anchors"]}'
       f'_{params["anchor_selection_type"]}'
@@ -4654,6 +4814,7 @@ def run_optuna(args, out_root=None):
         _cache_key_fn(interp, params['mlp_activation'],
                       proj_map[params['projector_config']], params['mlp_num_layers']),
         params['refinement_config'], params['refine_mode'],
+        params['num_refinement_samples'],
       )
       _closed_form_mae_cache[cf_key] = mae
     return mae
@@ -4704,18 +4865,28 @@ def run_optuna(args, out_root=None):
   if REFINEMENT_CONFIG['enabled']:
     _grid_modes = _REFINE_FLAG_TO_MODES.get(args.refinement, [])
     learned_modes = [m for m in _grid_modes if m != 'random_projector_linear']
-    n_ref_trainings += n_proj_trainings * len(ref_ids) * len(learned_modes)
+    n_ref_trainings += (
+      n_proj_trainings * len(ref_ids) * len(learned_modes)
+      * len(args.num_refinement_samples)
+    )
     if 'random_projector_linear' in _grid_modes:
-      n_ref_trainings += len(_anchor_combos) * len(_random_bundles) * len(ref_ids)
+      n_ref_trainings += (
+        len(_anchor_combos) * len(_random_bundles) * len(ref_ids)
+        * len(args.num_refinement_samples)
+      )
     if 'linear_only' in _grid_modes:
       _dist_specs = [m for m in args.interpolation_similarity if m not in _PROJECTOR_KINDS]
-      n_ref_trainings += len(_anchor_combos) * len(_dist_specs) * len(args.rbf_sigma) * len(ref_ids)
+      n_ref_trainings += (
+        len(_anchor_combos) * len(_dist_specs) * len(args.rbf_sigma) * len(ref_ids)
+        * len(args.num_refinement_samples)
+      )
   print(
     f'[run_optuna] grid preview: full grid={_grid_total} trial cell(s) (pruning may skip some); '
     f'projector trainings={n_proj_trainings}; random projector initializations='
     f'{len(_anchor_combos) * len(_random_bundles) if "random_projector_linear" in _REFINE_FLAG_TO_MODES.get(args.refinement, []) else 0}; '
     f'refinement trainings={n_ref_trainings}  '
     f'[projector recipes={len(proj_ids)}, refinement recipes={len(ref_ids)}, '
+    f'refinement sample settings={args.num_refinement_samples}, '
     f"refinement modes={_REFINE_FLAG_TO_MODES.get(args.refinement, []) or ['off']}]"
   )
 
@@ -4769,7 +4940,9 @@ def cross_space_projection(args, out_root=None):
   fake_projection_distribution = getattr(
     args, 'fake_projection_distribution', 'matched_gaussian')
   remove_classes_greater = getattr(args, 'remove_classes_greater', None)
+  num_refinement_samples = getattr(args, 'num_refinement_samples', 0)
   _validate_fake_projection(fake_projection, args.num_anchors)
+  _validate_num_refinement_samples(num_refinement_samples)
   if remove_classes_greater is not None and remove_classes_greater < 0:
     raise ValueError(
       f'--remove_classes_greater must be non-negative, got {remove_classes_greater}'
@@ -4799,6 +4972,7 @@ def cross_space_projection(args, out_root=None):
     _proj_tag = f'_{args.weighting_method}_s{args.rbf_sigma}'
   args_tag = (
     f'K{args.num_anchors}'
+    f'_R{num_refinement_samples}'
     f'_{args.anchor_selection_type}'
     f'_{args.csv_anchor_selection}'
     f'_{args.old_model_csv}'
@@ -5055,7 +5229,9 @@ def cross_space_projection(args, out_root=None):
         mode=_mode,
         sim_type=(None if _is_projector_kind else args.interpolation_similarity),
         rbf_sigma=(None if _is_projector_kind else args.rbf_sigma),
-        cfg=_ref_recipe,
+        cfg=_ref_recipe, num_refinement_samples=num_refinement_samples,
+        num_anchors=args.num_anchors,
+        anchor_selection_type=args.anchor_selection_type,
         **_class_filter_kwargs(remove_classes_greater),
       )
       refine_results[_mode] = rr
@@ -5129,6 +5305,7 @@ def cross_space_projection(args, out_root=None):
     'old_model_pth':           args.old_model_pth,
     'new_model_pth':           args.new_model_pth,
     'num_anchors':             args.num_anchors,
+    'num_refinement_samples':  num_refinement_samples,
     'anchor_selection_type':   args.anchor_selection_type,
     'csv_anchor_selection':    args.csv_anchor_selection,
     'old_model_csv':           args.old_model_csv,
@@ -5234,7 +5411,8 @@ def cross_space_projection(args, out_root=None):
 # the CLI flags; 'linear_projector' / 'refinement_config' are the swept-recipe blocks.
 # Note: 'refinement' is the 0–5 on/off+mode flag (not the recipe block).
 _ALLOWED_YAML_KEYS = {
-  'new_model_pth', 'old_model_pth', 'num_anchors', 'anchor_selection_type',
+  'new_model_pth', 'old_model_pth', 'num_anchors', 'num_refinement_samples',
+  'anchor_selection_type',
   'csv_anchor_selection', 'old_model_csv', 'interpolation_similarity', 'mlp_activation',
   'mlp_num_layers', 'weighting_method', 'rbf_sigma', 'n_trials', 'optuna_sampler',
   'run_tag', 'refinement', 'seed', 'fake_projection', 'fake_projection_distribution',
@@ -5247,7 +5425,8 @@ _ALLOWED_YAML_KEYS = {
 # new×old subtrial-aggregation mode (see _run_model_combos).
 _YAML_LIST_ARGS = (
   'new_model_pth', 'old_model_pth',
-  'num_anchors', 'anchor_selection_type', 'csv_anchor_selection', 'old_model_csv',
+  'num_anchors', 'num_refinement_samples', 'anchor_selection_type',
+  'csv_anchor_selection', 'old_model_csv',
   'interpolation_similarity', 'mlp_activation', 'mlp_num_layers', 'weighting_method', 'rbf_sigma',
   'seed',
 )
@@ -5522,9 +5701,12 @@ def _aggregate_model_combo_pkls(
   # Fixed hypers (identical across subtrials) carried through for downstream grid-row
   # synthesis (cross_space_logs._synth_trial_params_from_cfg). Read from the first subtrial.
   first_cfg = loaded[0].get('config_cross_space_projection') or {}
-  _hyper_keys = ('num_anchors', 'anchor_selection_type', 'csv_anchor_selection', 'old_model_csv',
-                 'interpolation_similarity', 'mlp_activation', 'mlp_num_layers',
-                 'weighting_method', 'rbf_sigma', 'remove_classes_greater')
+  _hyper_keys = (
+    'num_anchors', 'num_refinement_samples', 'anchor_selection_type',
+    'csv_anchor_selection', 'old_model_csv', 'interpolation_similarity',
+    'mlp_activation', 'mlp_num_layers', 'weighting_method', 'rbf_sigma',
+    'remove_classes_greater',
+  )
   config_logging = {
     **{k: first_cfg.get(k) for k in _hyper_keys},
     'new_model_pth':        list(dict.fromkeys(r['new_model_pth'] for r in records)),
@@ -5673,6 +5855,11 @@ if __name__ == '__main__':
   # --- Hyper args: accept one or more values; multiple values trigger Optuna ---
   parser.add_argument('--num_anchors', type=int, nargs='+', required=True,
                       help='Number of anchor samples (one or more values to sweep)')
+  parser.add_argument('--num_refinement_samples', type=int, nargs='+', default=[0],
+                      help='Source-training sample budget(s) for refinement. 0 (default) '
+                           'uses the trial num_anchors; -1 uses the full source train split; '
+                           'positive values use that explicit budget. Selection always reuses '
+                           '--anchor_selection_type.')
   parser.add_argument('--anchor_selection_type', type=str, nargs='+', default=['random'],
                       choices=_ANCHOR_SELECTION_TYPES,
                       help='Anchor selection strategy (one or more values to sweep). '
@@ -5812,6 +5999,7 @@ if __name__ == '__main__':
 
   try:
     _validate_fake_projection(args.fake_projection, args.num_anchors)
+    _validate_num_refinement_samples(args.num_refinement_samples)
   except ValueError as exc:
     parser.error(str(exc))
   if args.remove_classes_greater is not None and args.remove_classes_greater < 0:
@@ -5865,7 +6053,8 @@ if __name__ == '__main__':
   # use_optuna is decided by the non-seed axes only: a seed sweep must NOT force Optuna
   # mode (each seed is an independent run that re-runs the seed-dependent precompute).
   _hyper_lists = [
-    args.num_anchors, args.anchor_selection_type, args.csv_anchor_selection,
+    args.num_anchors, args.num_refinement_samples,
+    args.anchor_selection_type, args.csv_anchor_selection,
     args.old_model_csv, args.interpolation_similarity, args.mlp_activation,
     args.mlp_num_layers, args.weighting_method, args.rbf_sigma,
   ]
