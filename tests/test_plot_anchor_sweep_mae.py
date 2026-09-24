@@ -323,6 +323,22 @@ def test_extracts_both_modes_and_recomputes_exact_micro_macro_mae(tmp_path):
     assert {row.refinement_mode for row in rows} == {"linear_only", "projector_linear"}
 
 
+def test_extracts_actual_refinement_sample_count(tmp_path):
+    root = tmp_path / "anchor_sweep"
+    _, paths = _make_complete_group(root, anchors=10, actual_anchors=10)
+    for path in paths:
+        with path.open("rb") as stream:
+            payload = pickle.load(stream)
+        for block in payload["refinements"].values():
+            block["num_refinement_samples_real"] = 7
+        _write_pickle(path, payload)
+
+    [group] = discover_groups(root, "error")
+    rows = extract_group(group, allow_incomplete=False)
+
+    assert {row.refinement_samples_actual for row in rows} == {7}
+
+
 def test_summary_uses_arithmetic_mean_sample_sd_and_actual_n(tmp_path):
     root = tmp_path / "anchor_sweep"
     _make_complete_group(root)
