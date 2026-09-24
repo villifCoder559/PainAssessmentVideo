@@ -104,6 +104,7 @@ class SubtrialMetric:
     new_idx: int
     old_idx: int
     refinement_mode: str
+    refinement_samples_actual: int | None
     source_old_micro: float
     source_before_micro: float
     source_after_micro: float
@@ -657,6 +658,10 @@ def extract_group(group: SweepGroup, allow_incomplete: bool = False) -> list[Sub
                     new_idx=new_idx,
                     old_idx=old_idx,
                     refinement_mode=mode,
+                    refinement_samples_actual=(
+                        int(block["num_refinement_samples_real"])
+                        if block.get("num_refinement_samples_real") is not None else None
+                    ),
                     source_old_micro=source_old_micro,
                     source_before_micro=source_before_micro,
                     source_after_micro=source_after_micro,
