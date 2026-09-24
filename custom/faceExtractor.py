@@ -839,14 +839,15 @@ class FaceExtractor:
     print(f'shift_x: {shift_x}, shift_y: {shift_y}')
     return shift_x,shift_y
   
-  def frontalized_video(self,video_path,ref_landmarks,interpolation_mod_chunk=None,only_landmarks_crop=False,align_before_front=False,log_path=None,time_logs=False,extra_landmark_smoothing=None,plot_debug=False,plot_every=30,plot_output_dir=None,preprocess=True,stabilize=True):
+  def frontalized_video(self,video_path,ref_landmarks,interpolation_mod_chunk=None,only_landmarks_crop=False,align_before_front=False,log_path=None,time_logs=False,extra_landmark_smoothing=None,plot_debug=False,plot_every=30,plot_output_dir=None,preprocess=True,stabilize=True,plot_video=False):
     """
     Frontalize every detected frame of a video and return the frontalized frames/landmarks.
 
     Args (debug-plotting related only):
-      plot_debug:      If True, save a 2x2 debug figure every plot_every frames (frontalization path only).
-      plot_every:      Interval between debug figures, in frames. Only used when plot_debug is True.
-      plot_output_dir: Directory where debug PNGs are written. Falls back to 'z_debug_frontalization'.
+      plot_debug:      If True, save 2x2 debug figures (frontalization path only).
+      plot_every:      Interval between debug PNGs. Ignored when plot_video is True.
+      plot_output_dir: Directory for debug output. Falls back to 'z_debug_frontalization'.
+      plot_video:      Write every debug figure to one MP4 at source FPS instead of sampled PNGs.
       preprocess:      If True (default), crop every frame to a stable face ROI before
                        landmark extraction (see _get_list_frame); helps on small-face videos.
       stabilize:       If True (default), temporally stabilize the preprocessing ROI and use
@@ -946,40 +947,60 @@ class FaceExtractor:
             crop_boxes = smooth_boxes(crop_boxes, list_frames[0].shape[:2])
 
           # Pass 2 (expensive): warp each frame and crop it with its precomputed box.
-          for count, (frame, landmarks, frontalized_landmarks) in tqdm.tqdm(
-              enumerate(zip(list_frames, list_landmarks, list_frontalized_landmarks)),
-              total=len(list_frames), desc="Frontalizing frames..."):
-            frontalized_img_SVD = self._get_frontalized_img(landmarks_2d=landmarks,
-                                                            frontalized_landmarks_2d=frontalized_landmarks,
-                                                            orig_frame=frame,
-                                                            log_path=log_path,
-                                                            nr_frame=count)
+          video_writer = None
+          try:
+            for count, (frame, landmarks, frontalized_landmarks) in tqdm.tqdm(
+                enumerate(zip(list_frames, list_landmarks, list_frontalized_landmarks)),
+                total=len(list_frames), desc="Frontalizing frames..."):
+              frontalized_img_SVD = self._get_frontalized_img(landmarks_2d=landmarks,
+                                                              frontalized_landmarks_2d=frontalized_landmarks,
+                                                              orig_frame=frame,
+                                                              log_path=log_path,
+                                                              nr_frame=count)
 
-            if crop_boxes is not None:
-              x0, y0, x1, y1 = crop_boxes[count]
-              top_left_corner = (x0, y0)
-              bottom_right_corner = (x1, y1)
-            else:
-              top_left_corner = (int(np.min(frontalized_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
-                                int(np.min(frontalized_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
-              bottom_right_corner = (int(np.max(frontalized_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
-                                int(np.max(frontalized_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
+              if crop_boxes is not None:
+                x0, y0, x1, y1 = crop_boxes[count]
+                top_left_corner = (x0, y0)
+                bottom_right_corner = (x1, y1)
+              else:
+                top_left_corner = (int(np.min(frontalized_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
+                                  int(np.min(frontalized_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
+                bottom_right_corner = (int(np.max(frontalized_landmarks[:, 0]*frontalized_img_SVD.shape[1])),
+                                  int(np.max(frontalized_landmarks[:, 1]*frontalized_img_SVD.shape[0])))
 
-            frontalized_img_SVD = self.post_process_frontalized_img(frontalized_img=frontalized_img_SVD,
-                                        top_left_corner=top_left_corner,
-                                        bottom_right_corner=bottom_right_corner,
-                                        landmarks=frontalized_landmarks,
-                                        )
-            if plot_debug and (count % plot_every == 0):
-              video_name = os.path.splitext(os.path.basename(video_path))[0]
-              save_path = os.path.join(plot_output_dir or 'z_debug_frontalization',
-                                       f'{video_name}_frame{count}.png')
-              self.plot_frontalization_debug(orig_frame=frame,
-                                             frontalized_img=frontalized_img_SVD,
-                                             original_landmarks=landmarks,
-                                             frontalized_landmarks=frontalized_landmarks,
-                                             save_path=save_path)
-            list_frontalized_img.append(frontalized_img_SVD)
+              frontalized_img_SVD = self.post_process_frontalized_img(frontalized_img=frontalized_img_SVD,
+                                          top_left_corner=top_left_corner,
+                                          bottom_right_corner=bottom_right_corner,
+                                          landmarks=frontalized_landmarks,
+                                          )
+              if plot_debug:
+                video_name = os.path.splitext(os.path.basename(video_path))[0]
+                output_dir = plot_output_dir or 'z_debug_frontalization'
+                if plot_video:
+                  debug_frame = self.plot_frontalization_debug(
+                      orig_frame=frame, frontalized_img=frontalized_img_SVD,
+                      original_landmarks=landmarks, frontalized_landmarks=frontalized_landmarks)
+                  if video_writer is None:
+                    os.makedirs(output_dir, exist_ok=True)
+                    video_path_output = os.path.join(output_dir, f'{video_name}.mp4')
+                    height, width = debug_frame.shape[:2]
+                    video_writer = cv2.VideoWriter(video_path_output,
+                                                   cv2.VideoWriter_fourcc(*'avc1'), fps,
+                                                   (width, height))
+                    if not video_writer.isOpened():
+                      raise OSError(f'Could not open debug video writer: {video_path_output}')
+                  video_writer.write(cv2.cvtColor(debug_frame, cv2.COLOR_RGB2BGR))
+                elif count % plot_every == 0:
+                  save_path = os.path.join(output_dir, f'{video_name}_frame{count}.png')
+                  self.plot_frontalization_debug(orig_frame=frame,
+                                                 frontalized_img=frontalized_img_SVD,
+                                                 original_landmarks=landmarks,
+                                                 frontalized_landmarks=frontalized_landmarks,
+                                                 save_path=save_path)
+              list_frontalized_img.append(frontalized_img_SVD)
+          finally:
+            if video_writer is not None:
+              video_writer.release()
         else:
           for count, (frame, landmarks) in tqdm.tqdm(enumerate(zip(list_frames, list_landmarks)), total=len(list_frames), desc="Cropping frames to face oval..."):
             frame,mask = self.extract_frame_oval_from_img(frame,landmarks)
@@ -1296,7 +1317,8 @@ class FaceExtractor:
     img = np.copy(image)
     if landmarks.shape[1] > 2:
       landmarks = landmarks[:,:2]
-    if np.max(landmarks) <= 1 and np.min(landmarks) >= 0:
+    # Frontalization can move normalized landmarks slightly outside [0, 1].
+    if np.issubdtype(landmarks.dtype, np.floating) or (np.max(landmarks) <= 1 and np.min(landmarks) >= 0):
       landmarks = landmarks * (img.shape[1],img.shape[0])
       landmarks = landmarks.astype(np.int32)
     if tri_simplices is None:
@@ -1319,7 +1341,7 @@ class FaceExtractor:
     return img,top_left_corner,bottom_right_corner
     # return img
 
-  def plot_frontalization_debug(self, orig_frame, frontalized_img, original_landmarks, frontalized_landmarks, save_path):
+  def plot_frontalization_debug(self, orig_frame, frontalized_img, original_landmarks, frontalized_landmarks, save_path=None):
     """
     Save a 2x2 debug figure summarizing one frame of the frontalization process.
 
@@ -1328,10 +1350,10 @@ class FaceExtractor:
       frontalized_img:       Final cropped frontalized image. Shape: (H', W', 3).
       original_landmarks:    Detected landmarks before frontalization. Shape: (N, 2) or (N, 3), normalized.
       frontalized_landmarks: Landmarks after the rigid frontalization transform. Shape: (N, 2) or (N, 3), normalized.
-      save_path:             Full path (including .png filename) where the figure is written.
+      save_path:             Optional PNG path. If omitted, return the rendered RGB frame.
 
     Returns:
-      None. Writes the figure to save_path as a side effect.
+      RGB frame when save_path is omitted; otherwise writes the PNG.
     """
     def _mesh_crop(landmarks):
       mesh, top_left, bottom_right = self.plot_landmarks_triangulation(
@@ -1356,14 +1378,18 @@ class FaceExtractor:
     for a in ax.ravel():
       a.axis('off')
 
-    save_dir = os.path.dirname(save_path)
-    if save_dir:
-      os.makedirs(save_dir, exist_ok=True)
-    # thight layout to avoid cutting off titles
-    plt.tight_layout()
-    fig.savefig(save_path)
-    plt.close(fig)
-    print(f'Saved frontalization debug figure in {save_path}')
+    try:
+      plt.tight_layout()
+      if save_path is None:
+        fig.canvas.draw()
+        return np.asarray(fig.canvas.buffer_rgba())[:, :, :3].copy()
+      save_dir = os.path.dirname(save_path)
+      if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+      fig.savefig(save_path)
+      print(f'Saved frontalization debug figure in {save_path}')
+    finally:
+      plt.close(fig)
 
 
 class LandmarkSmoother:
