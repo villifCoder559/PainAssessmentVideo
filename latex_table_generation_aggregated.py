@@ -116,12 +116,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--comment-prefix",
-        default="cross-validation_BioVmae-unbcDFER_v2",
+        default="",
         help="Prefix placed before the source_pkl folder in LaTeX comments",
     )
     parser.add_argument(
         "--test-date",
-        default="test_Jul_16_26",
+        default="",
         help="Date/tag placed in every recovery comment",
     )
     parser.add_argument(
