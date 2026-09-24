@@ -20,12 +20,17 @@ from analysis.analyze_anchor_sweep_mae import (
     evaluate_checkpoint_pairs,
     mae_micro_macro,
     render_analysis_report,
+    render_fresh_sweep_report,
     render_investigation_report,
+    run_analysis,
+    parse_args,
     run_synthetic_probe,
     select_best_and_efficient_k,
     validate_artifact_record,
     validate_cell_alignment,
+    validate_fresh_sweep,
 )
+from plot_anchor_sweep_mae import summarize_subtrials
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -96,6 +101,69 @@ def test_anchor_effects_use_lower_mae_as_improvement_and_measure_consistency():
     assert row.fold_pair_change_sd > 0
     assert row.method_rank_at_largest_k == 1
     assert bool(row.micro_macro_endpoint_sign_agreement)
+
+
+def test_fresh_sweep_validates_config_coverage_and_reports_refinement_saturation(tmp_path):
+    config_dir = tmp_path / "configs" / "direction"
+    config_dir.mkdir(parents=True)
+    (config_dir / "linear.yaml").write_text(yaml.safe_dump({
+        "run_tag": "anchor_sweep_rerun_2026_09_23/bioVmae_to_mintDfer/refinement3_linear",
+        "interpolation_similarity": ["linear"],
+        "num_anchors": [5, 10],
+    }))
+    rows = []
+    for k in (5, 10):
+        for new in range(5):
+            for old in range(5):
+                for mode in ("linear_only", "projector_linear"):
+                    rows.append({
+                        "direction_alias": "bioVmae_to_mintDfer",
+                        "direction": "biovid-to-mintpain",
+                        "source_dataset": "BioVid",
+                        "target_dataset": "MIntPain",
+                        "method": "linear",
+                        "configured_anchors": k,
+                        "actual_anchors": k,
+                        "anchor_count_mismatch": False,
+                        "new_idx": new,
+                        "old_idx": old,
+                        "refinement_mode": mode,
+                        "refinement_samples_actual": min(k, 7),
+                        **{f"{stage}_{metric}": float(k) / 10 for stage in (
+                            "source_old", "source_before", "source_after",
+                            "target_before", "target_after", "source_improvement",
+                            "target_preservation_change",
+                        ) for metric in ("micro", "macro")},
+                    })
+    frame = pd.DataFrame(rows)
+    summary = summarize_subtrials(frame)
+
+    coverage = validate_fresh_sweep(frame, summary, config_dir.parent)
+    report = render_fresh_sweep_report(compute_anchor_effects(frame), frame, coverage)
+
+    assert coverage["subtrial_mode_rows"] == 100
+    assert coverage["groups"] == 2
+    assert "K=10" in report
+    assert "7" in report
+    assert "Linear" in report
+
+    results = tmp_path / "results"
+    data = results / "data"
+    data.mkdir(parents=True)
+    frame.to_csv(data / "anchor_sweep_subtrials.csv", index=False)
+    summary.to_csv(data / "anchor_sweep_summary.csv", index=False)
+    (data / "run_metadata.json").write_text("{}")
+    report_path = tmp_path / "report.md"
+    run_analysis(parse_args([
+        "--sweep-only", "--config-root", str(config_dir.parent),
+        "--results-dir", str(results), "--output-dir", str(tmp_path / "diagnostics"),
+        "--analysis-report", str(report_path),
+    ]))
+    assert "K=10" in report_path.read_text()
+    assert (tmp_path / "diagnostics" / "anchor_effects.csv").is_file()
+
+    with pytest.raises(ValueError, match="missing|alignment"):
+        validate_fresh_sweep(frame.iloc[:-1], summary, config_dir.parent)
 
 
 def test_dispersion_distinguishes_exact_equality_from_display_rounding():
