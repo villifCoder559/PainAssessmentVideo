@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import cv2; print\\(cv2.__version__\\)\")",
+      "Bash(conda info:*)",
+      "Bash(pip3 list:*)",
+      "Bash(python3)",
+      "Bash(grep -n '\\\\$\\\\|augm_n\\\\|augm_type\\\\|get_augmentation_type\\\\|get_shift_for\\\\|transform_sample_id\\\\|\\\\$N\\\\|\\\\$0\\\\|\\\\$1\\\\|\\\\$2\\\\|\\\\$3' /equilibrium/fvilli/PainAssessmentVideo/custom/helper.py)",
+      "Bash(grep -n 'get_shift_for_sample_id\\\\|transform_sample_id\\\\|\\\\$N\\\\|split.*\\\\$\\\\|\\\\$.*split\\\\|augm_n\\\\|variant\\\\|n_variant' /equilibrium/fvilli/PainAssessmentVideo/custom/helper.py)",
+      "Bash(git --no-pager diff cross_space_projection.py)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(python3 -m pytest tests/test_cross_space_summary_refinement.py -q)",
+      "Bash(xargs -r ls -la)",
+      "Bash(python3 *)"
+    ]
+  },
+  "enabledPlugins": {
+    "code-review@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true,
+    "pr-review-toolkit@claude-plugins-official": true,
+    "claude-md-management@claude-plugins-official": true
+  }
+}
