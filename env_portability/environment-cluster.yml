@@ -1,0 +1,8 @@
+# Optional POSIX/SLURM job launchers for bundled JEPA/V-JEPA 2 workflows.
+# Use on Linux; the scheduler and srun are provided by the cluster administrator.
+name: pain-portable
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - submitit
