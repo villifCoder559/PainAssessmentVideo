@@ -2,6 +2,7 @@ import io
 import pickle
 import sys
 import tempfile
+import types
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -10,6 +11,7 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 
+from custom.targets import TargetSpec  # Load torch before scoped sys.modules patches.
 from extract_kfold_test_table import extract_table, main
 
 
@@ -193,6 +195,76 @@ class TestMetricSelection(unittest.TestCase):
             self.assertIn('test_MAE_macro', csv.columns)
             expected = [0.9, 0.45, 0.675, 0.3182] if use_raw else [1.0, 0.5, 0.75, 0.3536]
             np.testing.assert_allclose(csv['test_MAE_macro'], expected)
+
+  def test_merged_predictions_cli(self):
+    for use_raw, custom_output in [(False, False), (False, True), (True, True)]:
+      with self.subTest(raw=use_raw, custom_output=custom_output):
+        self.run_prediction_export(use_raw, custom_output)
+
+  def test_export_rejects_missing_predictions_and_duplicate_ids(self):
+    for problem, message in [('missing', 'no logged prediction'), ('duplicate', 'duplicate sample_id')]:
+      with self.subTest(problem=problem):
+        with self.assertRaisesRegex((RuntimeError, ValueError), message):
+          self.run_prediction_export(False, True, problem)
+        self.assertFalse((self.pkl_path.parent / 'summary_predictions.csv').exists())
+
+  def run_prediction_export(self, use_raw, custom_output, problem=None):
+    with self.pkl_path.open('rb') as file:
+      data = pickle.load(file)
+    data['model_advanced_params'] = {'head': 'HEAD', 'head_params': {}}
+    data['config'].update(concatenate_temp_dim=0, concatenate_quadrants=0)
+    for key, result in data['results'].items():
+      fold = key.split('_')[0]
+      result['best_model'] = {'fold_sub_fold_idx': (0, 0), 'best_model_idx': 2}
+      folder = self.pkl_path.parent / 'train_HEAD' / f'{fold}_cross_val'
+      checkpoint = folder / f'{fold}_cross_val_sub_0' / 'best_model_ep_2.pt'
+      checkpoint.parent.mkdir(parents=True, exist_ok=True)
+      checkpoint.touch()
+      pd.DataFrame({
+        'sample_id': [2, 1] if problem != 'duplicate' else [1, 1],
+        'sample_name': ['002', '001'], 'class_id': [1, 0], 'subject_id': [8, 9],
+      }).to_csv(folder / 'test_cleaned.csv', sep='\t', index=False)
+    with self.pkl_path.open('wb') as file:
+      pickle.dump(data, file)
+
+    calls = []
+    class FakeModel:
+      def __init__(self, **kwargs):
+        pass
+
+      def test_pretrained_model(self, **kwargs):
+        calls.append(kwargs['csv_path'])
+        return {
+          'history_test_sample_predictions': {1: [0.123456789]} if problem == 'missing'
+            else {1: [0.123456789], 2: [0.876543211]},
+          'test_l1_error': 0.1, 'test_accuracy': 1.0,
+          'test_accuracy_per_class': np.ones(2), 'test_loss_per_subject': np.zeros(2),
+          'test_accuracy_per_subject': np.ones(2), 'test_unique_subject_ids': [8, 9],
+        }
+
+    helper = types.ModuleType('custom.helper')
+    helper.init_log_cross_attention = helper.init_log_video_embeddings = lambda: None
+    helper.step_shift = 100
+    model = types.ModuleType('custom.model')
+    model.Model_Advanced = FakeModel
+    output = self.pkl_path.parent / ('summary.csv' if custom_output else 'test_table_mae.csv')
+    argv = ['extract_kfold_test_table.py', '--pkl', str(self.pkl_path), '--export-predictions']
+    if custom_output:
+      argv.extend(['--out', str(output)])
+    if use_raw:
+      argv.append('--raw')
+    with mock.patch.dict(sys.modules, {'custom.helper': helper, 'custom.model': model}), \
+         mock.patch.object(sys, 'argv', argv), redirect_stdout(io.StringIO()):
+      main()
+    merged = pd.read_csv(output.with_name(output.stem + '_predictions.csv'), dtype={'sample_name': str})
+    self.assertEqual(merged.columns.tolist(), ['sample_id', 'sample_name', 'class_id', 'subject_id', 'fold', 'prediction'])
+    self.assertEqual(merged['fold'].tolist(), ['k0', 'k0', 'k1', 'k1'])
+    self.assertEqual(merged['sample_name'].tolist(), ['001', '002', '001', '002'])
+    self.assertEqual(merged['subject_id'].tolist(), [9, 8, 9, 8])
+    np.testing.assert_allclose(merged['prediction'], [0.123456789, 0.876543211] * 2, rtol=0, atol=1e-12)
+    self.assertEqual(len(calls), 2)
+    summary = pd.read_csv(output)
+    self.assertEqual('test_MAE_raw' in summary, use_raw)
 
 
 if __name__ == '__main__':
