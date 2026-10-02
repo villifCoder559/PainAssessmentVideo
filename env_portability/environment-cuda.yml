@@ -1,0 +1,56 @@
+# Standalone NVIDIA environment for Linux/Windows x86_64.
+# Official GPU wheels avoid the old Conda torchvision/FFmpeg ABI constraint.
+# Add native video/ranking dependencies using ENVIRONMENT.md.
+name: pain-portable-cuda
+channels:
+- conda-forge
+- nodefaults
+dependencies:
+- python=3.10
+- pip
+- setuptools
+- numpy>=1.26,<2
+- scipy
+- pandas
+- scikit-learn
+- scikit-image
+- matplotlib
+- seaborn
+- opentsne
+- umap-learn
+- pillow
+- ffmpeg
+- dataframe_image
+- av
+- einops
+- transformers>=4.57,<5
+- safetensors
+- pyyaml
+- packaging
+- psutil
+- tqdm
+- networkx
+- nltk
+- tensorboard
+- tensorboardx
+- h5py
+- configargparse
+- tree-format
+- optuna>=4.3,<5
+- optunahub>=0.3,<1
+- cmaes
+- git
+- pip:
+  - --index-url https://pypi.org/simple
+  - --extra-index-url https://download.pytorch.org/whl/cu118
+  - mediapipe>=0.10.5,<0.10.22
+  - opencv-contrib-python>=4.8,<4.12
+  - coral-pytorch
+  - conditional
+  - moviepy>=1.0.3,<2
+  - torch==2.5.1+cu118
+  - torchvision==0.20.1+cu118
+  - timm>=1.0.15,<1.1
+  - torchmetrics>=1.5,<2
+  - torch-optimizer
+  - webdataset
