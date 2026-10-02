@@ -1119,11 +1119,26 @@ def make_prediction_figure(
     import matplotlib.pyplot as plt
 
     figure, axis = plt.subplots(figsize=(12, 6.5))
+    model_colors = {"VideoMAE": "#1f77b4", "DFER": "#2ca02c"}
+    axis.set_prop_cycle(color=[
+        color for color in plt.rcParamsDefault["axes.prop_cycle"].by_key()["color"]
+        if color not in model_colors.values()
+    ])
     x_values = np.arange(len(frame_ranges))
     for label, values in curves.items():
         if len(values) != len(frame_ranges):
             raise ValueError(f"curve {label!r} does not match the number of prefixes")
-        axis.plot(x_values, values, marker="o", linewidth=1.8, label=label)
+        # Match baseline labels only: projected/refined curves also name models.
+        color = None
+        for model, model_color in model_colors.items():
+            if label == f"{model} (native)" or label.startswith(tuple(
+                f"{prefix}{model} (" for prefix in (
+                    "Source model — ", "Target model — ", "Native target — ", "Native ",
+                )
+            )):
+                color = model_color
+                break
+        axis.plot(x_values, values, marker="o", linewidth=1.8, label=label, color=color)
     axis.axhline(
         ground_truth,
         color="black",
