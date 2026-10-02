@@ -190,3 +190,12 @@ fake_projection*
 paper*
 *.txt
 *.tex
+chunk_*
+*.mp4
+*.csv
+# Environment documentation.
+!ENVIRONMENT.md
+
+# Separate portable specifications and the relocated reproducibility artifacts.
+!env_portability/**
+!env_reproducibility/**
