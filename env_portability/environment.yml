@@ -1,0 +1,62 @@
+# Common CPU environment. Add the required native-video/ranking dependencies
+# for your platform as described in ENVIRONMENT.md before running training.
+name: pain-portable
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.10
+  - pip
+  - setuptools
+  # Matching minor releases; CPU selector prevents a CUDA runtime in the base.
+  - pytorch-cpu>=2.5.1,<2.6
+  - torchvision>=0.20.1,<0.21
+  # NumPy 2 is unsuitable for the legacy video/native stack.
+  - numpy>=1.26,<2
+  - scipy
+  - pandas
+  - scikit-learn
+  - scikit-image
+  - matplotlib
+  - seaborn
+  - opentsne
+  - umap-learn
+  - pillow
+  - ffmpeg
+  - dataframe_image
+  - av
+  - einops
+  - timm>=1.0.15,<1.1
+  - torchmetrics>=1.5,<2
+  # Preserve ViTFeatureExtractor and the current V-JEPA 2 integration.
+  - transformers>=4.57,<5
+  - safetensors
+  - pyyaml
+  - packaging
+  - psutil
+  - tqdm
+  - networkx
+  - nltk
+  - tensorboard
+  - tensorboardx
+  - h5py
+  - webdataset
+  - configargparse
+  - tree-format
+  - torch-optimizer
+  - optuna>=4.3,<5
+  - optunahub>=0.3,<1
+  # train_model.py selects OptunaHub's AutoSampler at runtime.
+  - cmaes
+  # OptunaHub's GitPython importer also requires the git executable on PATH.
+  - git
+  - pip:
+      # MediaPipe has no conda-forge package. Keep one cv2 provider: its
+      # required contrib wheel, rather than overlapping Conda/PyPI OpenCV.
+      - mediapipe>=0.10.5,<0.10.22
+      - opencv-contrib-python>=4.8,<4.12
+      - coral-pytorch
+      - conditional
+      # The old Conda recipe omits MoviePy's decorator<5 requirement.
+      # Pip builds this pure-Python package and resolves its upstream metadata.
+      - moviepy>=1.0.3,<2
