@@ -89,6 +89,9 @@ def recompute_raw_fold_metrics(pkl_path: str, data: dict, final_keys: list, ffsp
     history = dict_test['history_test_sample_predictions']
     preds = {sid: epochs[0] for sid, epochs in history.items()}
     df_test = pd.read_csv(csv_path, sep='\t', dtype={'sample_name': str})
+    df_test['sample_id'] = df_test['sample_id'].astype(int)
+    if df_test['sample_id'].duplicated().any():
+      raise ValueError(f'{fold}: duplicate sample_id in {csv_path}')
     labels = dict(zip(df_test['sample_id'].astype(int), df_test['class_id'].astype(float)))
     class_values = (
       TargetSpec.from_metadata(cfg['target_spec']).to_bins(df_test['class_id'])
@@ -122,6 +125,7 @@ def recompute_raw_fold_metrics(pkl_path: str, data: dict, final_keys: list, ffsp
       'recomputed_sample_ids': sample_ids,
       'recomputed_sample_predictions': sample_predictions,
       'recomputed_sample_labels': sample_labels,
+      'test_metadata': df_test,
       'n_samples': len(labels),
     }
   if hasattr(model, 'free_gpu_memory'):
@@ -134,6 +138,7 @@ def extract_table(
   raw: bool = False,
   ffsp_override: str = None,
   metric: str = 'mae',
+  predictions_out: str = None,
 ) -> pd.DataFrame:
   """
   Build a per-fold test summary table from a k_fold_results.pkl file.
@@ -145,6 +150,8 @@ def extract_table(
     ffsp_override: Optional replacement for the cached-features folder path.
     metric:        Metric to report: 'mae' or 'accuracy'. Accuracy is reported
                    as a percentage.
+    predictions_out: Optional merged predictions CSV path. Enables inference
+                     independently of raw, without changing the summary metrics.
 
   Returns:
     DataFrame with one row per fold, class/sample/subject counts, and mean/std
@@ -167,7 +174,7 @@ def extract_table(
     [k for k in data['results'] if re.fullmatch(r'k\d+_cross_val_final', k)],
     key=lambda k: int(re.match(r'k(\d+)', k).group(1)),
   )
-  raw_metrics = recompute_raw_fold_metrics(pkl_path, data, final_keys, ffsp_override) if raw else None
+  raw_metrics = recompute_raw_fold_metrics(pkl_path, data, final_keys, ffsp_override) if raw or predictions_out is not None else None
 
   rows = []
   for key in final_keys:
@@ -195,7 +202,7 @@ def extract_table(
     if n_samples != int(count_subjects.sum()):
       print(f"WARNING {fold}: sum(test_count_y)={n_samples} != sum(test_count_subject_ids)={int(count_subjects.sum())}")
 
-    rm = raw_metrics[key] if raw_metrics is not None else None
+    rm = raw_metrics[key] if raw else None
     if rm is not None and rm['n_samples'] != n_samples:
       print(f"WARNING {fold}: re-run test set has {rm['n_samples']} samples, pkl says {n_samples}")
 
@@ -255,6 +262,18 @@ def extract_table(
     metric_cols.extend(c for c in df.columns if c.startswith('accuracy_class_'))
   mean_row = {'fold': 'mean', **df[metric_cols].mean().to_dict()}
   std_row = {'fold': 'std', **df[metric_cols].std().to_dict()}
+  if predictions_out is not None:
+    prediction_frames = []
+    for key in final_keys:
+      rm = raw_metrics[key]
+      metadata = rm['test_metadata'].sort_values('sample_id').copy()
+      if {'fold', 'prediction'} & set(metadata.columns):
+        raise ValueError(f'{key}: test metadata already contains fold or prediction columns')
+      predictions = pd.Series(rm['recomputed_sample_predictions'], index=rm['recomputed_sample_ids'])
+      metadata['fold'] = key.split('_')[0]
+      metadata['prediction'] = metadata['sample_id'].map(predictions)
+      prediction_frames.append(metadata)
+    pd.concat(prediction_frames, ignore_index=True).to_csv(predictions_out, index=False)
   return pd.concat([df, pd.DataFrame([mean_row, std_row])], ignore_index=True)
 
 
@@ -276,16 +295,23 @@ def main():
                       help='Metric to report (default: mae)')
   parser.add_argument('--raw', action='store_true',
                       help='Re-run each fold best checkpoint to recompute the selected metric')
+  parser.add_argument('--export-predictions', action='store_true',
+                      help='Re-run best checkpoints and save merged test metadata and predictions '
+                           'beside --out as <output_stem>_predictions.csv (--raw is optional)')
   parser.add_argument('--ffsp', default=None, help='Override features_folder_saving_path for re-inference')
   args = parser.parse_args()
 
   raw_suffix = '_raw' if args.raw else ''
   default_name = f'test_table_{args.metric}{raw_suffix}.csv'
   out = args.out or os.path.join(os.path.dirname(args.pkl), default_name)
-  df = extract_table(args.pkl, raw=args.raw, ffsp_override=args.ffsp, metric=args.metric)
+  predictions_out = os.path.splitext(out)[0] + '_predictions.csv' if args.export_predictions else None
+  df = extract_table(args.pkl, raw=args.raw, ffsp_override=args.ffsp, metric=args.metric,
+                     predictions_out=predictions_out)
   df.to_csv(out, index=False, float_format='%.4f')
   print(df.to_string(index=False))
   print(f"\nSaved to {out}")
+  if predictions_out is not None:
+    print(f'Saved predictions to {predictions_out}')
 
 
 if __name__ == '__main__':
