@@ -619,6 +619,51 @@ def test_presentation_title_uses_origin_models_and_stage(
     assert pcp.presentation_title("123", origin, result, 4.0, stage=stage) == expected
 
 
+@pytest.mark.parametrize("template", [
+    "Source model — {} (BIOVID)",
+    "Target model — {} (UNBC)",
+    "Native target — {} (UNBC)",
+    "Native {} (UNBC)",
+    "{} (native)",
+])
+@pytest.mark.parametrize("models", [("VideoMAE", "DFER"), ("DFER", "VideoMAE")])
+def test_native_model_colors_are_independent_of_line_order(template, models):
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import to_hex
+
+    curves = {template.format(model): [1.0, 2.0] for model in models}
+    figure = pcp.make_prediction_figure(curves, [(0, 15), (0, 31)], 3.0, "Colors")
+    try:
+        colors = {line.get_label(): to_hex(line.get_color())
+                  for line in figure.axes[0].lines}
+        assert colors[template.format("VideoMAE")] == "#1f77b4"
+        assert colors[template.format("DFER")] == "#2ca02c"
+    finally:
+        plt.close(figure)
+
+
+def test_other_curves_never_use_reserved_model_colors():
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import to_hex
+
+    labels = [
+        "Projection-only (mean) — VideoMAE (BIOVID) → DFER (UNBC)",
+        "Task-aware ref. (mean) — VideoMAE (BIOVID) → DFER (UNBC)",
+        "Target new_idx=0 — DFER (UNBC)",
+        *[f"Source old_idx={index} — DFER (UNBC) → VideoMAE (BIOVID)"
+          for index in range(12)],
+    ]
+    figure = pcp.make_prediction_figure(
+        {label: [1.0, 2.0] for label in labels},
+        [(0, 15), (0, 31)], 3.0, "Colors")
+    try:
+        for line in figure.axes[0].lines[:-1]:
+            assert to_hex(line.get_color()) not in {"#1f77b4", "#2ca02c"}
+        assert to_hex(figure.axes[0].lines[-1].get_color()) == "#000000"
+    finally:
+        plt.close(figure)
+
+
 def test_long_cross_presentation_title_fits_figure():
     import matplotlib.pyplot as plt
 
