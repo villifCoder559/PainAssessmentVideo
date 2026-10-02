@@ -1067,7 +1067,7 @@ def _heatmap_figure(summary: pd.DataFrame, direction: str, metric: str) -> Any:
     if np.isclose(vmin, vmax):
         vmax = vmin + 1e-12
     figure, axes = plt.subplots(
-        1, 3, figsize=(max(14, len(anchors) * 1.8), 4.8), squeeze=False
+        1, 3, figsize=(max(18, len(anchors) * 2.5), 4.8), squeeze=False
     )
     image = None
     for column, (plot_stage, matrix) in enumerate(
@@ -1104,10 +1104,10 @@ def _heatmap_figure(summary: pd.DataFrame, direction: str, metric: str) -> Any:
                     fontsize=8,
                     color="black",
                 )
+    figure.subplots_adjust(top=0.82, bottom=0.14, wspace=0.45)
     if image is not None:
         figure.colorbar(image, ax=axes.ravel().tolist(), label=f"Final source {metric}-MAE (lower is better)")
     figure.suptitle(f"{direction}: final source MAE heatmap")
-    figure.subplots_adjust(top=0.82, bottom=0.14, wspace=0.28)
     return figure
 
 
