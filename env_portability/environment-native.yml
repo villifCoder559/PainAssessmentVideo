@@ -1,0 +1,11 @@
+# REQUIRED addition for CPU training/video loading on Linux x86_64 or Intel macOS.
+# This is an overlay: create environment.yml first, then use conda env update.
+name: pain-portable
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.10
+  - pytorch-cpu>=2.5.1,<2.6
+  - torchsort>=0.1.9,<0.2
+  - decord>=0.6,<0.7
