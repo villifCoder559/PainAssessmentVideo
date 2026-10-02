@@ -1,0 +1,13 @@
+# REQUIRED addition for native Windows x86_64 CPU training/video loading.
+# Conda-forge has CPU torchsort, but no Windows decord package.
+name: pain-portable
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.10
+  - pytorch-cpu>=2.5.1,<2.6
+  - torchsort>=0.1.9,<0.2
+  - pip
+  - pip:
+      - decord>=0.6,<0.7
