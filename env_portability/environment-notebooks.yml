@@ -1,0 +1,11 @@
+# Optional notebook frontend/kernel and repository test tooling.
+name: pain-portable
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.10
+  - ipykernel
+  - ipython
+  - jupyterlab
+  - pytest
