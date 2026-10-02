@@ -1,0 +1,26 @@
+# Optional/bundled workflows; NOT part of the exact active-environment snapshot.
+# No versions are invented for packages absent from the inspected environment.
+# Solve and test in a separate environment before generating a new lock.
+# VideoMAEv2/run_class_finetuning.py imports this unconditionally; MAE_DFER gates it.
+deepspeed
+# Declared by JEPA/V-JEPA 2 requirements, not imported by the inspected source.
+beartype
+braceexpand
+# Declared by V-JEPA 2 requirements (its setup.py additionally requires Python >=3.11).
+iopath
+peft
+fire
+python-box
+ftfy
+jupyter
+# Optional source-only/GPU/storage imports intentionally require a chosen source:
+# apex: NVIDIA Apex, NOT the unrelated PyPI package named apex.
+# petrel_client: Petrel object-storage client, credentials/config required.
+# hierarchies: historical ImageNet hierarchy generator; source/revision unresolved.
+# Historical manifests also mention fastText, tensorflow, git-lfs and obsolete triton.
+# They are not live third-party imports; do not merge their old pins into this setup.
+
+# V-JEPA 2 development/CI tools, copied from requirements-test.txt; not runtime imports.
+# black==26.3.1
+# flake8==7.0.0
+# isort==5.13.2
