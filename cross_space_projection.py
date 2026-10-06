@@ -158,7 +158,10 @@ def _set_global_seed(seed):
 # (as opposed to the anchor-weighted distance metrics cos/l1/l2/l_inf/geodesic).
 # All require weighting_method='none' and num_anchors > 0.
 _PROJECTOR_KINDS = ('linear', 'mlp', 'procrustes', 'linear_close', 'autoencoder')
-_RANDOM_PROJECTOR_KINDS = ('linear', 'mlp', 'autoencoder')
+# Projector kinds with a seeded random frozen counterpart (--refinement 4/5). The
+# closed-form kinds get a random map of the same family: linear_close → random affine
+# nn.Linear, procrustes → data-free random semi-orthogonal rotation (s=1, no centering).
+_RANDOM_PROJECTOR_KINDS = ('linear', 'mlp', 'autoencoder', 'linear_close', 'procrustes')
 
 
 def _projector_key(interp, mlp_activation, mlp_num_layers=1):
@@ -289,7 +292,8 @@ LINEAR_PROJECTOR_CONFIG = {
 #       projector kinds (frozen projector) AND the distance metrics (cos/l1/l2/l_inf/
 #       geodesic, fixed interpolation), since no trainable projector is required.
 #   'random_projector_linear' (--refinement 4): replace the learned projector with the
-#       selected linear/mlp/autoencoder architecture at its seeded random initialization,
+#       selected linear/mlp/autoencoder/linear_close/procrustes architecture at its seeded
+#       random initialization (_build_random_projector_bundle),
 #       freeze it, and fine-tune only a COPY of head.linear. --refinement 5 runs all three
 #       applicable modes; --refinement 3 retains its legacy two-mode behavior.
 #
@@ -303,7 +307,7 @@ LINEAR_PROJECTOR_CONFIG = {
 REFINEMENT_CONFIG = {
   'enabled':            False,    # default off; toggle per-run via the --refinement CLI flag
   'mode':               'projector_linear',  # set from --refinement; see _REFINE_FLAG_TO_MODES
-  'procrustes_constrained': False,  # projector_linear + interpolation_similarity='procrustes' ONLY:
+  'procrustes_constrained': True,  # projector_linear + interpolation_similarity='procrustes' ONLY:
                                     # keep the refined projector a true similarity transform — R held
                                     # (semi-)orthogonal at every step via a hard Stiefel constraint and
                                     # the scale a single isotropic scalar (see SimilarityProjector).
@@ -1275,9 +1279,17 @@ def _build_random_projector_bundle(old_anchors, new_anchors, kind, activation,
   # Keep random-ablation construction from advancing the legacy global torch RNG stream.
   with torch.random.fork_rng(devices=[]):
     torch.manual_seed(init_seed)
-    projector = _build_projector_network(
-      d_old, d_new, kind, activation, num_layers, encoder_ratio,
-    )
+    if kind == 'procrustes':
+      R = _random_semi_orthogonal(d_old, d_new)
+      projector = torch.nn.Linear(d_old, d_new)
+      with torch.no_grad():
+        projector.weight.copy_(torch.from_numpy(R.T.copy()))
+        projector.bias.zero_()
+    else:
+      projector = _build_projector_network(
+        d_old, d_new, 'linear' if kind == 'linear_close' else kind,
+        activation, num_layers, encoder_ratio,
+      )
   projector.requires_grad_(False).eval()
   norm_stats = _projector_norm_stats(old_emb, new_emb, cfg)
   return {
@@ -1295,7 +1307,31 @@ def _build_random_projector_bundle(old_anchors, new_anchors, kind, activation,
     'kind': kind,
     'projector_trained': False,
     'random_seed': init_seed,
+    **({'procrustes_params': {
+      'mu_old': np.zeros(d_old, np.float32),
+      'mu_new': np.zeros(d_new, np.float32),
+      'scale':  1.0,
+      'R':      R,
+    }} if kind == 'procrustes' else {}),
   }
+
+
+def _random_semi_orthogonal(d_old, d_new):
+  """
+  Draw a random semi-orthogonal R (D_old, D_new) from the current torch RNG.
+
+  QR of a Gaussian (max, min) matrix with the sign fix Q * sign(diag(R_qr)) gives a
+  Haar-distributed orthonormal frame, so R^T R = I when D_old >= D_new, else R R^T = I —
+  the same constraint set as _fit_procrustes_solution's R.
+
+  Returns:
+    np.ndarray: float32, shape (D_old, D_new).
+  """
+  G = torch.randn(max(d_old, d_new), min(d_old, d_new), dtype=torch.float64)
+  Q, R_qr = torch.linalg.qr(G)
+  Q = Q * torch.sign(torch.diagonal(R_qr))
+  R = Q if d_old >= d_new else Q.T
+  return R.numpy().astype(np.float32)
 
 
 def _build_projector_optimizer(params, cfg):
@@ -5855,8 +5891,8 @@ if __name__ == '__main__':
   # --- Hyper args: accept one or more values; multiple values trigger Optuna ---
   parser.add_argument('--num_anchors', type=int, nargs='+', required=True,
                       help='Number of anchor samples (one or more values to sweep)')
-  parser.add_argument('--num_refinement_samples', type=int, nargs='+', default=[0],
-                      help='Source-training sample budget(s) for refinement. 0 (default) '
+  parser.add_argument('--num_refinement_samples', type=int, nargs='+', default=[-1],
+                      help='Source-training sample budget(s) for refinement if 0 '
                            'uses the trial num_anchors; -1 uses the full source train split; '
                            'positive values use that explicit budget. Selection always reuses '
                            '--anchor_selection_type.')
@@ -5958,7 +5994,7 @@ if __name__ == '__main__':
                            'linear/mlp/procrustes/linear_close/autoencoder only); 3 = both legacy modes in one '
                            'run (linear_only + projector_linear; projector_linear is skipped for '
                            'distance metrics, so 3 collapses to 1 there); 4 = random-projector+'
-                           'linear ablation (linear/mlp/autoencoder only): initialize the projector '
+                           'linear ablation (linear/mlp/autoencoder/linear_close/procrustes only): initialize the projector '
                            'from --seed, freeze it, and train only a copy of head.linear; 5 = ALL '
                            'three modes (linear_only + projector_linear + random_projector_linear), '
                            'dropping modes that do not apply to a given interpolation. 1/2/3/4/5 require '
