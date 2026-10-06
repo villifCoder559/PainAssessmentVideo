@@ -227,6 +227,24 @@ class TestCrossSpaceFakeProjectionTables(unittest.TestCase):
     )
     self.assertEqual(len(summary), 4)
 
+  def test_accepts_float32_rounding_noise_in_fitted_metric(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      workspace = Path(tmp)
+      old_model = self._write_model(
+        workspace, "biovid_vmae", "partA", "VIDEOMAE_v2_S")
+      new_model = self._write_model(workspace, "unbc_dfer", "UNBC", "DFER")
+      root = workspace / "experiment"
+      self._write_simple_experiment(root, old_model, new_model)
+      csv_path = root / "fake_adapter_seed_results_fast.csv"
+      frame = pd.read_csv(csv_path)
+      # One float32 ULP, as seen when a CPU replay recomputes the fitted adapter.
+      frame.loc[frame["fake_projection_seed"].eq(43), "trained_adapter_mae_micro"] += 2.0 ** -23
+      frame.to_csv(csv_path, index=False)
+
+      summary = tables.summarize_root(root, fast_mode=True)
+
+    self.assertFalse(summary.empty)
+
   def test_rejects_invalid_incomplete_and_conflicting_rows(self):
     """Catch silent omission or averaging of untrustworthy replay records."""
     cases = (
