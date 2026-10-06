@@ -156,7 +156,8 @@ def _validated_rows(frame: pd.DataFrame, root: Path) -> pd.DataFrame:
       raise ValueError(f"Incomplete seed coverage under {root}: {key}")
     for fitted, _ in METRICS.values():
       values = rows[fitted].to_numpy(dtype=float)
-      if not all(math.isclose(values[0], value, rel_tol=1e-12, abs_tol=1e-12)
+      # Each seed replays the fitted adapter on CPU in float32, so allow a few ULPs.
+      if not all(math.isclose(values[0], value, rel_tol=1e-6, abs_tol=1e-12)
                  for value in values[1:]):
         raise ValueError(f"Seed-varying fitted metric {fitted} under {root}: {key}")
   return frame
