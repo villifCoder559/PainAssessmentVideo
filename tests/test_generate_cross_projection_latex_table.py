@@ -1258,5 +1258,233 @@ class TestGenerateTable(unittest.TestCase):
         )
 
 
+class TestComparisonTable(unittest.TestCase):
+  def setUp(self):
+    self.tmp = tempfile.TemporaryDirectory()
+    self.addCleanup(self.tmp.cleanup)
+    self.root = Path(self.tmp.name)
+    self.first = self.root / "unbc_to_mint"
+    self.second = self.root / "mint_to_unbc"
+    models = [
+      _write_model(self.root, name, dataset, model)
+      for name, dataset, model in (
+        ("unbc_vmae", "UNBC", "VIDEOMAE_v2_S"),
+        ("mint_dfer", "MIntPAIN", "DFER"),
+        ("mint_vmae", "MIntPAIN", "VIDEOMAE_v2_S"),
+        ("unbc_dfer", "UNBC", "DFER"),
+      )
+    ]
+    self.pkls = []
+    for direction, old, new in (
+      (self.first, *models[:2]), (self.second, *models[2:]),
+    ):
+      for method in ("linear", "mlp", "procrustes"):
+        rows = [
+          _summary_row(method, mode, values, projected=(0.71, 0.72))
+          for mode, values in (
+            ("linear_only", (0.61, 0.62, 0.63, 0.64, 0.7, 0.8, 1.0, 1.1)),
+            ("projector_linear", (0.51, 0.52, 0.53, 0.54, 0.7, 0.8, 1.0, 1.1)),
+          )
+        ]
+        self.pkls.append(_write_aggregate(direction, method, old, new, rows))
+    _write_root_summary(self.root, self.pkls)
+
+  def comparison(self, stages, *, consolidated=True, **kwargs):
+    return generate_table(
+      self.root if consolidated else self.first,
+      None if consolidated else self.second,
+      projection="real", compare_stages=stages, **kwargs,
+    )
+
+  def edit_summary(self, index, edit):
+    path = self.pkls[index].parent / "logs" / "summary.csv"
+    edit(pd.read_csv(path)).to_csv(path, index=False)
+    _write_root_summary(self.root, self.pkls)
+
+  def test_three_stages_use_role_groups_and_native_baselines(self):
+    for consolidated in (True, False):
+      with self.subTest(consolidated=consolidated):
+        latex = self.comparison(
+          ("projector_only", "linear_only", "projector_linear"),
+          consolidated=consolidated,
+        )
+        self.assertIn(r"\multicolumn{4}{c}{\textbf{Projected-source}}", latex)
+        self.assertIn(r"\multicolumn{3}{c}{\textbf{Native-target}}", latex)
+        self.assertIn(r"\footnotesize VMAEv2-S $\to$ DFER", latex)
+        self.assertIn("Native source baseline", latex)
+        self.assertIn("Native target baseline", latex)
+        self.assertEqual(latex.count(r"\textbf{Projector-only}"), 1)
+        self.assertEqual(latex.count(r"\multirow{3}{*}{0.70 / 0.80}"), 2)
+        self.assertEqual(latex.count(r"\multirow{3}{*}{1.00 / 1.10}"), 2)
+        self.assertIn("0.71 / 0.72 & 0.61 / 0.62 & 0.51 / 0.52", latex)
+        self.assertIn("0.63 / 0.64 & 0.53 / 0.54", latex)
+        self.assertIn("Procrustes", latex)
+        self.assertIn("100 anchors", latex)
+        self.assertNotIn(r"\textbf{Anchors}", latex)
+
+  def test_two_stage_combinations_preserve_requested_order_and_precision(self):
+    for stages, widths, source in (
+      (("projector_only", "projector_linear"), (3, 2), "0.710 / 0.720 & 0.510 / 0.520"),
+      (("projector_only", "linear_only"), (3, 2), "0.710 / 0.720 & 0.610 / 0.620"),
+      (("projector_linear", "linear_only"), (3, 3), "0.510 / 0.520 & 0.610 / 0.620"),
+    ):
+      with self.subTest(stages=stages):
+        latex = self.comparison(stages, decimals=3)
+        self.assertIn(source, latex)
+        for width, role in zip(widths, ("Projected-source", "Native-target")):
+          self.assertIn(rf"\multicolumn{{{width}}}{{c}}{{\textbf{{{role}}}}}", latex)
+
+  def test_missing_method_stage_preserves_other_cells_and_baselines(self):
+    self.edit_summary(1, lambda frame: frame[frame.refine_mode != "projector_linear"])
+    for consolidated in (True, False):
+      latex = self.comparison(("projector_only", "projector_linear"), consolidated=consolidated)
+      section = latex.split(r"UNBC $\to$ MIntPAIN", 1)[1]
+      mlp = next(line for line in section.splitlines() if "& MLP &" in line)
+      self.assertIn("0.71 / 0.72 & X / X", mlp)
+      self.assertTrue(mlp.split("%", 1)[0].rstrip().endswith(r"X / X \\"))
+      self.assertIn(r"\multirow{3}{*}{1.00 / 1.10}", latex)
+      self.assertIn("0.51 / 0.52", latex)
+
+  def test_missing_entire_stage_still_keeps_projector_results(self):
+    for index in range(len(self.pkls)):
+      self.edit_summary(index, lambda frame: frame[frame.refine_mode == "linear_only"])
+    latex = self.comparison(("projector_only", "projector_linear"))
+    self.assertEqual(latex.split(r"\caption", 1)[0].count("X / X"), 12)
+    self.assertEqual(latex.count("0.71 / 0.72"), 6)
+
+  def test_varying_anchor_counts_add_column(self):
+    self.edit_summary(1, lambda frame: frame.assign(num_anchors=50))
+    latex = self.comparison(("projector_only", "projector_linear"))
+    self.assertIn(r"\textbf{Anchors}", latex)
+    self.assertIn("& MLP & 50 &", latex)
+    self.assertIn("& Linear & 100 &", latex)
+    self.assertNotIn("100 anchors", latex)
+
+  def test_inconsistent_anchors_across_stages_are_rejected(self):
+    def edit(frame):
+      frame.loc[frame.refine_mode == "projector_linear", "num_anchors"] = 50
+      return frame
+    self.edit_summary(0, edit)
+    with self.assertRaisesRegex(ValueError, "anchor"):
+      self.comparison(("linear_only", "projector_linear"))
+
+  def test_stage_baseline_disagreements_respect_consistency_option(self):
+    def edit(frame):
+      frame.loc[frame.refine_mode == "projector_linear", "srctest_mae_micro_old"] = 0.9
+      return frame
+    self.edit_summary(0, edit)
+    with self.assertRaisesRegex(ValueError, "baseline"):
+      self.comparison(("linear_only", "projector_linear"))
+    latex = self.comparison(("linear_only", "projector_linear"), skip_consistency_checks=True)
+    self.assertIn("0.70 / 0.80", latex)
+
+  def test_nonfinite_stage_metrics_are_errors_even_when_checks_are_skipped(self):
+    def edit(frame):
+      frame.loc[frame.refine_mode == "projector_linear", "srctest_mae_micro_after"] = float("inf")
+      return frame
+    self.edit_summary(0, edit)
+    with self.assertRaisesRegex(ValueError, "metric"):
+      self.comparison(("linear_only", "projector_linear"), skip_consistency_checks=True)
+
+  def test_missing_aggregate_mean_is_not_replaced_with_subtrial_baselines(self):
+    self.edit_summary(0, lambda frame: frame.assign(subtrial_index="0_0"))
+    for consolidated in (True, False):
+      with self.subTest(consolidated=consolidated), self.assertRaisesRegex(ValueError, "AGGREGATE_MEAN"):
+        self.comparison(("projector_only", "projector_linear"), consolidated=consolidated)
+
+  def test_duplicate_stage_rows_are_errors_in_both_input_modes(self):
+    self.edit_summary(0, lambda frame: pd.concat([
+      frame, frame[frame.refine_mode == "projector_linear"],
+    ], ignore_index=True))
+    for consolidated in (True, False):
+      with self.subTest(consolidated=consolidated), self.assertRaisesRegex(ValueError, "AGGREGATE_MEAN|Duplicate"):
+        self.comparison(("projector_only", "projector_linear"), consolidated=consolidated)
+
+  def test_missing_stage_columns_only_blank_the_affected_stage(self):
+    for index in range(len(self.pkls)):
+      self.edit_summary(index, lambda frame: frame.drop(columns=[
+        "srctest_mae_micro_after", "srctest_mae_macro_after",
+        "newtest_mae_micro_after", "newtest_mae_macro_after",
+      ]))
+    for consolidated in (True, False):
+      latex = self.comparison(("projector_only", "projector_linear"), consolidated=consolidated)
+      self.assertEqual(latex.split(r"\caption", 1)[0].count("X / X"), 12)
+      self.assertEqual(latex.count("0.71 / 0.72"), 6)
+
+  def test_fake_projection_filter_is_applied_before_comparing(self):
+    with self.pkls[0].open("rb") as handle:
+      config = pickle.load(handle)["config_cross_space_projection"]
+    fake = _write_aggregate(
+      self.first, "linear", config["old_model_pth"][0], config["new_model_pth"][0],
+      [_summary_row("linear", "projector_linear",
+                    (2.1, 2.2, 2.3, 2.4, 0.7, 0.8, 1.0, 1.1), projected=(3.1, 3.2))],
+      fake_distribution="standard_normal",
+    )
+    _write_root_summary(self.root, [*self.pkls, fake])
+    real = self.comparison(("projector_only", "projector_linear"))
+    self.assertNotIn("3.10 / 3.20", real)
+    fake_latex = generate_table(
+      self.root, projection="fake", fake_distribution="standard_normal",
+      compare_stages=("projector_only", "projector_linear"),
+    )
+    self.assertIn("3.10 / 3.20 & 2.10 / 2.20", fake_latex)
+    self.assertNotIn("& MLP &", fake_latex)
+
+  def write_adapter_seeds(self, *, missing_joint=False):
+    for direction, pkl in ((self.first, self.pkls[0]), (self.second, self.pkls[3])):
+      with pkl.open("rb") as handle:
+        config = pickle.load(handle)["config_cross_space_projection"]
+      for seed, values in (
+        (42, (0.2, 0.3, 0.4, 0.5, 0.7, 0.8, 1.0, 1.1)),
+        (43, (0.4, 0.5, 0.6, 0.7, 0.7, 0.8, 1.0, 1.1)),
+      ):
+        modes = ("linear_only",) if missing_joint and seed == 43 else ("linear_only", "projector_linear")
+        _write_aggregate(
+          direction, "linear", config["old_model_pth"][0], config["new_model_pth"][0],
+          [_summary_row("linear", mode, values, projected=(0.71, 0.72)) for mode in modes],
+          fake_control="fake_adapter", adapter_seed=seed,
+        )
+
+  def test_fake_adapter_comparison_averages_seeds(self):
+    self.write_adapter_seeds()
+    latex = generate_table(
+      self.first, self.second, projection="fake_adapter",
+      compare_stages=("projector_only", "projector_linear"),
+    )
+    self.assertEqual(latex.count("0.71 / 0.72 & 0.30 / 0.40"), 2)
+    self.assertEqual(latex.count("0.50 / 0.60"), 2)
+
+  def test_fake_adapter_missing_seed_stage_keeps_other_results(self):
+    self.write_adapter_seeds(missing_joint=True)
+    latex = generate_table(
+      self.first, self.second, projection="fake_adapter",
+      compare_stages=("projector_only", "projector_linear"),
+    )
+    self.assertEqual(latex.split(r"\caption", 1)[0].count("X / X"), 4)
+    self.assertEqual(latex.count("0.71 / 0.72 & X / X"), 2)
+    self.assertEqual(latex.count("1.00 / 1.10"), 2)
+
+  def test_invalid_stage_selections_are_rejected(self):
+    for stages in ((), ("linear_only",), ("linear_only", "linear_only"),
+                   ("projector_only", "random_projector_linear")):
+      with self.subTest(stages=stages), self.assertRaises(ValueError):
+        self.comparison(stages)
+    with self.assertRaises(ValueError):
+      self.comparison(("projector_only", "projector_linear"), stage="all")
+
+  def test_cli_comparison_writes_table_and_rejects_both_stage_options(self):
+    output = self.root / "comparison.tex"
+    command = [
+      sys.executable, str(REPO_ROOT / "cross_space_generate_latex_table.py"),
+      str(self.root), "--projection", "real", "--compare-stages",
+      "projector_only", "projector_linear", "--output", str(output),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True)
+    self.assertEqual(result.returncode, 0, result.stderr)
+    self.assertIn("Native source baseline", output.read_text())
+    result = subprocess.run(command + ["--stage", "all"], capture_output=True, text=True)
+    self.assertNotEqual(result.returncode, 0)
+
+
 if __name__ == "__main__":
   unittest.main()
