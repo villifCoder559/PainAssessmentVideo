@@ -30,6 +30,11 @@ STAGES = (
   "projector_linear",
   "random_projector_linear",
 )
+COMPARISON_STAGE_NAMES = {
+  "projector_only": "Projector-only",
+  "linear_only": "Linear-only refinement",
+  "projector_linear": "Joint refinement",
+}
 STAGE_CAPTIONS = {
   "projector_only": "Projector-only cross-projection results",
   "linear_only": "Linear-only refinement cross-projection results",
@@ -194,7 +199,7 @@ def _fake_adapter_identity(config: dict, row: dict, stage: str) -> str:
     "new_model_pth": _path_list(config.get("new_model_pth")),
     "method": row.get("method"),
     "num_anchors": row.get("num_anchors"),
-    "refine_mode": row.get("refine_mode") if stage != "projector_only" else None,
+    "refine_mode": stage if stage != "projector_only" else None,
   }
   for key in (
     "anchor_selection_type", "csv_anchor_selection", "old_model_csv",
@@ -232,6 +237,8 @@ def _load_direction(
     if not summary_path.is_file():
       raise ValueError(f"Missing aggregate summary: {summary_path}")
     summary = pd.read_csv(summary_path)
+    if summary.empty:
+      raise ValueError(f"Empty aggregate summary: {summary_path}")
     required = [
       "subtrial_index",
       "interpolation_similarity",
@@ -253,6 +260,16 @@ def _load_direction(
     stage_missing = [
       column for column in stage_required if column not in summary.columns
     ]
+    selected = aggregate_mean.iloc[:0]
+    if stage != "projector_only" and "refine_mode" in aggregate_mean.columns:
+      selected = aggregate_mean.loc[
+        aggregate_mean["refine_mode"].astype(str).eq(stage)
+      ]
+      if len(selected) > 1:
+        raise ValueError(
+          f"Expected one AGGREGATE_MEAN/{stage} row in {summary_path}, "
+          f"found {len(selected)}."
+        )
     reason = None
     if stage_missing:
       reason = f"missing columns in {summary_path}: {', '.join(stage_missing)}"
@@ -271,9 +288,6 @@ def _load_direction(
           )
       row = aggregate_mean.iloc[0].to_dict()
     else:
-      selected = aggregate_mean.loc[
-        aggregate_mean["refine_mode"].astype(str).eq(stage)
-      ]
       if len(selected) != 1:
         reason = (
           f"expected one AGGREGATE_MEAN/{stage} row in {summary_path}, "
@@ -298,6 +312,7 @@ def _load_direction(
     row.update({
       "method": method,
       "source_pkl": str(pkl_path.relative_to(root)),
+      "_stage_available": reason is None,
     })
     if projection == "fake_adapter":
       metadata = data.get("fake_projection_metadata") or {}
@@ -336,6 +351,7 @@ def _load_direction(
           f"Inconsistent fake-adapter configuration for method {method} under: {root}"
         )
       row = dict(parts[0])
+      row["_stage_available"] = all(part["_stage_available"] for part in parts)
       numeric = set(BASELINE_COLUMNS)
       for columns in STAGE_COLUMNS.values():
         numeric.update(columns)
@@ -389,8 +405,9 @@ def _root_summary_directions(
   fake_distribution: str | None,
   *,
   skip_consistency_checks: bool = False,
+  allow_unavailable: bool = False,
 ) -> list[dict]:
-  """Load one consolidated summary and return directions containing ``stage``."""
+  """Load a stage, optionally retaining methods whose stage is unavailable."""
   summary_path = root / "aggregated_summary.csv"
   if not summary_path.is_file():
     raise ValueError(f"Missing consolidated summary: {summary_path}")
@@ -403,10 +420,14 @@ def _root_summary_directions(
     "interpolation_similarity",
     "num_anchors",
     *BASELINE_COLUMNS,
-    *STAGE_COLUMNS[stage],
   ]
-  if stage != "projector_only":
-    required.append("refine_mode")
+  stage_required = [
+    *STAGE_COLUMNS[stage],
+    *(["refine_mode"] if stage != "projector_only" else []),
+  ]
+  if not allow_unavailable:
+    required.extend(stage_required)
+  stage_missing = [column for column in stage_required if column not in summary.columns]
   missing = [column for column in required if column not in summary.columns]
   if missing:
     raise ValueError(
@@ -415,7 +436,11 @@ def _root_summary_directions(
   rows = summary.loc[
     summary["subtrial_index"].astype(str).eq("AGGREGATE_MEAN")
   ]
-  if stage != "projector_only":
+  if allow_unavailable:
+    # Retain one representative of malformed aggregates for validation below.
+    without_mean = summary.loc[~summary["source_pkl"].isin(rows["source_pkl"])]
+    rows = pd.concat([rows, without_mean.drop_duplicates("source_pkl")])
+  if stage != "projector_only" and not allow_unavailable:
     rows = rows.loc[rows["refine_mode"].astype(str).eq(stage)]
 
   grouped: dict[tuple[tuple[str, str], tuple[str, str]], list[dict]] = {}
@@ -433,6 +458,8 @@ def _root_summary_directions(
     data = pkl_cache[pkl_path]
     if not _selected_aggregate(data, projection, fake_distribution):
       continue
+    if allow_unavailable and str(row["subtrial_index"]) != "AGGREGATE_MEAN":
+      raise ValueError(f"Missing AGGREGATE_MEAN row for aggregate: {pkl_path}")
     config = data.get("config_cross_space_projection") or {}
     old_metadata = _model_metadata(row["old_model_pth"])
     new_metadata = _model_metadata(row["new_model_pth"])
@@ -452,15 +479,19 @@ def _root_summary_directions(
       by_method.setdefault(row["method"], []).append(row)
     collapsed = []
     for method, method_rows in by_method.items():
-      if len(method_rows) > 1:
+      selected = method_rows if stage == "projector_only" else [
+        row for row in method_rows if str(row.get("refine_mode")) == stage
+      ]
+      available = bool(selected) and not stage_missing
+      if len(selected) > 1:
         if stage != "projector_only":
           raise ValueError(
             f"Duplicate aggregate method {method} for "
             f"{old_metadata[0]} -> {new_metadata[0]} in {summary_path}"
           )
-        for column in RESULT_COLUMNS[stage]:
+        for column in (() if stage_missing else RESULT_COLUMNS[stage]):
           values = pd.to_numeric(
-            pd.Series([item[column] for item in method_rows]), errors="coerce"
+            pd.Series([item[column] for item in selected]), errors="coerce"
           )
           if not skip_consistency_checks and (
             values.isna().any() or not math.isclose(
@@ -470,7 +501,9 @@ def _root_summary_directions(
             raise ValueError(
               f"Inconsistent projector_only column {column} in {summary_path}."
             )
-      collapsed.append(method_rows[0])
+      row = dict((selected or method_rows)[0])
+      row["_stage_available"] = available
+      collapsed.append(row)
     for column in BASELINE_COLUMNS:
       values = pd.to_numeric(
         pd.Series([row[column] for row in collapsed]), errors="coerce"
@@ -492,7 +525,7 @@ def _root_summary_directions(
       "target_dataset": new_metadata[0],
       "new_model": new_metadata[1],
       "rows": collapsed,
-      "stage_available": True,
+      "stage_available": all(row["_stage_available"] for row in collapsed),
       "stage_reason": "",
     })
 
@@ -831,19 +864,215 @@ def _generate_root_stage_table(
   )
 
 
+def _comparison_pair(
+  row: dict | None, columns: tuple[str, str], decimals: int,
+) -> str:
+  """Format a comparison cell, rejecting malformed or non-finite metrics."""
+  if row is None:
+    return "X / X"
+  values = []
+  for column in columns:
+    try:
+      value = float(row[column])
+    except (KeyError, TypeError, ValueError):
+      raise ValueError(f"Invalid metric {column} in {row['source_pkl']}.") from None
+    if not math.isfinite(value):
+      raise ValueError(f"Non-finite metric {column} in {row['source_pkl']}.")
+    values.append(_metric(value, decimals))
+  return " / ".join(values)
+
+
+def _generate_comparison_table(
+  first_root: str | Path,
+  second_root: str | Path | None,
+  *,
+  projection: str,
+  stages: tuple[str, ...],
+  fake_distribution: str | None,
+  decimals: int,
+  skip_consistency_checks: bool,
+) -> str:
+  """Merge selected stages by direction and method into one comparison table."""
+  grouped = {}
+  for stage in stages:
+    if second_root is None:
+      directions = _root_summary_directions(
+        Path(first_root), projection, stage, fake_distribution,
+        allow_unavailable=True, skip_consistency_checks=skip_consistency_checks,
+      )
+    else:
+      directions = [
+        _load_direction(
+          Path(root), projection, stage, fake_distribution,
+          allow_unavailable=True, skip_consistency_checks=skip_consistency_checks,
+        )
+        for root in (first_root, second_root)
+      ]
+      first, second = directions
+      if (first['source_dataset'] != second['target_dataset']
+          or first['target_dataset'] != second['source_dataset']):
+        raise ValueError("Experiment roots are not inverse datasets.")
+    for direction in directions:
+      key = tuple(direction[name] for name in (
+        "source_dataset", "target_dataset", "old_model", "new_model",
+      ))
+      if key not in grouped:
+        grouped[key] = {**direction, "methods": {}, "baseline": direction['rows'][0]}
+      merged = grouped[key]
+      for row in direction['rows']:
+        if str(row['subtrial_index']) != "AGGREGATE_MEAN":
+          raise ValueError(f"Missing AGGREGATE_MEAN row in {row['source_pkl']}.")
+        baseline = merged['baseline']
+        # Validate every baseline even if repeated-value checks are disabled.
+        _comparison_pair(row, tuple(BASELINE_COLUMNS[:2]), decimals)
+        _comparison_pair(row, tuple(BASELINE_COLUMNS[2:]), decimals)
+        if not skip_consistency_checks:
+          for column in BASELINE_COLUMNS:
+            if not math.isclose(float(row[column]), float(baseline[column]),
+                                rel_tol=1e-7, abs_tol=1e-8):
+              raise ValueError(f"Inconsistent baseline column {column} across stages.")
+        try:
+          anchors = float(row['num_anchors'])
+        except (TypeError, ValueError):
+          raise ValueError(f"Invalid anchor count in {row['source_pkl']}.") from None
+        if not math.isfinite(anchors) or not anchors.is_integer() or anchors <= 0:
+          raise ValueError(f"Invalid anchor count in {row['source_pkl']}.")
+        method = merged['methods'].setdefault(row['method'], {
+          "anchors": int(anchors), "stages": {}, "source_pkls": [],
+        })
+        if method['anchors'] != int(anchors):
+          raise ValueError(
+            f"Inconsistent anchor counts across stages for {row['method']}: "
+            f"{direction['source_dataset']} -> {direction['target_dataset']}."
+          )
+        method['stages'][stage] = row if row['_stage_available'] else None
+        if row['source_pkl'] not in method['source_pkls']:
+          method['source_pkls'].append(row['source_pkl'])
+  if not grouped:
+    raise ValueError(f"No {projection} aggregate rows found under: {first_root}")
+
+  native_stages = tuple(stage for stage in stages if stage != "projector_only")
+  counts = {method['anchors'] for direction in grouped.values()
+            for method in direction['methods'].values()}
+  show_anchors = len(counts) > 1
+  prefix_columns = 3 if show_anchors else 2
+  source_width, target_width = 1 + len(stages), 1 + len(native_stages)
+  source_start = prefix_columns + 1
+  source_end = prefix_columns + source_width
+  column_end = source_end + target_width
+  headers = [r"\textbf{Direction}", r"\textbf{Map method}"]
+  if show_anchors:
+    headers.append(r"\textbf{Anchors}")
+  for baseline_name, group_stages in (
+    ("Native source baseline", stages), ("Native target baseline", native_stages),
+  ):
+    headers.extend(
+      rf"\makecell{{\textbf{{{name}}} \\ \textbf{{(MAE / Macro-MAE)}}}}"
+      for name in (baseline_name, *(COMPARISON_STAGE_NAMES[stage] for stage in group_stages))
+    )
+  roles = [""] * prefix_columns + [
+    rf"\multicolumn{{{source_width}}}{{c}}{{\textbf{{Projected-source}}}}",
+    rf"\multicolumn{{{target_width}}}{{c}}{{\textbf{{Native-target}}}}",
+  ]
+  datasets = sorted({dataset for direction in grouped.values()
+                     for dataset in (direction['source_dataset'], direction['target_dataset'])})
+  label = "_".join((
+    "tab_cross_projection", *(_label_slug(dataset) for dataset in datasets),
+    projection, "comparison", *stages,
+    *((fake_distribution,) if fake_distribution else ()),
+  ))
+  lines = [
+    r"\begin{table}[H]", r"\centering", r"\resizebox{\textwidth}{!}{%",
+    rf"\begin{{tabular}}{{{'ll' + ('c' if show_anchors else '') + 'c' * (source_width + target_width)}}}",
+    r"    \toprule", "    " + " & ".join(roles) + r" \\",
+    rf"    \cmidrule(lr){{{source_start}-{source_end}}}"
+    rf"\cmidrule(lr){{{source_end + 1}-{column_end}}}",
+    "    " + " & ".join(headers) + r" \\", r"    \midrule",
+  ]
+  for index, direction in enumerate(grouped.values()):
+    if index:
+      lines.append(r"    \midrule")
+    methods = sorted(direction['methods'], key=_method_sort_key)
+    row_count = len(methods)
+    lines.extend([
+      rf"    \multirow{{{row_count}}}{{*}}{{\shortstack{{"
+      rf"{_escape(direction['source_dataset'])} $\to$ "
+      rf"{_escape(direction['target_dataset'])} \\",
+      rf"    \footnotesize {_escape(direction['old_model'])} $\to$ "
+      rf"{_escape(direction['new_model'])}}}}}",
+    ])
+    for method_index, method_name in enumerate(methods):
+      method = direction['methods'][method_name]
+      cells = [_escape(METHOD_NAMES.get(method_name, method_name.replace('_', ' ').title()))]
+      if show_anchors:
+        cells.append(str(method['anchors']))
+      for baseline_columns, group_stages, result_offset in (
+        (tuple(BASELINE_COLUMNS[:2]), stages, 0),
+        (tuple(BASELINE_COLUMNS[2:]), native_stages, 2),
+      ):
+        value = _comparison_pair(direction['baseline'], baseline_columns, decimals)
+        cells.append(rf"\multirow{{{row_count}}}{{*}}{{{value}}}" if method_index == 0 else "")
+        cells.extend(
+          _comparison_pair(method['stages'].get(stage),
+                           RESULT_COLUMNS[stage][result_offset:result_offset + 2], decimals)
+          for stage in group_stages
+        )
+      lines.append("    & " + " & ".join(cells) + r" \\ % ("
+                   + ";".join(method['source_pkls']) + ")")
+  caption = (
+    "Comparison of " + ", ".join(COMPARISON_STAGE_NAMES[stage] for stage in stages)
+    + ". Results are reported as MAE / Macro-MAE. Projected-source evaluates "
+    "mapped source representations with the target regression head; native-target "
+    "evaluates native target representations. Baselines report each original model "
+    "on its own dataset."
+  )
+  if projection == "fake_adapter":
+    caption += " Random adapter control."
+  elif projection == "fake":
+    caption += f" Fake embeddings control ({fake_distribution})."
+  if not show_anchors:
+    caption += f" All mapping methods use {next(iter(counts))} anchors."
+  if any(row is None for direction in grouped.values()
+         for method in direction['methods'].values() for row in method['stages'].values()):
+    caption += " X / X denotes unavailable stage results."
+  caption += " Lower values indicate better performance."
+  lines.extend([
+    r"    \bottomrule", r"\end{tabular}", "}",
+    rf"\caption{{{_escape(caption)}}}", rf"\label{{{label}}}", r"\end{table}",
+  ])
+  return "\n".join(lines) + "\n"
+
+
 def generate_table(
   first_root: str | Path,
   second_root: str | Path | None = None,
   *,
   projection: str,
-  stage: str,
+  stage: str | None = None,
+  compare_stages: tuple[str, ...] | list[str] | None = None,
   fake_distribution: str | None = None,
   decimals: int = 2,
   skip_consistency_checks: bool = False,
 ) -> str:
-  """Generate one stage, or all available stages, as LaTeX tables."""
+  """Generate separate stage tables, or one table comparing selected stages."""
   if not isinstance(decimals, int) or decimals < 0:
     raise ValueError("decimals must be non-negative.")
+  if compare_stages is not None:
+    if stage is not None:
+      raise ValueError("stage and compare_stages are mutually exclusive.")
+    if (not isinstance(compare_stages, (list, tuple))
+        or len(compare_stages) not in (2, 3)
+        or any(current not in COMPARISON_STAGE_NAMES for current in compare_stages)
+        or len(set(compare_stages)) != len(compare_stages)):
+      raise ValueError(
+        "compare_stages must contain two or three distinct stages from "
+        "projector_only, linear_only, projector_linear."
+      )
+    return _generate_comparison_table(
+      first_root, second_root, projection=projection, stages=tuple(compare_stages),
+      fake_distribution=fake_distribution, decimals=decimals,
+      skip_consistency_checks=skip_consistency_checks,
+    )
   if stage not in (*STAGES, "all"):
     raise ValueError(f"Unknown stage: {stage}")
   if second_root is None:
@@ -910,10 +1139,14 @@ def parse_args() -> argparse.Namespace:
     "--fake-distribution",
     choices=("matched_gaussian", "standard_normal"),
   )
-  parser.add_argument(
+  stage_options = parser.add_mutually_exclusive_group(required=True)
+  stage_options.add_argument(
     "--stage",
     choices=(*STAGES, "all"),
-    required=True,
+  )
+  stage_options.add_argument(
+    "--compare-stages", nargs="+", choices=tuple(COMPARISON_STAGE_NAMES),
+    help="Compare two or three selected stages side by side in one table.",
   )
   parser.add_argument("--decimals", type=int, default=2)
   parser.add_argument(
@@ -938,6 +1171,7 @@ def main() -> None:
       args.second_root,
       projection=args.projection,
       stage=args.stage,
+      compare_stages=args.compare_stages,
       fake_distribution=args.fake_distribution,
       decimals=args.decimals,
       skip_consistency_checks=args.skip_consistency_checks,
@@ -945,18 +1179,22 @@ def main() -> None:
   except ValueError as exc:
     raise SystemExit(f"error: {exc}") from None
   try:
+    output_stage = (
+      "comparison-" + "-".join(args.compare_stages)
+      if args.compare_stages is not None else args.stage
+    )
     output = args.output or (
       _default_output_path(
         args.first_root,
         args.projection,
-        args.stage,
+        output_stage,
         args.fake_distribution,
       )
       if args.second_root is not None
       else _default_root_output_path(
         args.first_root,
         args.projection,
-        args.stage,
+        output_stage,
         args.fake_distribution,
       )
     )
