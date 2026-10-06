@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
+import pytest
 import torch
 
 
@@ -60,9 +61,9 @@ def test_refinement_flags_add_random_only_and_all_modes():
 
 
 def test_random_mode_applies_only_to_randomizable_projectors():
-    for kind in ("linear", "mlp", "autoencoder"):
+    for kind in ("linear", "mlp", "autoencoder", "linear_close", "procrustes"):
         assert csp._applicable_refine_modes(4, kind, 10) == ["random_projector_linear"]
-    for kind in ("procrustes", "linear_close", "cos", "geodesic"):
+    for kind in ("cos", "geodesic"):
         assert csp._applicable_refine_modes(4, kind, 10) == []
     assert csp._applicable_refine_modes(4, "linear", 0) == []
 
@@ -76,8 +77,56 @@ def test_all_mode_keeps_legacy_fallbacks_for_nonrandom_projectors():
     assert csp._applicable_refine_modes(5, "procrustes", 10) == [
         "linear_only",
         "projector_linear",
+        "random_projector_linear",
     ]
     assert csp._applicable_refine_modes(5, "cos", 10) == ["linear_only"]
+
+
+def test_random_procrustes_is_frozen_data_free_semi_orthogonal_rotation():
+    for d_old, d_new in ((8, 5), (5, 8), (6, 6)):
+        old, new = _anchors(d_old=d_old, d_new=d_new)
+        cfg = _projector_cfg(normalize_embeddings=False)
+        bundle = csp._build_random_projector_bundle(
+            old, new, kind="procrustes", activation=None, cfg=cfg, seed=3,
+        )
+        again = csp._build_random_projector_bundle(
+            old, new, kind="procrustes", activation=None, cfg=cfg, seed=3,
+        )
+        other = csp._build_random_projector_bundle(
+            old, new, kind="procrustes", activation=None, cfg=cfg, seed=4,
+        )
+        proj = bundle["projector"]
+        R = proj.weight.detach().numpy().T.astype(np.float64)
+        gram = R.T @ R if d_old >= d_new else R @ R.T
+        assert np.allclose(gram, np.eye(min(d_old, d_new)), atol=1e-5)
+        assert np.allclose(R, bundle["procrustes_params"]["R"])
+        assert bundle["procrustes_params"]["scale"] == 1.0
+        assert not proj.bias.detach().any()
+        assert all(not p.requires_grad for p in proj.parameters())
+        assert torch.equal(proj.weight, again["projector"].weight)
+        assert not torch.equal(proj.weight, other["projector"].weight)
+        # Data-free: the map ignores the anchor contents.
+        old2, new2 = _anchors(seed=11, d_old=d_old, d_new=d_new)
+        swapped = csp._build_random_projector_bundle(
+            old2, new2, kind="procrustes", activation=None, cfg=cfg, seed=3,
+        )
+        assert torch.equal(proj.weight, swapped["projector"].weight)
+
+
+def test_random_linear_close_is_frozen_linear_with_its_own_draw():
+    old, new = _anchors(d_old=8, d_new=6)
+    cfg = _projector_cfg()
+    close = csp._build_random_projector_bundle(
+        old, new, kind="linear_close", activation=None, cfg=cfg, seed=5,
+    )
+    linear = csp._build_random_projector_bundle(
+        old, new, kind="linear", activation=None, cfg=cfg, seed=5,
+    )
+    assert isinstance(close["projector"], torch.nn.Linear)
+    assert close["projector"].weight.shape == (6, 8)
+    assert all(not p.requires_grad for p in close["projector"].parameters())
+    assert "procrustes_params" not in close
+    assert not torch.equal(close["projector"].weight, linear["projector"].weight)
 
 
 def test_only_random_mode_skips_learned_projector_fit():
@@ -181,8 +230,9 @@ def test_random_projector_stays_identical_while_head_updates(tmp_path):
         result["ckpt_paths"]["projector_after"]
 
 
-def test_optuna_trial_uses_random_bundle_and_refined_head(tmp_path):
-    old, new = _anchors(n=6, d_old=2, d_new=2)
+@pytest.mark.parametrize("kind", ["linear", "linear_close", "procrustes"])
+def test_optuna_trial_uses_random_bundle_and_refined_head(tmp_path, kind):
+    old, new = _anchors(n=6, d_old=3, d_new=2)
     old.update({
         "labels": np.linspace(0, 1, 6, dtype=np.float32),
         "sample_ids": np.arange(6, dtype=np.int64),
@@ -192,7 +242,7 @@ def test_optuna_trial_uses_random_bundle_and_refined_head(tmp_path):
     refinement_recipe = _refinement_cfg(epochs=1)
     refinement_tag = csp._refinement_tag(refinement_recipe)
     random_bundle = csp._build_random_projector_bundle(
-        old, new, kind="linear", activation=None, cfg=recipe, seed=13,
+        old, new, kind=kind, activation=None, cfg=recipe, seed=13,
     )
     head_before = torch.nn.Linear(2, 1)
     head_after = copy.deepcopy(head_before)
@@ -225,7 +275,7 @@ def test_optuna_trial_uses_random_bundle_and_refined_head(tmp_path):
     }
     random_bundle["ckpt_path"] = "other-count.pt"
     key = ("train", 6, "random")
-    random_key = csp._random_projector_bundle_key("linear", None, recipe)
+    random_key = csp._random_projector_bundle_key(kind, None, recipe)
     anchor_cache = {
         key: {
             "old": old,
@@ -249,7 +299,7 @@ def test_optuna_trial_uses_random_bundle_and_refined_head(tmp_path):
         "anchor_selection_type": "random",
         "csv_anchor_selection": "train",
         "old_model_csv": "test",
-        "interpolation_similarity": "linear",
+        "interpolation_similarity": kind,
         "mlp_activation": "gelu",
         "mlp_num_layers": 1,
         "weighting_method": "none",
@@ -279,3 +329,10 @@ def test_optuna_trial_uses_random_bundle_and_refined_head(tmp_path):
     assert result["linear_projector"]["random_seed"] == random_bundle["random_seed"]
     assert result["linear_projector"]["ckpt_path"] == "chosen.pt"
     assert result["refinement"]["refine_mode"] == "random_projector_linear"
+    assert result["linear_projector"]["kind"] == kind
+    if kind == "procrustes":
+        params = result["linear_projector"]["procrustes_params"]
+        assert params["scale"] == 1.0
+        assert not params["mu_old"].any() and not params["mu_new"].any()
+    else:
+        assert result["linear_projector"]["procrustes_params"] is None
