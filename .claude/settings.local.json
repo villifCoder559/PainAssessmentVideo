@@ -12,7 +12,8 @@
       "Bash(git commit *)",
       "Bash(python3 -m pytest tests/test_cross_space_summary_refinement.py -q)",
       "Bash(xargs -r ls -la)",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "Bash(python -m pytest tests/test_random_frozen_projector.py -q -p no:warnings -k optuna_trial -v)"
     ]
   },
   "enabledPlugins": {
