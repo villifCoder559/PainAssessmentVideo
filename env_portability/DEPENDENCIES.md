@@ -49,7 +49,7 @@ Standard-library roots and verified local modules (including `custom`, `MAE_DFER
 | `torchvision` | torchvision | environment.yml (Conda) | `custom/dataset.py:19` |
 | `tqdm` | tqdm | environment.yml (Conda) | `new_plot_tsne_post_head.py:15` |
 | `transformers` | transformers | environment.yml (Conda) | `custom/backbone.py:29` |
-| `tree_format` | tree-format | environment.yml (Conda) | `making_better_mistakes/data/scripts_asis/compute_inaturalist19_hierarchy.py:13` |
+| `tree_format` | tree-format | not installed (optional: only the as-is hierarchy scripts; its py2-tagged wheel fails `pip check`) | `making_better_mistakes/data/scripts_asis/compute_inaturalist19_hierarchy.py:13` |
 | `umap` | umap-learn | environment.yml (Conda) | `new_plot_tsne_post_head.py:8` |
 | `webdataset` | webdataset | environment.yml (Conda) | `vjepa2/evals/action_anticipation_frozen/epickitchens.py:17` |
 | `yaml` | pyyaml | environment.yml (Conda) | `tests/test_analyze_anchor_sweep_mae.py:11` |
