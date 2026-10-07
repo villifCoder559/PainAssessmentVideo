@@ -195,6 +195,8 @@ chunk_*
 *.csv
 # Environment documentation.
 !ENVIRONMENT.md
+!README.md
+!PORTABILITY_REPORT.md
 
 # Separate portable specifications and the relocated reproducibility artifacts.
 !env_portability/**
