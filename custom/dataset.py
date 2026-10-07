@@ -125,7 +125,10 @@ class customDataset(torch.utils.data.Dataset):
     if video_labels is not None:
       assert isinstance(video_labels, pd.DataFrame), "video_labels must be a pandas DataFrame."
       
-    assert os.path.exists(path_dataset), f"Dataset path {path_dataset} does not exist."
+    if not os.path.exists(path_dataset):
+      # Raw videos are optional when training from precomputed features (--ffsp);
+      # the path is still used to infer the dataset (see helper.set_step_shift).
+      print(f"WARNING: dataset path {path_dataset} does not exist; only precomputed features can be used.")
     assert clip_length > 0, "Clip length must be greater than 0."
     assert stride_window > 0, "Stride window must be greater than 0."
     assert sample_frame_strategy in SAMPLE_FRAME_STRATEGY, f"Sample frame strategy must be one of {SAMPLE_FRAME_STRATEGY}."
@@ -246,6 +249,10 @@ class customDataset(torch.utils.data.Dataset):
   def _load_reference_landmarks(self):
     """Load reference facial landmarks for face frontalization"""
     landmarks_path = os.path.join('partA', 'video', 'mean_face_landmarks_per_subject', 'all_subjects_mean_landmarks.pkl')
+    if not os.path.exists(landmarks_path):
+      # Optional asset (BioVid-derived); not needed when training from precomputed features.
+      self.reference_landmarks = None
+      return
     landmarks_data = pickle.load(open(landmarks_path, 'rb'))
     self.reference_landmarks = landmarks_data['mean_facial_landmarks']
 
@@ -1628,6 +1635,11 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
       total_samples += n_original_kept
       # Augmentation-only groups contribute augmentations only
       n_augment_groups = n_selected_with_original - n_original_kept
+      if n_augment_groups > 0 and not any(g['augmented'] for g in self.base_id_groups.values()):
+        raise FileNotFoundError(
+          f'keep_original={self.keep_original} < 1 needs augmented samples, but none were found. '
+          'Augmented embeddings must sit next to the --ffsp folder as sibling folders named '
+          '<ffsp>_<augmentation> (e.g. <ffsp>_jitter, <ffsp>_jitter$0); see README.md.')
       avg_aug = np.mean([min(self.n_keep_augmentations, len(g['augmented']))
                          for g in self.base_id_groups.values() if g['augmented']]) if n_augment_groups > 0 else 0
       total_samples += int(n_augment_groups * avg_aug)
