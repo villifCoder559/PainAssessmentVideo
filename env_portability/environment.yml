@@ -42,7 +42,6 @@ dependencies:
   - h5py
   - webdataset
   - configargparse
-  - tree-format
   - torch-optimizer
   - optuna>=4.3,<5
   - optunahub>=0.3,<1
