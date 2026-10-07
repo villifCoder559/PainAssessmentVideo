@@ -164,7 +164,7 @@ def get_loss(loss_name, dict_args=None):
     if dict_args is None or 'class_weights' not in dict_args:
       raise ValueError("class_weights must be provided for ce_weight loss")
     return nn.CrossEntropyLoss(
-      weight=torch.tensor(dict_args['class_weights'], dtype=torch.float32, device='cuda')
+      weight=torch.tensor(dict_args['class_weights'], dtype=torch.float32, device='cuda' if torch.cuda.is_available() else 'cpu')
     )
   elif loss_lower == 'huber':
     return nn.HuberLoss(delta=dict_args['delta_huber'])
@@ -191,7 +191,7 @@ def get_loss(loss_name, dict_args=None):
     return losses.SimLoss(
       number_of_classes=dict_args['num_classes'],
       reduction_factor=dict_args['sim_loss_reduction'],
-      device='cuda'
+      device='cuda' if torch.cuda.is_available() else 'cpu'
     )
   elif loss_lower == 'contrastive_reg':
     # if ',' not in dict_args['contrastive_loss_temp']:
