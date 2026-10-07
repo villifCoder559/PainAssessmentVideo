@@ -127,7 +127,7 @@ class Attention(nn.Module):
             if mask.ndim == 2:
                 mask = mask[:, None, None,:].expand(B, self.num_heads, N, N)
         if self.use_sdpa:
-            with torch.nn.attention.sdpa_kernel(backends=torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION):
+            with torch.nn.attention.sdpa_kernel(backends=[torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION, torch.nn.attention.SDPBackend.MATH]):  # MATH: CPU fallback
                 
                 x = F.scaled_dot_product_attention(q, k, v, 
                                                    dropout_p=self.attn_drop_value if self.training else 0.0,
@@ -229,7 +229,7 @@ class CrossAttention(nn.Module):
             if mask.ndim == 2:
                 mask = mask[:, None, None,:].expand(B, self.num_heads, n, N)
         if self.use_sdpa and not return_xattn and not XATTN_LOG_ENABLED:
-            with torch.nn.attention.sdpa_kernel(backends=torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION):
+            with torch.nn.attention.sdpa_kernel(backends=[torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION, torch.nn.attention.SDPBackend.MATH]):  # MATH: CPU fallback
                 # if mask is not None:
                 #     print("Debug")
                 q = F.scaled_dot_product_attention(q, k, v,
@@ -360,7 +360,7 @@ class SelfAttentionWithCLS(nn.Module):
         q, k, v = qkv[0], qkv[1], qkv[2]
 
         if self.use_sdpa:
-            with torch.nn.attention.sdpa_kernel(backends=torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION):
+            with torch.nn.attention.sdpa_kernel(backends=[torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION, torch.nn.attention.SDPBackend.MATH]):  # MATH: CPU fallback
                 z = F.scaled_dot_product_attention(
                     q, k, v,
                     dropout_p=self.attn_drop_value if self.training else 0.0,
