@@ -64,7 +64,7 @@ class CompositeLoss(nn.Module):
     #     break
     # if device is None:
       # fallback to CPU
-    device = torch.device('cuda')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     total_loss = torch.tensor(0.0, device=device, requires_grad=True, dtype=torch.float32)
     component_losses = {}
