@@ -199,12 +199,13 @@ class BaseHead(nn.Module):
       if dict_kwarg:
         for k,v in dict_kwarg.items():
           print(f'  {k}              : {v:.4f}' if isinstance(v,float) else f'  {k}              : {v}') 
-      free_gpu_mem,total_gpu_mem = torch.cuda.mem_get_info()
-      peak_gpu_mem = torch.cuda.max_memory_allocated() / 1024 ** 3
-      total_gpu_mem = total_gpu_mem / 1024 ** 3
-      free_gpu_mem = free_gpu_mem / 1024 ** 3
-      print(f'  GPU memory free  : {free_gpu_mem:.2f} GB')
-      print(f'  GPU memory peak  : {peak_gpu_mem:.2f} GB')
+      if torch.cuda.is_available():
+        free_gpu_mem,total_gpu_mem = torch.cuda.mem_get_info()
+        peak_gpu_mem = torch.cuda.max_memory_allocated() / 1024 ** 3
+        total_gpu_mem = total_gpu_mem / 1024 ** 3
+        free_gpu_mem = free_gpu_mem / 1024 ** 3
+        print(f'  GPU memory free  : {free_gpu_mem:.2f} GB')
+        print(f'  GPU memory peak  : {peak_gpu_mem:.2f} GB')
       
   def check_and_apply_latent_augmentation_(self,features,list_sample_id):
     # polarity inversion + gaussian noise
@@ -350,14 +351,17 @@ class BaseHead(nn.Module):
     # Generate Thread for smooth stopping 
     stop_event = threading.Event()
     def _wait_for_s():
-      cmd = input(">>> Type 's' + Enter to stop after this epoch: ")
+      try:
+        cmd = input(">>> Type 's' + Enter to stop after this epoch: ")
+      except EOFError:  # non-interactive stdin (e.g. < /dev/null, nohup, CI)
+        return
       if cmd.strip().lower() == 's':
         stop_event.set()
         print("Stopping training after this epoch...")
     threading.Thread(target=_wait_for_s, daemon=True).start()
     
     # Start training 
-    device = 'cuda'
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     self.to(device)
     # if init_network:
     self._initialize_weights(init_type=init_network)
@@ -617,7 +621,8 @@ class BaseHead(nn.Module):
       dict_log_time = {}
       dict_log_time['pre_batch'] = dict_log_time.get('pre_batch',0) + time.perf_counter() - start_epoch
       start_load_batch = time.perf_counter()
-      torch.cuda.reset_peak_memory_stats(device)
+      if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats(device)
       list_batch_lr = []
       total_steps = num_epochs * len(train_loader)
       list_batch_wd = []
@@ -1287,7 +1292,7 @@ class BaseHead(nn.Module):
 
   def evaluate(self, val_loader, criterion, unique_val_subjects, unique_val_classes, is_test,is_coral_loss,epoch,history_val_sample_predictions=None,save_log=True,**kwargs):
     # unique_train_val_classes is only for eval but kept the name for compatibility
-    device = 'cuda'
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     count = 0
     self.to(device) 
     self.eval() 
