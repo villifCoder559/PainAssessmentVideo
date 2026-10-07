@@ -181,7 +181,7 @@ the unrelated PyPI package named `apex` is not the provider.
 Everything else is left unpinned: SciPy, pandas, scikit-learn, scikit-image,
 matplotlib, seaborn, openTSNE, UMAP, Pillow, FFmpeg, PyAV, dataframe_image, einops,
 safetensors, PyYAML, packaging, psutil, tqdm, NetworkX, NLTK, TensorBoard,
-TensorBoardX, h5py, WebDataset, ConfigArgParse, tree-format, torch-optimizer,
+TensorBoardX, h5py, WebDataset, ConfigArgParse, torch-optimizer,
 coral-pytorch, conditional, cmaes, Git, setuptools, pip, and optional notebook/test/cluster
 tools. Their dependency metadata selects versions compatible with Python 3.10 and
 the constrained stack. No hashes, exact Conda builds, local artifacts, or absolute
