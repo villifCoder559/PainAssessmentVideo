@@ -218,7 +218,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
     return feature
       
   def _extract_features(dataset,batch_size_feat_extraction,n_workers,backbone,df):
-    device = 'cuda'
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"extracting features using.... {device}")
     list_features = []
     list_labels = []
@@ -270,7 +270,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
       expected_end = elapsed * (len(dataloader) / count)
       print(f'Batch {count}/{len(dataloader)} | feature {feature.shape} dtype {feature.dtype} | sample_id {list_sample_id[-1]}')
       print(f'Elapsed: {elapsed//3600:.0f}h {elapsed//60%60:.0f}m {elapsed%60:.0f}s | ETA: {expected_end//3600:.0f}h {expected_end//60%60:.0f}m {expected_end%60:.0f}s')
-      if count % 10 == 0:
+      if count % 10 == 0 and torch.cuda.is_available():
         free_gb, total_gb = (v / 1024**3 for v in torch.cuda.mem_get_info())
         print(f'GPU: {free_gb:.2f}/{total_gb:.2f} GB free | feat size: {feature.element_size()*feature.nelement()/1024**3:.3f} GB')
         torch.cuda.empty_cache()
@@ -433,7 +433,7 @@ def main(model_type,pooling_embedding_reduction,adaptive_avg_pool3d_out_shape,en
   
 import tempfile
 import multiprocessing as mp
-tempfile.tempdir = '/tmp'
+tempfile.tempdir = os.environ.get('TMPDIR', '/tmp')  # override with TMPDIR
 mp.util._exit_function = lambda: None
 
 
