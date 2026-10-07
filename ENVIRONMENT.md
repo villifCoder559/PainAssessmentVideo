@@ -13,4 +13,7 @@ Environment files are separated by purpose:
 The portable setup supports package installation across operating systems; existing
 hard-coded paths, CUDA-only source paths, native-extension availability, and old
 upstream APIs still limit which workflows run unchanged. See the portability guide
-for platform commands and validation limits. Project source code was not changed.
+for platform commands and validation limits. Small source changes for CPU/path
+portability are listed in [PORTABILITY_REPORT.md](PORTABILITY_REPORT.md); the tested
+pinned files are `env_portability/environment-pinned-linux-64.yml` (CPU) and
+`env_portability/environment-cuda-pinned-linux-64.yml` (NVIDIA).
