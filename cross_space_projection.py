@@ -269,7 +269,7 @@ LINEAR_PROJECTOR_CONFIG = {
   # val.csv sized by these fractions of the val.csv row count (test absorbs
   # the remainder so every val.csv row is used).
   'split_ratios':         (0.0, 0.50, 0.50),
-  'device':               'cuda',
+  'device':               'cuda' if torch.cuda.is_available() else 'cpu',
   'num_workers':          4,
 }
 
@@ -327,7 +327,7 @@ REFINEMENT_CONFIG = {
   'refine_val_min_keep_frac': 0.1,  # if < this fraction of a val set survives leakage exclusion,
                                     # that term is dropped and selection falls back to train loss
   'new_eval_split':     'val',   # new-model split for the preserve eval (val fallback)
-  'device':             'cuda',
+  'device':             'cuda' if torch.cuda.is_available() else 'cpu',
   'report_after_refinement': True,  # headline MAE/CCC + saved preds reflect the refined model
 }
 
