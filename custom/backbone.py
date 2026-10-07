@@ -41,7 +41,7 @@ class BackboneBase(nn.Module):
     super(BackboneBase,self).__init__()
     self.model = None
     self.model_type = None
-    self.device = "cuda"
+    self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
   def forward_features(self, x: torch.Tensor) -> torch.Tensor:
     """Extract features from input. To be implemented by subclasses.
@@ -149,7 +149,7 @@ class VideoBackbone(BackboneBase):
       # Load JEPA2 model
       import transformers
       # No cache_dir: rely on the HF_HOME env var so all HF models share one cache
-      # (see ~/.bashrc / ~/.profile -> /equilibrium/fvilli/PainAssessmentVideo/hugging_face_models/hub).
+      # (e.g. HF_HOME=<repo>/hugging_face_models set in ~/.bashrc / ~/.profile).
       self.model = transformers.AutoModel.from_pretrained(model_type.value)
       self.tubelet_size = self.model.config.tubelet_size
       self.img_size = self.model.config.image_size
