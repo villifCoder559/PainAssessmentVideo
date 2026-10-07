@@ -107,3 +107,21 @@ external dataset/checkpoint access was exercised. Use the post-install checks in
 [ENVIRONMENT.md](ENVIRONMENT.md) on each destination computer. Existing fixed
 paths, multiprocessing import side effects, legacy APIs, optional private/source
 dependencies, and hardware-specific source paths remain documented limitations.
+
+## Clean-room runtime validation (2026-10-06)
+
+The paragraph above is superseded for Linux x86_64. Two complete portable environments were
+built from scratch in an isolated directory with a fresh Miniforge (conda 26.7.2), empty
+package/pip caches, `PYTHONNOUSERSITE=1` and no reuse of the original environment:
+
+* CPU: `environment.yml` + `environment-native.yml` → Python 3.10.21, PyTorch 2.5.1 (CPU),
+  NumPy 1.26.4, timm 1.0.29, transformers 4.57.6, Decord 0.6.0, torchsort 0.1.9, MediaPipe 0.10.21.
+  `pip check` failed only because of `tree-format` (py2-tagged wheel; removed from the specs).
+* CUDA: `environment-cuda.yml` + the documented Decord/torchsort commands → PyTorch 2.5.1+cu118;
+  `pip check`, a CUDA tensor and a CUDA torchsort soft-rank passed (RTX 2080 Ti, driver 550).
+
+`smoke_test.sh` (training on precomputed embeddings, MAE-DFER forward pass, all cross-space
+projectors, log aggregation) passed in these environments after the source fixes listed in
+[../PORTABILITY_REPORT.md](../PORTABILITY_REPORT.md). The working CPU and CUDA environments
+were exported to `environment-pinned-linux-64.yml` and `environment-cuda-pinned-linux-64.yml`.
+Windows/macOS runtime remains unvalidated.
