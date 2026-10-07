@@ -18,6 +18,8 @@ For the captured original Linux environment and exact package locks, use
 | [environment-cuda.yml](environment-cuda.yml) | Standalone NVIDIA environment for Linux/Windows x86_64, using PyTorch 2.5.1 and CUDA runtime 11.8. |
 | [environment-notebooks.yml](environment-notebooks.yml) | Optional notebook frontend, kernel, and test tooling. |
 | [environment-cluster.yml](environment-cluster.yml) | Optional POSIX/SLURM launcher tooling. |
+| [environment-pinned-linux-64.yml](environment-pinned-linux-64.yml) | Exact versions of the clean-room CPU environment that passed `smoke_test.sh` (Linux x86_64, standalone). |
+| [environment-cuda-pinned-linux-64.yml](environment-cuda-pinned-linux-64.yml) | Exact versions of the clean-room CUDA 11.8 environment that passed `smoke_test.sh` (Linux x86_64, standalone, includes Decord and torchsort). |
 
 The common file alone is **insufficient for training**: install the appropriate
 native additions. Overlay files update an existing environment; they are not
@@ -66,7 +68,9 @@ native overlay to this environment. macOS cannot use the CUDA specification.
 - [dependency-audit.json](dependency-audit.json): detailed source/import audit and
   package-resolution summaries.
 
-Package-resolution checks passed for the documented CPU and GPU targets; runtime
-execution of the newly resolved environments was not tested. Fixed source paths,
+Package-resolution checks passed for the documented CPU and GPU targets. On Linux x86_64
+the CPU and CUDA environments were also built from scratch and passed `smoke_test.sh`; their
+exact exports are `environment-pinned-linux-64.yml` and `environment-cuda-pinned-linux-64.yml`
+(see [VALIDATION.md](VALIDATION.md)). Fixed source paths,
 CUDA-only workflows, legacy APIs, and native-extension availability still limit
 portability. Flexible resolution also does not guarantee identical numerical results.
