@@ -562,7 +562,10 @@ class HEAD(Enum):
 
 
 class GLOBAL_PATH:
-  NAS_PATH = os.path.join('/equilibrium','fvilli','PainAssessmentVideo')
+  # Prefix for relative paths when --gp is passed. Defaults to the repository root;
+  # override with the PAIN_PROJECT_ROOT environment variable.
+  NAS_PATH = os.environ.get('PAIN_PROJECT_ROOT',
+                            os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
   def get_global_path(path):
     if path is not  None:
       tmp_path = path
