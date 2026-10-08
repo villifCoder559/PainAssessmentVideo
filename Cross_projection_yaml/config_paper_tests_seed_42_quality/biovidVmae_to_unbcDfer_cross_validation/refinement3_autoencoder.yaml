@@ -1,0 +1,58 @@
+# Cross-space projection run config (YAML-only mode).
+
+new_model_pth: ["UNBC_DFER_v2/1783348663339_DFER_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/k0_cross_val/k0_cross_val_sub_0/best_model_ep_70.pt",
+                "UNBC_DFER_v2/1783348663339_DFER_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/k1_cross_val/k1_cross_val_sub_3/best_model_ep_95.pt",  
+                "UNBC_DFER_v2/1783348663339_DFER_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/k2_cross_val/k2_cross_val_sub_0/best_model_ep_138.pt",
+                "UNBC_DFER_v2/1783348663339_DFER_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/k3_cross_val/k3_cross_val_sub_2/best_model_ep_54.pt",
+                "UNBC_DFER_v2/1783348663339_DFER_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/k4_cross_val/k4_cross_val_sub_3/best_model_ep_99.pt"
+                ]
+
+old_model_pth:  ["BIOVID_5FOLD_VideoMAEv2-S_FULL_1145473_ATTENTIVE_JEPA_lannister_1782457644/1782457647800_VIDEOMAE_v2_S_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/\
+                  k0_cross_val/k0_cross_val_sub_0/best_model_ep_48.pt",
+                 "BIOVID_5FOLD_VideoMAEv2-S_FULL_1145473_ATTENTIVE_JEPA_lannister_1782457644/1782457647800_VIDEOMAE_v2_S_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/\
+                  k1_cross_val/k1_cross_val_sub_0/best_model_ep_42.pt",
+                 "BIOVID_5FOLD_VideoMAEv2-S_FULL_1145473_ATTENTIVE_JEPA_lannister_1782457644/1782457647800_VIDEOMAE_v2_S_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/\
+                  k2_cross_val/k2_cross_val_sub_0/best_model_ep_33.pt",
+                  "BIOVID_5FOLD_VideoMAEv2-S_FULL_1145473_ATTENTIVE_JEPA_lannister_1782457644/1782457647800_VIDEOMAE_v2_S_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/\
+                  k3_cross_val/k3_cross_val_sub_0/best_model_ep_29.pt",
+                  "BIOVID_5FOLD_VideoMAEv2-S_FULL_1145473_ATTENTIVE_JEPA_lannister_1782457644/1782457647800_VIDEOMAE_v2_S_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/\
+                  k4_cross_val/k4_cross_val_sub_0/best_model_ep_12.pt"
+                ]
+# --- Sweep axes (lists) ---
+num_anchors: [100]
+anchor_selection_type: [balance_class_quality]
+csv_anchor_selection: [train]
+old_model_csv: [test]
+interpolation_similarity: [autoencoder]
+weighting_method: [none]
+mlp_activation: [gelu]    # default; ignored for non-mlp interps
+mlp_num_layers: [1]          # default; ignored for non-mlp interps
+rbf_sigma: [1.0]          # default; ignored when weighting_method=none
+num_refinement_samples: [-1]  # -1 uses the full source train split; 0 uses the trial num_anchors; positive values use that explicit budget. Selection always reuses --anchor_selection_type.
+# --- Optuna settings ---
+n_trials: null            # null + grid -> full grid
+optuna_sampler: grid      # default
+seed: [42]
+run_tag: paper_tests_seed_42_quality/biovidVmae_to_unbcDfer_cross_validation/refinement3_autoencoder
+refinement: 3             # linear-only refinement (sets enabled+mode on every recipe)
+
+linear_projector:
+  lr: [1.0e-5]
+  batch_size: [64]
+  optimizer: adamw
+  weight_decay: 0
+  epochs: 1500
+  encoder_ratio: [4]   # ratio of encoder hidden dim to latent dim (default=2)
+  normalize_embeddings: [false]
+  loss: [mse]
+
+refinement_config:
+  lr_projector: [1.0e-4]            # useless for l2 interp but set for consistency with recipe
+  lr_linear: [1.0e-5]  
+  lambda_B: [1.0e-4]
+  lambda_A: [1.0e-3]
+  optimizer: adamw
+  weight_decay: 0
+  epochs: 250
+  loss: [mse]
+  batch_size: 64

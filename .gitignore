@@ -143,7 +143,8 @@ cython_debug/
 
 
 # others
-CelebV-HQ/video_celebv_hq/*
+CelebV-HQ/
+test.ipynb
 debug_frontalization_list/*
 MAE_DFER/saved/model/pretraining/*
 partA/*
@@ -159,6 +160,10 @@ log_key_frmae_Selector/*
 FINAL_*/*
 FAST_MODEL_BIOVID/*
 Cross_*/*
+# Paper cross-space configs (README section 5.2).
+!Cross_projection_yaml/config_paper_tests_seed_42/
+!Cross_projection_yaml/config_paper_tests_seed_42_quality/
+!Cross_projection_yaml/config_ablation_frozen_random_adapter/
 MORPH_2/*
 TRAIN_*/*
 BIOVID_*/*
@@ -173,6 +178,7 @@ DISFA*/
 hugging_face_models/*
 umap_movement*/*
 MIntPAIN*/*
+!MIntPAIN/generate_videos.py
 videos_jitter_comparison/*
 DFER_all_*
 unbc_dfer_*
@@ -182,6 +188,9 @@ z_latex_tables
 XITE*/*
 !XITE/check_frontalized_videos.py
 !XITE/DATASET_STRUCTURE.md
+!XITE/starting_point/
+XITE/starting_point/*
+!XITE/starting_point/prepare_xite.py
 analysis/*
 *.csv
 *.md

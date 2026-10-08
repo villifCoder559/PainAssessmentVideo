@@ -1,0 +1,69 @@
+# Cross-space projection run config (YAML-only mode).
+####### CONFIG #######
+# Trial 465, 
+# Date: 18 June 2026
+# path: cross_projection_Biovid-UNBC/search_refinement3_mlp_BioDFER-UNBC_vMAE_K100-250-1000_balance_class_random_train_test_mlp_none_s1.0_mlp_lr0.0001_bs64_adamw_wd0_ep300_normT_mse_sp0-50-50_actgelu_ref225_1781548330 
+############################
+
+new_model_pth: ["BIOVID_5FOLDcomplete_DFER_FULL/history_run_BIO_5_keep002_restartSched_FINAL_1070021_ATTENTIVE_JEPA_lannister_1782406974/1782406978358_DFER_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/\
+                  k0_cross_val/k0_cross_val_sub_0/best_model_ep_25.pt",
+                "BIOVID_5FOLDcomplete_DFER_FULL/history_run_BIO_5_keep002_restartSched_FINAL_1070021_ATTENTIVE_JEPA_lannister_1782406974/1782406978358_DFER_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/\
+                  k1_cross_val/k1_cross_val_sub_0/best_model_ep_35.pt",  
+                "BIOVID_5FOLDcomplete_DFER_FULL/history_run_BIO_5_keep002_restartSched_FINAL_1070021_ATTENTIVE_JEPA_lannister_1782406974/1782406978358_DFER_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/\
+                  k2_cross_val/k2_cross_val_sub_0/best_model_ep_37.pt",
+                "BIOVID_5FOLDcomplete_DFER_FULL/history_run_BIO_5_keep002_restartSched_FINAL_1070021_ATTENTIVE_JEPA_lannister_1782406974/1782406978358_DFER_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/\
+                  k3_cross_val/k3_cross_val_sub_0/best_model_ep_61.pt",
+                "BIOVID_5FOLDcomplete_DFER_FULL/history_run_BIO_5_keep002_restartSched_FINAL_1070021_ATTENTIVE_JEPA_lannister_1782406974/1782406978358_DFER_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/\
+                  k4_cross_val/k4_cross_val_sub_0/best_model_ep_75.pt"
+                ]
+old_model_pth:  ["UNBC_OPI_0to4_VIDEOMAE-S/history_run_UNBC_5FOLD_std_load/history_run_UNBC_5FOLD_S_batch16_1333517_ATTENTIVE_JEPA_targaryen_1781520074/1781520077852_VIDEOMAE_v2_S_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/\
+                  k0_cross_val/k0_cross_val_sub_3/best_model_ep_32.pt",
+                 "UNBC_OPI_0to4_VIDEOMAE-S/history_run_UNBC_5FOLD_std_load/history_run_UNBC_5FOLD_S_batch16_1333517_ATTENTIVE_JEPA_targaryen_1781520074/1781520077852_VIDEOMAE_v2_S_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/\
+                  k1_cross_val/k1_cross_val_sub_0/best_model_ep_11.pt",
+                 "UNBC_OPI_0to4_VIDEOMAE-S/history_run_UNBC_5FOLD_std_load/history_run_UNBC_5FOLD_S_batch16_1333517_ATTENTIVE_JEPA_targaryen_1781520074/1781520077852_VIDEOMAE_v2_S_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/\
+                  k2_cross_val/k2_cross_val_sub_1/best_model_ep_12.pt",
+                 "UNBC_OPI_0to4_VIDEOMAE-S/history_run_UNBC_5FOLD_std_load/history_run_UNBC_5FOLD_S_batch16_1333517_ATTENTIVE_JEPA_targaryen_1781520074/1781520077852_VIDEOMAE_v2_S_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/\
+                  k3_cross_val/k3_cross_val_sub_2/best_model_ep_78.pt",
+                 "UNBC_OPI_0to4_VIDEOMAE-S/history_run_UNBC_5FOLD_std_load/history_run_UNBC_5FOLD_S_batch16_1333517_ATTENTIVE_JEPA_targaryen_1781520074/1781520077852_VIDEOMAE_v2_S_MEAN_SPATIAL_NONE_SLIDING_WINDOW_ATTENTIVE_JEPA/train_ATTENTIVE_JEPA/\
+                  k4_cross_val/k4_cross_val_sub_0/best_model_ep_25.pt"
+                ]
+
+# --- Sweep axes (lists) ---
+num_anchors: [100]
+anchor_selection_type: [balance_class_quality]
+csv_anchor_selection: [train]
+old_model_csv: [test]
+interpolation_similarity: [linear_close]
+weighting_method: [none]
+mlp_activation: [gelu]    # default; ignored for non-mlp interps
+mlp_num_layers: [1]          # default; ignored for non-mlp interps
+rbf_sigma: [1.0]          # default; ignored when weighting_method=none
+num_refinement_samples: [-1]  # -1 uses the full source train split; 0 uses the trial num_anchors; positive values use that explicit budget. Selection always reuses --anchor_selection_type.
+
+# --- Optuna settings ---
+n_trials: null            # null + grid -> full grid
+optuna_sampler: grid      # default
+seed: [42]
+run_tag: paper_tests_seed_42_quality/unbcVmae_to_biovidDfer_cross_validation/refinement3_linear_close
+refinement: 3             # linear-only refinement (sets enabled+mode on every recipe)
+
+linear_projector:
+  lr: [1.0e-5]
+  batch_size: [64]
+  optimizer: adamw
+  weight_decay: 0
+  epochs: 750
+  # encoder_ratio: [2, 4, 8]   # ratio of encoder hidden dim to latent dim (default=2)
+  normalize_embeddings: [false]
+  loss: [mse]
+
+refinement_config:
+  lr_projector: [1.0e-5]            # useless for l2 interp but set for consistency with recipe
+  lr_linear: [1.0e-4]  
+  lambda_B: [1.0e-1]
+  lambda_A: [1.0e-1]
+  optimizer: adamw
+  weight_decay: 0
+  epochs: 150
+  loss: [mse]
+  batch_size: 64
