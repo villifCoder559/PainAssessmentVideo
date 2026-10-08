@@ -1,5 +1,7 @@
 # Portability report (2026-10-06)
 
+> **Note (2026-10-08):** this report is kept as written. Some files it mentions were later removed because the paper does not use them: `custom/composite_loss.py`, `run_cross_space_anchor_sweep.sh`, `cross_space_reproducibility_report.py`, `tests/test_prepare_pemf.py`, the vendored `vjepa2/` and the unused vendored modules (e.g. `making_better_mistakes/data/scripts_asis/`). See the README's *Repository layout* for the current file set.
+
 Goal: verify that a third person can rebuild the environment and run the training and
 cross-space pipelines from this repository. They get the released CSVs, the precomputed
 embeddings and the public backbone checkpoints, but no raw videos. Only installation, import,

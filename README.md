@@ -15,6 +15,19 @@ target model on the projected source data.
 > (including the augmented-embedding folders, see below). You also need the two public
 > backbone checkpoints. Raw videos are **not** needed and are not distributed.
 
+## Repository layout
+
+| Role | Files |
+| --- | --- |
+| Model training (§5.1) | `train_model.py`, `custom/` (backbones, dataset, attentive head, losses, training loop, splits) |
+| Cross-space transfer (§5.2) | `run_cross_space_configs.sh` → `cross_space_projection.py`; `cross_space_logs.py` (summaries); `cross_space_fake_projection.py` (synthetic-embedding and random-mapping controls); paper configs in `Cross_projection_yaml/` |
+| Paper tables and statistics (§5.4) | `cross_space_paper_tables.py` (uses `cross_space_generate_latex_table.py`, `cross_space_fake_projection_tables.py`), `extract_kfold_test_table.py`, `statistical_compare_kfold_results.py` |
+| Preprocessing from raw videos (§5.3) | `extract_feature.py`, `multiple_feature_extraction.sh`, `extract_video_frontalized.py` + `custom/faceExtractor.py` + `landmark_model/`, `extract_landmarks.py`, `MIntPAIN/generate_videos.py`, `XITE/starting_point/prepare_xite.py`, `XITE/check_frontalized_videos.py`, `check_augmentation_completeness.py` |
+| Optional tools (not needed for paper numbers) | `cross_space_grid_two_stage.py` (projector hyperparameter search), `new_plot_res_from_server.py` (training plots), `plot_cumulative_predictions.py` + `run_cumulative_predictions.sh` (predictions over growing video prefixes) |
+| Helper modules | `log_cross_attention_from_model.py`, `new_plot_tsne_post_head.py` (imported by the cross-space code) |
+| Vendored backbone/head code | `MAE_DFER/`, `VideoMAEv2/`, `jepa/`, `making_better_mistakes/`: only the modules the pipeline imports (upstream licenses kept) |
+| Tests | `smoke_test.sh` (end-to-end, §4), `tests/` (`python -m pytest tests -q`) |
+
 ---
 
 ## 1. Environment
@@ -331,8 +344,10 @@ python train_model.py --head ATTENTIVE_JEPA --num_cross_head 1 --num_heads 8 --m
 ### 5.2 Cross-space projection (`cross_space_projection.py`)
 
 Configs live in `Cross_projection_yaml/<config set>/<direction>/refinement<R>_<method>.yaml`
-(method ∈ linear, mlp, autoencoder, procrustes, linear_close). Each lists the 5×5 source/target
-fold checkpoints from training:
+(method ∈ linear, mlp, autoencoder, procrustes, linear_close). The three paper config sets are
+included: `config_paper_tests_seed_42` (random anchors), `config_paper_tests_seed_42_quality`
+(quality anchors) and `config_ablation_frozen_random_adapter` (frozen random projector). Each
+lists the 5×5 source/target fold checkpoints from training:
 
 | Direction folder | Source (old) model | Target (new) model |
 | --- | --- | --- |
@@ -384,7 +399,59 @@ python extract_feature.py --model_type DFER --emb_red spatial --path_dataset <vi
 Videos are read from `<video_root>/<subject_name>/<sample_name>.mp4`, and embeddings are written to
 `<out>/<subject_name>/<sample_name>.safetensors`. The `<video_root>` path must contain a known dataset keyword (`unbc`, `parta`/`biovid`, `mintpain`,
 `xite`, …). The paper's face frontalization/preprocessing pipeline needs the raw videos and was
-not part of this portability check.
+not part of this portability check. With the raw videos, the released embeddings were built in
+this order:
+
+1. **Dataset metadata.** Two datasets need conversion first. `MIntPAIN/generate_videos.py`
+   assembles the MIntPAIN RGB frame sequences into per-clip videos and writes
+   `MIntPAIN/starting_point/samples.csv`. The released videos use its default `--fps 25`.
+   `XITE/starting_point/prepare_xite.py` writes the X-ITE challenge train/test/all CSVs. The
+   21/5-subject train/validation split files in `XITE/starting_point/splits/` are released with
+   the CSVs.
+2. **Reference geometry.** `extract_landmarks.py` averages MediaPipe landmarks over all BioVid
+   subjects into `partA/video/mean_face_landmarks_per_subject/all_subjects_mean_landmarks.pkl`.
+3. **Frontalization.** Run `python extract_video_frontalized.py --gv --vfp <raw_videos> --csv <labels.csv> --pfo <out> --prl <reference.pkl>`.
+   The algorithm is in `custom/faceExtractor.py` (Paper Appendix, Face Frontalization). See
+   `--help`; for example, `--interpolation_mod_chunk mirror_start_video 16` pads each video to
+   a multiple of 16 frames.
+4. **Embeddings.** Use `extract_feature.py` (command above) for the base folders.
+   `bash multiple_feature_extraction.sh <gpu> <n_runs> --dataset <name> --model {DFER,S} <aug…>`
+   writes the augmented folders `<features>_<aug>[$N]`, one per run. XITE frontalized videos are
+   checked first with `XITE/check_frontalized_videos.py`.
+   `python check_augmentation_completeness.py --original_folder <features>` checks that every
+   augmented folder is complete.
+
+### 5.4 Paper tables, controls and statistics
+
+After the §5.2 runs of all three config sets, and after `cross_space_logs.py --only_aggregated --skip_umap` on
+each output root (`Cross_projection/paper_tests_seed_42`, `…_quality`,
+`Cross_projection/ablation_paper_frozen_rnd_adapter`):
+
+```sh
+R=Cross_projection/paper_tests_seed_42          # one folder per direction below it
+for d in $R/*_cross_validation; do
+  python cross_space_fake_projection.py $d --control fake_embeddings --distribution standard_normal  # synthetic-embedding control
+  python cross_space_fake_projection.py $d --control fake_adapter                                     # random-mapping ablation (seeds 42-46)
+done
+python cross_space_paper_tables.py anchor $R Cross_projection/paper_tests_seed_42_quality --metric micro   # also --metric macro
+python cross_space_paper_tables.py refinement $R
+python cross_space_paper_tables.py closed-form $R
+python cross_space_paper_tables.py synthetic $R/*_cross_validation
+python cross_space_paper_tables.py random-adapter $R/*_cross_validation
+python cross_space_paper_tables.py frozen $R Cross_projection/ablation_paper_frozen_rnd_adapter
+python cross_space_paper_tables.py confusion $R/mintVmae_to_biovidDfer_cross_validation --method linear --seed 42
+```
+
+Add `--output <file.tex>` to write a table to a file instead of stdout.
+
+* **Baseline tables.** Run `python extract_kfold_test_table.py --pkl <run>/k_fold_results.pkl --raw`
+  for each of the 12 runs of §5.1. Add `--metric accuracy` for MIntPAIN and X-ITE.
+* **Video-level statistics.** Run `python statistical_compare_kfold_results.py --pkl_path_0 <MAE-DFER k_fold_results.pkl> --pkl_path_1 <VideoMAEv2-S k_fold_results.pkl> --analysis_level video --measure mae`
+  to get the paired tests between the two backbones.
+* **Constant-predictor baselines.** These need no script. For a fixed constant *c*, MAE is
+  `mean(|y − c|)` over all videos of the full label CSV, and Macro-MAE averages that error over
+  the represented levels. For example, BioVid with c=2 gives 1.20 / 1.20 and MIntPAIN with c=0
+  gives 1.25 / 2.00.
 
 ## 6. Known limitations
 
@@ -398,4 +465,7 @@ not part of this portability check.
   `env_portability/`, but runtime was not verified there.
 * Raw-video preprocessing (face frontalization, landmark extraction, augmentation generation) and
   the paper table/plot scripts were not covered by the smoke test.
+* The V-JEPA 2.1 backbone option in `custom/backbone.py` (`--mt vjepa2_1_B`) is not used in the
+  paper, and its vendored code is not shipped. Using it requires a checkout of
+  [facebookresearch/vjepa2](https://github.com/facebookresearch/vjepa2) in `vjepa2/`.
 * See [PORTABILITY_REPORT.md](PORTABILITY_REPORT.md) for every issue found and fixed.
