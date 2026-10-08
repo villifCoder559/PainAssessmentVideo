@@ -198,7 +198,6 @@ chunk_*
 !README.md
 !PORTABILITY_REPORT.md
 
-# Separate portable specifications and the relocated reproducibility artifacts.
+# Portable environment specifications.
 !env_portability/**
-!env_reproducibility/**
 REPRO*

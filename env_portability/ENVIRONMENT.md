@@ -1,10 +1,10 @@
 # Portable project environments
 
-Use this directory when moving the project to another computer. Use
-[`../env_reproducibility/ENVIRONMENT.md`](../env_reproducibility/ENVIRONMENT.md) when you need
-the original Linux installation, exact builds, hashes, and captured custom wheel.
-Portable specifications deliberately allow a new resolution; they do not reproduce
-identical floating-point results.
+Use this directory when moving the project to another computer. On Linux x86_64, the
+recommended route is the tested pinned files: `environment-cuda-pinned-linux-64.yml` for
+NVIDIA GPUs, and `environment-pinned-linux-64.yml` for CPU (see [README.md](README.md#quick-start)).
+The flexible specifications below are the fallback, and the route for Windows/macOS. They
+deliberately allow a new resolution, and they do not reproduce identical floating-point results.
 
 ## Python and file selection
 
@@ -83,6 +83,12 @@ For the CUDA environment, use `-n pain-portable-cuda` with either optional overl
 Do not apply the CPU native overlay to a CUDA environment.
 
 ## NVIDIA GPU installation
+
+On Linux x86_64, first try the pinned file
+`conda env create -f env_portability/environment-cuda-pinned-linux-64.yml`, which already contains
+Decord and the matching torchsort wheel. Use the flexible steps below only if it does not resolve.
+Both routes need an NVIDIA driver ≥ 520 and a GPU with compute capability ≤ 9.0 (PyTorch
+2.5.1+cu118 ships kernels for sm_37 to sm_90).
 
 The base selects Conda-forge's CPU PyTorch package and does not request CUDA, cuDNN,
 NVIDIA drivers, MKL, Triton, or any system-toolkit path explicitly. Dependencies may
@@ -229,7 +235,7 @@ do not mix extension binaries from different providers.
 
 Unrelated installed packages are excluded, including dlib, face_alignment,
 TensorFlow, fastText, installed compiler metapackages, obsolete cudatoolkit,
-machine-specific CUDA libraries, and all other snapshot-only packages. Tests and
+machine-specific CUDA libraries, and all other packages that existed only in the original environment. Tests and
 notebook frontends are optional. Upstream declarations without live imports
 (`wandb`, `beartype`, `braceexpand`, `iopath`, `peft`, `fire`, `python-box`, `ftfy`)
 are not needed by the main project and are not promoted to common requirements.

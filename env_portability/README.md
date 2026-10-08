@@ -5,8 +5,8 @@ use **Python 3.10**, direct project dependencies, and compatibility ranges rathe
 than exact Conda builds. Conda packages come from Conda-forge; pip supplies packages
 that are unavailable or unsuitable there.
 
-For the captured original Linux environment and exact package locks, use
-[reproducibility](../env_reproducibility/README.md).
+On Linux x86_64, start with the **pinned** files: they are the tested environments. Use the
+flexible files only as a fallback, or on Windows/macOS.
 
 ## Choose a specification
 
@@ -30,6 +30,31 @@ remains unvalidated; follow the [macOS instructions](ENVIRONMENT.md#installation
 
 Run from the **repository root**, with Conda initialized, using a fresh environment.
 
+Linux x86_64 with an NVIDIA GPU (recommended; needs a driver ≥ 520 and a GPU with compute
+capability ≤ 9.0):
+
+```sh
+conda env create -f env_portability/environment-cuda-pinned-linux-64.yml
+conda activate pain-portable-cuda
+python -m pip check
+python -c "import torch, torchsort; print(torch.cuda.is_available(), torchsort.soft_rank(torch.tensor([[3.,1.,2.]], device='cuda')))"
+```
+
+Linux x86_64 CPU only:
+
+```sh
+conda env create -f env_portability/environment-pinned-linux-64.yml
+conda activate pain-portable
+python -m pip check
+```
+
+Then follow [README.md](../README.md) §2–§4 (weights, data, smoke test).
+
+### Fallback: flexible specifications
+
+Use these if a pinned file does not resolve on your machine, or on Windows/macOS. They resolve
+current compatible versions, which may differ from the tested ones.
+
 Linux x86_64 or Intel macOS CPU:
 
 ```sh
@@ -48,7 +73,7 @@ conda activate pain-portable
 python -m pip check
 ```
 
-For NVIDIA GPUs, create the standalone alternative:
+NVIDIA GPU, flexible alternative:
 
 ```sh
 conda env create -f env_portability/environment-cuda.yml

@@ -9957,7 +9957,7 @@
     "yarl",
     "zipp"
   ],
-  "configuration_audit_reference": "../env_reproducibility/locks/dependency-audit.json",
+  "configuration_audit_reference": "git show ee49793:env_reproducibility/locks/dependency-audit.json",
   "configuration_validation": {
     "existing_files_checked": 4005,
     "portable_yaml_files_checked": 6,

@@ -27,8 +27,9 @@ running the application on each operating system.
   Only environment/documentation organization and Git ignore rules were changed.
 
 The full source/import/provider record is [dependency-audit.json](dependency-audit.json).
-The original broader audit remains in
-[the reproducibility snapshot](../env_reproducibility/locks/dependency-audit.json).
+The original broader audit was stored in `env_reproducibility/locks/dependency-audit.json`.
+That folder has since been removed; the file is available in git history with
+`git show ee49793:env_reproducibility/locks/dependency-audit.json`.
 
 ## CPU package resolution
 
@@ -125,3 +126,29 @@ projectors, log aggregation) passed in these environments after the source fixes
 [../PORTABILITY_REPORT.md](../PORTABILITY_REPORT.md). The working CPU and CUDA environments
 were exported to `environment-pinned-linux-64.yml` and `environment-cuda-pinned-linux-64.yml`.
 Windows/macOS runtime remains unvalidated.
+
+## GPU revalidation from a fresh clone (2026-10-08)
+
+The pinned CUDA file was rebuilt with no manual steps:
+`conda env create -p <prefix> -f environment-cuda-pinned-linux-64.yml`. This used a fresh clone
+of `main` (commit `ee49793`), an empty `CONDARC` and empty caches, on an RTX 2080 Ti (compute
+capability 7.5) with driver 535.183.01. The env creation took 45 min on NFS and exited 0. The
+flexible fallback was not needed.
+
+* The following all passed:
+  * `pip check`.
+  * `torch 2.5.1+cu118` (`torch.version.cuda` 11.8, cuDNN 9.1.0), with `sm_75` in
+    `torch.cuda.get_arch_list()`.
+  * A CUDA conv3d forward pass and an fp16 autocast matmul.
+  * `torchsort.soft_rank`/`soft_sort` forward and backward on `cuda:0`.
+  * Imports of decord, cv2, mediapipe and timm.
+* `SMOKE_DEVICE=0 bash smoke_test.sh` passed 11/11, and `SMOKE_FULL=1` passed 19/19 (all 12
+  paper training configurations plus both extraction backbones).
+* GPU use was verified, not inferred from PASS:
+  * Both extraction logs contain `extracting features using.... cuda`.
+  * Every training log contains `GPU memory peak`.
+  * Every `train_model.py`, `extract_feature.py` and `cross_space_projection.py` process
+    appeared in a per-second `nvidia-smi` log.
+  * There were no CUDA, cuBLAS, cuDNN or OOM errors.
+  * The only exceptions were the harmless NFS `Errno 16` multiprocessing-cleanup errors.
+* No source changes were needed.

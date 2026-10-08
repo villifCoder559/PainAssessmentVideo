@@ -67,8 +67,9 @@ Standard-library roots and verified local modules (including `custom`, `MAE_DFER
 
 ## Manifest-only declarations and exclusions
 
-The complete prior manifest/configuration audit is preserved under
-`../env_reproducibility/locks/dependency-audit.json`. Python/requirements files in
+The complete prior manifest/configuration audit was stored in
+`env_reproducibility/locks/dependency-audit.json`, which is now removed. It is available with
+`git show ee49793:env_reproducibility/locks/dependency-audit.json`. Python/requirements files in
 MAE_DFER, VideoMAEv2, JEPA, V-JEPA 2, and making_better_mistakes were inspected.
 The current Python sources match that audit byte-for-byte; the environment verifier
 is additionally scanned in the fresh audit.

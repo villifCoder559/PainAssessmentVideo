@@ -21,8 +21,10 @@ target model on the projected source data.
 
 Tested (2026-10-06) on Ubuntu 22.04 x86_64 with a fresh Miniforge (conda 26.7). The resulting
 env had **Python 3.10.21** and **PyTorch 2.5.1**. It ran on CPU only (no GPU visible), and with
-CUDA 11.8 wheels on an NVIDIA RTX 2080 Ti (driver 550). Run all commands from the
-**repository root**.
+CUDA 11.8 wheels on an NVIDIA RTX 2080 Ti (driver 550). On 2026-10-08 the GPU env was rebuilt
+from a fresh clone (RTX 2080 Ti, driver 535) and passed the fast and full smoke tests on GPU.
+Run all commands from the **repository root**. All environment files are in
+[env_portability/](env_portability/README.md).
 
 **Recommended: exact pinned environment (Linux x86_64, CPU).**
 
@@ -35,7 +37,14 @@ python -m pip check
 This is the environment exported from the clean-room install that passed `smoke_test.sh`. It
 contains CPU PyTorch. Training runs on CPU, slowly, but enough for the smoke test and small runs.
 
-**NVIDIA GPU (Linux x86_64, CUDA 11.8 runtime wheels; needs a driver ≥ 520).**
+**Recommended for NVIDIA GPUs: exact pinned environment (Linux x86_64, CUDA 11.8 runtime wheels).**
+
+Check the machine first with `nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv`:
+
+* The NVIDIA **driver must be ≥ 520** (CUDA 11.8). No system CUDA toolkit is needed, because the
+  CUDA runtime and cuDNN come with the PyTorch wheels.
+* The GPU **compute capability must be ≤ 9.0**. PyTorch 2.5.1+cu118 ships kernels for sm_37 to
+  sm_90 only. Newer GPUs (e.g. Blackwell) need a different, untested PyTorch/CUDA stack.
 
 ```sh
 conda env create -f env_portability/environment-cuda-pinned-linux-64.yml   # creates "pain-portable-cuda"
@@ -44,11 +53,17 @@ python -m pip check
 python -c "import torch, torchsort; print(torch.cuda.is_available(), torchsort.soft_rank(torch.tensor([[3.,1.,2.]], device='cuda')))"
 ```
 
-**Flexible (non-pinned) specifications.** `env_portability/environment.yml` plus
+The last command must print `True` and a tensor on `device='cuda:0'`. Make sure that both
+`python` and `python3` resolve to this env (`command -v python python3`), because
+`run_cross_space_configs.sh` calls `python3`. Creating the env downloads several GB of CUDA
+wheels. It took about 45 min when the env was on network storage.
+
+**Fallback: flexible (non-pinned) specifications.** Use these only if the pinned file does not
+resolve on your machine, or on Windows/macOS. `env_portability/environment.yml` plus
 `environment-native.yml` (CPU), or `environment-cuda.yml` plus the Decord/torchsort commands in
-[env_portability/ENVIRONMENT.md](env_portability/ENVIRONMENT.md) (GPU), resolve current
-compatible versions. Windows and macOS instructions are documented there but were **not**
-tested end-to-end.
+[env_portability/ENVIRONMENT.md](env_portability/ENVIRONMENT.md#nvidia-gpu-installation) (GPU),
+resolve current compatible versions. These may differ from the tested ones. Windows and macOS
+instructions are documented there but were **not** tested end-to-end.
 
 ## 2. Backbone weights (required, also for training on precomputed embeddings)
 
@@ -111,9 +126,24 @@ up by these relative paths.
 ```sh
 conda activate pain-portable
 bash smoke_test.sh                  # CPU, ~10 min (9-12 min measured on a NAS checkout); PASS/FAIL/SKIP per step
-SMOKE_DEVICE=0 bash smoke_test.sh   # use GPU 0 instead
+SMOKE_DEVICE=0 bash smoke_test.sh   # use GPU 0 instead (in pain-portable-cuda); ~10 min, ~14 min with SMOKE_FULL=1
 SMOKE_FULL=1 bash smoke_test.sh     # additionally all 12 paper training configurations + VideoMAEv2-S extraction
 ```
+
+**With `SMOKE_DEVICE=0`, check that the GPU was really used.** If CUDA is not usable, device
+selection silently falls back to CPU, and the steps can still PASS. After the run:
+
+```sh
+grep -L 'extracting features using.... cuda' smoke_out/logs/extract_*.log   # must print nothing
+grep -L 'GPU memory peak' smoke_out/logs/train_*.log                        # must print nothing
+grep -iE 'CUDA error|device-side assert|CUBLAS_STATUS|CUDNN_STATUS|out of memory|same device' smoke_out/logs/*.log
+```
+
+You can also watch `nvidia-smi` during the run: each `train_model.py`, `extract_feature.py` and
+`cross_space_projection.py` process should appear there. `cross_space_logs.py` is CPU-only by
+design. If `TMPDIR` is on NFS, the logs contain
+`OSError: [Errno 16] Device or resource busy: '.nfs…'` tracebacks from multiprocessing cleanup.
+These are harmless, and the step still exits 0. timm `FutureWarning`s are harmless too.
 
 What it runs (1 epoch, first fold/subfold only, small subject subsets, tiny projector epochs):
 

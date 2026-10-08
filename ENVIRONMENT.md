@@ -1,19 +1,22 @@
 # Project environment setup
 
-Environment files are separated by purpose:
+All environment files are in [env_portability/](env_portability/README.md). Run the
+commands from the repository root.
 
-- **[Portability](env_portability/ENVIRONMENT.md):** Python 3.10, direct dependencies,
-  flexible compatibility constraints, CPU setup, and optional NVIDIA CUDA setup.
-  Start with [`env_portability/environment.yml`](env_portability/environment.yml) and add
-  the native dependencies for your platform using the documented commands.
-- **[Reproducibility](env_reproducibility/ENVIRONMENT.md):** the original Linux x86_64
-  environment, exact Conda/pip locks, audit snapshot, and preserved custom wheel.
-  Run its installation commands from inside `env_reproducibility/`.
+- **Linux x86_64, NVIDIA GPU (recommended):**
+  `conda env create -f env_portability/environment-cuda-pinned-linux-64.yml`. This needs an NVIDIA
+  driver ≥ 520 and a GPU with compute capability ≤ 9.0.
+- **Linux x86_64, CPU only:** `conda env create -f env_portability/environment-pinned-linux-64.yml`.
+- **Fallback, and Windows/macOS:** use the flexible specifications (`environment.yml` + the native
+  additions for your platform, or `environment-cuda.yml` + the Decord/torchsort steps). They are
+  described in [env_portability/ENVIRONMENT.md](env_portability/ENVIRONMENT.md).
 
-The portable setup supports package installation across operating systems; existing
-hard-coded paths, CUDA-only source paths, native-extension availability, and old
-upstream APIs still limit which workflows run unchanged. See the portability guide
-for platform commands and validation limits. Small source changes for CPU/path
-portability are listed in [PORTABILITY_REPORT.md](PORTABILITY_REPORT.md); the tested
-pinned files are `env_portability/environment-pinned-linux-64.yml` (CPU) and
-`env_portability/environment-cuda-pinned-linux-64.yml` (NVIDIA).
+The two pinned files are exact exports of clean-room installs that passed `smoke_test.sh` (see
+[env_portability/VALIDATION.md](env_portability/VALIDATION.md)). The full walkthrough is in
+[README.md](README.md) §1–§4: environment, backbone weights, data layout, and smoke test,
+including how to check that the GPU was really used.
+
+The portable setup supports installing the packages on other operating systems. Existing
+hard-coded paths, CUDA-only source paths, native-extension availability and old upstream APIs
+still limit which workflows run unchanged. Small source changes for CPU/path portability are
+listed in [PORTABILITY_REPORT.md](PORTABILITY_REPORT.md).
