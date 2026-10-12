@@ -1,0 +1,61 @@
+# Paper training run: unbc_opi0-4_vmae_s (item 11)
+# Original run: UNBC_OPI_0to4_VIDEOMAE-S/history_run_UNBC_5FOLD_std_load/history_run_UNBC_5FOLD_S_batch16_1333517_ATTENTIVE_JEPA_targaryen_1781520074/1781520077852
+# Source command: REPRO_model_training/commands.sh ### 07
+# Usage (from repo root): python train_model.py --config configs/train/unbc_opi0-4_vmae_s.yaml
+
+head: ATTENTIVE_JEPA
+num_cross_head: [1]
+num_heads: [8]
+mt: S
+lr: [0.0001]
+ep: 150
+csv: UNBC/starting_point/samples_OPI_0_to_4.csv
+load_dataset_in_memory: 0
+ffsp: UNBC/video/features/VideoMaev2_S/spatial_pooled_features_UNBC_B_last143_stride16_interpol
+global_folder_name: runs/unbc_opi0-4_vmae_s/history_run
+path_video_dataset: UNBC/video/WarpedVideos_Cropped_interpolated_mirror
+k_fold: 5
+stop: [5, 5]
+opt: [adamw]
+batch_train: [16]
+init_network: [default]
+p_early_stop: 2000
+min_delta: 0.005
+threshold_mode: abs
+regulariz_lambda_L1: [0.0]
+regulariz_lambda_L2: [0.01]
+scheduler_name: [cosine]
+warm_up_epochs: [5.0]
+warm_up_scheduler: [linear]
+warm_up_start_factor: [0.01]
+model_dropout: [0.3]
+drop_attn: [0.0]
+drop_residual: [0.0]
+loss: [l1]
+label_smooth: [0.0]
+nr_blocks: [2]
+cross_block_after_transformers: [0]
+pos_enc: [3]
+n_trials: 1
+timeout: 140.0
+pruner_n_warmup_steps: 500
+sampler_loader_type: [standard]
+optuna_categorical: 1
+pruner_threshold_lower: 0.0
+optuna_sampler: grid
+n_workers: 8
+prefetch_factor: 2
+validation_enabled: 1
+is_subject_independent: 1
+concatenate_quadrants: [0]
+skip_test: 0
+use_test_as_val: 0
+embedding_reduction: spatial
+save_best_model: true
+stratified_training: [1]
+complete_block: [2]
+mlp_num_hidden_layers: [1]
+mlp_ratio: [0.5]
+custom_mlp: [1]
+target_samples_per_class_training: [35]
+normalize_labels: 0

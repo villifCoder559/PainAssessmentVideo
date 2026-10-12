@@ -1,0 +1,61 @@
+# Paper training run: unbc_opi0-4_dfer (item 12)
+# Original run: unbc_dfer_all_tests/UNBC_OPI_0to4_new/grid_mlp_ratio0.5_2215966_ATTENTIVE_JEPA_targaryen_1783329222/1783348663339
+# Source command: REPRO_model_training/commands.sh ### 08
+# Usage (from repo root): python train_model.py --config configs/train/unbc_opi0-4_dfer.yaml
+
+head: ATTENTIVE_JEPA
+mt: DFER
+num_cross_head: [1]
+num_heads: [8]
+ep: 250
+k_fold: 5
+stop: [5, 5]
+csv: UNBC/starting_point/samples_OPI_0_to_4.csv
+load_dataset_in_memory: 0
+ffsp: UNBC/video/features/DFER/spatial_pooled_features_UNBC_B_last143_stride16_interpol
+path_video_dataset: UNBC/video/WarpedVideos_Cropped_interpolated_mirror
+opt: [adamw]
+init_network: [default]
+p_early_stop: 2000
+min_delta: 0.005
+threshold_mode: abs
+regulariz_lambda_L1: [0.0]
+regulariz_lambda_L2: [0.0]
+scheduler_name: [cosine]
+warm_up_epochs: [5.0]
+warm_up_scheduler: [linear]
+warm_up_start_factor: [0.01]
+loss: [l1]
+label_smooth: [0.0]
+cross_block_after_transformers: [0]
+pos_enc: [3]
+complete_block: [2]
+custom_mlp: [1]
+mlp_num_hidden_layers: [1]
+sampler_loader_type: [standard]
+stratified_training: [1]
+embedding_reduction: spatial
+normalize_labels: 0
+is_subject_independent: 1
+validation_enabled: 1
+concatenate_quadrants: [0]
+skip_test: 0
+use_test_as_val: 0
+save_best_model: true
+n_workers: 8
+prefetch_factor: 2
+optuna_categorical: 1
+optuna_sampler: grid
+pruner_n_warmup_steps: 500
+pruner_threshold_lower: 0.0
+n_trials: 1
+timeout: 140.0
+lr: [0.0001]
+batch_train: [16]
+nr_blocks: [3]
+mlp_ratio: [0.5]
+model_dropout: [0.1]
+drop_attn: [0.0]
+drop_residual: [0.0]
+global_folder_name: runs/unbc_opi0-4_dfer/history_run
+target_samples_per_class_training: [60]
