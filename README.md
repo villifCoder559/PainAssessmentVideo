@@ -99,25 +99,24 @@ by these relative paths.
 ## 4. Smoke test
 
 ```sh
-SMOKE_DEVICE=0 bash smoke_test.sh                # GPU 0, ~10 min; PASS/FAIL/SKIP per step
-SMOKE_DEVICE=0 SMOKE_FULL=1 bash smoke_test.sh   # + all 12 training configs and VideoMAEv2-S extraction, ~14 min
+python reproduce/smoke_gpu.py --gpu 0          # ~10 min; add --full for all 12 training configs (~14 min)
 ```
 
-It runs feature extraction, five training configs and the cross-space pipeline (all projector
-methods, UNBC VMAE-S → MIntPAIN DFER) for 1 epoch on small subject subsets. Missing datasets are
-reported as `SKIP`, and the script exits non-zero on any `FAIL`. If CUDA is not usable, device
-selection silently falls back to CPU and the steps can still PASS, so check that the GPU was used:
-
-```sh
-grep -L 'extracting features using.... cuda' smoke_out/logs/extract_*.log   # must print nothing
-grep -L 'GPU memory peak' smoke_out/logs/train_*.log                        # must print nothing
-grep -iE 'CUDA error|device-side assert|CUBLAS_STATUS|CUDNN_STATUS|out of memory|same device' smoke_out/logs/*.log
-```
+It runs `smoke_test.sh` (feature extraction, five training configs and the cross-space pipeline
+for 1 epoch on small subject subsets) with `SMOKE_DEVICE=0`. Then it checks the logs, because
+device selection silently falls back to CPU when CUDA is unusable. The script fails if any step
+FAILs, if an extraction or training log shows no GPU use, or if a log contains a CUDA error.
+Missing datasets are reported as `SKIP`.
 
 ## 5. Model training
 
 Each paper model is one subject-independent 5-fold cross-validation run, defined by a YAML file
-in `configs/train/`.
+in `configs/train/`. Train all of them, or a subset:
+
+```sh
+python reproduce/train_all.py --gpu 0                                # skips configs that already have a complete run
+python reproduce/train_all.py --gpu 0 --only biovid_dfer mintpain_dfer
+```
 
 | Dataset (labels) | Backbone | Command |
 | --- | --- | --- |
@@ -155,139 +154,58 @@ source with the 5 target fold checkpoints and pools all pairs into one aggregate
 | `config_ablation_frozen_random_adapter` | frozen random projector + linear-head refinement (`refinement: 4`) | `ablation_paper_frozen_rnd_adapter` |
 | `config_anchor_sweep` | anchor-budget figure (§7) | `anchor_sweep_rerun_2026_09_23` |
 
-**1. Point the YAMLs at your checkpoints.** The YAMLs refer to the authors' run folders.
-`fill_cross_space_checkpoints.py` finds, for each direction, the newest complete 5-fold run of
-the source and target config under `runs/` and rewrites `old_model_pth` (source) and
-`new_model_pth` (target) in place, in all four config sets. Directions whose runs are missing are
-reported and left unchanged.
-
 ```sh
-python fill_cross_space_checkpoints.py --dry-run   # report what would be filled
-python fill_cross_space_checkpoints.py             # write; use --run CONFIG=runs/<config>/history_run_<...> to pick a run
+python reproduce/fill_cross_space_checkpoints.py      # 1. point the YAMLs at your checkpoints (--dry-run to preview)
+python reproduce/run_cross_space.py --gpu 0          # 2. run every YAML of the three paper sets
+python reproduce/summarize_cross_space.py            # 3. write aggregated_summary.csv in each output root
 ```
 
-**2. Run all directions of the three paper sets** (first argument: GPU id, or `cpu`):
-
-```sh
-for set in config_paper_tests_seed_42 config_paper_tests_seed_42_quality config_ablation_frozen_random_adapter; do
-  for d in Cross_projection_yaml/$set/*_cross_validation; do
-    bash run_cross_space_configs.sh 0 "$d"
-  done
-done
-```
-
-A single YAML can also be run with `python cross_space_projection.py --config <file.yaml>`.
-
-**3. Summarize each output root** (writes `aggregated_summary.csv`, used by §7):
-
-```sh
-for r in paper_tests_seed_42 paper_tests_seed_42_quality ablation_paper_frozen_rnd_adapter; do
-  python cross_space_logs.py --pkl_path Cross_projection/$r --only_aggregated --skip_umap
-done
-```
+1. The YAMLs refer to the authors' run folders. The fill script takes, for each direction, the
+   newest complete run of the source and target config under `runs/` and rewrites
+   `old_model_pth` (source) and `new_model_pth` (target) in place, in all four config sets.
+   Directions whose runs are missing are reported and left unchanged.
+   `--run CONFIG=runs/<config>/history_run_<...>` picks a specific run.
+2. YAMLs whose result already exists are skipped. `--sets` restricts the run to some config sets.
+   A single YAML can also be run with `python cross_space_projection.py --config <file.yaml>`.
 
 ## 7. Paper tables, controls, statistics and figures
 
-Each block reproduces one table or figure, named by its paper title and LaTeX label. The table
-scripts print LaTeX to stdout. Add `--output <file.tex>` to write it to a file instead. The
-blocks assume that §5 and §6 are done and use:
+Each script reproduces one table or figure, named here by its paper title and LaTeX label, and
+writes it to `paper_outputs/`. A script first runs the steps it needs whose outputs are missing:
+cross-space experiments, controls, sweeps and re-inference. Finished steps are skipped, and
+`--force` reruns the script's own steps. Training is never started by these scripts. The whole
+pipeline, from training to the last figure, is resumable:
 
 ```sh
-R=Cross_projection/paper_tests_seed_42
+python reproduce/all.py --gpu 0
 ```
 
-#### Frozen-representation baselines (`tab:literature_comparison_all_datasets`, `tab:baseline_summary_all_datasets`)
+| Paper result (LaTeX label) | Command | Output in `paper_outputs/` |
+| --- | --- | --- |
+| Frozen-representation baselines (`tab:literature_comparison_all_datasets`, `tab:baseline_summary_all_datasets`) | `python reproduce/table_baselines.py` | `baselines.csv`, `baselines_constant.csv` |
+| Video-level statistical comparison (`tab:video-mae-performance`, `tab:video-mae-significance`) | `python reproduce/table_video_statistics.py` | `tab_video-mae-performance.tex`, `tab_video-mae-significance.tex` |
+| Projector-only vs joint refinement, incl. Procrustes and OLS (`tab:comparison_proj_vs_projANDregressor_stage_mae_macro`) | `python reproduce/table_refinement.py` | `tab_comparison_proj_vs_projANDregressor_stage_mae_macro.tex` (+ `tab_closed_form.tex`) |
+| Random vs quality-based anchor selection (`tab:quality_anchor_micro_mae`, `tab:quality_anchor_macro_mae`) | `python reproduce/table_anchor_selection.py` | `tab_quality_anchor_{micro,macro}_mae.tex` |
+| Synthetic-embedding control (`tab:real_fake_unbc_biovid`, `tab:real_fake_mintpain_biovid`, `tab:real_fake_mintpain_unbc`) | `python reproduce/table_synthetic_control.py` | `tab_real_fake_synthetic_control.tex` |
+| Learned vs random cross-space mapping (`tab:random_adapter_ablation_joint_mae_macro_mae`, `fig:mintpain_biovid_random_confusion`) | `python reproduce/table_random_mapping.py` | `tab_random_adapter_ablation_joint_mae_macro_mae.tex`, `fig_mintpain_biovid_random_confusion.tex` |
+| Learned vs frozen random projection with linear-head refinement (`tab:projector_linear_vs_random_source`, `tab:projector_linear_vs_random_target`) | `python reproduce/table_frozen_projection.py` | `tab_projector_linear_vs_random.tex` |
+| Anchor budget (`fig:anchor_budget_sweep`, projector-only stage) | `python reproduce/figure_anchor_budget.py` | `anchor_budget_sweep.png` (+ all sweep plots and data in `anchor_budget/`) |
+| Temporal predictions on BioVid video 7678 (`fig:cumulative_mean`, `fig:cumulative_per_target`) | `python reproduce/figure_temporal_7678.py` | `cumulative_biovid7678_mean_curves.png`, `cumulative_biovid7678_task_aware_per_target.png` |
 
-```sh
-for pkl in runs/*/history_run_*/*/k_fold_results.pkl; do
-  python extract_kfold_test_table.py --pkl "$pkl" --raw          # add --metric accuracy for MIntPAIN and X-ITE
-done
-```
+All scripts take `--gpu <id>` (default `0`). Notes:
 
-Constant-predictor rows need no script: for a constant *c*, MAE is `mean(|y − c|)` over all
-videos of the label CSV, and Macro-MAE averages it over the represented levels (BioVid, c=2:
-1.20 / 1.20; MIntPAIN, c=0: 1.25 / 2.00).
-
-#### Projector-only vs joint refinement, incl. Procrustes and OLS (`tab:comparison_proj_vs_projANDregressor_stage_mae_macro`)
-
-```sh
-python cross_space_paper_tables.py refinement $R
-python cross_space_paper_tables.py closed-form $R    # optional: closed-form mappings only
-```
-
-#### Video-level statistical comparison (`tab:video-mae-performance`, `tab:video-mae-significance`)
-
-Run once per dataset, with the MAE-DFER and VideoMAEv2-S runs of that dataset (each glob must
-match exactly one run):
-
-```sh
-python statistical_compare_kfold_results.py \
-  --pkl_path_0 runs/biovid_dfer/history_run_*/*/k_fold_results.pkl \
-  --pkl_path_1 runs/biovid_vmae_s/history_run_*/*/k_fold_results.pkl \
-  --analysis_level video --measure mae
-```
-
-#### Synthetic-embedding control (`tab:real_fake_unbc_biovid`, `tab:real_fake_mintpain_biovid`, `tab:real_fake_mintpain_unbc`)
-
-```sh
-for d in $R/*_cross_validation; do
-  python cross_space_fake_projection.py $d --control fake_embeddings --distribution standard_normal
-done
-python cross_space_paper_tables.py synthetic $R/*_cross_validation
-```
-
-#### Random vs quality-based anchor selection (`tab:quality_anchor_micro_mae`, `tab:quality_anchor_macro_mae`)
-
-```sh
-python cross_space_paper_tables.py anchor $R Cross_projection/paper_tests_seed_42_quality --metric micro
-python cross_space_paper_tables.py anchor $R Cross_projection/paper_tests_seed_42_quality --metric macro
-```
-
-#### Anchor budget (`fig:anchor_budget_sweep`)
-
-`run_cross_space_anchor_sweep.sh` runs each YAML once per value in its `num_anchors` list
-(output: `Cross_projection/<run_tag>/K<k>/`). The GPU id must be an integer. The paper figure
-shows the projector-only stage.
-
-```sh
-for d in Cross_projection_yaml/config_anchor_sweep/*/; do bash "$d/run_all_anchor_sweeps.sh" 0; done
-python plot_anchor_sweep_mae.py --input-root Cross_projection/anchor_sweep_rerun_2026_09_23 \
-  --output-dir analysis/results/anchor_sweep_mae
-```
-
-#### Temporal predictions on BioVid video 7678 (`fig:cumulative_mean`, `fig:cumulative_per_target`)
-
-`plot_cumulative_predictions.py` reruns a cross-space experiment on one video, cutting it at
-increasing lengths. `plot_cumulative_snapshot_figure.py` puts the face snapshots under the plot.
-
-```sh
-python plot_cumulative_predictions.py <cross-space run>/refinement3_mlp_100 7678 --origin source \
-  --refinement-stage 2 --compare-native-root <BioVid DFER run> --video 1 --snapshots 47 63 95 143 --dump-curves
-D=chunk_prediction_plots/videomae_biovid_to_unbc_dfer/7678/mlp/videomae_biovid/stage_2
-python plot_cumulative_snapshot_figure.py $D/summary_full_range_<digest>.png \
-  $D/summary_full_range_video_<digest>_snapshots cumulative_biovid7678_mean_curves.png
-python plot_cumulative_snapshot_figure.py $D/models_stage_2_full_range_<digest>.png \
-  $D/models_stage_2_full_range_video_<digest>_snapshots cumulative_biovid7678_task_aware_per_target.png
-```
-
-`--dump-curves` also writes the plotted values to `curves_<digest>.json`.
-`run_cumulative_predictions.sh` runs `plot_cumulative_predictions.py` over many videos.
-
-#### Learned vs random cross-space mapping (`tab:random_adapter_ablation_joint_mae_macro_mae`, `fig:mintpain_biovid_random_confusion`)
-
-```sh
-for d in $R/*_cross_validation; do
-  python cross_space_fake_projection.py $d --control fake_adapter      # random projectors, seeds 42-46
-done
-python cross_space_paper_tables.py random-adapter $R/*_cross_validation
-python cross_space_paper_tables.py confusion $R/mintVmae_to_biovidDfer_cross_validation --method linear --seed 42
-```
-
-#### Learned vs frozen random projection with linear-head refinement (`tab:projector_linear_vs_random_source`, `tab:projector_linear_vs_random_target`)
-
-```sh
-python cross_space_paper_tables.py frozen $R Cross_projection/ablation_paper_frozen_rnd_adapter
-```
+* **Baselines:** recomputes each fold's test metrics from its best checkpoint. MAE and
+  Macro-MAE are reported for every dataset, plus accuracy and Macro-F1 for MIntPAIN and X-ITE.
+  The constant-predictor rows are computed from the label CSVs: `mean(|y − c|)` over all videos,
+  with Macro-MAE averaged over the represented levels.
+* **Statistics:** re-infers the per-video predictions of every fold, runs paired *t*-tests
+  (MAE-DFER vs VideoMAEv2-S) and applies the Holm correction across the four datasets.
+* **Synthetic-embedding control:** the script writes the three paper tables as one combined
+  table.
+* **Temporal predictions (7678):** uses the BioVid → UNBC MLP run of `paper_tests_seed_42` and
+  the newest BioVid MAE-DFER run. The plotted values are written to `curves_<digest>.json` under
+  `chunk_prediction_plots/`. `run_cumulative_predictions.sh` runs the same analysis over many
+  videos.
 
 ## 8. Optional: feature extraction from your own videos
 
@@ -334,6 +252,9 @@ snapshot, `precomputed/` (anchors and extracted embeddings), one folder per subt
 pooled aggregated `.pkl`. `cross_space_logs.py --only_aggregated` writes `aggregated_summary.csv`
 and per-run plots in the output root.
 
+**Paper tables and figures** (§7): `paper_outputs/`. Statistics CSVs are in
+`paper_outputs/statistics/`, and the temporal-prediction plots are in `chunk_prediction_plots/`.
+
 **Smoke test**: logs in `smoke_out/logs/`, training runs in `smoke_out/train/`, cross-space runs
 in `Cross_projection/smoke_test/<timestamp>/`. All of these can be deleted.
 
@@ -344,8 +265,8 @@ in `Cross_projection/smoke_test/<timestamp>/`. All of these can be deleted.
 * Only Linux x86_64 was tested end-to-end.
 * CPU and GPU (and different attention kernels) give slightly different numbers. Exact paper
   values need the GPU setup.
-* Raw-video preprocessing (§8) and the paper table/plot scripts (§7) are not covered by the smoke
-  test.
+* Raw-video preprocessing (§8) and the paper scripts in `reproduce/` (§7) are not covered by the
+  smoke test.
 * The V-JEPA 2.1 backbone option in `custom/backbone.py` (`--mt vjepa2_1_B`) is not used in the
   paper, and its vendored code is not shipped. Using it requires a checkout of
   [facebookresearch/vjepa2](https://github.com/facebookresearch/vjepa2) in `vjepa2/`.
@@ -364,8 +285,8 @@ python -m pip check
 bash smoke_test.sh                                                    # CPU, ~10 min
 ```
 
-Pass `cpu` instead of a GPU id to `run_cross_space_configs.sh`. The anchor-sweep scripts need a
-GPU id.
+Pass `--gpu cpu` to the `reproduce/` scripts to run on CPU. The anchor sweep
+(`figure_anchor_budget.py`) and the video-7678 figure need a GPU.
 
 **Flexible (non-pinned) specifications.** Use these only if a pinned file does not resolve on
 your machine, or on Windows/macOS: `env_portability/environment.yml` plus
