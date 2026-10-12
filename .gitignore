@@ -164,6 +164,12 @@ Cross_*/*
 !Cross_projection_yaml/config_paper_tests_seed_42/
 !Cross_projection_yaml/config_paper_tests_seed_42_quality/
 !Cross_projection_yaml/config_ablation_frozen_random_adapter/
+# Anchor-budget sweep (paper appendix), only the 3 directions in the figure.
+!Cross_projection_yaml/config_anchor_sweep/
+Cross_projection_yaml/config_anchor_sweep/*
+!Cross_projection_yaml/config_anchor_sweep/config_pain_from_unbcVmae_to_biovidDfer_cross_validation/
+!Cross_projection_yaml/config_anchor_sweep/config_pain_from_BiovidVmae_to_UNBCdfer-V2_cross_validation/
+!Cross_projection_yaml/config_anchor_sweep/config_pain_from_MintVmae_to_unbcDfer_cross_validation/
 MORPH_2/*
 TRAIN_*/*
 BIOVID_*/*
@@ -183,7 +189,6 @@ videos_jitter_comparison/*
 DFER_all_*
 unbc_dfer_*
 PEMF*/*
-!PEMF/prepare_pemf.py
 z_latex_tables
 XITE*/*
 !XITE/check_frontalized_videos.py
@@ -202,11 +207,67 @@ paper*
 chunk_*
 *.mp4
 *.csv
-# Environment documentation.
-!ENVIRONMENT.md
-!README.md
-!PORTABILITY_REPORT.md
-
-# Portable environment specifications.
-!env_portability/**
 REPRO*
+
+# Root documentation.
+!/README.md
+!/PORTABILITY_REPORT.md
+
+# ---------------------------------------------------------------------------
+# Paper release whitelist: only what reproduces the paper is tracked.
+# Keep this block last so it overrides the generic patterns above.
+# ---------------------------------------------------------------------------
+
+# Local tooling and development notes.
+.claude/
+docs/superpowers/
+
+# Scripts and tests not used for any paper result.
+cross_space_grid_two_stage.py
+new_plot_res_from_server.py
+custom/plot_aggregation.py
+tests/test_new_plot_res_from_server_*.py
+tests/test_compute_mae.py
+tests/test_accumulate_confusion_matrix.py
+tests/test_pemf_feature_extraction_support.py
+tests/test_analyze_anchor_sweep_mae.py
+
+# Environment files (Linux).
+env_portability/*
+!env_portability/README.md
+!env_portability/ENVIRONMENT.md
+!env_portability/DEPENDENCIES.md
+!env_portability/VALIDATION.md
+!env_portability/environment.yml
+!env_portability/environment-native.yml
+!env_portability/environment-cuda.yml
+!env_portability/environment-pinned-linux-64.yml
+!env_portability/environment-cuda-pinned-linux-64.yml
+!env_portability/environment-notebooks.yml
+
+# Face-landmark models read by custom/faceExtractor.py.
+landmark_model/*
+!landmark_model/face_landmarker.task
+!landmark_model/blaze_face_short_range.tflite
+
+# Vendored repos: license, imported modules, and docs linked from README.md.
+MAE_DFER/*
+!MAE_DFER/LICENSE
+!MAE_DFER/README.md
+!MAE_DFER/modeling_finetune.py
+!MAE_DFER/modeling_pretrain.py
+
+VideoMAEv2/*
+!VideoMAEv2/LICENSE
+!VideoMAEv2/models/
+!VideoMAEv2/docs/
+VideoMAEv2/docs/*
+!VideoMAEv2/docs/MODEL_ZOO.md
+
+jepa/*
+!jepa/LICENSE
+!jepa/src/
+
+making_better_mistakes/*
+!making_better_mistakes/LICENSE
+!making_better_mistakes/better_mistakes/

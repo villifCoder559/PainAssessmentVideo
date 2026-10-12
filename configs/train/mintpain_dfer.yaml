@@ -1,0 +1,65 @@
+# Paper training run: mintpain_dfer (item 7)
+# Original run: MIntPAIN_DFER_5_fold/1783539017352
+# Source command: REPRO_model_training/commands.sh ### 03
+# Usage (from repo root): python train_model.py --config configs/train/mintpain_dfer.yaml
+
+head: ATTENTIVE_JEPA
+num_cross_head: [1]
+num_heads: [8]
+mt: DFER
+lr: [0.0001]
+ep: 300
+csv: MIntPAIN/starting_point/samples.csv
+load_dataset_in_memory: 0
+ffsp: MIntPAIN/features/DFER/spatial_pooled_features_MIntPAIN_B_last143_stride16_interpol
+global_folder_name: runs/mintpain_dfer/history_run
+path_video_dataset: MIntPAIN/video_frontalized
+k_fold: 5
+stop: [5, 1]
+opt: [adamw]
+batch_train: [128]
+init_network: [default]
+p_early_stop: 2000
+min_delta: 0.005
+threshold_mode: abs
+regulariz_lambda_L1: [0.0]
+regulariz_lambda_L2: [0.01]
+scheduler_name: [cosine]
+min_lr: [0.0000001]
+warm_up_epochs: [5.0]
+warm_up_scheduler: [linear]
+warm_up_start_factor: [0.01]
+model_dropout: [0.0]
+drop_attn: [0.0]
+drop_residual: [0.0]
+loss: [l1]
+label_smooth: [0.0]
+nr_blocks: [2]
+cross_block_after_transformers: [0]
+pos_enc: [3]
+n_trials: 1
+timeout: 140.0
+pruner_n_warmup_steps: 500
+sampler_loader_type: [selective_augm]
+filtered_augm_n_keep: [1]
+filtered_augm_strategy: [1]
+keep_original: [0.8]
+undersample_max_per_class: [600]
+optuna_categorical: 1
+pruner_threshold_lower: 0.0
+optuna_sampler: grid
+n_workers: 8
+prefetch_factor: 2
+validation_enabled: 1
+is_subject_independent: 1
+concatenate_quadrants: [0]
+skip_test: 0
+use_test_as_val: 0
+embedding_reduction: spatial
+save_best_model: true
+stratified_training: [1]
+complete_block: [2]
+mlp_num_hidden_layers: [1]
+mlp_ratio: [1.0]
+custom_mlp: [1]
+target_samples_per_class_training: [600]

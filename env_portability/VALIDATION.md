@@ -26,7 +26,8 @@ running the application on each operating system.
   retain their original bytes, including exact locks and the custom torchsort wheel.
   Only environment/documentation organization and Git ignore rules were changed.
 
-The full source/import/provider record is [dependency-audit.json](dependency-audit.json).
+The source/import/provider record (`dependency-audit.json`) is not part of the paper release:
+it listed vendored files that were removed later.
 The original broader audit was stored in `env_reproducibility/locks/dependency-audit.json`.
 That folder has since been removed; the file is available in git history with
 `git show ee49793:env_reproducibility/locks/dependency-audit.json`.

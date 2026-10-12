@@ -1,0 +1,60 @@
+# Paper training run: unbc_vas_dfer (item 4)
+# Original run: REPRO_model_training/goal_dfer_vas attempt 100 (phase-2 best, test_MAE_raw 1.7233 +- 0.2731)
+# Source command: REPRO_model_training/goal_dfer_vas/100_*/_config_prompt.txt (--gp dropped, absolute paths made repo-relative)
+# Usage (from repo root): python train_model.py --config configs/train/unbc_vas_dfer.yaml
+
+head: ATTENTIVE_JEPA
+num_cross_head: [2]
+num_heads: [16]
+mt: DFER
+lr: [0.0001]
+ep: 100
+csv: UNBC/starting_point/samples.csv
+load_dataset_in_memory: 0
+ffsp: UNBC/video/features/DFER/spatial_pooled_features_UNBC_B_last143_stride16_interpol
+global_folder_name: runs/unbc_vas_dfer/history_run
+path_video_dataset: UNBC/video/WarpedVideos_Cropped_interpolated_mirror
+k_fold: 5
+stop: [5, 5]
+opt: [adamw]
+batch_train: [9]
+init_network: [default]
+key_early_stopping: val_loss
+p_early_stop: 2000
+min_delta: 0.005
+threshold_mode: abs
+regulariz_lambda_L1: [0.0]
+regulariz_lambda_L2: [0.3]
+scheduler_name: [cosine_restart]
+first_restart_epochs: [7]
+multiplier_restart: [2]
+warm_up_epochs: [5.0]
+warm_up_scheduler: [linear]
+warm_up_start_factor: [0.01]
+model_dropout: [0.3]
+drop_attn: [0.0]
+drop_residual: [0.0]
+mlp_ratio: [0.5]
+label_smooth: [0.0]
+nr_blocks: [1]
+cross_block_after_transformers: [0]
+pos_enc: [3]
+n_trials: 1
+timeout: 102.0
+loss: [l1]
+pruner_n_warmup_steps: 100000
+optuna_categorical: 0
+pruner_threshold_lower: 0.0
+optuna_sampler: grid
+n_workers: 8
+prefetch_factor: 2
+validation_enabled: 1
+is_subject_independent: 1
+stratified_training: [0]
+target_samples_per_class_training: [31]
+sampler_loader_type: [standard]
+concatenate_quadrants: [0]
+skip_test: 0
+use_test_as_val: 0
+embedding_reduction: spatial
+save_best_model: true

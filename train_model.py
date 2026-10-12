@@ -1197,10 +1197,9 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser(
     description='Train video analysis model with various configurations'
   )
-  if yaml_defaults:
-    parser.set_defaults(**yaml_defaults)
 
   # Arguments definitions
+  parser.add_argument('--config', type=str, help='Path to YAML configuration file (CLI flags override it).')
   parser.add_argument('--use_test_as_val', type=int, choices=[0, 1], default=0, help='Use test set as validation set.')
   parser.add_argument('--mt', type=str, default='B', help="Model type.")
   parser.add_argument('--head', type=str, default='ATTENTIVE_JEPA', help="Head type.")
@@ -1409,6 +1408,16 @@ if __name__ == '__main__':
   parser.add_argument('--normalize_labels', type=int, choices=[0, 1], default=0,
                       help='Min-max normalize continuous labels to [0,1] using observed bounds. '
                            'All logged metrics are reported in the original label scale.')
+
+  # YAML values become defaults after all add_argument calls, so argparse's own defaults don't win.
+  actions = {a.dest: a for a in parser._actions}
+  unknown = set(yaml_defaults) - set(actions)
+  if unknown:
+    parser.error(f'Unknown keys in {pre_args.config}: {sorted(unknown)}')
+  for k, v in yaml_defaults.items():  # nargs='*' args are iterated as grids downstream
+    if actions[k].nargs == '*' and not isinstance(v, list):
+      yaml_defaults[k] = [v]
+  parser.set_defaults(**yaml_defaults)
 
   args = parser.parse_args()
   args.timeout = int(args.timeout * 3600)  # Convert hours to seconds

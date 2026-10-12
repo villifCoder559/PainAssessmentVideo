@@ -23,7 +23,7 @@ target model on the projected source data.
 | Cross-space transfer (§5.2) | `run_cross_space_configs.sh` → `cross_space_projection.py`; `cross_space_logs.py` (summaries); `cross_space_fake_projection.py` (synthetic-embedding and random-mapping controls); paper configs in `Cross_projection_yaml/` |
 | Paper tables and statistics (§5.4) | `cross_space_paper_tables.py` (uses `cross_space_generate_latex_table.py`, `cross_space_fake_projection_tables.py`), `extract_kfold_test_table.py`, `statistical_compare_kfold_results.py` |
 | Preprocessing from raw videos (§5.3) | `extract_feature.py`, `multiple_feature_extraction.sh`, `extract_video_frontalized.py` + `custom/faceExtractor.py` + `landmark_model/`, `extract_landmarks.py`, `MIntPAIN/generate_videos.py`, `XITE/starting_point/prepare_xite.py`, `XITE/check_frontalized_videos.py`, `check_augmentation_completeness.py` |
-| Optional tools (not needed for paper numbers) | `cross_space_grid_two_stage.py` (projector hyperparameter search), `new_plot_res_from_server.py` (training plots), `plot_cumulative_predictions.py` + `run_cumulative_predictions.sh` (predictions over growing video prefixes) |
+| Paper appendix figures (§5.5) | `run_cross_space_anchor_sweep.sh` + `plot_anchor_sweep_mae.py` (anchor-budget sweep, configs in `Cross_projection_yaml/config_anchor_sweep/`), `plot_cumulative_predictions.py` + `run_cumulative_predictions.sh` + `plot_cumulative_snapshot_figure.py` (predictions over growing video prefixes, BioVid sample 7678) |
 | Helper modules | `log_cross_attention_from_model.py`, `new_plot_tsne_post_head.py` (imported by the cross-space code) |
 | Vendored backbone/head code | `MAE_DFER/`, `VideoMAEv2/`, `jepa/`, `making_better_mistakes/`: only the modules the pipeline imports (upstream licenses kept) |
 | Tests | `smoke_test.sh` (end-to-end, §4), `tests/` (`python -m pytest tests -q`) |
@@ -180,6 +180,11 @@ to `Cross_projection/smoke_test/<timestamp>/`. All of these can be deleted after
 The 12 paper models (one 5-fold cross-validation run each; `--stop K S` = run K folds × S
 subfolds). Add `--gp` to resolve relative paths against the repository root, or against
 `$PAIN_PROJECT_ROOT` if set, instead of the current directory.
+
+The DFER / VideoMAEv2-S settings are also in YAML form in `configs/train/` (BIOVID, MIntPAIN, XITE,
+UNBC OPI 0–5, and UNBC VAS with the best `REPRO_model_training/goal_*_vas` settings). Run them from
+the repository root: `python train_model.py --config configs/train/biovid_dfer.yaml`. Flags given
+on the command line override the YAML (e.g. `--stop 1 1 --ep 1` for a quick check).
 
 <details><summary>All 12 training commands (paper hyperparameters)</summary>
 
@@ -452,6 +457,39 @@ Add `--output <file.tex>` to write a table to a file instead of stdout.
   `mean(|y − c|)` over all videos of the full label CSV, and Macro-MAE averages that error over
   the represented levels. For example, BioVid with c=2 gives 1.20 / 1.20 and MIntPAIN with c=0
   gives 1.25 / 2.00.
+
+### 5.5 Appendix figures
+
+**Anchor-budget sweep.** `Cross_projection_yaml/config_anchor_sweep/` holds the three directions
+in the figure (UNBC→BioVid, BioVid→UNBC, MIntPAIN→UNBC). `run_cross_space_anchor_sweep.sh`
+runs one YAML once per value in its `num_anchors` list and writes each run to
+`Cross_projection/<run_tag>/K<k>/`. As in §5.2, point the checkpoint paths in the YAMLs to your
+own runs first. The GPU id must be an integer.
+
+```sh
+for d in Cross_projection_yaml/config_anchor_sweep/*/; do bash "$d/run_all_anchor_sweeps.sh" 0; done
+python plot_anchor_sweep_mae.py --input-root Cross_projection/anchor_sweep_rerun_2026_09_23 \
+  --output-dir analysis/results/anchor_sweep_mae      # micro/macro MAE per K, method and stage
+```
+
+The paper figure shows the projector-only stage.
+
+**Predictions over growing video prefixes (BioVid sample 7678).** `plot_cumulative_predictions.py`
+reruns a cross-space experiment on one video, cutting it at increasing lengths. With
+`--dump-curves` it also writes the plotted values to `curves_<digest>.json`.
+`plot_cumulative_snapshot_figure.py` then puts the face snapshots under a plot.
+
+```sh
+python plot_cumulative_predictions.py <cross-space run>/refinement3_mlp_100 7678 --origin source \
+  --refinement-stage 2 --compare-native-root <BioVid DFER run> --video 1 --snapshots 47 63 95 143 --dump-curves
+D=chunk_prediction_plots/videomae_biovid_to_unbc_dfer/7678/mlp/videomae_biovid/stage_2
+python plot_cumulative_snapshot_figure.py $D/summary_full_range_<digest>.png \
+  $D/summary_full_range_video_<digest>_snapshots cumulative_biovid7678_mean_curves.png
+python plot_cumulative_snapshot_figure.py $D/models_stage_2_full_range_<digest>.png \
+  $D/models_stage_2_full_range_video_<digest>_snapshots cumulative_biovid7678_task_aware_per_target.png
+```
+
+`run_cumulative_predictions.sh` runs `plot_cumulative_predictions.py` over many videos.
 
 ## 6. Known limitations
 

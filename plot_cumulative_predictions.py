@@ -7,6 +7,7 @@ import argparse
 import copy
 import csv
 import hashlib
+import json
 import math
 from dataclasses import dataclass, replace
 import pickle
@@ -1332,8 +1333,9 @@ def _composite_frame(
     speed: float,
     *,
     cv2_module,
+    show_info: bool = False,
 ) -> np.ndarray:
-    footer_height = 96
+    footer_height = 96 if show_info else 0
     plot_height, plot_width = plot_rgb.shape[:2]
     source_height = plot_height - footer_height
     scale = source_height / source_frame.shape[0]
@@ -1344,6 +1346,8 @@ def _composite_frame(
     composite[:source_height, plot_width:plot_width + source_width] = cv2_module.resize(
         source_frame, (source_width, source_height), interpolation=cv2_module.INTER_AREA
     )
+    if not show_info:
+        return composite
     text = (
         f"Source FPS: {source_fps:g}",
         f"Playback FPS: {playback_fps:g}",
@@ -1397,6 +1401,10 @@ def _verify_encoded_video(
         )
 
 
+def snapshot_dir(video_path: Path) -> Path:
+    return video_path.with_name(f"{video_path.stem}_snapshots")
+
+
 def _write_synchronized_videos(
     plots: Sequence[tuple[np.ndarray, tuple[int, int, int, int]]],
     frame_ranges: Sequence[tuple[int, int]],
@@ -1404,14 +1412,23 @@ def _write_synchronized_videos(
     source_video: str | Path,
     paths: Sequence[Path],
     speed: float,
+    show_info: bool = False,
+    snapshot_frames: Sequence[int] = (),
 ) -> tuple[Path, ...]:
     import cv2
 
     frames, source_fps = _source_frames_and_fps(source_video, cv2_module=cv2)
+    wanted = set(snapshot_frames)
+    if wanted and (min(wanted) < 0 or max(wanted) >= len(frames)):
+        raise ValueError(
+            f"snapshot frames must be within 0–{len(frames) - 1}: {sorted(wanted)}"
+        )
+    captured = [{} for _ in paths]
     positions = cursor_positions(frame_ranges, len(frames))
     playback_fps = source_fps * speed
     first = _composite_frame(
-        plots[0][0], frames[0], source_fps, playback_fps, speed, cv2_module=cv2)
+        plots[0][0], frames[0], source_fps, playback_fps, speed, cv2_module=cv2,
+        show_info=show_info)
     codec = cv2.VideoWriter_fourcc(*"avc1")
     temporary_paths = tuple(
         path.with_name(f".{path.stem}.{uuid4().hex}.tmp.mp4") for path in paths
@@ -1424,14 +1441,17 @@ def _write_synchronized_videos(
             )
         if not all(writer.isOpened() for writer in writers):
             raise RuntimeError("OpenCV could not open H.264 video writers")
-        for source_frame, position in zip(frames, positions):
-            for writer, plot in zip(writers, plots):
+        for index, (source_frame, position) in enumerate(zip(frames, positions)):
+            for writer, plot, stills in zip(writers, plots, captured):
                 plot_image = plot[0].copy()
                 _draw_cursor(
                     plot_image, position, plot[1], frame_ranges, cv2_module=cv2)
-                writer.write(_composite_frame(
+                composite = _composite_frame(
                     plot_image, source_frame, source_fps, playback_fps, speed,
-                    cv2_module=cv2))
+                    cv2_module=cv2, show_info=show_info)
+                writer.write(composite)
+                if index in wanted:
+                    stills[index] = composite
         for writer in writers:
             writer.release()
         for path in temporary_paths:
@@ -1448,6 +1468,15 @@ def _write_synchronized_videos(
         for path in temporary_paths:
             path.unlink(missing_ok=True)
         raise
+    for path, stills in zip(paths, captured):
+        if not stills:
+            continue
+        folder = snapshot_dir(path)
+        folder.mkdir(exist_ok=True)
+        for index, image in sorted(stills.items()):
+            still = folder / f"frame_{index:05d}.png"
+            if not cv2.imwrite(str(still), image):
+                raise RuntimeError(f"cannot write snapshot: {still}")
     return tuple(paths)
 
 
@@ -1464,6 +1493,8 @@ def save_prediction_videos(
     y_max: float,
     speed: float,
     debug_title: bool = False,
+    show_info: bool = False,
+    snapshot_frames: Sequence[int] = (),
 ) -> tuple[Path, Path]:
     """Write synchronized summary and per-model H.264 composites atomically."""
     speed = _validated_video_speed(speed)
@@ -1499,6 +1530,8 @@ def save_prediction_videos(
         source_video=source_video,
         paths=paths,
         speed=speed,
+        show_info=show_info,
+        snapshot_frames=snapshot_frames,
     )
 
 
@@ -1513,6 +1546,8 @@ def save_native_comparison_video(
     digest: str,
     y_max: float,
     speed: float,
+    show_info: bool = False,
+    snapshot_frames: Sequence[int] = (),
 ) -> Path:
     speed = _validated_video_speed(speed)
     plot = _full_range_plot_image(
@@ -1526,6 +1561,8 @@ def save_native_comparison_video(
         source_video=source_video,
         paths=(path,),
         speed=speed,
+        show_info=show_info,
+        snapshot_frames=snapshot_frames,
     )[0]
 
 
@@ -1548,6 +1585,16 @@ def _positive_finite_speed(value: str) -> float:
         return _validated_video_speed(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _non_negative_frame(value: str) -> int:
+    try:
+        frame = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("snapshot frame must be an integer") from exc
+    if frame < 0:
+        raise argparse.ArgumentTypeError("snapshot frame must be non-negative")
+    return frame
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1580,7 +1627,51 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="SPEED",
     )
+    parser.add_argument(
+        "--video-info", action="store_true",
+        help="overlay source/playback FPS and speed on --video output",
+    )
+    parser.add_argument(
+        "--snapshots", nargs="+", type=_non_negative_frame, default=None,
+        metavar="FRAME",
+        help=(
+            "source frame indices (x-axis end-frame values) to save as PNG stills "
+            "of each --video output; requires --video"
+        ),
+    )
+    parser.add_argument(
+        "--dump-curves", action="store_true",
+        help="also write the plotted curve values to curves_<digest>.json",
+    )
     return parser
+
+
+def save_curve_values(
+    curves: CurveSet,
+    frame_ranges: Sequence[tuple[int, int]],
+    ground_truth: float,
+    output_dir: Path,
+    *,
+    digest: str,
+) -> Path:
+    def as_lists(group):
+        return {
+            label: np.asarray(values, dtype=np.float64).tolist()
+            for label, values in group.items()
+        }
+
+    path = output_dir / f"curves_{digest}.json"
+    path.write_text(json.dumps({
+        "ground_truth": float(ground_truth),
+        "frame_ranges": [list(item) for item in frame_ranges],
+        "summary": as_lists(curves.summary),
+        "full_range_summary": as_lists(
+            curves.full_range_summary
+            if curves.full_range_summary is not None else curves.summary
+        ),
+        "detail": as_lists(curves.detail),
+    }, indent=2, ensure_ascii=False) + "\n")
+    return path
 
 
 def _experiment_kind(path: Path) -> str:
@@ -1602,6 +1693,8 @@ def run_cli(
     if args.backbone_batch_size < 1:
         raise ValueError("--backbone-batch-size must be positive")
     video_enabled = args.video_speed is not None
+    if args.snapshots is not None and not video_enabled:
+        raise ValueError("--snapshots requires --video")
     kind = _experiment_kind(args.experiment_root)
     comparison_enabled = args.compare_native_root is not None
     native_comparison_enabled = comparison_enabled and kind == "native"
@@ -1739,6 +1832,12 @@ def run_cli(
         projector_kind=projector_kind,
     )
     ranges = cumulative_frame_ranges(result.frame_count)
+    snapshot_frames = tuple(sorted(set(args.snapshots or ())))
+    for frame in snapshot_frames:
+        if frame >= result.frame_count:
+            raise ValueError(
+                f"--snapshots frame {frame} is outside 0–{result.frame_count - 1}"
+            )
     if native_comparison_enabled:
         title = (
             native_comparison_title(args.sample_id, result, y_max)
@@ -1786,6 +1885,8 @@ def run_cli(
                 digest=digest,
                 y_max=y_max,
                 speed=args.video_speed,
+                show_info=args.video_info,
+                snapshot_frames=snapshot_frames,
             ),)
         else:
             paths += save_prediction_videos(
@@ -1800,10 +1901,18 @@ def run_cli(
                 y_max=y_max,
                 speed=args.video_speed,
                 debug_title=args.debug_title,
+                show_info=args.video_info,
+                snapshot_frames=snapshot_frames,
             )
+    if args.dump_curves:
+        paths += (save_curve_values(
+            result.curves, ranges, result.ground_truth, output_dir, digest=digest,
+        ),)
     snapshot = save_script_snapshot(output_dir, raw_argv, digest=digest)
     for path in paths:
         print(f"Saved {path}")
+        if snapshot_frames and path.suffix == ".mp4":
+            print(f"Saved {snapshot_dir(path)}")
     print(f"Saved {snapshot}")
     return paths
 

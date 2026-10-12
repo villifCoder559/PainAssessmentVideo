@@ -41,7 +41,7 @@ Standard-library roots and verified local modules (including `custom`, `MAE_DFER
 | `setuptools` | setuptools | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `skimage` | scikit-image | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `sklearn` | scikit-learn | environment.yml (Conda) | `custom/dataset.py:17` |
-| `submitit` | submitit | Optional environment-cluster.yml; POSIX/SLURM | none left (all uses removed in the 2026-10-08 cleanup) |
+| `submitit` | submitit | Not shipped (`environment-cluster.yml` dropped) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `tensorboardX` | tensorboardx | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `timm` | timm | environment.yml (Conda) | `MAE_DFER/modeling_finetune.py:6` |
 | `torch` | pytorch (pytorch-cpu selector in base) | environment.yml (Conda) | `statistical_compare_kfold_results.py:401` |

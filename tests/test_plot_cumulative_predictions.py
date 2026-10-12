@@ -1,6 +1,7 @@
 from pathlib import Path
 import csv
 import hashlib
+import json
 import os
 import pickle
 import shlex
@@ -1024,6 +1025,36 @@ def test_mocked_native_cli_writes_hashed_artifacts_in_organized_path(
     ).is_file()
 
 
+def test_dump_curves_writes_plotted_values_as_json(tmp_path, monkeypatch):
+    native = _native_experiment(tmp_path)
+    monkeypatch.setattr(pcp, "require_cuda", lambda *_: None)
+    result = pcp.InferenceResult(
+        curves=pcp.CurveSet(
+            summary={"Native": [1.0, 2.0]},
+            detail={"Native": np.array([1.0, 2.0])},
+        ),
+        frame_count=20,
+        ground_truth=3.0,
+        metadata="fold 1, subfold 2, epoch 7",
+        origin_dataset="UNBC",
+        origin_model="VideoMAE",
+    )
+    argv = [str(native), "42", "--output-root", str(tmp_path / "plots"),
+            "--dump-curves"]
+    paths = pcp.run_cli(argv, native_inference=lambda *args: result)
+    digest = hashlib.sha256("\0".join(argv).encode()).hexdigest()[:12]
+
+    assert paths[-1].name == f"curves_{digest}.json"
+    dumped = json.loads(paths[-1].read_text())
+    assert dumped == {
+        "ground_truth": 3.0,
+        "frame_ranges": [[0, 15], [0, 19]],
+        "summary": {"Native": [1.0, 2.0]},
+        "full_range_summary": {"Native": [1.0, 2.0]},
+        "detail": {"Native": [1.0, 2.0]},
+    }
+
+
 @pytest.mark.parametrize(
     ("debug", "expected"),
     [
@@ -1520,6 +1551,54 @@ def test_native_comparison_root_is_optional():
     assert comparison.compare_native_root == Path("other-experiment")
 
 
+def test_snapshots_option_parses_frame_indices():
+    parser = pcp.build_parser()
+
+    disabled = parser.parse_args(["experiment", "42", "--video"])
+    enabled = parser.parse_args(
+        ["experiment", "42", "--video", "--snapshots", "0", "47"])
+
+    assert disabled.snapshots is None
+    assert enabled.snapshots == [0, 47]
+
+
+@pytest.mark.parametrize("frame", ["-1", "1.5", "abc"])
+def test_snapshots_option_rejects_invalid_frames(frame):
+    with pytest.raises(SystemExit):
+        pcp.build_parser().parse_args(
+            ["experiment", "42", "--video", "--snapshots", frame])
+
+
+def test_snapshots_require_video_before_inference(tmp_path):
+    native = _native_experiment(tmp_path)
+
+    def inference(*args):
+        raise AssertionError("inference must not run")
+
+    with pytest.raises(ValueError, match="--snapshots requires --video"):
+        pcp.run_cli(
+            [str(native), "42", "--snapshots", "3"], native_inference=inference)
+
+
+def test_out_of_range_snapshot_fails_before_writing_outputs(tmp_path, monkeypatch):
+    native = _native_experiment(tmp_path)
+    monkeypatch.setattr(pcp, "require_cuda", lambda *_: None)
+    result = pcp.InferenceResult(
+        curves=pcp.CurveSet(summary={"Native": [1.0]}, detail={"Native": [1.0]}),
+        frame_count=5, ground_truth=3.0, metadata="native",
+        origin_dataset="UNBC", origin_model="VideoMAE")
+    plots = tmp_path / "plots"
+
+    with pytest.raises(ValueError, match="frame 5 is outside 0–4"):
+        pcp.run_cli(
+            [str(native), "42", "--output-root", str(plots),
+             "--video", "--snapshots", "0", "5"],
+            native_inference=lambda *args: result,
+        )
+
+    assert not plots.exists() or not any(plots.rglob("*.*"))
+
+
 @pytest.mark.parametrize("option", ["--video-speed", "--video_speed"])
 def test_redundant_video_speed_options_are_rejected(option):
     with pytest.raises(SystemExit):
@@ -1582,6 +1661,23 @@ def test_cursor_is_red_in_the_bgr_composite():
         cv2_module=cv2)
 
     assert composite[30, 10].tolist() == [0, 0, 255]
+
+
+def test_composite_frame_shows_video_info_only_when_requested():
+    cv2 = pytest.importorskip("cv2")
+    plot = np.zeros((650, 1200, 3), dtype=np.uint8)
+    source = np.full((6, 8, 3), 255, dtype=np.uint8)
+
+    hidden = pcp._composite_frame(plot, source, 4.0, 2.0, 0.5, cv2_module=cv2)
+    shown = pcp._composite_frame(
+        plot, source, 4.0, 2.0, 0.5, cv2_module=cv2, show_info=True)
+
+    assert hidden.shape[0] == shown.shape[0] == 650
+    assert hidden[:, 1200].min() == 255
+    assert shown[:554, 1200].min() == 255
+    assert shown[554:, 1200].max() == 0
+    footer = shown[554:, 1200:]
+    assert footer.any() and not footer.all()
 
 
 def test_cursor_endpoints_match_rendered_chunk_coordinates():
@@ -1710,6 +1806,60 @@ def test_native_comparison_video_writes_one_synchronized_full_range_file(tmp_pat
     capture.release()
 
 
+def test_prediction_videos_save_requested_composite_snapshots(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    source = tmp_path / "source.mp4"
+    _write_synthetic_video(source)
+    curves = pcp.CurveSet(
+        summary={"Summary": [1.0, 2.0]}, detail={"Detail": [2.0, 3.0]})
+
+    paths = pcp.save_prediction_videos(
+        curves,
+        [(0, 3), (0, 4)],
+        ground_truth=3.0,
+        title="Synthetic",
+        source_video=source,
+        output_dir=tmp_path,
+        stage=2,
+        digest="abcdef123456",
+        y_max=5.0,
+        speed=1.0,
+        snapshot_frames=(0, 4),
+    )
+
+    for path in paths:
+        folder = tmp_path / f"{path.stem}_snapshots"
+        assert pcp.snapshot_dir(path) == folder
+        assert sorted(item.name for item in folder.iterdir()) == [
+            "frame_00000.png", "frame_00004.png",
+        ]
+        first = cv2.imread(str(folder / "frame_00000.png"))
+        last = cv2.imread(str(folder / "frame_00004.png"))
+        assert first.shape[0] == 650
+        assert first.shape[1] > 1200 and first.shape[1] % 2 == 0
+        assert first.shape == last.shape
+        red = lambda image: np.flatnonzero(
+            (image[..., 2] == 255) & (image[..., 1] == 0) & (image[..., 0] == 0)
+        ).size
+        assert red(first) and red(last)
+        assert not np.array_equal(first[:, :1200], last[:, :1200])
+
+
+def test_videos_without_snapshots_create_no_snapshot_folders(tmp_path):
+    pytest.importorskip("cv2")
+    source = tmp_path / "source.mp4"
+    _write_synthetic_video(source)
+    curves = pcp.CurveSet(summary={"Summary": [1.0, 2.0]}, detail={})
+
+    pcp.save_native_comparison_video(
+        curves, [(0, 3), (0, 4)], 3.0, "Synthetic",
+        source_video=source, output_dir=tmp_path, digest="abcdef123456",
+        y_max=4.0, speed=1.0,
+    )
+
+    assert not list(tmp_path.glob("*_snapshots"))
+
+
 def test_invalid_temporary_videos_leave_existing_outputs_untouched(
         tmp_path, monkeypatch):
     class DiscardingWriter:
@@ -1822,17 +1972,28 @@ def test_second_writer_construction_failure_releases_first_and_cleans_temp(
 
 
 @pytest.mark.parametrize(
-    ("video_args", "speed"),
-    [(["--video"], 1.0), (["--video", "0.5"], 0.5), (["--video", "2"], 2.0)],
+    ("video_args", "speed", "show_info", "snapshot_frames"),
+    [
+        (["--video"], 1.0, False, ()),
+        (["--video", "0.5"], 0.5, False, ()),
+        (["--video", "2"], 2.0, False, ()),
+        (["--video", "--video-info"], 1.0, True, ()),
+        (["--video", "--snapshots", "3", "0", "3"], 1.0, False, (0, 3)),
+    ],
 )
 def test_native_video_cli_uses_selected_source_and_appends_videos(
-        tmp_path, monkeypatch, video_args, speed):
+        tmp_path, monkeypatch, capsys, video_args, speed, show_info,
+        snapshot_frames):
     native = _native_experiment(tmp_path)
     source = tmp_path / "videos" / "subject" / "clip.mp4"
     seen = {}
     monkeypatch.setattr(pcp, "require_cuda", lambda *_: None)
-    def save_videos(*args, source_video, output_dir, stage, digest, speed, **kwargs):
-        seen.update(source_video=source_video, speed=speed)
+    def save_videos(
+            *args, source_video, output_dir, stage, digest, speed, show_info,
+            snapshot_frames, **kwargs):
+        seen.update(
+            source_video=source_video, speed=speed, show_info=show_info,
+            snapshot_frames=snapshot_frames)
         return (
             Path(output_dir) / f"summary_full_range_video_{digest}.mp4",
             Path(output_dir) / f"models_stage_{stage}_full_range_video_{digest}.mp4",
@@ -1849,11 +2010,17 @@ def test_native_video_cli_uses_selected_source_and_appends_videos(
     paths = pcp.run_cli(argv, native_inference=lambda *args: result)
 
     assert len(paths) == 6
-    assert seen == {"source_video": source, "speed": speed}
+    assert seen == {
+        "source_video": source, "speed": speed, "show_info": show_info,
+        "snapshot_frames": snapshot_frames,
+    }
     assert paths[-2:] == (
         paths[0].parent / f"summary_full_range_video_{pcp.invocation_digest(argv)}.mp4",
         paths[0].parent / f"models_stage_2_full_range_video_{pcp.invocation_digest(argv)}.mp4",
     )
+    printed = capsys.readouterr().out
+    for path in paths[-2:]:
+        assert (f"Saved {pcp.snapshot_dir(path)}" in printed) == bool(snapshot_frames)
 
 
 @pytest.mark.parametrize(

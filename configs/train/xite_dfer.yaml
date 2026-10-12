@@ -1,0 +1,55 @@
+# Paper training run: xite_dfer (item 9)
+# Original run: XITE_dfer_tests/history_run_all_samples_grid_2686406_ATTENTIVE_JEPA_targaryen_1787930153/1788046133794
+# Source command: REPRO_model_training/commands.sh ### 06
+# Usage (from repo root): python train_model.py --config configs/train/xite_dfer.yaml
+
+head: ATTENTIVE_JEPA
+num_cross_head: [1]
+num_heads: [8]
+mt: DFER
+lr: [0.0003]
+ep: 200
+csv: XITE/starting_point/splits
+ffsp: XITE/video/features/DFER/spatial_pooled_features_XITE_B_last143_stride16_interpol_all
+global_folder_name: runs/xite_dfer/history_run
+path_video_dataset: XITE/video/video_frontalized
+k_fold: 5
+stop: [1, 1]
+opt: [adamw]
+batch_train: [16]
+init_network: [default]
+p_early_stop: 2000
+min_delta: 0.005
+threshold_mode: abs
+regulariz_lambda_L1: [0.0]
+regulariz_lambda_L2: [0.5]
+scheduler_name: [cosine]
+min_lr: [0.0000001]
+warm_up_epochs: [5.0]
+warm_up_scheduler: [linear]
+warm_up_start_factor: [0.01]
+model_dropout: [0.0]
+drop_attn: [0.0]
+drop_residual: [0.0]
+loss: [ce]
+label_smooth: [0.0]
+nr_blocks: [1]
+pos_enc: [3]
+n_trials: 1
+timeout: 140.0
+pruner_n_warmup_steps: 500
+sampler_loader_type: [standard]
+optuna_categorical: 1
+pruner_threshold_lower: 0.0
+optuna_sampler: grid
+n_workers: 8
+prefetch_factor: 2
+validation_enabled: 1
+is_subject_independent: 1
+concatenate_quadrants: [0]
+skip_test: 0
+use_test_as_val: 0
+embedding_reduction: spatial
+save_best_model: true
+complete_block: [2]
+load_dataset_in_memory: 1

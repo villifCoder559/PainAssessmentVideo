@@ -6,6 +6,8 @@ NVIDIA GPUs, and `environment-pinned-linux-64.yml` for CPU (see [README.md](READ
 The flexible specifications below are the fallback, and the route for Windows/macOS. They
 deliberately allow a new resolution, and they do not reproduce identical floating-point results.
 
+The paper release keeps only the Linux files. The Windows overlay (`environment-windows.yml`) and the SLURM overlay (`environment-cluster.yml`) are not shipped; Windows and macOS were never tested end-to-end.
+
 ## Python and file selection
 
 **Python 3.10**, at the minor-version level, preserves the working application's
@@ -17,10 +19,8 @@ NumPy 1.26.4, MediaPipe 0.10.5, transformers 4.57.1, and timm 1.0.15.
 | --- | --- |
 | `environment.yml` | Common CPU stack on Linux x86_64, Windows x86_64, and macOS Intel/Apple Silicon. Conda-forge only; `nodefaults` prevents implicit extra channels. |
 | `environment-native.yml` | Required addition for CPU training and vendored video loaders on Linux x86_64 and Intel macOS: Conda Decord and torchsort. |
-| `environment-windows.yml` | Required addition for native Windows CPU training/video loading: Conda torchsort and PyPI Decord. |
 | `environment-cuda.yml` | Standalone alternative for NVIDIA GPUs on Linux/Windows x86_64. Conda-forge supplies the common libraries; official PyTorch CUDA wheels supply the GPU stack. Native video/ranking installation is described below. |
 | `environment-notebooks.yml` | Optional JupyterLab/IPython/kernel and pytest tooling. |
-| `environment-cluster.yml` | Optional submitit launchers for POSIX/SLURM workflows, normally Linux. |
 | `DEPENDENCIES.md` | Complete third-party import-to-distribution cross-check, including conditional and historical imports. |
 
 **The common file alone is insufficient for training.** `custom/loss.py` imports
@@ -39,15 +39,6 @@ Linux x86_64 CPU, or Intel macOS CPU:
 ```sh
 conda env create -f env_portability/environment.yml
 conda env update -n pain-portable -f env_portability/environment-native.yml
-conda activate pain-portable
-python -m pip check
-```
-
-Native Windows x86_64 CPU, in Anaconda Prompt or a Conda-initialized PowerShell:
-
-```powershell
-conda env create -f env_portability/environment.yml
-conda env update -n pain-portable -f env_portability/environment-windows.yml
 conda activate pain-portable
 python -m pip check
 ```
