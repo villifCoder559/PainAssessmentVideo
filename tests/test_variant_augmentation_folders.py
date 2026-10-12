@@ -360,5 +360,36 @@ class TestLoadInMemoryDiscoversVariants(unittest.TestCase):
     shutil.rmtree(tmpdir)
 
 
+class TestAugmentationAvailables(unittest.TestCase):
+  """Test helper.get_augmentation_availables and the Model_Advanced.augment_csv guard."""
+
+  def setUp(self):
+    self.tmpdir = tempfile.mkdtemp()
+    self.base_name = 'features_UNBC'
+    self.path_to_features = os.path.join(self.tmpdir, self.base_name)
+    _create_dir(self.path_to_features)
+
+  def tearDown(self):
+    shutil.rmtree(self.tmpdir)
+
+  def test_sibling_files_and_unrelated_dirs_ignored(self):
+    """Only <base>_<aug> / <base>$N directories count; stray files (e.g. a completeness log) do not."""
+    _create_dir(os.path.join(self.tmpdir, f'{self.base_name}_jitter'))
+    _create_dir(os.path.join(self.tmpdir, f'{self.base_name}_jitter$0'))
+    _create_dir(os.path.join(self.tmpdir, f'other_{self.base_name}_hflip'))
+    open(os.path.join(self.tmpdir, f'{self.base_name}_unmatched_augmented.txt'), 'w').close()
+    self.assertEqual(helper.get_augmentation_availables(self.path_to_features), ['jitter'])
+
+  def test_augment_csv_without_augmented_folders_raises(self):
+    """stratified_training=1 with no augmented sibling folders must fail instead of silently not augmenting."""
+    from custom.model import Model_Advanced
+    model = MagicMock(path_to_extracted_features=self.path_to_features)
+    csv_path = os.path.join(self.tmpdir, 'train.csv')
+    pd.DataFrame({'subject_id': [1], 'subject_name': ['s'], 'class_id': [0], 'class_name': ['c'],
+                  'sample_id': [1], 'sample_name': ['x']}).to_csv(csv_path, sep='\t', index=False)
+    with self.assertRaises(FileNotFoundError):
+      Model_Advanced.augment_csv(model, train_csv_path=csv_path, stratified_training=1)
+
+
 if __name__ == '__main__':
   unittest.main()

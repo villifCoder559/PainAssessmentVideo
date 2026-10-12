@@ -92,7 +92,8 @@ by these relative paths.
 * CSVs are **tab-separated** with columns `subject_id subject_name class_id class_name sample_id sample_name`.
 * **Augmented embeddings** (`<features>_<aug>` and `<features>_<aug>$N`, e.g. `_jitter`, `_jitter$0`,
   `_shift_hflip$2`) are **required** by the configs marked † in §5. Without them, training stops
-  with a `FileNotFoundError` that explains this. Sizes: BioVid ≈ 35 GB, MIntPAIN ≈ 3 GB, UNBC ≈ 2 GB.
+  with a `FileNotFoundError` that explains this. Sizes (both backbones): BioVid ≈ 37 GB,
+  MIntPAIN ≈ 2.6 GB, UNBC ≈ 2 GB. The X-ITE configs use no augmented folders.
 * `path_video_dataset` in the configs does **not** need to exist: only its name is used to
   identify the dataset.
 
@@ -124,10 +125,10 @@ python reproduce/train_all.py --gpu 0 --only biovid_dfer mintpain_dfer
 | BioVid Part A † | MAE-DFER | `python train_model.py --config configs/train/biovid_dfer.yaml` |
 | MIntPAIN † | VideoMAEv2-S | `python train_model.py --config configs/train/mintpain_vmae_s.yaml` |
 | MIntPAIN † | MAE-DFER | `python train_model.py --config configs/train/mintpain_dfer.yaml` |
-| UNBC (OPI 0–4) | VideoMAEv2-S | `python train_model.py --config configs/train/unbc_opi0-4_vmae_s.yaml` |
-| UNBC (OPI 0–4) | MAE-DFER | `python train_model.py --config configs/train/unbc_opi0-4_dfer.yaml` |
-| UNBC (OPI 0–5) | VideoMAEv2-S | `python train_model.py --config configs/train/unbc_opi0-5_vmae_s.yaml` |
-| UNBC (OPI 0–5) | MAE-DFER | `python train_model.py --config configs/train/unbc_opi0-5_dfer.yaml` |
+| UNBC (OPI 0–4) † | VideoMAEv2-S | `python train_model.py --config configs/train/unbc_opi0-4_vmae_s.yaml` |
+| UNBC (OPI 0–4) † | MAE-DFER | `python train_model.py --config configs/train/unbc_opi0-4_dfer.yaml` |
+| UNBC (OPI 0–5) † | VideoMAEv2-S | `python train_model.py --config configs/train/unbc_opi0-5_vmae_s.yaml` |
+| UNBC (OPI 0–5) † | MAE-DFER | `python train_model.py --config configs/train/unbc_opi0-5_dfer.yaml` |
 | UNBC (VAS) † | VideoMAEv2-S | `python train_model.py --config configs/train/unbc_vas_vmae_s.yaml` |
 | UNBC (VAS) | MAE-DFER | `python train_model.py --config configs/train/unbc_vas_dfer.yaml` |
 | X-ITE (predefined splits) | VideoMAEv2-S | `python train_model.py --config configs/train/xite_vmae_s.yaml` |

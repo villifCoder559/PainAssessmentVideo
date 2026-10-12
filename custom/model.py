@@ -437,6 +437,11 @@ class Model_Advanced: # Scenario_Advanced
       list_augmentations_available = target_list_string.split(',')
       # list_augmentations_available = [augm for augm in list_only_augments]
     else:
+      if stratified_training == 1 and not list_augmentations_available:
+        raise FileNotFoundError(
+          'stratified_training=1 needs augmented samples, but none were found. '
+          'Augmented embeddings must sit next to the --ffsp folder as sibling folders named '
+          '<ffsp>_<augmentation> (e.g. <ffsp>_jitter, <ffsp>_jitter$0); see README.md.')
       if stratified_training == 2:
         list_augmentations_available.append('latent_basic')
       elif stratified_training == 3:
