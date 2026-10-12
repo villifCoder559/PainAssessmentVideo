@@ -221,6 +221,7 @@ REPRO*
 # Local tooling and development notes.
 .claude/
 docs/superpowers/
+smoke_out/
 
 # Scripts and tests not used for any paper result.
 cross_space_grid_two_stage.py
