@@ -18,9 +18,6 @@ stop: [1, 1]  # predefined splits (csv dir) force 1 1 anyway (custom/predefined_
 opt: [adamw]
 batch_train: [16]
 init_network: [default]
-p_early_stop: 2000
-min_delta: 0.005
-threshold_mode: abs
 regulariz_lambda_L1: [0.0]
 regulariz_lambda_L2: [0.5]
 scheduler_name: [cosine]

@@ -9,10 +9,10 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from custom.targets import TargetSpec, huber_delta_for_optimization
+from custom.targets import TargetSpec
 from custom import tools
 from cross_space_projection import _label_transform_from_config, _inverse_label_values
-from train_model import configure_target_spec, get_class_weights
+from train_model import configure_target_spec
 
 
 def _write(path, values):
@@ -65,38 +65,6 @@ def test_config_rejects_fractional_targets_with_classification_loss(tmp_path):
 
   with pytest.raises(ValueError, match='fractional class_id'):
     configure_target_spec(config)
-
-
-def test_config_rejects_fractional_disentangled_pain_classification(tmp_path):
-  csv_path = _write(tmp_path / 'samples.csv', [0.19, 1.0])
-  config = {
-    'training_csv': csv_path,
-    'predefined_csv_splits': None,
-    'normalize_labels': 0,
-    'loss': None,
-    'composite_loss': [None],
-    'disent_loss_p_s': ['ce,ce'],
-  }
-
-  with pytest.raises(ValueError, match='fractional class_id'):
-    configure_target_spec(config)
-
-
-def test_huber_delta_is_interpreted_on_original_scale():
-  normalized = TargetSpec.from_values([0.19, 6.26], normalize=True)
-  raw = TargetSpec.from_values([0.19, 6.26], normalize=False)
-
-  assert huber_delta_for_optimization(1.5, normalized) == pytest.approx(1.5 / 6.07)
-  assert huber_delta_for_optimization(1.5, raw) == pytest.approx(1.5)
-
-
-def test_weighted_classification_covers_missing_bins(tmp_path):
-  csv_path = _write(tmp_path / 'samples.csv', [0, 2])
-  spec = TargetSpec.from_values([0, 2])
-
-  weights = get_class_weights(csv_path, spec)
-
-  assert weights.tolist() == pytest.approx([2.0, 0.0, 2.0])
 
 
 def test_csv_reader_does_not_truncate_continuous_targets(tmp_path):

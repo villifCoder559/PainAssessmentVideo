@@ -16,9 +16,6 @@ ffsp: UNBC/video/features/DFER/spatial_pooled_features_UNBC_B_last143_stride16_i
 path_video_dataset: UNBC/video/WarpedVideos_Cropped_interpolated_mirror
 opt: [adamw]
 init_network: [default]
-p_early_stop: 2000
-min_delta: 0.005
-threshold_mode: abs
 regulariz_lambda_L1: [0.0]
 regulariz_lambda_L2: [0.0]
 scheduler_name: [cosine]

@@ -1,38 +1,20 @@
-from custom.helper import CLIPS_REDUCTION,EMBEDDING_REDUCTION,MODEL_TYPE,SAMPLE_FRAME_STRATEGY,GLOBAL_PATH
 from custom.model import Model_Advanced
-from transformers import AutoImageProcessor
-# from custom.head import HeadSVR, HeadGRU, HeadAttentive, HeadLinear
 import time
 from custom.tools import NpEncoder
 import custom.tools as tools
 import custom.helper as helper
-import torch.nn as nn
-import torch.optim as optim
-import dataframe_image as dfi
-import pandas as pd
 import torch
 import numpy as np
-import time
 import json
-import pickle
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 import os
 import random
-import custom.loss as losses
 from custom.model_selection import is_better_metric
 from custom.predefined_training import run_predefined_split
 from custom.targets import TargetSpec
 import copy
-# import wandb
-def check_intersection_splits(k_fold,subject_ids,list_splits_idxs):
-  for i in range(k_fold):
-    for j in range(i+1,k_fold):
-      subject_ids_i = set(subject_ids[list_splits_idxs[i]])
-      subject_ids_j = set(subject_ids[list_splits_idxs[j]])
-      if len(subject_ids_i.intersection(subject_ids_j)) > 0:
-        raise ValueError('The splits must be disjoint')
-      
-      
+
+
 def set_seed(seed):
   random.seed(seed)  # Python random module
   np.random.seed(seed)  # NumPy
@@ -43,10 +25,10 @@ def set_seed(seed):
   torch.backends.cudnn.benchmark = False  # May slow down training but ensures reproducibility
 
 def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced, k_fold, seed_random_state,
-                          lr, epochs, round_output_loss, shuffle_training_batch, criterion,
-                          early_stopping, concatenate_temp_dim, init_network,is_subject_independent,
+                          lr, epochs, shuffle_training_batch, criterion,
+                          early_stopping, init_network,is_subject_independent,
                           regularization_lambda_L1, key_for_early_stopping, target_metric_best_model,stop_after_kth_fold,
-                          clip_grad_norm,regularization_lambda_L2,trial,summary_res,run_folder_path,validate,**kwargs):
+                          regularization_lambda_L2,trial,summary_res,run_folder_path,validate,**kwargs):
   """
   Perform k-fold cross-validation on the dataset and train the model.
   
@@ -75,10 +57,6 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
   # Create stratified group k-fold splits
   list_splits_idxs = create_stratified_splits(k_fold, seed_random_state, y_labels, subject_ids, 
                                               is_subject_independent,
-                                              validation_enabled = validate,
-                                              type_group=kwargs['type_group'],
-                                              skip_test = kwargs['skip_test'],
-                                              load_idxs_splits = kwargs['load_idxs_splits']
                                               )
   # check_intersection_splits(k_fold, subject_ids, list_splits_idxs)
 
@@ -88,10 +66,10 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
     fold_results = run_single_fold(
       i, k_fold, list_splits_idxs, csv_array, cols, sample_ids, subject_ids,
       train_folder_path, model_advanced, lr, epochs, 
-      concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
+      criterion, shuffle_training_batch,
       init_network, regularization_lambda_L1,
       key_for_early_stopping, early_stopping,
-      target_metric_best_model, seed_random_state, clip_grad_norm,stop_after_kth_fold,
+      target_metric_best_model, seed_random_state, stop_after_kth_fold,
       regularization_lambda_L2,trial,validate,**kwargs
     )
     
@@ -105,60 +83,27 @@ def k_fold_cross_validation(path_csv_dataset, train_folder_path, model_advanced,
     if stop_after_kth_fold is not None and i == stop_after_kth_fold[0] - 1:
       break
 
-def create_stratified_splits(k_fold, seed_random_state, y_labels, subject_ids, subject_independent=True,**kwargs):
-  """Create stratified group k-fold splits"""
+def create_stratified_splits(k_fold, seed_random_state, y_labels, subject_ids, subject_independent=True):
+  """Create stratified (group) k-fold splits: the test indices of each of the k folds."""
   list_splits_idxs = []  # contains indices for all k splits
-
-  # load predefined splits, for the adversarial training experiments otherwise cannot compare with previous (not adversarial) results
-  if kwargs['load_idxs_splits']:
-    # load predefined splits
-    with open(f'UNBC/predefined_splits/stratified_k{k_fold}_indip{subject_independent}_val{kwargs["validation_enabled"]}_skiptest{kwargs["skip_test"]}.pkl', 'rb') as f:
-      list_splits_idxs = pickle.load(f)
-    if subject_independent:
-      check_intersection_splits(k_fold,subject_ids,list_splits_idxs)
-  else:                
-    if subject_independent:
-      # no subjects in common between folds
-      if not kwargs['type_group']:
-        sgkf = StratifiedGroupKFold(n_splits=k_fold, random_state=seed_random_state, shuffle=True)
-        for _, test_index in sgkf.split(X=torch.zeros(y_labels.shape), y=y_labels, groups=subject_ids):
-          list_splits_idxs.append(test_index)
-      else: 
-        # 1. Identify all unique subjects
-        unique_subjects = np.unique(subject_ids)
-        
-        # 2. Shuffle the subjects deterministically
-        rng = np.random.RandomState(kwargs['type_group'])  # Use type_group as seed for reproducibility
-        rng.shuffle(unique_subjects)
-        
-        # 3. Split unique subjects into 'k_fold' chunks
-        # np.array_split handles cases where total subjects aren't perfectly divisible
-        subject_folds = np.array_split(unique_subjects, k_fold)
-        
-        # 4. Map back to original indices
-        for fold_subjects in subject_folds:
-          # Find indices in the original data belonging to the subjects in this fold
-          test_mask = np.isin(subject_ids, fold_subjects)
-          test_index = np.where(test_mask)[0]
-          list_splits_idxs.append(test_index)
-    else:
-      # If not subject independent, use regular StratifiedKFold
-      skf = StratifiedKFold(n_splits=k_fold, random_state=seed_random_state, shuffle=True)
-      for _, test_index in skf.split(X=torch.zeros(y_labels.shape), y=y_labels):
-        list_splits_idxs.append(test_index)
-    
-    # save locally the splits
-    # os.makedirs('UNBC/predefined_splits', exist_ok=True)
-    # with open(f'UNBC/predefined_splits/stratified_k{k_fold}_indip{subject_independent}_val{kwargs["validation_enabled"]}_skiptest{kwargs["skip_test"]}.pkl', 'wb') as f:
-    #   pickle.dump(list_splits_idxs, f)
+  if subject_independent:
+    # no subjects in common between folds
+    sgkf = StratifiedGroupKFold(n_splits=k_fold, random_state=seed_random_state, shuffle=True)
+    for _, test_index in sgkf.split(X=torch.zeros(y_labels.shape), y=y_labels, groups=subject_ids):
+      list_splits_idxs.append(test_index)
+  else:
+    # If not subject independent, use regular StratifiedKFold
+    skf = StratifiedKFold(n_splits=k_fold, random_state=seed_random_state, shuffle=True)
+    for _, test_index in skf.split(X=torch.zeros(y_labels.shape), y=y_labels):
+      list_splits_idxs.append(test_index)
   return list_splits_idxs
 
 def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_ids, subject_ids,
                    train_folder_path, model_advanced, lr, epochs, 
-                   concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
+                   criterion, shuffle_training_batch,
                    init_network, regularization_lambda_L1,
                    key_for_early_stopping, early_stopping, 
-                   target_metric_best_model, seed_random_state,clip_grad_norm,
+                   target_metric_best_model, seed_random_state,
                    stop_after_kth_fold,regularization_lambda_L2,trial,validate=True,**kwargs):
   """Run a single fold of the cross-validation"""
   # Setup folder structure for this fold
@@ -176,11 +121,6 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
   else:
     val_idx_split = None
   train_idxs_split = [j for j in range(k_fold) if j != test_idx_split and j != val_idx_split]
-  if helper.FORCE_SPLIT_K_FOLD:
-    print('\n!!!!!!! ATTENTION: FORCE_SPLIT_K_FOLD is set to True in helper.py, using fixed splits !!!!!!!\n')
-    test_idx_split = 1
-    train_idxs_split = [2]
-    val_idx_split = 0
     
   # Generate datasets
   split_indices = create_split_indices(test_idx_split, val_idx_split, train_idxs_split,
@@ -211,10 +151,10 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
   fold_results_kth = train_subfold_models(
     fold_idx, sub_k_fold_list, csv_array, cols, sample_ids,
     saving_path_kth_fold, model_advanced, lr, epochs,
-    concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
+    criterion, shuffle_training_batch,
     init_network, regularization_lambda_L1,
     key_for_early_stopping, early_stopping, seed_random_state,
-    clip_grad_norm,stop_after_kth_fold,regularization_lambda_L2,
+    stop_after_kth_fold,regularization_lambda_L2,
     trial,validate,**kwargs
   )
   
@@ -230,19 +170,17 @@ def run_single_fold(fold_idx, k_fold, list_splits_idxs, csv_array, cols, sample_
       path_model_weights=None, 
       test_csv_path=path_csv_kth_fold['test'],
       criterion=criterion,
-      concatenate_temporal=concatenate_temp_dim,
       **kwargs)
     # remove state_dict to save space
     fold_results_kth[f'k{fold_idx}_cross_val']['best_model']['best_model_state'] = None
   fold_results ={'fold_results':{}}
   
   # Add sub-fold results
-  is_resupcon_loss = isinstance(criterion, losses.RESupConLoss)
   for sub_idx in range(len(fold_results_kth)):
     if sub_idx < len(fold_results_kth):
       if f'k{fold_idx}_cross_val_sub_{sub_idx}' not in list(fold_results_kth.keys()):
         continue
-      reduced_dict = reduce_logs_for_subfold(fold_results_kth[f'k{fold_idx}_cross_val_sub_{sub_idx}']['train'], skip_reduction=is_resupcon_loss)
+      reduced_dict = reduce_logs_for_subfold(fold_results_kth[f'k{fold_idx}_cross_val_sub_{sub_idx}']['train'])
       if f'k{fold_idx}_cross_val_sub_{sub_idx}' not in fold_results['fold_results']:
         fold_results['fold_results'][f'k{fold_idx}_cross_val_sub_{sub_idx}'] = {}
       fold_results['fold_results'][f'k{fold_idx}_cross_val_sub_{sub_idx}']['train_val'] = reduced_dict
@@ -300,28 +238,6 @@ def generate_fold_csv_files(split_indices, csv_array, cols, saving_path):
   
   return path_csv_kth_fold
 
-def get_pth_models_from_folder(folder_path):
-  """Get all .pth model files from a folder"""
-  pth_files = []
-  for file in os.listdir(folder_path):
-    if file.endswith(".pth"):
-      pth_files.append(os.path.join(folder_path, file))
-  return pth_files
-
-def set_frozen_head_from_pth_folder(model_advanced: Model_Advanced, saving_path_kth_sub_fold: str):
-  pth_files = get_pth_models_from_folder(model_advanced.head_init_path)
-  pth_model = None
-  saving_kth = os.path.basename(saving_path_kth_sub_fold)
-  for pth in pth_files:
-    if saving_kth in pth:
-      pth_model = pth
-      break
-  if pth_model is not None:
-    model_advanced.head.set_init_path(pth_model)
-  else:
-    raise ValueError(f'No .pth model found for {saving_kth} in {model_advanced.head_init_path}')
-
-
 def should_replace_best_subfold(current_best, candidate_value, metric_name):
   if current_best is None:
     return True
@@ -333,9 +249,9 @@ def should_replace_best_subfold(current_best, candidate_value, metric_name):
 
 def train_subfold_models(fold_idx, sub_k_fold_list, csv_array, cols, sample_ids,
                       saving_path_kth_fold, model_advanced, lr, epochs,
-                      concatenate_temp_dim, criterion, round_output_loss, shuffle_training_batch,
+                      criterion, shuffle_training_batch,
                       init_network, regularization_lambda_L1,
-                      key_for_early_stopping, early_stopping, seed_random_state,clip_grad_norm,
+                      key_for_early_stopping, early_stopping, seed_random_state,
                       stop_after_kth_fold, regularization_lambda_L2, trial, validate, **kwargs):
   """Train models on sub-folds"""
   if not isinstance(model_advanced, Model_Advanced):
@@ -357,11 +273,6 @@ def train_subfold_models(fold_idx, sub_k_fold_list, csv_array, cols, sample_ids,
       sample_ids, saving_path_kth_sub_fold, validate
     )
     
-    ## set correct init_path_head if criterion is RESupConLoss, head_init_path is the general folder that contains all models for the k-fold
-    if isinstance(criterion, losses.RESupConLoss) and model_advanced.head_init_path is not None:
-      if os.path.isdir(model_advanced.head_init_path):
-        set_frozen_head_from_pth_folder(model_advanced, saving_path_kth_sub_fold)
-    
     ## Train model
     set_seed(seed=seed_random_state)
     # if kwargs.get('use_test_as_val', False):
@@ -369,19 +280,16 @@ def train_subfold_models(fold_idx, sub_k_fold_list, csv_array, cols, sample_ids,
     dict_train = model_advanced.train(
       lr=lr,
       num_epochs=epochs,
-      concatenate_temporal=concatenate_temp_dim,
       criterion=criterion,
       saving_path=saving_path_kth_sub_fold,
       train_csv_path=sub_path_csv_kth_fold['train'],
       val_csv_path=sub_path_csv_kth_fold['val'] if 'val' in sub_path_csv_kth_fold else None,
-      round_output_loss=round_output_loss,
       shuffle_training_batch=shuffle_training_batch,
       init_network=init_network,
       regularization_lambda_L1=regularization_lambda_L1,
       regularization_lambda_L2=regularization_lambda_L2,
       key_for_early_stopping=key_for_early_stopping,
       early_stopping=early_stopping,
-      clip_grad_norm=clip_grad_norm,
       trial=trial,
       enable_optuna_pruning = True if fold_idx == 0 and sub_idx == 0 else False,
       **kwargs
@@ -462,8 +370,7 @@ def generate_subfold_csv_files(sub_idx, k_fold, sub_k_fold_list, csv_array, cols
   return sub_path_csv_kth_fold
 
 def test_model(model_advanced, path_model_weights, test_csv_path,
-                   state_dict, criterion, concatenate_temporal,
-                   subfolder_idx=None,saving_path_kth_fold=None,fold_idx=None,**kwargs):
+                   state_dict, criterion, **kwargs):
   """Test the best model on the test set"""
   if not isinstance(model_advanced, Model_Advanced):
     raise ValueError('model_advanced must be an instance of Model_Advanced')
@@ -474,23 +381,11 @@ def test_model(model_advanced, path_model_weights, test_csv_path,
     csv_path=test_csv_path,
     is_test=True,
     criterion=criterion,
-    concatenate_temporal=concatenate_temporal,
     **kwargs
   )
-  
-  # # Plot confusion matrix
-  # tools.plot_confusion_matrix(
-  #   confusion_matrix=dict_test['test_confusion_matrix'],
-  #   title=f'Confusion matrix Test folder k-{fold_idx} considering best model',
-  #   saving_path=os.path.join(
-  #     saving_path_kth_fold,
-  #     f'confusion_matrix_test_submodel_{subfolder_idx}.png'
-  #   )
-  # )
-  
   return dict_test
 
-def reduce_logs_for_subfold(dict_train, skip_reduction=False):
+def reduce_logs_for_subfold(dict_train):
   """Reduce logs to save space, keeping only results every count_epochs//10 and the best model epoch"""
   list_to_reduce_for_logs = [
     'train_confusion_matricies', 'val_confusion_matricies'
@@ -510,16 +405,15 @@ def reduce_logs_for_subfold(dict_train, skip_reduction=False):
     if key != 'best_model_state':
       if key in list_to_reduce_for_logs:
         # Keep results every target_nr_matricies epochs
-        if not skip_reduction:
-          if v is None or len(v) == 0:
-            continue
-          reduced_dict_train[key] = {f'{epoch}': v[epoch] for epoch in range(0, count_epochs, target_nr_matricies)}
-          if str(count_epochs - 1) not in reduced_dict_train[key].keys():
-            reduced_dict_train[key].update({f'{count_epochs - 1}': v[count_epochs - 1]})
-          
-          # Also keep the best model epoch if not already included
-          if best_model_idx % target_nr_matricies != 0:
-            reduced_dict_train[key].update({f'{best_model_idx}': v[best_model_idx]})
+        if v is None or len(v) == 0:
+          continue
+        reduced_dict_train[key] = {f'{epoch}': v[epoch] for epoch in range(0, count_epochs, target_nr_matricies)}
+        if str(count_epochs - 1) not in reduced_dict_train[key].keys():
+          reduced_dict_train[key].update({f'{count_epochs - 1}': v[count_epochs - 1]})
+        
+        # Also keep the best model epoch if not already included
+        if best_model_idx % target_nr_matricies != 0:
+          reduced_dict_train[key].update({f'{best_model_idx}': v[best_model_idx]})
       else:
         reduced_dict_train[key] = v
         
@@ -529,39 +423,30 @@ def reduce_logs_for_subfold(dict_train, skip_reduction=False):
   # save only the last matrix
   return reduced_dict_train
 
-def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduction, sample_frame_strategy, 
+def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduction,
                    path_csv_dataset, path_video_dataset, head, stride_window_in_video, features_folder_saving_path,head_params,
                    k_fold,
                    global_foder_name, 
                    batch_size_training, epochs, 
                    criterion, lr,seed_random_state,
-                   is_plot_dataset_distribution,
-                   is_round_output_loss, is_shuffle_video_chunks,is_shuffle_training_batch,
+                   is_shuffle_training_batch,
                    init_network,key_for_early_stopping,
                    regularization_lambda_L1,
                    regularization_lambda_L2,
                    clip_length,
                    target_metric_best_model,
                    early_stopping,
-                   concatenate_temp_dim,
                    stop_after_kth_fold,
                    n_workers,
-                   num_clips_per_video,
-                   clip_grad_norm,
                    label_smooth,
-                   stride_inside_window,
-                   dict_augmented,
-                   use_sdpa,
                    prefetch_factor,
-                   soft_labels,
-                   adapter_dict,
                    load_dataset_in_memory,
                    trial=None,
                    validate=True,
                    **kwargs
                   ):
- 
-
+  # Augmentations are added to the training CSV by stratified training (Model_Advanced.augment_csv)
+  dict_augmented = {}
 
   def get_obj_config():
     return{
@@ -577,31 +462,21 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
       'batch_size_training': batch_size_training,
       'pooling_embedding_reduction': pooling_embedding_reduction,
       'pooling_clips_reduction': pooling_clips_reduction,
-      'sample_frame_strategy': sample_frame_strategy,
       'path_csv_dataset': path_csv_dataset.split('/'), # get the last 3 folders
       'path_video_dataset': path_video_dataset.split('/'), # get the last 3 folders
       'features_folder_saving_path': features_folder_saving_path.split('/'), # get the last 3 folders
       'head': head,
       'key_for_early_stopping': key_for_early_stopping,
-      # 'stride_window_in_video': stride_window_in_video,
       'head_params': head_params,
-      'adapter_dict': adapter_dict,
       'dataset_type': tools.get_dataset_type(features_folder_saving_path),
       'random_state': seed_random_state,
-      'plot_dataset_distribution': is_plot_dataset_distribution,
-      'round_output_loss': is_round_output_loss,
-      'shuffle_video_chunks': is_shuffle_video_chunks,
       'shuffle_training_batch':is_shuffle_training_batch,
       'clip_length': clip_length,
       'target_metric_best_model': target_metric_best_model,
       'early_stopping': early_stopping,
-      'concatenate_temp_dim': concatenate_temp_dim,
       'stop_after_kth_fold': stop_after_kth_fold,
       'n_workers': n_workers,
-      'clip_grad_norm': clip_grad_norm,
       'label_smooth': label_smooth,
-      'soft_labels': soft_labels,
-      **dict_augmented,
       'validate': validate,
       **kwargs,
       'type_regul': 'elastic' if regularization_lambda_L1 > 0 and regularization_lambda_L2 > 0 else 'L1' if regularization_lambda_L1 > 0 else 'L2' if regularization_lambda_L2 > 0 else 'none'
@@ -618,24 +493,17 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     'batch_size_training': batch_size_training,
     'pooling_embedding_reduction': pooling_embedding_reduction.name,
     'pooling_clips_reduction': pooling_clips_reduction.name,
-    'sample_frame_strategy': sample_frame_strategy.name,
     'path_csv_dataset': path_csv_dataset.split('/')[-3:], # get the last 3 folders
     'path_video_dataset': path_video_dataset.split('/')[-3:], # get the last 3 folders
     'features_folder_saving_path': features_folder_saving_path.split('/')[-3:], # get the last 3 folders
     'head': head.name,
     'key_for_early_stopping': key_for_early_stopping,
-    # 'stride_window_in_video': stride_window_in_video,
     'head_params': head_params,
     'random_state': seed_random_state,
-    'plot_dataset_distribution': is_plot_dataset_distribution,
-    'round_output_loss': is_round_output_loss,
-    'shuffle_video_chunks': is_shuffle_video_chunks,
     'shuffle_training_batch':is_shuffle_training_batch,
     'clip_length': clip_length,
     'target_metric_best_model': target_metric_best_model,
     'early_stopping': str(early_stopping),
-    'soft_labels': soft_labels,
-    'adapter_dict': adapter_dict,
     **kwargs,
     'regularization_lambda_L2': regularization_lambda_L2,
     }
@@ -648,13 +516,12 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
     os.makedirs(global_foder_name)
   
   # Create folder to save the run
-  # print(f"Creating run folder at {global_foder_name}")
   timestamp = int(time.time()*1000) # get the current time in milliseconds
   run_folder_name = (f'{timestamp}_'+
                      f'{model_type.name}_'+
                      f'{pooling_embedding_reduction.name}_'+
                      f'{pooling_clips_reduction.name}_'+
-                     f'{sample_frame_strategy.name}_{head.name}')
+                     f'SLIDING_WINDOW_{head.name}')
   run_folder_path = os.path.join(global_foder_name,run_folder_name) # history_run/VIDEOMAE_v2_B_MEAN_SPATIAL_NONE_SLIDING_WINDOW_GRU_timestamp
   
   if not os.path.exists(run_folder_path):
@@ -663,58 +530,33 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
 
   # Create the model
   new_csv_path = os.path.join(run_folder_path,'augmented_'+os.path.split(path_csv_dataset)[-1])
-  # if stop_after_kth_fold and stop_after_kth_fold[0] != 1 and stop_after_kth_fold[1] != 1:
-  #   helper.LOG_CROSS_ATTENTION['enable'] = False
-  # else:
-  #   helper.LOG_CROSS_ATTENTION['enable'] = True
-  if tools.get_dataset_type(features_folder_saving_path) != helper.CUSTOM_DATASET_TYPE.BASE:
-    adapter_dict = None
-    print(f'WARNING: adapter_dict is set to None because the dataset type is {tools.get_dataset_type(features_folder_saving_path)}\n')
   model_advanced_params = {
     "model_type": model_type,
     "path_dataset": path_video_dataset,
     "embedding_reduction": pooling_embedding_reduction,
     "clips_reduction": pooling_clips_reduction,
-    "sample_frame_strategy": sample_frame_strategy,
     "stride_window": stride_window_in_video,
-    "stride_inside_window": stride_inside_window,
     "path_labels": path_csv_dataset,
-    "use_sdpa": use_sdpa,
     "batch_size_training": batch_size_training,
     "head": head.value,
-    "load_dataset_in_memory": load_dataset_in_memory,  # TODO: make it a parameter
-    "adapter_dict": adapter_dict,
-    "num_clips_per_video": num_clips_per_video,
-    "soft_labels": soft_labels,
+    "load_dataset_in_memory": load_dataset_in_memory,
     "prefetch_factor": prefetch_factor,
     "head_params": head_params,
     "features_folder_saving_path": features_folder_saving_path,
     "clip_length": clip_length,
-    "concatenate_temporal": concatenate_temp_dim,
     "n_workers": n_workers,
     "label_smooth": label_smooth,
     "dict_augmented": dict_augmented,
     'stratified_training':kwargs.get('stratified_training', False),
-    "new_csv_path": new_csv_path if dict_augmented is not None else None,
-    "gaussian_sigma_min": kwargs.get('gaussian_sigma_min', None),
-    "gaussian_sigma_max": kwargs.get('gaussian_sigma_max', None),
-    "gaussian_kernel_size": kwargs.get('gaussian_kernel_size', None),
+    "new_csv_path": new_csv_path,
 }
 
   model_advanced = Model_Advanced(**model_advanced_params)
   
-  # print(f"Run folder created at {run_folder_path}")
-  
   # Save model configuration
-  # print(f"Saving model configuration at {run_folder_path}")
   inputs_dict = get_json_config()
   with open(os.path.join(run_folder_path,'global_config.json'), 'w') as config_file:
     json.dump(inputs_dict, config_file, indent=4,cls=NpEncoder)
-      
-  # Plot dataset distribution of whole dataset
-  # print(f"Plotting dataset distribution at {run_folder_path}")
-  if is_plot_dataset_distribution:
-    tools.plot_dataset_distribuition(csv_path=path_csv_dataset, run_folder_path=run_folder_path, total_classes=model_advanced.dataset.total_classes)
 
   # Train the model
   print(f"Start training phase the model at {run_folder_path}")
@@ -723,7 +565,6 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   if not os.path.exists(train_folder_path):
     os.makedirs(train_folder_path)
   
-  # Debugging for the training phase
   summary_res = {}
   summary_res['results'] = {} # fold_results['dict_k_fold_results']
   summary_res['config'] = get_obj_config()
@@ -749,31 +590,22 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
       train_kwargs={
         'lr': lr,
         'num_epochs': epochs,
-        'concatenate_temporal': concatenate_temp_dim,
         'criterion': criterion,
-        'round_output_loss': is_round_output_loss,
         'shuffle_training_batch': is_shuffle_training_batch,
         'init_network': init_network,
         'regularization_lambda_L1': regularization_lambda_L1,
         'regularization_lambda_L2': regularization_lambda_L2,
         'key_for_early_stopping': key_for_early_stopping,
         'early_stopping': early_stopping,
-        'clip_grad_norm': clip_grad_norm,
         'trial': trial,
         'enable_optuna_pruning': True,
-        'dict_augmented': dict_augmented,
         **runtime_kwargs,
       },
       test_kwargs={
         'criterion': criterion,
-        'concatenate_temporal': concatenate_temp_dim,
-        'dict_augmented': dict_augmented,
         **runtime_kwargs,
       },
-      reduce_logs=lambda train_result: reduce_logs_for_subfold(
-        train_result,
-        skip_reduction=isinstance(criterion, losses.RESupConLoss),
-      ),
+      reduce_logs=reduce_logs_for_subfold,
       set_seed=set_seed,
     )
     summary_res['results'].update(predefined_results)
@@ -790,28 +622,20 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
                             seed_random_state=seed_random_state,
                             lr=lr,
                             epochs=epochs,
-                            round_output_loss=is_round_output_loss,
                             shuffle_training_batch=is_shuffle_training_batch,
                             criterion=criterion,
                             early_stopping=early_stopping,
-                            concatenate_temp_dim=concatenate_temp_dim,
                             init_network=init_network,
                             regularization_lambda_L1=regularization_lambda_L1,
                             regularization_lambda_L2=regularization_lambda_L2,
                             key_for_early_stopping=key_for_early_stopping,
-                            clip_grad_norm=clip_grad_norm,
                             target_metric_best_model=target_metric_best_model,
                             stop_after_kth_fold=stop_after_kth_fold,
                             trial=trial,
                             summary_res=summary_res,
                             run_folder_path=run_folder_path,
                             validate=validate,
-                            dict_augmented=dict_augmented,
                             **runtime_kwargs)
-  if helper.LOG_CROSS_ATTENTION['enable']:
-    summary_res['cross_attention_debug'] = helper.LOG_CROSS_ATTENTION
-    helper.LOG_CROSS_ATTENTION = {'enable':helper.LOG_CROSS_ATTENTION['enable'],
-                                  'state':'train'}
   if helper.LOG_NORM_CROSS_ATTN_BLOCK['enable']:
     summary_res['norm_cross_attn_block_debug'] = helper.LOG_NORM_CROSS_ATTN_BLOCK
     helper.LOG_NORM_CROSS_ATTN_BLOCK = {'enable':helper.LOG_NORM_CROSS_ATTN_BLOCK['enable'],
@@ -820,4 +644,3 @@ def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduct
   del model_advanced
   torch.cuda.empty_cache()
   return run_folder_path,summary_res 
- 

@@ -3,7 +3,6 @@ import re
 import torch
 import pandas as pd
 import os
-import math
 import numpy as np
 import torch
 import cv2
@@ -14,10 +13,8 @@ from custom.backbone import BackboneBase
 from custom.helper import CUSTOM_DATASET_TYPE, SAMPLE_FRAME_STRATEGY, EMBEDDING_REDUCTION, MODEL_TYPE
 import custom.helper as helper
 import custom.tools as tools
-from sklearn.model_selection import StratifiedKFold
 # from torch.utils.data import  Sampler
 from torchvision.transforms import v2
-from concurrent.futures import ThreadPoolExecutor
 # import torchvision.transforms.functional as F
 # import torchvision.transforms as T
 # import custom.faceExtractor as extractor
@@ -30,7 +27,6 @@ from torchvision import tv_tensors
 from torch.utils.data import BatchSampler
 from making_better_mistakes.better_mistakes.model import labels as soft_labels_generator
 from coral_pytorch.dataset import levels_from_labelbatch
-import multiprocessing as mp
 from custom.targets import TargetSpec, resolve_target_spec
 
 
@@ -910,14 +906,12 @@ class customDataset(torch.utils.data.Dataset):
                            stratified_training=stratified_training)
 
 class customDatasetAggregated(torch.utils.data.Dataset):
-  def __init__(self,root_folder_features,concatenate_temporal,concatenate_quadrants,model,is_train,csv_path,smooth_labels,soft_labels,coral_loss,latent_coefficient,consider_only_lasts_n_chunks=None,target_spec=None):
+  def __init__(self,root_folder_features,concatenate_quadrants,model,is_train,csv_path,smooth_labels,target_spec=None):
     self.root_folder_feature = root_folder_features
     self.csv_path = csv_path
     helper.set_step_shift(root_folder_features)
     print(f"Using step shift = {helper.step_shift} for dataset {root_folder_features}")
-    self.concatenate_temporal = concatenate_temporal
     self.concatenate_quadrants = concatenate_quadrants
-    self.latent_coefficient = latent_coefficient
     self.df = pd.read_csv(csv_path,sep='\t')
     self.is_quadrant = True if 'combined' in root_folder_features else False
     if not is_train:
@@ -936,21 +930,7 @@ class customDatasetAggregated(torch.utils.data.Dataset):
     self.model = model
     self.instance_model_name = tools.get_instace_model_name(model)
     self.smooth_labels = smooth_labels
-    self.consider_only_lasts_n_chunks = consider_only_lasts_n_chunks
-    if soft_labels:
-      classes = list(range(self.num_classes))
-      distances = {(i, j): abs(i - j) for i in classes for j in classes}
-      self.soft_labels = soft_labels_generator.make_all_soft_labels(
-        classes=classes,
-        distances=distances,
-        hardness=soft_labels
-      )
-    else:
-      self.soft_labels = None
-    self.coral_loss = coral_loss
-  
 
-      
   def _populate_feature_dict(self):
     sample_id_list = torch.tensor(self.df['sample_id'].tolist())
     dict_samples = {
@@ -1008,24 +988,15 @@ class customDatasetAggregated(torch.utils.data.Dataset):
     if isinstance(idx,int):
       return _get_element(df=self.df,dict_data=helper.dict_data,idx=idx,
                           dataset_type=CUSTOM_DATASET_TYPE.AGGREGATED,is_quadrant=self.is_quadrant,
-                          consider_only_lasts_n_chunks=self.consider_only_lasts_n_chunks,
-                          latent_coefficient=self.latent_coefficient,
                           embedding_reduction=self.model.embedding_reduction)
-    else:
-      raise NotImplementedError("Batch loading is not implemented for customDatasetAggregated")
-      batch = [_get_element(df=self.df,dict_data=helper.dict_data,idx=idx) for idx in idx]
-      batch = self._custom_collate(batch)
-      return batch
+    raise NotImplementedError("Batch loading is not implemented for customDatasetAggregated")
   
   def _custom_collate(self,batch):
     return _custom_collate(batch,
                            self.instance_model_name,
-                           self.concatenate_temporal,
                            self.model,
                            self.num_classes,
                            self.smooth_labels,
-                           self.soft_labels,
-                           self.coral_loss,
                            self.concatenate_quadrants,
                            target_spec=self.target_spec)
   
@@ -1048,12 +1019,10 @@ class customDatasetAggregated(torch.utils.data.Dataset):
 
 
 class customDatasetWhole(torch.utils.data.Dataset):
-  def __init__(self,csv_path,root_folder_features,concatenate_temporal,concatenate_quadrants,model,smooth_labels,soft_labels,coral_loss, xattn_mask,latent_coefficient,split_chunks=False, consider_only_lasts_n_chunks=None,
-               feature_merge_type=None,feature_merge_lambda=None,feature_merge_orig=1,target_spec=None):
+  def __init__(self,csv_path,root_folder_features,concatenate_quadrants,model,smooth_labels,target_spec=None):
     self.csv_path = csv_path
     helper.set_step_shift(root_folder_features)
     print(f"\n CustomDatasetWhole: Using step shift = {helper.step_shift} for dataset {root_folder_features} \n")
-    self.xattn_mask = xattn_mask
     self.root_folder_features = root_folder_features
     self.df = pd.read_csv(csv_path,sep='\t',dtype={'sample_name':str,'subject_name':str}) # subject_id, subject_name, class_id, class_name, sample_id, sample_name
     self.target_spec = _target_spec(target_spec, self.df['class_id'])
@@ -1061,34 +1030,12 @@ class customDatasetWhole(torch.utils.data.Dataset):
     # count subject_id uniqueness
     unique_subject_ids, counts = np.unique(self.df['subject_id'], return_counts=True)
     print(f"\nUnique subject_ids: {len(unique_subject_ids)}, Total entries: {len(self.df)}")
-    # if 'CAER' in root_folder_features:
-    #   # remove string in subject name
-    #   print("\nRemoving string after / in subject_name for caer dataset\n")
-    #   self.df['subject_name'] = self.df['subject_name'].apply(lambda x: x.split('/')[1])
-    self.concatenate_temporal = concatenate_temporal
     self.concatenate_quadrants = concatenate_quadrants
     self.model = model
-    self.latent_coefficient = latent_coefficient
     self.is_quadrant = True if 'combined' in root_folder_features else False
     self.instance_model_name = tools.get_instace_model_name(model)
     self.smooth_labels = smooth_labels
     self.num_classes = self.target_spec.bin_count
-    self.split_chunks = split_chunks
-    self.consider_only_lasts_n_chunks = consider_only_lasts_n_chunks
-    if soft_labels:
-      classes = list(range(self.num_classes))
-      distances = {(i, j): abs(i - j) for i in classes for j in classes}
-      self.soft_labels = soft_labels_generator.make_all_soft_labels(
-        classes=classes,
-        distances=distances,
-        hardness=soft_labels
-      )
-    else:
-      self.soft_labels = None
-    self.coral_loss = coral_loss
-    self.feature_merge_type = feature_merge_type
-    self.feature_merge_lambda = feature_merge_lambda
-    self.feature_merge_orig = feature_merge_orig
     self._discover_variant_folders()
 
   def _discover_variant_folders(self):
@@ -1135,7 +1082,7 @@ class customDatasetWhole(torch.utils.data.Dataset):
     #   helper.time_profile_dict[pid] = {}
     csv_row = self.df.iloc[idx]
     sample_id = csv_row['sample_id']
-    if sample_id > helper.step_shift and not helper.is_latent_basic_augmentation(sample_id) and not helper.is_latent_masking_augmentation(sample_id):
+    if sample_id > helper.step_shift:
       aug_type = helper.get_augmentation_type(sample_id)
       if aug_type in self.aug_variant_folders:
         variants = self.aug_variant_folders[aug_type]
@@ -1163,78 +1110,23 @@ class customDatasetWhole(torch.utils.data.Dataset):
       else:
         features = tools.load_dict_data(folder_path)
 
-      if self.feature_merge_type is not None:
-        features = self._merge_top_down_features(features, csv_row, sample_id)
-
     return _get_element(dict_data=features,
                         df=self.df,idx=idx,
                         dataset_type=CUSTOM_DATASET_TYPE.WHOLE, 
                         is_quadrant=self.is_quadrant,
-                        consider_only_lasts_n_chunks=self.consider_only_lasts_n_chunks,
-                        embedding_reduction=self.model.embedding_reduction,
-                        latent_coefficient=self.latent_coefficient,
-                        xattn_mask=self.xattn_mask)
-
-  def _merge_top_down_features(self, features, csv_row, sample_id):
-    """Merge top/down feature variants with the original features.
-
-    Args:
-      features (dict): Loaded original feature dict with keys 'features', 'list_labels', etc.
-      csv_row (pd.Series): CSV row for the current sample.
-      sample_id (int): Sample ID used to determine augmentation routing.
-
-    Returns:
-      dict: The features dict with 'features' key replaced by the merged tensor.
-    """
-    if sample_id > helper.step_shift and not helper.is_latent_basic_augmentation(sample_id) and not helper.is_latent_masking_augmentation(sample_id):
-      aug_type = helper.get_augmentation_type(sample_id)
-
-    top_path = os.path.join(self.root_folder_features, csv_row['subject_name'], f"{csv_row['sample_name']}$top.safetensors")
-    down_path = os.path.join(self.root_folder_features, csv_row['subject_name'], f"{csv_row['sample_name']}$down.safetensors")
-
-    top_features = tools.load_dict_data(top_path)
-    down_features = tools.load_dict_data(down_path)
-
-    if self.feature_merge_type == 'sum':
-      k = self.feature_merge_lambda
-      if self.feature_merge_orig:
-        features['features'] = features['features'] + k * (top_features['features'] + down_features['features'])
-      else:
-        features['features'] = k * (top_features['features'] + down_features['features'])
-    elif self.feature_merge_type == 'concat':
-      if self.feature_merge_orig:
-        features['features'] = torch.cat([features['features'], top_features['features'], down_features['features']], dim=-1)
-      else:
-        features['features'] = torch.cat([top_features['features'], down_features['features']], dim=-1)
-
-    return features
+                        embedding_reduction=self.model.embedding_reduction)
 
   def __getitem__(self,idx):
     if isinstance(idx,int):
-      el = self._load_element(idx=idx)
-      return el
-    else:
-      raise NotImplementedError("Batch loading is not implemented for customDatasetWhole")
-      batch_time_start = time.perf_counter()
-      # batch = [_load_element(idx=idx) for idx in idx]
-      with ThreadPoolExecutor(max_workers=len(idx)) as executor:
-        batch = list(executor.map(self._load_element, idx))
-      batch_time_end = time.perf_counter()
-      print(f"Batch {idx} loading time: {batch_time_end - batch_time_start:.2f} seconds")
-      batch = self._custom_collate(batch)
-      return batch
+      return self._load_element(idx=idx)
+    raise NotImplementedError("Batch loading is not implemented for customDatasetWhole")
 
   def _custom_collate(self,batch):
     return _custom_collate(batch,self.instance_model_name,
-                           self.concatenate_temporal,
                            self.model,
                            self.num_classes,
                            self.smooth_labels,
-                           self.soft_labels,
-                           self.coral_loss,
                            self.concatenate_quadrants,
-                           self.xattn_mask,
-                           self.split_chunks,
                            target_spec=self.target_spec)
 
   def get_unique_subjects(self):
@@ -1256,83 +1148,48 @@ class customDatasetWhole(torch.utils.data.Dataset):
                            dict_augmentation=dict_augmentation,
                            stratified_training=stratified_training)
   
-# Alternative version with even more optimizations for large batches
-def highly_optimized_custom_collate(batch, pid, is_training,concatenate_temporal=False, smooth_labels=0.0,
-  soft_labels_mat=None, coral_loss=False, num_classes=None,concatenate_quadrants=False, split_chunks=False,xattn_mask=None,target_spec=None):
-  """Highly optimized version using vectorized operations where possible"""
-  
+def highly_optimized_custom_collate(batch, pid, is_training, smooth_labels=0.0,
+  num_classes=None,concatenate_quadrants=False,target_spec=None):
+  """Stack per-sample chunk features into [B, tokens, emb] (padding variable lengths) and build the targets."""
   batch_size = len(batch)
-  # Try to stack tensors directly if they have the same shape (more efficient)
-  if split_chunks:
-    _, T, _, _, _ = batch[0]['features'].shape
-    features = torch.cat([sample['features'] for sample in batch], dim=0) # [B*quadrants*nr_chunks,T,S,S,Emb]
-    features = features.view(features.shape[0], -1, features.shape[-1]).to(torch.float32)
+  try:
+    # Stack all features at once when they have the same shape
+    features = torch.stack([sample['features'] for sample in batch]) # [B,quadrants*nr_chunks,T,S,S,Emb]
+    B, QnC, T, S1, S2, emb = features.shape
+    if concatenate_quadrants:
+      # features stacked as [upper_left,upper_left,upper_left,upper_left,
+      #                      upper_right,upper_right,...] # [quadrants * nr_chunks]
+      # So i have to reshape 1D vector [upp_left,upp_left,...,upp_right,...] into 2D matrix [[upp_left,upp_left,...],[upp_right,upp_right,...],[...],...] -> [quadrants, nr_chunks]
+      # from 2D matrix I want to concatenate different quadrants from the same chunk ->So from [quadrants,nr_chunks] to [nr_chunks, quadrants]
+      features = features.reshape(B, 4, QnC//4, T, S1, S2, emb).transpose(1,2) # [B,4=quadrants,QnC/4,T,S,S,Emb] -> [B,QnC/4,4,T,S,S,Emb]
+      # concatenate quadrants in channel dimension
+      features = features.permute(0,1,3,4,5,2,6).contiguous()
+      features = features.view(batch_size, (QnC//4)*T*S1*S2, 4*emb).to(torch.float32)
+    else:
+      features = features.view(batch_size, -1, features.shape[-1]).to(torch.float32)
     lengths = None
-    batch_size = features.shape[0]
-  else:
-    try:
-      # Check if all features have the same shape
-      # first_shape = batch[0]['features'].shape
-      # Stack all features at once - much faster
-      # shape_array = torch.tensor([sample['features'].shape for sample in batch])
-      # print(f"Shapes in batch: {shape_array}")
-      features = torch.stack([sample['features'] for sample in batch]) # [B,quadrants*nr_chunks,T,S,S,Emb]
-      B, QnC, T, S1, S2, emb = features.shape
-      if concatenate_quadrants:
-        # features stacked as [upper_left,upper_left,upper_left,upper_left,
-        #                      upper_right,upper_right,...] # [quadrants * nr_chunks]
-        # So i have to reshape 1D vector [upp_left,upp_left,...,upp_right,...] into 2D matrix [[upp_left,upp_left,...],[upp_right,upp_right,...],[...],...] -> [quadrants, nr_chunks]
-        # from 2D matrix I want to concatenate different quadrants from the same chunk ->So from [quadrants,nr_chunks] to [nr_chunks, quadrants]
-        features = features.reshape(B, 4, QnC//4, T, S1, S2, emb).transpose(1,2) # [B,4=quadrants,QnC/4,T,S,S,Emb] -> [B,QnC/4,4,T,S,S,Emb]
-        # concatenate quadrants in channel dimension
-        features = features.permute(0,1,3,4,5,2,6).contiguous()
-        features = features.view(batch_size, (QnC//4)*T*S1*S2, 4*emb).to(torch.float32)
-      elif concatenate_temporal:
-        raise NotImplementedError("concatenate_temporal=True not implemented yet in highly_optimized_custom_collate")
-        # features = all_features.reshape()
-        features = all_features.permute(0,2,3,4,1,5).contiguous().view(
-            batch_size, -1, all_features.shape[-1] * all_features.shape[1]).to(torch.float32)
-      else:
-        features = features.view(batch_size, -1, features.shape[-1]).to(torch.float32)
-        # lengths = torch.full((batch_size,), features.size(1), dtype=torch.int32)
-      
-      lengths = None
-    # else:
-    #     # Fall back to individual processing
-    #     raise ValueError("Shapes don't match")
-        
-    except (ValueError, RuntimeError):
-      # Fall back to the standard approach for variable shapes
-      features = []
-      lengths = []
+  except (ValueError, RuntimeError):
+    # Fall back to the standard approach for variable shapes
+    features = []
+    lengths = []
 
-      for sample in batch:
-        feat = sample['features'] # [quadrants*nr_chunks,T,S,S,Emb]
-        QnC, T, S1, S2, emb = feat.shape
-        if concatenate_temporal:
-          raise NotImplementedError("concatenate_temporal=True not implemented yet in highly_optimized_custom_collate")
-          processed_feat = feat.permute(0,2,3,4,1).contiguous().view(
-            -1, feat.shape[-1] * feat.shape[1]).to(torch.float32)
-        elif concatenate_quadrants:
-          processed_feat = feat.view(4, QnC//4, T, S1, S2, emb).transpose(0,1) # [4=quadrants,QnC/4,T,S,S,Emb] -> [QnC/4,4,T,S,S,Emb]
-          processed_feat = processed_feat.permute(0,2,3,4,1,5).contiguous().view(
-            QnC//4*T*S1*S2,4*emb).to(torch.float32)
-        else:
-          processed_feat = feat.view(-1, feat.shape[-1]).to(torch.float32)
-        # if not concatenate_temporal:
-        #   processed_feat = feat.view(-1, feat.shape[-1]).to(torch.float32)
-        # else:
-        #   processed_feat = feat.permute(0,2,3,1,4).contiguous().view(
-        #     -1, feat.shape[-1] * feat.shape[-2]).to(torch.float32)
-        
-        features.append(processed_feat)
-        lengths.append(processed_feat.size(0))
+    for sample in batch:
+      feat = sample['features'] # [quadrants*nr_chunks,T,S,S,Emb]
+      QnC, T, S1, S2, emb = feat.shape
+      if concatenate_quadrants:
+        processed_feat = feat.view(4, QnC//4, T, S1, S2, emb).transpose(0,1) # [4=quadrants,QnC/4,T,S,S,Emb] -> [QnC/4,4,T,S,S,Emb]
+        processed_feat = processed_feat.permute(0,2,3,4,1,5).contiguous().view(
+          QnC//4*T*S1*S2,4*emb).to(torch.float32)
+      else:
+        processed_feat = feat.view(-1, feat.shape[-1]).to(torch.float32)
+      features.append(processed_feat)
+      lengths.append(processed_feat.size(0))
+    
+    with profile_workers(f'{pid}_pad_sequence_time',helper.time_profiling_enabled,helper.time_profile_dict):
+      lengths = torch.tensor(lengths, dtype=torch.int32)
+      features = torch.nn.utils.rnn.pad_sequence(features, batch_first=True)
       
-      with profile_workers(f'{pid}_pad_sequence_time',helper.time_profiling_enabled,helper.time_profile_dict):
-        lengths = torch.tensor(lengths, dtype=torch.int32)
-        features = torch.nn.utils.rnn.pad_sequence(features, batch_first=True)
-        
-      helper.time_profile_dict[f'{pid}_pad_sequence_calls'] = helper.time_profile_dict.get(f'{pid}_pad_sequence_calls', 0) + 1
+    helper.time_profile_dict[f'{pid}_pad_sequence_calls'] = helper.time_profile_dict.get(f'{pid}_pad_sequence_calls', 0) + 1
   
   # Build key_padding_mask for attention
   max_len = features.size(1)
@@ -1341,25 +1198,8 @@ def highly_optimized_custom_collate(batch, pid, is_training,concatenate_temporal
     key_padding_mask = None
   else:
     # Variable lengths -> pad mask
-    # max_len = features.size(1)
     key_padding_mask = torch.arange(max_len)[None, :] < lengths[:, None]
     key_padding_mask = key_padding_mask.unsqueeze(1).unsqueeze(1)
-
-  # Apply xattn_mask if provided (shape [S, S])
-  with profile_workers(f'{pid}_xattn_mask_time',helper.time_profiling_enabled,helper.time_profile_dict):
-    if xattn_mask is not None and not concatenate_quadrants:
-      nr_chunks = max_len // (T*S1*S2) if not split_chunks else 1
-      if key_padding_mask is not None:
-        tmp = xattn_mask.unsqueeze(0).unsqueeze(0).unsqueeze(0).repeat(key_padding_mask.shape[0],nr_chunks,T,1,1) # [B,nr_chunks,T,S,S]
-        tmp = tmp.reshape(tmp.shape[0],-1).unsqueeze(1).unsqueeze(1) # [B,1,1,nr_chunks*T*S*S]
-        key_padding_mask = key_padding_mask & tmp
-      else:
-        key_padding_mask = xattn_mask.unsqueeze(0).unsqueeze(0).unsqueeze(0).repeat(batch_size,nr_chunks,T,1,1) # [B,nr_chunks,T,S,S]
-        if split_chunks:
-          key_padding_mask = key_padding_mask.reshape(key_padding_mask.shape[0]*key_padding_mask.shape[1],-1) # [B*nr_chunks,T*S*S]
-        else:
-          key_padding_mask = key_padding_mask.reshape(key_padding_mask.shape[0],-1) # [B,nr_chunks*T*S*S]
-        key_padding_mask = key_padding_mask.unsqueeze(1).unsqueeze(1) # [B,1,1,nr_chunks*T*S*S]
 
   # Vectorized extraction of labels, subject_ids, and sample_ids
   labels = torch.tensor([sample['labels'][0] for sample in batch], dtype=torch.float32)
@@ -1368,23 +1208,10 @@ def highly_optimized_custom_collate(batch, pid, is_training,concatenate_temporal
   subject_id = torch.tensor([sample['subject_id'][0] for sample in batch], dtype=torch.int32)
   sample_id = torch.tensor([sample['sample_id'] for sample in batch], dtype=torch.int32)
   
-  if split_chunks:
-    repeats = torch.tensor([sample['features'].shape[0] for sample in batch], dtype=torch.int32)
-    subject_id = torch.repeat_interleave(subject_id, repeats=repeats, dim=0)
-    sample_id = torch.repeat_interleave(sample_id, repeats=repeats, dim=0)
-    labels = torch.repeat_interleave(labels, repeats=repeats, dim=0)
-    class_targets = torch.repeat_interleave(class_targets, repeats=repeats, dim=0)
-  
   # Handle label smoothing when in training mode
   if is_training and smooth_labels > 0.0:
     labels = smooth_labels_batch(gt_classes=class_targets, num_classes=num_classes,
       smoothing=smooth_labels)
-  
-  # Handle label transformations (same as before)
-  if soft_labels_mat is not None:
-    labels = soft_labels_mat[class_targets].to(torch.float32)
-  elif coral_loss:
-    labels = levels_from_labelbatch(class_targets, num_classes, dtype=torch.float32)
     
   return {
     'features': features,
@@ -1394,92 +1221,26 @@ def highly_optimized_custom_collate(batch, pid, is_training,concatenate_temporal
     'subject_id': subject_id,
     'sample_id': sample_id,
     'key_padding_mask': key_padding_mask,
-    # 'preprocessing_time': time_preprocess_end - time_preprocess_start
   }
 
 
-def _custom_collate(batch,instance_model_name,concatenate_temporal,model,num_classes,smooth_labels, soft_labels_mat,coral_loss,concatenate_quadrants,xattn_mask=None,split_chunks=False,target_spec=None):
-  # Pre-flatten features: reshape each sample to (sequence_length, emb_dim)
+def _custom_collate(batch,instance_model_name,model,num_classes,smooth_labels,concatenate_quadrants,target_spec=None):
   pid = os.getpid()
-  # if pid not in helper.time_profile_dict:
-  #   helper.time_profile_dict[pid] = 
-  
   with profile_workers(f'{pid}_collate_preprocess_time',helper.time_profiling_enabled,helper.time_profile_dict):
     dict_res = highly_optimized_custom_collate(batch=batch,
                                               pid=pid,
                                               is_training = model.training,
-                                              concatenate_temporal=concatenate_temporal,
                                               smooth_labels=smooth_labels,
-                                              soft_labels_mat=soft_labels_mat,
-                                              coral_loss=coral_loss,
-                                              split_chunks=split_chunks,
                                               concatenate_quadrants=concatenate_quadrants,
-                                              xattn_mask=xattn_mask,
                                               num_classes=num_classes,
                                               target_spec=target_spec)
-      
-  if instance_model_name == helper.INSTANCE_MODEL_NAME.AttentiveClassifier or instance_model_name == helper.INSTANCE_MODEL_NAME.GRUHead:
-
-    return {'x':dict_res['features'], 'key_padding_mask': dict_res['key_padding_mask'], 'class_targets': dict_res['class_targets']},\
-            dict_res['labels'],\
-            dict_res['subject_id'],\
-            dict_res['sample_id']
-  elif instance_model_name == helper.INSTANCE_MODEL_NAME.GRUPROBE:
-    raise NotImplementedError("GRUPROBE not implemented in collate function.")
-    packed_input = torch.nn.utils.rnn.pack_padded_sequence(features,lengths_tensor,batch_first=True,enforce_sorted=False)
-    if model.output_size == 1:
-      labels = labels.float()
-    return {'x':packed_input},\
-            labels,\
-            subject_id,\
-            sample_id
-  else:
+  if instance_model_name != helper.INSTANCE_MODEL_NAME.AttentiveClassifier:
     raise NotImplementedError(f"Instance model {instance_model_name} not implemented for collate function.")
+  return {'x':dict_res['features'], 'key_padding_mask': dict_res['key_padding_mask'], 'class_targets': dict_res['class_targets']},\
+          dict_res['labels'],\
+          dict_res['subject_id'],\
+          dict_res['sample_id']
 
-
-class balancedBatchSampler(BatchSampler):
-  def __init__(self, batch_size, shuffle,path_cvs_dataset=None, random_state=42,df=None,class_bins=None):
-    if df is None:
-      csv_array,_ = tools.get_array_from_csv(path_cvs_dataset)
-    else:
-      csv_array = df.to_numpy()
-    # self.y_labels = np.array(csv_array[:,2]).astype(int)
-    if df is not None:
-      self.y_labels = _class_bin_series(df, class_bins).to_numpy()
-    else:
-      self.y_labels = TargetSpec.from_values(csv_array[:, 2]).to_bins(csv_array[:, 2])
-    self.n_batch_size = batch_size
-    self.random_state = random_state
-    self.shuffle = shuffle
-    nr_samples = len(self.y_labels)
-    self.calculated_n_splits = math.ceil(nr_samples/self.n_batch_size)
-    _,count = np.unique(self.y_labels,return_counts=True)
-    min_class_count = np.min(count)
-    if self.calculated_n_splits > min_class_count:
-      raise ValueError(f"Cannot create stratified batches: "+
-                       f"the calculated number of splits {self.calculated_n_splits} is higher than the minimum class count {min_class_count}. ")
-    self.initialize()
-    
-  def initialize(self):
-    self.skf = StratifiedKFold(n_splits = self.calculated_n_splits,
-                               shuffle=self.shuffle,
-                               random_state=self.random_state)
-    self.n_batches = self.skf.get_n_splits()
-    
-    # Informative but batches can vary slightly in size
-    self.real_batch_size = math.ceil(len(self.y_labels)/self.n_batches) 
-    
-  def __iter__(self):
-    for _,test in self.skf.split(np.zeros(self.y_labels.shape[0]), self.y_labels):
-      yield test.astype(np.int32).tolist() 
-      
-    # Update random state for next epoch, so that shuffling is different
-    self.random_state += 13
-    self.initialize()
-      
-
-  def __len__(self):
-    return self.n_batches
 
 class SelectiveAugmentationBatchSampler(BatchSampler):
   """
@@ -1759,326 +1520,6 @@ class SelectiveAugmentationBatchSampler(BatchSampler):
       yield batch
 
 
-class AugmentedOnlyBatchSampler(BatchSampler):
-  def __init__(self, df, batch_size, augmentations, shuffle=True, random_state=42, balance_batch=True,root_folder_features=None,class_bins=None):
-    """
-    BatchSampler that creates batches containing ONLY augmented versions of samples.
-    
-    Logic:
-    1. Filters df to find 'original' samples (sample_id <= helper.step_shift).
-    2. Uses StratifiedKFold on these original samples to determine which 'base' samples go into a batch.
-       The number of base samples per batch is batch_size // n_augmentations.
-    3. For each selected base sample, finds the requested augmented versions.
-    4. The final batch consists ONLY of these augmented versions.
-    
-    Args:
-        df (pd.DataFrame): The full dataset dataframe.
-        batch_size (int): The desired output batch size.
-        augmentations (str): Comma-separated string of augmentations (e.g. "hflip,jitter").
-        shuffle (bool): Whether to shuffle the data (via StratifiedKFold).
-        random_state (int): Random seed for reproducibility.
-        balance_batch (bool): Whether to use StratifiedKFold (True) or simple random sampling (False).
-        root_folder_features (str): Path to the root folder of features, used to get all available augmentations.
-    """
-    self.df = df
-    self.batch_size = batch_size
-    self.shuffle = shuffle
-    self.random_state = random_state
-    self.balance_batch = balance_batch
-    self.batches = []
-    self.root_folder_features = root_folder_features
-    self.available_augmentation_types = None
-    self.strategy = None
-    
-    # Get available augmentations from folder if possible
-    if root_folder_features:
-      try:
-        self.available_augmentation_types = sorted(list(set(helper.get_augmentation_availables(root_folder_features))))
-        print(f"\n\nAvailable augmentation types retrieved from folder: {self.available_augmentation_types}")
-      except Exception as e:
-        print(f"Warning: Could not get available augmentations from folder: {e}")
-    
-    if augmentations.startswith('strategy'):
-      if root_folder_features is None:
-        raise ValueError("root_folder_features is required when using augmentation strategies.")
-      
-      if self.available_augmentation_types is None or len(self.available_augmentation_types) == 0:
-         raise ValueError(f"Could not retrieve available augmentations from {root_folder_features}. Required for strategy.")
-
-      parts = augmentations.split(',')
-      strategy_name = parts[0]
-      try:
-        self.k = int(parts[1])
-      except (IndexError, ValueError):
-        raise ValueError(f"Invalid format for strategy. Expected 'strategyX,K', got '{augmentations}'")
-      
-      if strategy_name == 'strategy1': # Select augmentations for the whole epoch
-        self.strategy = 1
-      elif strategy_name == 'strategy2': # Select random augmentations for each sample independently
-        self.strategy = 2
-      else:
-        raise ValueError(f"Unknown strategy: {strategy_name}")
-      
-      self.n_augment = self.k
-      self.augmentations_list = [] # Placeholder, determined at runtime
-    else:
-      self.augmentations_list = [aug.strip() for aug in augmentations.split(',')]
-      self.n_augment = len(self.augmentations_list)
-    
-    if self.n_augment == 0:
-      raise ValueError("At least one augmentation must be specified.")
-      
-    self.sub_batch_size = self.batch_size // self.n_augment
-    
-    if self.sub_batch_size < 1:
-      raise ValueError(f"Batch size {self.batch_size} is too small for {self.n_augment} augmentations. "
-                       f"Must be at least {self.n_augment}.")
-
-    # 1. Filter for original samples
-    self.original_df = self.df[self.df['sample_id'] <= helper.step_shift].copy()
-    if len(self.original_df) == 0:
-        raise ValueError("No original samples (sample_id <= step_shift) found in the dataframe.")
-        
-    self.y_labels = _class_bin_series(df, class_bins).loc[self.original_df.index].to_numpy()
-    self.original_indices = self.original_df.index.to_numpy() # Indices in the global df
-    
-    # 2. Create lookup map: sample_id -> global dataframe index
-    # We need to map sample_ids back to the indices expected by the DataLoader (which iterates over the full df)
-    self.sample_id_to_idx = dict(zip(self.df['sample_id'], self.df.index))
-    
-    # Calculate number of batches
-    nr_samples = len(self.y_labels)
-    self.calculated_n_splits = math.ceil(nr_samples / self.sub_batch_size)
-    
-    if self.balance_batch:
-      # Check if we can perform stratified sampling
-      _, count = np.unique(self.y_labels, return_counts=True)
-      min_class_count = np.min(count)
-      if self.calculated_n_splits > min_class_count:
-        raise ValueError(f"Cannot create stratified batches: "+
-                         f"the calculated number of splits {self.calculated_n_splits} is higher than the minimum class count {min_class_count}. ")
-        
-    self.initialize()
-
-  def initialize(self):
-    self.batches = []
-    
-    # Get the indices of original samples (relative to self.original_df) that will form each batch
-    batch_indices_list = []
-    
-    if self.balance_batch:
-      try:
-        rnd_state = self.random_state if self.shuffle else None
-        skf = StratifiedKFold(n_splits=self.calculated_n_splits,
-                                   shuffle=self.shuffle,
-                                   random_state=rnd_state)
-        # split returns indices relative to the input array (which matches self.original_df rows)
-        for _, test_indices in skf.split(np.zeros(len(self.y_labels)), self.y_labels):
-          batch_indices_list.append(test_indices)
-            
-      except ValueError as e:
-        raise ValueError(f"Failed to initialize StratifiedKFold: {e}. Check if batch size is appropriate for class distribution.") from e
-    else:
-      # Simple random sampling
-      indices = np.arange(len(self.y_labels))
-      if self.shuffle:
-        rng = np.random.default_rng(self.random_state)
-        rng.shuffle(indices)
-        
-      # Split into chunks of size sub_batch_size
-      for i in range(0, len(indices), self.sub_batch_size):
-        batch_indices_list.append(indices[i : i + self.sub_batch_size])
-
-    # Strategy 1: Select augmentations for the whole epoch
-    epoch_augmentations = None
-    if self.strategy == 1:
-      epoch_augmentations = np.random.choice(self.available_augmentation_types, size=self.k, replace=False)
-
-    # Now construct the actual batches with augmented global indices
-    for indices_in_orig in batch_indices_list:
-      final_batch = []
-      
-      for idx_in_orig in indices_in_orig:
-        original_row = self.original_df.iloc[idx_in_orig]
-        original_sample_id = original_row['sample_id']
-        
-        # Determine augmentations to use
-        if self.strategy == 1:
-            augmentations_to_use = epoch_augmentations
-        elif self.strategy == 2: # 
-            augmentations_to_use = np.random.choice(self.available_augmentation_types, size=self.k, replace=False)
-        else:
-            augmentations_to_use = self.augmentations_list
-
-        # Find the requested augmented versions
-        for aug_type in augmentations_to_use:
-          shift = helper.get_shift_for_sample_id(aug_type)
-          augmented_sample_id = original_sample_id + shift
-          
-          if augmented_sample_id not in self.sample_id_to_idx:
-            raise ValueError(f"Augmented sample {augmented_sample_id} (original: {original_sample_id}, type: {aug_type}) "
-                             f"not found in the dataset.")
-            
-          global_idx = self.sample_id_to_idx[augmented_sample_id]
-          final_batch.append(global_idx)
-      
-      if len(final_batch) > 0:
-        self.batches.append(final_batch)
-
-    self.n_batches = len(self.batches)
-
-  def __iter__(self):
-    for batch in self.batches:
-      yield batch
-
-    # Update random state and re-initialize for next epoch
-    self.random_state += 13
-    self.initialize()
-
-  def __len__(self):
-    return self.n_batches
-
-
-class SubjectBatchSampler(BatchSampler):
-  """
-  Ensures each batch contains a minimum number of unique subjects per pain level,
-  so HSIC can measure dependence reliably.
-
-  Strategy: For each batch, sample subjects first, then sample instances from
-  each subject across pain levels. This guarantees subject diversity within
-  each pain-level group while maintaining class balance.
-  """
-
-  def __init__(self, df, batch_size, min_subjects_per_level,
-               include_augmented=True, require_all_levels=True,
-               shuffle=True, random_state=42, class_bins=None):
-    self.df = df
-    self.batch_size = batch_size
-    self.min_subjects_per_level = min_subjects_per_level
-    self.include_augmented = include_augmented
-    self.require_all_levels = require_all_levels
-    self.shuffle = shuffle
-    self.random_state = random_state
-
-    # Filter out augmented samples if needed
-    if not include_augmented:
-      self.working_df = df[df['sample_id'] <= helper.step_shift].copy()
-    else:
-      self.working_df = df.copy()
-    working_bins = _class_bin_series(df, class_bins).loc[self.working_df.index]
-
-    # Extract pain levels
-    self.pain_levels = sorted(working_bins.unique())
-    self.n_levels = len(self.pain_levels)
-
-    # Build lookup: {class_id: {subject_id: [df_indices]}}
-    self.level_subject_map = {}
-    for level in self.pain_levels:
-      level_df = self.working_df[working_bins == level]
-      subjects = level_df['subject_id'].unique()
-      self.level_subject_map[level] = {}
-      for subj in subjects:
-        indices = level_df[level_df['subject_id'] == subj].index.tolist()
-        self.level_subject_map[level][subj] = indices
-
-    # Validate min_subjects_per_level constraint
-    for level in self.pain_levels:
-      n_subjects = len(self.level_subject_map[level])
-      if n_subjects < min_subjects_per_level:
-        raise ValueError(
-          f"Pain level {level} has only {n_subjects} unique subjects, "
-          f"but min_subjects_per_level={min_subjects_per_level} is required."
-        )
-
-    # Compute derived values
-    self.samples_per_level = batch_size // self.n_levels
-
-    if self.samples_per_level < self.min_subjects_per_level:
-      raise ValueError(
-        f"samples_per_level ({self.samples_per_level}) < min_subjects_per_level "
-        f"({self.min_subjects_per_level}). Increase batch_size or decrease "
-        f"min_subjects_per_level."
-      )
-
-    self.initialize()
-
-  def initialize(self):
-    self.batches = []
-    rng = np.random.default_rng(self.random_state)
-
-    # Build shuffled subject lists and sample pools per level
-    level_data = {}
-    for level in self.pain_levels:
-      subjects = list(self.level_subject_map[level].keys())
-      if self.shuffle:
-        rng.shuffle(subjects)
-
-      pools = {}
-      for subj in subjects:
-        pool = list(self.level_subject_map[level][subj])
-        if self.shuffle:
-          rng.shuffle(pool)
-        pools[subj] = pool
-
-      level_data[level] = {'subjects': subjects, 'pools': pools}
-
-    # Number of batches limited by smallest level's total samples
-    min_total_samples = min(
-      sum(len(indices) for indices in self.level_subject_map[level].values())
-      for level in self.pain_levels
-    )
-    n_batches = min_total_samples // self.samples_per_level
-
-    # Generate each batch
-    for batch_idx in range(n_batches):
-      batch = []
-      for level in self.pain_levels:
-        ld = level_data[level]
-        subjects = ld['subjects']
-        pools = ld['pools']
-        n_subjects = len(subjects)
-
-        # Select min_subjects_per_level subjects via rotation
-        start = (batch_idx * self.min_subjects_per_level) % n_subjects
-        selected_subjects = []
-        for i in range(self.min_subjects_per_level):
-          idx = (start + i) % n_subjects
-          selected_subjects.append(subjects[idx])
-
-        # Distribute samples_per_level evenly across selected subjects
-        base_per_subject = self.samples_per_level // self.min_subjects_per_level
-        remainder = self.samples_per_level % self.min_subjects_per_level
-
-        for i, subj in enumerate(selected_subjects):
-          n_samples = base_per_subject + (1 if i < remainder else 0)
-          pool = pools[subj]
-
-          for _ in range(n_samples):
-            if len(pool) == 0:
-              # Refill and reshuffle
-              pool = list(self.level_subject_map[level][subj])
-              if self.shuffle:
-                rng.shuffle(pool)
-              pools[subj] = pool
-            batch.append(pool.pop())
-
-      if len(batch) > 0:
-        self.batches.append(batch)
-
-    self.n_batches = len(self.batches)
-
-  def __iter__(self):
-    for batch in self.batches:
-      yield batch
-
-    # Update random state for next epoch
-    self.random_state += 13
-    self.initialize()
-
-  def __len__(self):
-    return self.n_batches
-
-
 def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: float = 0.2) -> torch.Tensor:
   """
   Highly optimized implementation of neighbor-only label smoothing.
@@ -2144,8 +1585,9 @@ def smooth_labels_batch(gt_classes: torch.Tensor, num_classes: int, smoothing: f
 
   return out
  
-def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_training_batch,is_training,dataset_type,concatenate_temporal,model,
-                           label_smooth,soft_labels,is_coral_loss,stride_inside_window=1,num_clips_per_video=1,sample_frame_strategy=None,n_workers=None,backbone_dict=None,split_chunks=False,prefetch_factor=None,**kwargs):
+def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_training_batch,is_training,dataset_type,model,
+                           label_smooth,n_workers=None,prefetch_factor=None,**kwargs):
+  """Dataset and DataLoader over precomputed embeddings (WHOLE: one file per video, AGGREGATED: one file)."""
   target_values = pd.read_csv(csv_path, sep='\t')['class_id']
   runtime_target_spec = resolve_target_spec(
     metadata=kwargs.get('target_spec'),
@@ -2155,71 +1597,25 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
   )
   if dataset_type.value == CUSTOM_DATASET_TYPE.WHOLE.value:
     dataset_ = customDatasetWhole(csv_path,root_folder_features=root_folder_features,
-                                  concatenate_temporal=concatenate_temporal,
                                   model=model,smooth_labels=label_smooth,
                                   concatenate_quadrants=kwargs['concatenate_quadrants'],
-                                  soft_labels=soft_labels,
-                                  consider_only_lasts_n_chunks=kwargs['consider_only_lasts_n_chunks'],
-                                  xattn_mask=kwargs.get('xattn_mask',None),
-                                  split_chunks=split_chunks,
-                                  latent_coefficient=kwargs.get('latent_coefficient',0.0),
-                                  coral_loss=is_coral_loss,
-                                  feature_merge_type=kwargs.get('feature_merge_type',None),
-                                  feature_merge_lambda=kwargs.get('feature_merge_lambda',None),
-                                  feature_merge_orig=kwargs.get('feature_merge_orig',1),
                                   target_spec=runtime_target_spec)
-    if 'caer' in csv_path.lower() or 'combined' in root_folder_features.lower():
-      pin_memory = False
-    else:
-      pin_memory = False
+    pin_memory = False
     persistent_workers = True
     prefetch_factor = 2 if prefetch_factor is None else prefetch_factor
   elif dataset_type.value == CUSTOM_DATASET_TYPE.AGGREGATED.value:
     dataset_ = customDatasetAggregated(csv_path=csv_path,
                                         root_folder_features=root_folder_features,
-                                        concatenate_temporal=concatenate_temporal,
                                         is_train=is_training,
                                         model=model,
-                                        latent_coefficient=kwargs.get('latent_coefficient',0.0),
-                                        consider_only_lasts_n_chunks=kwargs['consider_only_lasts_n_chunks'],
                                         concatenate_quadrants=kwargs['concatenate_quadrants'],
                                         smooth_labels=label_smooth,
-                                        coral_loss=is_coral_loss,
-                                        soft_labels=soft_labels,
                                         target_spec=runtime_target_spec)
     pin_memory = True
     persistent_workers = False
     prefetch_factor = 2 if prefetch_factor is None else prefetch_factor
-    
-  elif dataset_type.value == CUSTOM_DATASET_TYPE.BASE.value:
-    if backbone_dict is not None:
-      dataset_ = customDataset(path_dataset=root_folder_features,
-                               model_type=backbone_dict['backbone'].model_type,
-                              sample_frame_strategy=sample_frame_strategy,
-                              num_clips_per_video=num_clips_per_video,
-                              path_labels=csv_path,
-                              stride_window=16,
-                              clip_length=16,
-                              stride_inside_window=stride_inside_window,
-                              preprocess_align=False,
-                              preprocess_frontalize=False,
-                              consider_only_lasts_n_chunks=kwargs['consider_only_lasts_n_chunks'],
-                              preprocess_crop_detection=False,
-                              saving_folder_path_extracted_video=None,
-                              video_labels=None,
-                              backbone_dict=backbone_dict,
-                              coral_loss=is_coral_loss,
-                              soft_labels=soft_labels,
-                              smooth_labels=label_smooth,
-                              target_spec=runtime_target_spec,
-                              **kwargs['dict_augmented'])
-      pin_memory = False
-      persistent_workers = True
-      prefetch_factor = 5 if prefetch_factor is None else prefetch_factor
-    else:
-      raise ValueError(f'backbone_dict must be provided for dataset_type: {dataset_type}')
   else:
-    raise ValueError(f'Unknown dataset type: {dataset_type}. Choose one of {CUSTOM_DATASET_TYPE}')
+    raise ValueError(f'Training needs precomputed embeddings; unsupported dataset type: {dataset_type}')
   
   # Trainloader
   if is_training:
@@ -2235,48 +1631,15 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                                                   undersample_max_per_class=kwargs.get('undersample_max_per_class', 0),
                                                   class_bins=dataset_.class_bins)
       print(f'Use FilteredAugmentationBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
-    elif kwargs['sampler_loader_type'] == 'augmented_only':
-      sampler = AugmentedOnlyBatchSampler(df=dataset_.df,
-                                          batch_size=batch_size,
-                                          augmentations=kwargs['sampler_augmented_only_types'],
-                                          shuffle=shuffle_training_batch,
-                                          balance_batch=False,
-                                          root_folder_features=root_folder_features,
-                                          class_bins=dataset_.class_bins)
-      print(f'Use AugmentedOnlyBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
-    elif kwargs['sampler_loader_type'] == 'balanced':
-      sampler = balancedBatchSampler(df=dataset_.df, 
-                                      batch_size=batch_size,
-                                      shuffle=shuffle_training_batch,
-                                      class_bins=dataset_.class_bins)
-      print(f'Use balancedBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers} \nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
-    elif kwargs['sampler_loader_type'] == 'subject_batch':
-      sampler = SubjectBatchSampler(
-        df=dataset_.df,
-        batch_size=batch_size,
-        min_subjects_per_level=kwargs.get('min_subjects_per_level', 3),
-        include_augmented=True,
-        require_all_levels=True,
-        shuffle=shuffle_training_batch,
-        random_state=42,
-        class_bins=dataset_.class_bins,
-      )
-      print(f'Use SubjectBatchSampler with {n_workers} workers!\nPersistent workers: {persistent_workers}\nPin memory: {pin_memory}\nPrefetch factor: {prefetch_factor}')
-    elif kwargs['sampler_loader_type'] == 'standard':
-      sampler = None
-      print(f'Use standard DataLoader with {n_workers} workers!\nPersistent workers: True')
-    else:
-      raise ValueError(f"Unknown sampler_loader_type: {kwargs['sampler_loader_type']}. Choose from 'selective_augm', 'augmented_only', 'balanced', 'subject_batch', 'standard'.")
-    if sampler is not None:
       loader_ = DataLoader(dataset=dataset_,
                           batch_sampler=sampler,
                           collate_fn=dataset_._custom_collate,
-                          # batch_size=1,
                           num_workers=n_workers,
                           persistent_workers=persistent_workers,
                           prefetch_factor=prefetch_factor,
                           pin_memory=pin_memory)
-    else:
+    elif kwargs['sampler_loader_type'] == 'standard':
+      print(f'Use standard DataLoader with {n_workers} workers!\nPersistent workers: True')
       loader_ = DataLoader(dataset=dataset_,
                            batch_size=batch_size,
                            shuffle=shuffle_training_batch,
@@ -2285,6 +1648,8 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
                            persistent_workers=persistent_workers,
                            prefetch_factor=prefetch_factor,
                            pin_memory=pin_memory)
+    else:
+      raise ValueError(f"Unknown sampler_loader_type: {kwargs['sampler_loader_type']}. Choose from 'selective_augm', 'standard'.")
   # Eval loader
   else:
     if n_workers > 1:
@@ -2303,25 +1668,16 @@ def get_dataset_and_loader(csv_path,root_folder_features,batch_size,shuffle_trai
   return dataset_,loader_
 
   
-def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,consider_only_lasts_n_chunks,latent_coefficient,is_quadrant=False,concatenate_quadrants=False,xattn_mask=None):
+def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,is_quadrant=False):
   pid = os.getpid()
-  # if pid not in helper.time_profile_dict:
-  #   helper.time_profile_dict[pid] = mp.Manager().dict()
   with profile_workers(f'{pid}_get_element_time',helper.time_profiling_enabled,helper.time_profile_dict):
     csv_row = df.iloc[idx]
     sample_id = csv_row['sample_id']
     csv_label = torch.tensor(csv_row['class_id'], dtype=torch.float32)
     subject_id = torch.tensor([csv_row['subject_id']])
-    # If AGGREGATED or WHOLE dataset, sample_id is the real sample_id
-    # start_time_mask = time.perf_counter()
-
+    # AGGREGATED: select this sample's rows from the shared tensors; WHOLE: dict_data is this sample
     mask = None
-    if dataset_type in [CUSTOM_DATASET_TYPE.AGGREGATED]:
-      if helper.is_latent_basic_augmentation(sample_id) or helper.is_latent_masking_augmentation(sample_id): # latent augm.
-        mask = dict_data['list_sample_id'] == ((sample_id - 1) % helper.step_shift + 1) # to get the real sample_id
-      elif not is_quadrant and dataset_type == CUSTOM_DATASET_TYPE.AGGREGATED: # base aggregated dataset
-        mask = dict_data['list_sample_id'] == sample_id
-    elif dataset_type == CUSTOM_DATASET_TYPE.BASE: # BASE dataset
+    if dataset_type == CUSTOM_DATASET_TYPE.AGGREGATED and not is_quadrant:
       mask = dict_data['list_sample_id'] == sample_id
 
   if mask is not None and mask.sum() == 0:
@@ -2330,47 +1686,15 @@ def _get_element(dict_data,df,idx,dataset_type,embedding_reduction,consider_only
   with profile_workers(f'{pid}_selection_time',helper.time_profiling_enabled,helper.time_profile_dict):
     if dataset_type != CUSTOM_DATASET_TYPE.AGGREGATED:
       features = dict_data['features'] # shape [nr_chunks,T,S,S,Emb] 
-      if consider_only_lasts_n_chunks is not None:
-        features = features[-consider_only_lasts_n_chunks:] # consider only the last n chunks
-      labels = csv_label.repeat(features.shape[0])
-      subject_id = subject_id.repeat(labels.shape[0])
-      
     else:
       features = dict_data['features'][mask]
-      if consider_only_lasts_n_chunks is not None:
-        features = features[-consider_only_lasts_n_chunks:] # consider only the last n chunks
-      labels = csv_label.repeat(features.shape[0])
-      subject_id = subject_id.repeat(labels.shape[0])
+    labels = csv_label.repeat(features.shape[0])
+    subject_id = subject_id.repeat(labels.shape[0])
 
   with profile_workers(f'{pid}_embedding_reduction_time',helper.time_profiling_enabled,helper.time_profile_dict):
     if embedding_reduction != EMBEDDING_REDUCTION.NONE:
       features = torch.mean(features,dim=embedding_reduction.value,keepdim=True) 
     
-  ###### LATENT AUGMENTATIONS ######
-  with profile_workers(f'{pid}_latent_augm_time',helper.time_profiling_enabled,helper.time_profile_dict):
-    if helper.is_latent_basic_augmentation(sample_id): # latent_basic_augmentation: invert the features + add gaussian noise
-      gaussian_noise = torch.randn_like(features) * 0.1 # mean 0, std 0.1
-      features = (-1 * features) + gaussian_noise
-
-    # random masking patches
-    elif helper.is_latent_masking_augmentation(sample_id):
-      B,T,S,S,C = features.shape # B->nr_frames, T->temporal, S->spatial, C->emb_dim
-      if S == 1: # mask Temporal
-        mask_grid = torch.rand(T,dtype=features.dtype) < latent_coefficient # mask % of the temporal, if 0 all unmasked
-        mask_grid = mask_grid.view(1,T,1,1,1)
-      else: # mask Spatial
-        mask_grid = torch.rand(S,S,dtype=features.dtype) < latent_coefficient # mask % of the grid, if 0 all unmasked
-        mask_grid = mask_grid.view(1,1,S,S,1)
-      features = features.masked_fill(mask_grid, 0.0) # set to zero the masked values
-  
-  ##################################
-  ## shuffle temporal dimension of the features, dim 0 and 1
-  # def shuffle_dim(x, dim):
-  #   idx = torch.randperm(x.size(dim))
-  #   return x.index_select(dim, idx)
-  # features = shuffle_dim(features, dim=1) # shuffle temporal dimension
-  # features = shuffle_dim(features, dim=0) # shuffle chunk dimension
-  ######
   return {
       'features': features,     # [8,8,1,1,768]-> [chunks,Temporal,Space,Space,Emb]
       'labels': labels,         # [8]

@@ -20,9 +20,6 @@ opt: [adamw]
 batch_train: [9]
 init_network: [default]
 key_early_stopping: val_loss
-p_early_stop: 2000
-min_delta: 0.005
-threshold_mode: abs
 regulariz_lambda_L1: [0.0]
 regulariz_lambda_L2: [0.3]
 scheduler_name: [cosine_restart]

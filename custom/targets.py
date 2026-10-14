@@ -171,11 +171,6 @@ def resolve_target_spec(
   return TargetSpec(0.0, 1.0, normalize_labels=False)
 
 
-def loss_uses_class_bins(loss):
-  name = getattr(loss, '__name__', loss.__class__.__name__)
-  return name in CLASS_BIN_LOSS_TYPES or name == 'coral_loss'
-
-
 def validate_primary_losses(loss_names, target_spec):
   """Reject classification objectives that cannot consume fractional labels."""
   names = {str(name).lower() for name in (loss_names or []) if name is not None}
@@ -205,8 +200,3 @@ def prepare_batch_targets(batch_inputs, batch_targets, target_spec, use_exact_ta
     loss_targets = class_targets
   return loss_targets, class_targets
 
-
-def huber_delta_for_optimization(delta, target_spec):
-  if delta is None or not target_spec.normalize_labels or target_spec.span == 0:
-    return delta
-  return float(delta) / target_spec.span

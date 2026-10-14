@@ -14,9 +14,7 @@ import torch
 from torchmetrics.classification import  MulticlassConfusionMatrix
 import torch.nn.functional as F
 import sys
-from pathlib import Path
 from scipy import stats
-from custom.helper import unbc_count_to_id
 
 class NpEncoder(json.JSONEncoder):
   def default(self, obj):
@@ -218,53 +216,6 @@ import matplotlib.pyplot as plt
 
 import matplotlib.pyplot as plt
 
-def plot_distribution(data_dict, x_label,title,show_missing=False, color=None,ax=None,y_lim=None):
-  """
-  Plots a bar chart of label/subject distribution.
-
-  Parameters:
-  -----------
-  data_dict : dict
-      Dictionary mapping labels/subjects to counts, e.g. {0: 19, 1: 18, 2: 17}.
-  title : str
-      Title for the plot (e.g., 'Train Label Distribution').
-  ax : matplotlib.axes.Axes, optional
-      Axis object to draw the plot on. If None, a new figure and axis are created.
-  """
-
-  if ax is None:
-    fig, ax = plt.subplots(figsize=(6, 4))
-
-  # Extract keys and values
-  if not show_missing:
-    filtered_data = {k: v for k, v in data_dict.items() if v != 0}
-    keys = list(filtered_data.keys())
-    values = [filtered_data[k] for k in keys]
-  else:
-    # add dummy keys for lower (show_missing[0]) and upper (show_missing[1]) bounds if they don't exist
-    for k in range(show_missing[0], show_missing[1]+1):
-      if k not in data_dict:
-        data_dict[k] = 0
-    keys = list(data_dict.keys())
-    values = list(data_dict.values())
-  # Plot bars
-  ax.bar([str(k) for k in keys] if not show_missing else keys, values, color=color if color is not None else 'steelblue', edgecolor='black', alpha=0.8)
-  # Add labels and title
-  ax.set_title(title, fontsize=12, fontweight='bold')
-  ax.set_xlabel(x_label)
-  ax.set_ylabel('Count')
-
-  # Optional styling
-  y_lim = (0,y_lim) if y_lim is not None else (0, max(values) * 1.1)
-  ax.set_ylim(y_lim)
-  ax.set_xticks([str(k) for k in keys] if not show_missing else keys)
-  ax.grid(axis='y', linestyle='--', alpha=0.6)
-  ax.set_axisbelow(True)
-  ax.yaxis.grid(True, linestyle='--', which='major', color='grey', alpha=0.5)
-
-  return ax
-
-
 def plot_confusion_matrix(confusion_matrix, title, ax=None, saving_path=None):
   # confusion_matrix must be from torchmetrics
   if not isinstance(confusion_matrix, MulticlassConfusionMatrix):
@@ -295,79 +246,6 @@ def get_unique_subjects_and_classes(df, target_spec=None):
   class_counts = {class_id: np.sum(class_ids == class_id) for class_id in np.unique(class_ids)}
   
   return subject_counts, class_counts
-
-def _plot_dataset_distribution(csv_path, total_classes=None,per_class=False, per_partecipant=False, saving_path=None): 
-    def plot_distribution(unique,count,title):  
-      plt.figure(figsize=(10, 5))
-      plt.bar(unique.astype(str), count, color='blue')
-      plt.xlabel('User ID', fontsize=16)
-      plt.ylabel('Samples', fontsize=16)
-      plt.xticks(fontsize=16, rotation=0)
-      plt.yticks(fontsize=16)
-      plt.grid(axis="y", linestyle="--", alpha=0.7)
-      # dataset_name = f'{os.path.split(self.path_labels)[-1]}'
-      plt.title('Dataset Distribution ' + title +f' ({os.path.split(csv_path)[-1]})',fontsize=16)
-      if saving_path is not None:
-        plt.savefig(os.path.join(saving_path,f'{title}.png'))
-      else:
-        plt.show()
-      plt.xticks(fontsize=14,rotation=0)
-      plt.close()
-    def plot_distribution_stacked(unique, title, class_counts,total_classes): # suppose that there is at least one sample per class
-      # colors = ['blue', 'orange', 'green', 'red', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
-      fig, ax = plt.subplots(figsize=(20, 10))
-      cmap = plt.get_cmap('tab10')
-      cmap = [cmap(i) for i in range(total_classes)]
-      bottom = np.zeros(len(unique))
-      for i, (class_id, class_count) in enumerate(class_counts.items()):
-        unique_people = np.sum(class_count > 0)
-        
-        ax.bar(unique.astype(str), class_count, bottom=bottom, label=f'{class_id} ({unique_people}/{len(class_count)})',color=cmap[i])
-        bottom += class_count
-      ax.set_xlabel('User ID', fontsize=14)
-      ax.set_ylabel('# Samples', fontsize=14)
-      dataset_name = f'{os.path.split(csv_path)[-1].split(".")[0]}'
-      ax.set_title('Dataset Distribution ' + title + f' ({dataset_name})', fontsize=16)
-      ax.legend(title='Pain level (unique_people/tot_people)')
-      plt.xticks(fontsize=13,rotation=45)
-      plt.yticks(fontsize=13)
-      plt.grid(axis="y", linestyle="--", alpha=0.7)
-      if saving_path is not None:
-        plt.savefig(os.path.join(saving_path,f'{title}_{dataset_name}.png'))
-      else:
-        plt.show()
-      plt.xticks(fontsize=14,rotation=0)
-      plt.close()
-    #Extract csv and postprocess
-    csv_array = pd.read_csv(csv_path).to_numpy()  # subject_id, subject_name, class_id, class_name, sample_id, sample_name
-    list_samples = []
-    for entry in csv_array:
-      tmp = entry[0].split("\t")
-      list_samples.append(tmp)
-    list_samples = np.stack(list_samples)
-    # total_classes = len(np.unique(list_samples[:, 2].astype(int)))
-    if per_class and per_partecipant:
-      assert total_classes is not None, 'total_classes must be provided having per_class=True and per_partecipant=True'
-      unique_subject_id = np.unique(list_samples[:, 0].astype(int)) # subject_id
-      # print(f'unique_subject_id: {unique_subject_id}')
-      class_ids = np.unique(target_bins)
-      # class_ids = np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) # class_id
-      class_counts = {class_id: np.zeros(len(unique_subject_id)) for class_id in class_ids} # for each class, create a list of zeros for each participant
-      for i, subject_id in enumerate(unique_subject_id):
-        for class_id in class_ids:
-          # Count the number of samples for each class and participant
-          class_counts[class_id][i] = np.sum((list_samples[:, 0].astype(int) == subject_id) & (target_bins == class_id))
-      # print(class_counts)
-      plot_distribution_stacked(unique_subject_id, 'per participant and class', class_counts, total_classes)
-    
-    elif per_class:
-      unique_subject_id,count = np.unique(target_bins,return_counts=True)
-      plot_distribution(unique_subject_id,count,'per class')
-    
-    elif per_partecipant: 
-      unique_subject_id,count = np.unique(list_samples[:,0],return_counts=True)
-      unique_subject_id = np.sort(unique_subject_id.astype(int))
-      plot_distribution(unique_subject_id,count,'per participant')
 
   # print(f' labels shape: {labels.shape}')
 
@@ -489,20 +367,6 @@ def save_dict_k_fold_results(dict_k_fold_results, folder_path):
 # Built-in metrics from scikit-learn
 # TODO: select the right stride window for each video when read data from SSD
     
-def plot_dataset_distribuition(csv_path,run_folder_path,per_class=True,per_partecipant=True,total_classes=None):
-  #  Create folder to save the dataset distribution 
-  dataset_folder_path = os.path.join(run_folder_path,'dataset') #  history_run/VIDEOMAE_v2_B_MEAN_SPATIAL_NONE_SLIDING_WINDOW_GRU_{timestamp}/dataset
-  if not os.path.exists(dataset_folder_path):
-    os.makedirs(os.path.join(run_folder_path,'dataset'))
-
-  # Plot all the dataset distribution 
-  _plot_dataset_distribution(csv_path=csv_path,
-                                  per_class=per_class, 
-                                  per_partecipant=per_partecipant,
-                                  saving_path=dataset_folder_path,
-                                  total_classes=total_classes) # 1  plot
-
-
 def print_dict_size(d):
   # Measure table alone
   base = sys.getsizeof(d)  # ~240 bytes
@@ -810,104 +674,6 @@ def plot_losses_and_test_new(list_1,title, list_2=None,output_path=None,point=No
     plt.savefig(output_path, bbox_inches='tight')
     plt.close(fig)
     
-def plot_masked_attention(pkl_path, mask_threshold=7680, plot_all_subject=False,folder_plot_path=None):
-  def get_one_video_per_subject(video_path_folder):
-    folder_list = [f for f in os.listdir(video_path_folder) if os.path.isdir(os.path.join(video_path_folder, f))]
-    lst = []
-    for folder in tqdm(folder_list, desc="Getting one video per subject"):
-      folder_path = os.path.join(video_path_folder, folder)
-      for file in os.listdir(folder_path):
-        if file.endswith(".mp4") and '$' not in file:
-          lst.append(os.path.join(folder_path, file))
-          break    
-    return lst
-
-                                                       
-  list_video_per_subject = []
-  # --- Load pickle ---
-  if not Path(pkl_path).exists():
-      raise FileNotFoundError(f"Pickle not found: {pkl_path}")
-  with open(pkl_path, "rb") as f:
-    pkl_file = pickle.load(f)
-
-  # --- Compute boolean mask ---
-  mask_small = np.mean(pkl_file['mean_value_matrix'], axis=0) < mask_threshold  # (14,14)
-
-  folder_plot_path = Path(folder_plot_path) / f"plots_grid_{mask_small.shape[0]}x{mask_small.shape[1]}_thr_{mask_threshold}"
-  os.makedirs(folder_plot_path, exist_ok=True)
-  
-  if plot_all_subject:
-    list_video_per_subject = get_one_video_per_subject(Path(pkl_path).parent)
-    print(f"Found {len(list_video_per_subject)} videos, one per subject.")
-    print(f"Plots will be saved to: {folder_plot_path}")
-  else:
-    list_video_per_subject = [f"{Path(pkl_path).parent}/071309_w_21/071309_w_21-BL1-081.mp4"]
-    
-  # --- Load one video frame per subject ---
-  for ref_video_path in tqdm(list_video_per_subject, desc="Processing videos"):
-    if not Path(ref_video_path).exists():
-      raise FileNotFoundError(f"Video not found: {ref_video_path}")
-    
-    cap = cv2.VideoCapture(ref_video_path)
-    if not cap.isOpened():
-      raise RuntimeError("Error opening video file")
-
-    ret, frame = cap.read()
-    cap.release()
-    if not ret or frame is None:
-      raise RuntimeError("Couldn't read first frame from video")
-
-    # Convert to RGBA
-    frame_rgba = cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA)
-    h, w = frame_rgba.shape[:2]
-
-    # --- Compute mask ---
-    mask_resized = cv2.resize(mask_small.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
-
-    # --- Overlay coloring ---
-    overlay_alpha_value = 70
-    overlay = np.zeros_like(frame_rgba, dtype=np.uint8)
-    overlay[mask_resized] = [255, 0, 0, overlay_alpha_value]   # red semi-transparent
-    overlay[~mask_resized] = [0, 255, 0, overlay_alpha_value]  # green semi-transparent
-
-    alpha = overlay[..., 3:4].astype(np.float32) / 255.0
-    blended_rgb = (alpha * overlay[..., :3] + (1 - alpha) * frame_rgba[..., :3]).astype(np.uint8)
-    final_img = np.concatenate([blended_rgb, np.full((h, w, 1), 255, dtype=np.uint8)], axis=2)
-
-    # --- Draw grid borders (14×14) ---
-    num_rows, num_cols = mask_small.shape
-    step_y = h // num_rows
-    step_x = w // num_cols
-
-    grid_img = final_img.copy()
-    line_color = (0, 0, 0, 128)  # black lines
-    thickness = 1
-
-    # Vertical lines
-    for x in range(0, w, step_x):
-      cv2.line(grid_img, (x, 0), (x, h), line_color, thickness)
-
-    # Horizontal lines
-    for y in range(0, h, step_y):
-      cv2.line(grid_img, (0, y), (w, y), line_color, thickness)
-
-    # --- Display ---
-    plt.figure(figsize=(10, 6))
-    plt.imshow(grid_img)
-    plt.axis('off')
-    plt.title(f"Red = Masked, Green = Unmasked \nThreshold = {mask_threshold} Grid Size = {num_rows}x{num_cols}\n\{Path(ref_video_path).stem}\n{pkl_path}")
-    png_path = folder_plot_path / f"{Path(ref_video_path).stem}_grid_{num_rows}x{num_cols}_thr{mask_threshold}.png"
-    plt.savefig(png_path)
-    plt.close()
-
-def get_pth_path_from_project_folder(project_folder):
-  pth_path_list = []
-  for root, dirs, files in os.walk(project_folder):
-    for file in files:
-      if file.endswith('.pth'):
-        pth_path_list.append(os.path.join(root, file))
-  return pth_path_list
-
 def concordance_ccc(y_true, y_pred):
   """Compute the Concordance Correlation Coefficient (CCC) between two 1-D arrays.
 

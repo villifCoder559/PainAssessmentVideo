@@ -41,12 +41,10 @@ def recompute_raw_fold_metrics(pkl_path: str, data: dict, final_keys: list, ffsp
   from custom.model import Model_Advanced
   from custom.targets import TargetSpec
 
-  helper.init_log_cross_attention()
   helper.init_log_video_embeddings()
   helper.LOG_HISTORY_SAMPLE = True
 
   params = data['model_advanced_params']
-  params['head_params']['skip_init_weights'] = True
   if ffsp_override is not None:
     params['features_folder_saving_path'] = ffsp_override
   model = Model_Advanced(**params)
@@ -78,9 +76,7 @@ def recompute_raw_fold_metrics(pkl_path: str, data: dict, final_keys: list, ffsp
       'csv_path': csv_path,
       'criterion': cfg['criterion'],
       'is_test': True,
-      'concatenate_temporal': cfg['concatenate_temp_dim'],
       'concatenate_quadrants': cfg['concatenate_quadrants'],
-      'CCC_loss': cfg.get('CCC_loss'),
     }
     kwargs = {k: v for k, v in cfg.items() if k not in test_args.keys()}
     print(f'\n=== Re-running {fold} best model (sub_{sub_idx}, epoch {epoch}) ===')

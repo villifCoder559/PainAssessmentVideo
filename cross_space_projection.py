@@ -722,7 +722,6 @@ def _build_model(config_model):
     Model_Advanced: Newly constructed model (head weights not yet loaded).
   """
   params = copy.deepcopy(config_model['model_advanced_params'])
-  params['head_params']['skip_init_weights'] = True
   return Model_Advanced(**params)
 
 
@@ -905,12 +904,9 @@ def _extract_embeddings(model, model_pth, csv_path, config_model, features_path_
       'csv_path': clean_csv,
       'criterion': cfg['criterion'],
       'is_test': True,
-      'concatenate_temporal': cfg['concatenate_temp_dim'],
       'concatenate_quadrants': cfg['concatenate_quadrants'],
-      'CCC_loss': cfg.get('CCC_loss'),
     }
     extra_kwargs = {k: v for k, v in cfg.items() if k not in test_args}
-    extra_kwargs['split_chunks'] = 0
 
     model.test_pretrained_model(**test_args, **extra_kwargs)
 

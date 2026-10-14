@@ -9,10 +9,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from custom.dataset import (
-  AugmentedOnlyBatchSampler,
   SelectiveAugmentationBatchSampler,
-  SubjectBatchSampler,
-  balancedBatchSampler,
   customDataset,
   highly_optimized_custom_collate,
 )
@@ -99,7 +96,7 @@ def test_raw_video_classification_transforms_use_bin_targets():
   assert targets.argmax(dim=1).tolist() == [4]
 
 
-def test_every_class_aware_sampler_uses_supplied_bins(monkeypatch):
+def test_selective_sampler_uses_supplied_bins(monkeypatch):
   monkeypatch.setattr('custom.dataset.helper.step_shift', 100)
   frame = pd.DataFrame(
     {
@@ -110,7 +107,6 @@ def test_every_class_aware_sampler_uses_supplied_bins(monkeypatch):
   )
   bins = torch.tensor([0, 0, 4, 4] * 2).numpy()
 
-  balanced = balancedBatchSampler(df=frame, class_bins=bins, batch_size=4, shuffle=True)
   selective = SelectiveAugmentationBatchSampler(
     df=frame,
     class_bins=bins,
@@ -119,22 +115,5 @@ def test_every_class_aware_sampler_uses_supplied_bins(monkeypatch):
     n_keep_augmentations=0,
     augmentation_strategy=1,
   )
-  augmented = AugmentedOnlyBatchSampler(
-    df=frame,
-    class_bins=bins,
-    batch_size=2,
-    augmentations='hflip',
-    balance_batch=False,
-  )
-  subject = SubjectBatchSampler(
-    df=frame,
-    class_bins=bins,
-    batch_size=4,
-    min_subjects_per_level=2,
-    shuffle=False,
-  )
 
-  assert balanced.y_labels.tolist() == [0, 0, 4, 4] * 2
   assert set(selective.base_ids_per_class) == {0, 4}
-  assert augmented.y_labels.tolist() == [0, 0, 4, 4]
-  assert subject.pain_levels == [0, 4]

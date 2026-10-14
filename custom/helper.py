@@ -46,26 +46,13 @@ desired_order_csv = ['subject_id', 'subject_name', 'class_id', 'class_name', 'sa
 time_profile_dict = mp.Manager().dict()
 time_profiling_enabled = True
 
-PROFILING_GPU_SYNC = False
 
-AMP_ENABLED = False
-AMP_DTYPE = None
-LOG_GRADIENT_PER_MODULE = False
 LOG_PER_CLASS = True
 LOG_PER_SUBJECT = True
 LOG_CONFIDENCE_PREDICTION = True
 LOG_HISTORY_SAMPLE = False
-QUERIES_AGG_METHOD = ['mean','max']
-LOG_LOSS_ACCURACY = False
-LOG_GRADIENT_NORM = False
-SAVE_LAST_EPOCH_MODEL = False
-FORCE_SPLIT_K_FOLD = False # Only for CAER dataset!, turns on in the train_model.py script
 SAVE_PTH_MODEL = False
 
-LOG_CROSS_ATTENTION = {
-  'enable': False,
-  'state':'train'
-}
 LOG_VIDEO_EMBEDDINGS = {
   'enable': False,
   'embeddings':[],
@@ -79,12 +66,6 @@ LOG_NORM_CROSS_ATTN_BLOCK = {
   'logs':[]
 }
   
-def init_log_cross_attention():
-  global LOG_CROSS_ATTENTION
-  LOG_CROSS_ATTENTION = {
-    'enable': False,
-    'state':'train'
-  }
 def init_log_video_embeddings():
   global LOG_VIDEO_EMBEDDINGS
   LOG_VIDEO_EMBEDDINGS = {
@@ -242,37 +223,6 @@ def get_augmentation_availables(fold_feature_path):
   augment_available = list(dict.fromkeys(a.split('$')[0] for a in augment_available))
   return augment_available
 
-
-def refine_perfectly_balanced_target_samples_per_class(df, target_samples_per_class,strategy='oversample',target_spec=None):
-  def class_values(frame):
-    return target_spec.to_bins(frame['class_id']) if target_spec is not None else frame['class_id'].to_numpy()
-
-  class_counts = pd.Series(class_values(df)).value_counts()
-  new_df = df.copy(deep=True)
-  for class_id, count in class_counts.items(): 
-    class_mask = class_values(new_df) == class_id
-    if count < target_samples_per_class:
-      n_to_add = target_samples_per_class - count
-      if strategy == 'oversample':
-        samples_to_add = new_df[class_mask].sample(n=n_to_add, replace=True)
-        new_df = pd.concat([new_df, samples_to_add], ignore_index=True)
-      elif strategy == 'latent_augm':
-        while n_to_add > 0:
-          class_mask = class_values(new_df) == class_id
-          n = min(n_to_add, target_samples_per_class - int(class_mask.sum()))
-          samples_to_add = new_df[class_mask].sample(n=n, replace=True)
-          # Apply latent_basic augmentation to samples with sample_id < step_shift (non augmented samples)
-          samples_to_add['sample_id'] = samples_to_add['sample_id'].apply(lambda x: transform_sample_id((((x-1)%step_shift) + 1), 'latent_basic'))
-          n_to_add -= len(samples_to_add)
-          new_df = pd.concat([new_df, samples_to_add], ignore_index=True)
-          # n_to_add = target_samples_per_class - new_df[new_df['class_id'] == class_id].shape[0]
-      else:
-        raise ValueError(f"Strategy not recognized: {strategy}")
-    elif count > target_samples_per_class:
-      samples_to_remove = new_df[class_mask].sample(n=count-target_samples_per_class, replace=False)
-      new_df = new_df[~new_df.index.isin(samples_to_remove.index)]
-    
-  return new_df  
 
 def get_sample_augmented(pain, list_subject, orig_df, dict_augmentation_per_sample, new_df, class_bins=None):
   class_bins = pd.Series(class_bins, index=orig_df.index) if class_bins is not None else orig_df['class_id']
@@ -523,8 +473,6 @@ class EMBEDDING_REDUCTION(Enum):
       raise ValueError(f'Pooling embedding reduction not recognized: {pooling_embedding_reduction}. Can be spatial, temporal, all, adaptive_pooling_3d, spatial_masked or none')
 
 class INSTANCE_MODEL_NAME(Enum): # model.__class__.__name__
-  GRUPROBE = 'GRUProbe'
-  GRUHead = 'GRUHead'
   AttentiveClassifier = 'AttentiveHeadJEPA' # JEPA implementation
   
 class CLIPS_REDUCTION(Enum): 

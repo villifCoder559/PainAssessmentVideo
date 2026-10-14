@@ -10,7 +10,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from custom.targets import (
   TargetSpec,
-  loss_uses_class_bins,
   prepare_batch_targets,
   resolve_target_spec,
   validate_primary_losses,
@@ -165,7 +164,3 @@ def test_runtime_target_spec_resolves_metadata_and_legacy_normalization():
   legacy = resolve_target_spec(normalize=True, legacy_max_label=5)
   assert legacy.inverse(torch.tensor([0.0, 1.0])).tolist() == [0.0, 5.0]
 
-
-def test_disentangled_pain_loss_target_mode_detection():
-  assert loss_uses_class_bins(torch.nn.CrossEntropyLoss())
-  assert not loss_uses_class_bins(torch.nn.L1Loss())
