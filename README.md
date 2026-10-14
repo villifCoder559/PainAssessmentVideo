@@ -77,7 +77,7 @@ gdown 1nzvMITUHic9fKwjQ7XLcnaXYViWTawRv -O "$DFER_DIR/checkpoint-49.pth"
 | Dataset | Where to request | Who can sign |
 | --- | --- | --- |
 | BioVid Heat Pain, Part A | [agreement form](https://www.nit.ovgu.de/BioVid.html) (sent to Ulm University) | permanent academic staff |
-| UNBC-McMaster Shoulder Pain | no longer public; ask the owners via [PainArchive](https://painarchive.jeffcohn.net/) | faculty or research scientist |
+| UNBC-McMaster Shoulder Pain | no longer distributed; only an existing copy can be used | — |
 | MIntPAIN | [EULA by e-mail](https://www.vap.aau.dk/mintpain-database/) (Aalborg University) | permanent academic staff |
 | X-ITE (2025 challenge subset + test labels) | [X-ITE Pain Challenge](https://sites.google.com/view/xitepainchallenge) | see the challenge rules |
 
