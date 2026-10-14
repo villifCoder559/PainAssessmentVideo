@@ -206,27 +206,7 @@ The X-ITE configs use only the base embeddings.
 
 `--subjects <names>` limits any step to a few subjects for a quick test.
 
-### 3.4 Your own videos
-
-Videos laid out as `<videos>/<subject_name>/<sample_name>.mp4` and listed in a tab-separated CSV
-go through the same steps with the underlying tools:
-
-```sh
-python extract_video_frontalized.py --gv --vfp <videos> --csv <labels.csv> --pfo <frontalized> \
-  --prl partA/video/mean_face_landmarks_per_subject/all_subjects_mean_landmarks.pkl \
-  --interpolation_mod_chunk mirror_start_video 16 --workers 4
-python extract_feature.py --model_type DFER --path_dataset <frontalized> --path_labels <labels.csv> \
-  --saving_folder_path <out> --emb_red spatial --backbone_type video --save_as_safetensors \
-  --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature   # --model_type S: VideoMAEv2-S
-```
-
-* Add `--color_jitter`, `--spatial_shift`, `--h_flip`, `--rotation`, `--zoom` or `--gaussian_smooth`
-  to `extract_feature.py` for an augmented copy.
-* Training reads augmented copies from `<out>_<aug>`, `<out>_<aug>$0`, `<out>_<aug>$1`, …. Running
-  `extract_feature.py` again with an existing `--saving_folder_path` adds the next `$N` folder.
-* `<videos>` must contain a dataset keyword (`unbc`, `parta`/`biovid`, `mintpain`, `xite`).
-
-### 3.5 Result
+### 3.4 Result
 
 The rebuilt embeddings are close to the paper's but not bit-identical: the videos are re-encoded,
 and the augmentations draw new random parameters. In our tests the base embeddings had a mean
