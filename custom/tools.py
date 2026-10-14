@@ -488,17 +488,6 @@ def save_dict_k_fold_results(dict_k_fold_results, folder_path):
   
 # Built-in metrics from scikit-learn
 # TODO: select the right stride window for each video when read data from SSD
-  # TODO: REMOVE comments if want to plot precision and recall
-  # unique_classes_train = np.unique(dict_train['dict_results']['list_y_train'])
-  # tools.plot_accuracy_confusion_matrix(confusion_matricies=dict_train['dict_results']['train_confusion_matricies'],
-  #                                      type_conf='train',
-  #                                      saving_path=saving_path_precision_recall,
-  #                                      list_real_classes=unique_classes_train)
-  
-  # tools.plot_accuracy_confusion_matrix(confusion_matricies=dict_train['dict_results']['val_confusion_matricies'],
-  #                                      type_conf='test',
-  #                                      saving_path=saving_path_precision_recall,
-  #                                      list_real_classes=unique_classes_train)
     
 def plot_dataset_distribuition(csv_path,run_folder_path,per_class=True,per_partecipant=True,total_classes=None):
   #  Create folder to save the dataset distribution 
@@ -512,12 +501,6 @@ def plot_dataset_distribuition(csv_path,run_folder_path,per_class=True,per_parte
                                   per_partecipant=per_partecipant,
                                   saving_path=dataset_folder_path,
                                   total_classes=total_classes) # 1  plot
-  # TODO: Remove comments to plot the mean and std of the dataset
-  # tools.plot_dataset_distribution_mean_std_duration(csv_path=csv_path,
-  #                                                   video_path=path_video_dataset,
-  #                                                   per_class=per_class, 
-  #                                                   per_partecipant=per_partecipant, 
-  #                                                   saving_path=dataset_folder_path) # 2 plots
 
 
 def print_dict_size(d):

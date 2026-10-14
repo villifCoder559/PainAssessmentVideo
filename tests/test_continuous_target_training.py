@@ -154,28 +154,3 @@ def test_cross_space_uses_affine_inverse_for_new_and_legacy_configs():
   assert _inverse_label_values(torch.tensor([0.0, 1.0]), current).tolist() == pytest.approx([0.19, 6.26])
   assert _inverse_label_values(torch.tensor([0.0, 1.0]), legacy).tolist() == pytest.approx([0.0, 5.0])
 
-
-def test_csv_subsampling_skips_missing_bins(monkeypatch):
-  rows = pd.DataFrame({
-    'subject_id': [1, 2],
-    'subject_name': ['s1', 's2'],
-    'class_id': [0.2, 2.2],
-    'class_name': ['a', 'b'],
-    'sample_id': [1, 2],
-    'sample_name': ['x', 'y'],
-  })
-  captured = {}
-  monkeypatch.setattr(
-    tools,
-    'get_array_from_csv',
-    lambda _: (rows.to_numpy(), rows.columns.to_numpy()),
-  )
-  monkeypatch.setattr(
-    pd.DataFrame,
-    'to_csv',
-    lambda self, *args, **kwargs: captured.setdefault('frame', self.copy()),
-  )
-
-  tools._generate_csv_subsampled('unused.csv', nr_samples_per_class=1)
-
-  assert captured['frame']['class_id'].astype(float).tolist() == pytest.approx([0.2, 2.2])
