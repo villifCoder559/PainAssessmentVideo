@@ -8,7 +8,7 @@ Stages:
   csv          MIntPAIN/starting_point/samples.csv (MIntPAIN/generate_videos.py)
   video        one 25 fps video per sweep from its RGB frames: MIntPAIN/video (needs ffmpeg)
   preprocess   frontalized videos padded to a multiple of 16 frames: MIntPAIN/video_frontalized
-               (needs the BioVid reference landmarks, see reproduce/setup_biovid.py)
+               (reference face: the BioVid landmarks shipped with the repository)
   features     the feature folders of configs/features/mintpain.yaml (GPU)
 """
 
@@ -20,8 +20,8 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _setup_common import (REF_LANDMARKS, REPO_ROOT, extract_features, frontalize, parser,  # noqa: E402
-                           read_csv, require, resolve, skip, subset_csv, videos_of)
+from _setup_common import (REPO_ROOT, extract_features, frontalize, parser, read_csv,  # noqa: E402
+                           reference_landmarks, require, resolve, skip, subset_csv, videos_of)
 
 sys.path.insert(0, str(REPO_ROOT / "MIntPAIN"))
 import generate_videos  # noqa: E402
@@ -67,7 +67,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit("error: encoding failed for:\n  " + "\n  ".join(failed))
 
   if "preprocess" in args.stages:
-    frontalize(videos, csv_run, mintpain / "video_frontalized", args.root / REF_LANDMARKS, args.workers)
+    frontalize(videos, csv_run, mintpain / "video_frontalized", reference_landmarks(args.root),
+               args.workers)
 
   if "features" in args.stages:
     extract_features("mintpain", args.root, csv_run, args.backbones, args.base_only, args.gpu)

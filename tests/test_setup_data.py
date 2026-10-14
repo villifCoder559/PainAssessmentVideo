@@ -115,6 +115,19 @@ class FeatureFoldersTest(unittest.TestCase):
       self.assertEqual(_setup_common.count_features(Path(tmp)), 2)
 
 
+class ReferenceLandmarksTest(unittest.TestCase):
+  def test_root_copy_wins_over_the_shipped_one(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      root = Path(tmp)
+      shipped = REPO_ROOT / _setup_common.REF_LANDMARKS
+      self.assertEqual(_setup_common.reference_landmarks(root), shipped)
+      self.assertTrue(shipped.is_file())
+      built = root / _setup_common.REF_LANDMARKS
+      built.parent.mkdir(parents=True)
+      built.touch()
+      self.assertEqual(_setup_common.reference_landmarks(root), built)
+
+
 class XiteLabelsTest(unittest.TestCase):
   def test_test_labels_map_segments_to_samples(self):
     with tempfile.TemporaryDirectory() as tmp:

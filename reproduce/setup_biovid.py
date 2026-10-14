@@ -8,10 +8,11 @@ Stages:
   csv          partA/starting_point/samples.csv (the official file) and samples_adversarial.csv
                (same rows, subject_id counted from 0), the CSV used for training
   video        link partA/video/video to the raw videos
-  landmarks    reference face geometry for frontalization (all datasets need it):
-               partA/video/mean_face_landmarks_per_subject/all_subjects_mean_landmarks.pkl,
-               always averaged over all 87 subjects (--subjects does not apply);
-               about 23 min per subject per worker
+  landmarks    reference face geometry for frontalization (BioVid, MIntPAIN, X-ITE):
+               partA/video/mean_face_landmarks_per_subject/all_subjects_mean_landmarks.pkl.
+               It is shipped with the repository, so this stage is skipped; delete the file to
+               rebuild it from all 87 subjects (--subjects does not apply), about 23 min per
+               subject per worker
   preprocess   frontalized videos padded to a multiple of 16 frames:
                partA/video/video_frontalized_interpolated_resolution_original
   features     the feature folders of configs/features/biovid.yaml (GPU)
@@ -25,7 +26,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _setup_common import (REF_LANDMARKS, extract_features, frontalize, link, parser, read_csv,  # noqa: E402
-                           rel, require, require_videos, resolve, run, skip, subset_csv, write_csv)
+                           reference_landmarks, rel, require, require_videos, resolve, run, skip,
+                           subset_csv, write_csv)
 
 STAGES = ("csv", "video", "landmarks", "preprocess", "features")
 
@@ -56,8 +58,8 @@ def main(argv: list[str] | None = None) -> int:
 
   if "landmarks" in args.stages:
     out = args.root / REF_LANDMARKS
-    if out.is_file():
-      skip(out)
+    if reference_landmarks(args.root).is_file():
+      skip(reference_landmarks(args.root))
     else:
       # The paper reference averages every subject; a subset mean would change all frontalizations.
       require_videos(csv, videos)
@@ -66,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
 
   if "preprocess" in args.stages:
     frontalize(videos, csv_run, part_a / "video" / "video_frontalized_interpolated_resolution_original",
-               args.root / REF_LANDMARKS, args.workers)
+               reference_landmarks(args.root), args.workers)
 
   if "features" in args.stages:
     extract_features("biovid", args.root, csv_run, args.backbones, args.base_only, args.gpu)

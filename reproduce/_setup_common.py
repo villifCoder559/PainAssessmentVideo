@@ -115,13 +115,19 @@ def require_videos(csv: Path, folder: Path) -> None:
              f"e.g. {missing[0]}")
 
 
+def reference_landmarks(root: Path) -> Path:
+  """The frontalization reference face: one built under `root`, else the copy shipped in the repo."""
+  built = root / REF_LANDMARKS
+  return built if built.is_file() else REPO_ROOT / REF_LANDMARKS
+
+
 def frontalize(videos: Path, csv: Path, out: Path, ref_landmarks: Path, workers: int) -> None:
-  """extract_video_frontalized.py with frames padded to a multiple of 16 (README section 8)."""
+  """extract_video_frontalized.py with frames padded to a multiple of 16 (README section 3)."""
   if all(p.is_file() for p in videos_of(csv, out)):
     skip(out)
     return
-  require(ref_landmarks, "Build it first: python reproduce/setup_biovid.py --raw <BioVid PartA> "
-          "--stages csv video landmarks")
+  require(ref_landmarks, "It is shipped with the repository; restore it with git, or rebuild it with "
+          "python reproduce/setup_biovid.py --raw <BioVid PartA> --stages csv video landmarks")
   require_videos(csv, videos)
   run([sys.executable, "extract_video_frontalized.py", "--gv", "--vfp", rel(videos), "--csv", rel(csv),
        "--pfo", rel(out), "--prl", rel(ref_landmarks), "--interpolation_mod_chunk", "mirror_start_video",

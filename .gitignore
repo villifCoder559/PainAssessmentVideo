@@ -148,6 +148,12 @@ test.ipynb
 debug_frontalization_list/*
 MAE_DFER/saved/model/pretraining/*
 partA/*
+# BioVid reference face for frontalization (478x3 mean over 87 subjects), read by reproduce/setup_*.py.
+!partA/video/
+partA/video/*
+!partA/video/mean_face_landmarks_per_subject/
+partA/video/mean_face_landmarks_per_subject/*
+!partA/video/mean_face_landmarks_per_subject/all_subjects_mean_landmarks.pkl
 VideoMAEv2/pretrained/*
 MAE_DFER/saved/*
 AgeDB/features/*

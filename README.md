@@ -13,8 +13,8 @@ transfer direction. Joint refinement with stored source labels largely recovers 
 regression performance, whereas anchor-only transfer gives a higher source MAE.
 
 > **What you need.** This code, the two public backbone checkpoints (§2) and your own copy of
-> each dataset. The dataset licences do not allow redistributing labels or embeddings, so the
-> label CSVs and embeddings are rebuilt from the raw data by one setup script per dataset (§3).
+> each dataset, requested from its owners (§3.1). The dataset agreements do not allow
+> redistributing labels or embeddings, so one setup script per dataset rebuilds them (§3.2).
 
 Run every command from the **repository root**.
 
@@ -42,7 +42,7 @@ python -c "import torch, torchsort; print(torch.cuda.is_available(), torchsort.s
 The last command must print `True` and a tensor on `device='cuda:0'`. Both `python` and
 `python3` must resolve to this env (`command -v python python3`), because
 `run_cross_space_configs.sh` calls `python3`. The env downloads several GB of CUDA wheels. No GPU?
-See [§11 CPU fallback](#11-cpu-fallback).
+See [§10 CPU fallback](#10-cpu-fallback).
 
 ## 2. Backbone weights
 
@@ -65,46 +65,106 @@ gdown 1nzvMITUHic9fKwjQ7XLcnaXYViWTawRv -O "$DFER_DIR/checkpoint-49.pth"
 
 ## 3. Data setup
 
-Obtain each dataset from its owners, then build the label CSVs and embeddings with its script:
+> **No data is distributed.** The dataset agreements do not allow redistributing the videos, the
+> labels or anything derived from them, embeddings included. Request each dataset from its owners
+> (§3.1). The scripts below then rebuild the label CSVs, preprocessed videos and embeddings
+> (§3.2–3.3). The repository ships only two label-free files: the UNBC row order
+> (`UNBC/starting_point/sample_order_permutation.txt`) and the BioVid mean face used as the
+> frontalization reference (`partA/video/mean_face_landmarks_per_subject/all_subjects_mean_landmarks.pkl`).
 
-| Dataset | Command | `--raw` folder of the official release |
+### 3.1 Request the datasets
+
+| Dataset | Where to request | Who can sign |
 | --- | --- | --- |
-| BioVid Part A | `python reproduce/setup_biovid.py --raw <PartA> --gpu 0` | `starting_point/samples.csv`, `video/video/<subject>/<sample>.mp4` |
-| UNBC-McMaster | `python reproduce/setup_unbc.py --raw <UNBC> --gpu 0` | `OPI/<subject>/<sequence>.txt`, `VAS/<subject>/<sequence>.txt`, `WarpedVideos/<subject>/<sequence>/<sequence>.mp4` |
-| MIntPAIN | `python reproduce/setup_mintpain.py --raw <MIntPAIN> --gpu 0` | the `Sub<N> <Name>/` folders (`Extracted_Data/`) |
-| X-ITE | `python reproduce/setup_xite.py --raw <XITE> --gpu 0` | `train_data/`, `test_data/` and the organizers' `Labels_test_data.csv` |
+| BioVid Heat Pain, Part A | [agreement form](https://www.nit.ovgu.de/BioVid.html) (sent to Ulm University) | permanent academic staff |
+| UNBC-McMaster Shoulder Pain | [PainArchive](https://painarchive.jeffcohn.net/) | faculty or research scientist |
+| MIntPAIN | [EULA by e-mail](https://www.vap.aau.dk/mintpain-database/) (Aalborg University) | permanent academic staff |
+| X-ITE (2025 challenge subset + test labels) | [X-ITE Pain Challenge](https://sites.google.com/view/xitepainchallenge) | see the challenge rules |
 
-**Run BioVid first.** Its `landmarks` stage builds the reference face geometry
-(`partA/video/mean_face_landmarks_per_subject/all_subjects_mean_landmarks.pkl`). The BioVid,
-MIntPAIN and X-ITE frontalization reads it.
+### 3.2 Set up each dataset
 
-Each script runs these stages in order (`--stages` selects some). A stage skips work whose
-outputs already exist, so an interrupted run can simply be started again.
+Download the backbone weights (§2) first. Then run one command per dataset; `--raw` is the
+downloaded folder, laid out as shown. An interrupted run resumes when started again.
 
-1. `csv`: the label CSVs, byte-identical to the paper's. For UNBC, the paper's row order (and
-   therefore its training folds) is restored from `UNBC/starting_point/sample_order_permutation.txt`,
-   a list of row positions without labels.
-2. `video`: links to the raw videos. For MIntPAIN, 25 fps videos are encoded from the RGB frames,
-   which needs `ffmpeg`.
-3. `landmarks`: BioVid only (see above). It always averages all 87 subjects, about 23 min per
-   subject per worker (`--workers 8`: about 4 h).
-4. `preprocess`: frontalization with frames padded to a multiple of 16 for BioVid, MIntPAIN and
-   X-ITE. For UNBC, a face crop on a black background with the same padding.
-5. `features`: every base and augmented embedding folder listed in
-   `configs/features/<dataset>.yaml`, extracted with `extract_feature.py` on the GPU.
+**BioVid Part A**: `--raw` is the `PartA` folder.
 
-Further options:
+```
+PartA/starting_point/samples.csv
+PartA/video/video/<subject>/<sample>.mp4
+```
+```sh
+python reproduce/setup_biovid.py --raw /path/to/PartA --gpu 0
+```
 
-* `--backbones DFER S` restricts the backbones.
-* `--base_only` skips the augmented folders.
-* `--subjects <names>` processes a few subjects only, for a quick test (not the `landmarks` stage).
-* `--root <dir>` writes the dataset folders somewhere other than the repository root.
-* `--workers` sets the number of preprocessing processes.
+**UNBC-McMaster**: one pain score per sequence in each `.txt` file.
 
-The regenerated embeddings are close to the paper's but not bit-identical. Frontalization uses
-the current code, augmentations draw new random parameters, and videos are re-encoded. For
-example, the UNBC base MAE-DFER embeddings match the paper's with a mean per-clip cosine
-similarity of 0.998. The generated data takes about 60 GB:
+```
+UNBC/OPI/<subject>/<sequence>.txt
+UNBC/VAS/<subject>/<sequence>.txt
+UNBC/WarpedVideos/<subject>/<sequence>/<sequence>.mp4
+```
+```sh
+python reproduce/setup_unbc.py --raw /path/to/UNBC --gpu 0
+```
+
+**MIntPAIN**: only the RGB frames are used. Needs `ffmpeg`.
+
+```
+MIntPAIN/Sub1 <Name>/Annotated_data_Sub01_Trial01/Sub01_Trial01_Sweep01_Label0/RGB/RGB-*.jpg
+```
+```sh
+python reproduce/setup_mintpain.py --raw /path/to/MIntPAIN --gpu 0
+```
+
+**X-ITE**: only the frontal face videos (`fvf`) are used.
+
+```
+XITE/train_data/{baseline,low_pain,med_pain}/fvf/<subject>/<sample>.mp4
+XITE/test_data/fvf/<subject>/<sample>.mp4
+XITE/Labels_test_data.csv                  (test labels released by the organizers)
+```
+```sh
+python reproduce/setup_xite.py --raw /path/to/XITE --gpu 0
+```
+
+### 3.3 Individual steps
+
+Each command above runs these steps in order; `--stages` runs some of them (set `S` to the
+dataset's script and `RAW` to its folder):
+
+```sh
+S=reproduce/setup_unbc.py; RAW=/path/to/UNBC
+python $S --raw $RAW --stages csv video                     # label CSVs (identical to the paper's) + videos
+python $S --raw $RAW --stages preprocess                    # frontalize (UNBC: face crop), pad to x16 frames
+python $S --raw $RAW --stages features --base_only --gpu 0  # embeddings of both backbones
+python $S --raw $RAW --stages features --gpu 0              # + the augmented copies (configs/features/<dataset>.yaml)
+```
+
+`--subjects <names>` limits a run to a few subjects for a quick test.
+
+For your own videos (`<videos>/<subject_name>/<sample_name>.mp4`, listed in a tab-separated CSV),
+the same steps use the underlying tools:
+
+```sh
+python extract_video_frontalized.py --gv --vfp <videos> --csv <labels.csv> --pfo <frontalized> \
+  --prl partA/video/mean_face_landmarks_per_subject/all_subjects_mean_landmarks.pkl \
+  --interpolation_mod_chunk mirror_start_video 16 --workers 4
+python extract_feature.py --model_type DFER --path_dataset <frontalized> --path_labels <labels.csv> \
+  --saving_folder_path <out> --emb_red spatial --backbone_type video --save_as_safetensors \
+  --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature   # --model_type S: VideoMAEv2-S
+```
+
+* Add `--color_jitter`, `--spatial_shift`, `--h_flip`, `--rotation`, `--zoom` or `--gaussian_smooth`
+  to `extract_feature.py` for an augmented copy.
+* Training reads augmented copies from `<out>_<aug>`, `<out>_<aug>$0`, `<out>_<aug>$1`, …. Running
+  `extract_feature.py` again with an existing `--saving_folder_path` adds the next `$N` folder.
+* `<videos>` must contain a dataset keyword (`unbc`, `parta`/`biovid`, `mintpain`, `xite`).
+
+### 3.4 Result
+
+The rebuilt embeddings are close to the paper's but not bit-identical: the videos are re-encoded,
+and the augmentations draw new random parameters. In our tests the base embeddings had a mean
+per-clip cosine similarity of 0.96–0.999 with the paper's. Space needed: about 60 GB.
 
 | Dataset | Embeddings | Preprocessed videos |
 | --- | --- | --- |
@@ -113,18 +173,16 @@ similarity of 0.998. The generated data takes about 60 GB:
 | UNBC | 2 GB | 40 MB |
 | X-ITE | 0.8 GB | 0.9 GB |
 
-The scripts create this layout. Training and the cross-space code find the data by these
-relative paths, and they infer the dataset from keywords in them (`unbc`, `parta`/`biovid`,
-`mintpain`, `xite`):
+Rebuilding the shipped BioVid mean face (delete it, then run the `landmarks` stage of
+`setup_biovid.py`) takes about 4 h with `--workers 8`.
+
+Training and the cross-space code find the data by these relative paths:
 
 ```
 <repo>/
 ├── UNBC/
 │   ├── starting_point/            samples.csv  samples_OPI.csv  samples_OPI_0_to_4.csv  samples_adversarial.csv
-│   └── video/features/
-│       ├── DFER/spatial_pooled_features_UNBC_B_last143_stride16_interpol/<subject_name>/<sample_name>.safetensors
-│       ├── DFER/spatial_pooled_features_UNBC_B_last143_stride16_interpol_<aug>[$N]/...      (augmented; see below)
-│       └── VideoMaev2_S/spatial_pooled_features_UNBC_B_last143_stride16_interpol[ _<aug>[$N] ]/...
+│   └── video/features/{DFER,VideoMaev2_S}/spatial_pooled_features_UNBC_B_last143_stride16_interpol[ _<aug>[$N] ]/<subject_name>/<sample_name>.safetensors
 ├── partA/                         (BioVid Part A)
 │   ├── starting_point/samples_adversarial.csv
 │   └── video/features/{DFER,VideoMaev2_S}/spatial_pooled_features_Biovid_B_last143_stride16_interpol[ _<aug>[$N] ]/...
@@ -136,10 +194,8 @@ relative paths, and they infer the dataset from keywords in them (`unbc`, `parta
     └── video/features/{DFER,VideoMaev2_S}/spatial_pooled_features_XITE_B_last143_stride16_interpol_all/...
 ```
 
-* CSVs are **tab-separated** with columns `subject_id subject_name class_id class_name sample_id sample_name`.
-* **Augmented embeddings** (`<features>_<aug>` and `<features>_<aug>$N`, e.g. `_jitter`, `_jitter$0`,
-  `_shift_hflip$2`) are **required** by the configs marked † in §5. Without them, training stops
-  with a `FileNotFoundError` that explains this. The X-ITE configs use no augmented folders.
+* The configs marked † in §5 need the augmented folders. Without them, training stops with a
+  `FileNotFoundError` that explains this. The X-ITE configs use none.
 * `path_video_dataset` in the configs does **not** need to exist: only its name is used to
   identify the dataset.
 
@@ -185,7 +241,7 @@ python reproduce/train_all.py --gpu 0 --only biovid_dfer mintpain_dfer
 * Quick check: append `--stop 1 1 --ep 1`. Flags on the command line override the YAML.
 * `stop: [K, S]` runs K folds × S subfolds. The subfold with the best validation score becomes
   the model of that fold.
-* Runs are written to `runs/<config>/history_run_*` (see §9). The cross-space step (§6) needs
+* Runs are written to `runs/<config>/history_run_*` (see §8). The cross-space step (§6) needs
   the six BioVid, MIntPAIN and UNBC OPI 0–4 runs.
 
 ## 6. Cross-space projection
@@ -254,30 +310,7 @@ All scripts take `--gpu <id>` (default `0`). Notes:
   `chunk_prediction_plots/`. `run_cumulative_predictions.sh` runs the same analysis over many
   videos.
 
-## 8. Optional: feature extraction from your own videos
-
-```sh
-python extract_feature.py --model_type DFER --emb_red spatial --path_dataset <video_root> \
-  --path_labels <labels.csv> --saving_folder_path <out> --backbone_type video --save_as_safetensors \
-  --stride_window 16 --stride_inside_window 1 --float_16 --save_big_feature      # --model_type S for VideoMAEv2-S
-```
-
-Videos are read from `<video_root>/<subject_name>/<sample_name>.mp4`, and embeddings are written to
-`<out>/<subject_name>/<sample_name>.safetensors`. `<video_root>` must contain a dataset keyword
-(`unbc`, `parta`/`biovid`, `mintpain`, `xite`, …). Add `--color_jitter`, `--spatial_shift`,
-`--h_flip`, `--rotation`, `--zoom` or `--gaussian_smooth` for an augmented copy.
-
-The setup scripts of §3 chain the repository tools:
-
-* `MIntPAIN/generate_videos.py` builds the MIntPAIN videos and CSV.
-* `XITE/starting_point/prepare_xite.py` builds the X-ITE CSVs and video links.
-* `extract_landmarks.py` builds the reference geometry.
-* `extract_video_frontalized.py` frontalizes, with `--interpolation_mod_chunk mirror_start_video 16`.
-* `custom/unbc_crop.py` crops UNBC.
-* `extract_feature.py` extracts the embeddings.
-* `XITE/check_frontalized_videos.py` and `check_augmentation_completeness.py` check the outputs.
-
-## 9. Outputs
+## 8. Outputs
 
 **Training** (`runs/<config>/history_run_<pid>_ATTENTIVE_JEPA_<host>_<timestamp>/`):
 
@@ -300,7 +333,7 @@ and per-run plots in the output root.
 **Smoke test**: logs in `smoke_out/logs/`, training runs in `smoke_out/train/`, cross-space runs
 in `Cross_projection/smoke_test/<timestamp>/`. All of these can be deleted.
 
-## 10. Known limitations
+## 9. Known limitations
 
 * **Backbone weights are mandatory** even for training on precomputed embeddings, and are loaded
   from paths relative to the working directory: run from the repository root.
@@ -314,7 +347,7 @@ in `Cross_projection/smoke_test/<timestamp>/`. All of these can be deleted.
   [facebookresearch/vjepa2](https://github.com/facebookresearch/vjepa2) in `vjepa2/`.
 * See [PORTABILITY_REPORT.md](PORTABILITY_REPORT.md) for every issue found and fixed.
 
-## 11. CPU fallback
+## 10. CPU fallback
 
 **Pinned CPU environment (Linux x86_64).** This is the environment exported from the clean-room
 install that passed `smoke_test.sh`. Training on CPU is slow, but it is enough for the smoke test

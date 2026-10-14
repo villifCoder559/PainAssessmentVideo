@@ -11,7 +11,7 @@ Stages:
                subjects), val_samples_5.csv (last 5) and test.csv (the 4 test subjects)
   video        link XITE/video/video/<subject>/<sample>.mp4 to the fvf videos
   preprocess   frontalized videos padded to a multiple of 16 frames: XITE/video/video_frontalized,
-               then XITE/check_frontalized_videos.py (needs the BioVid reference landmarks)
+               then XITE/check_frontalized_videos.py (reference face: the shipped BioVid landmarks)
   features     the feature folders of configs/features/xite.yaml (GPU)
 """
 
@@ -23,8 +23,8 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _setup_common import (CSV_COLUMNS, REF_LANDMARKS, REPO_ROOT, extract_features, frontalize, link,  # noqa: E402
-                           parser, rel, require, resolve, run, subset_csv, write_csv)
+from _setup_common import (CSV_COLUMNS, REPO_ROOT, extract_features, frontalize, link, parser,  # noqa: E402
+                           reference_landmarks, rel, require, resolve, run, subset_csv, write_csv)
 
 sys.path.insert(0, str(REPO_ROOT / "XITE" / "starting_point"))
 import prepare_xite  # noqa: E402
@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
 
   if "preprocess" in args.stages:
     frontalize(xite / "video" / "video", csv_run, xite / "video" / "video_frontalized",
-               args.root / REF_LANDMARKS, args.workers)
+               reference_landmarks(args.root), args.workers)
     run([sys.executable, "XITE/check_frontalized_videos.py", "--original-root", rel(xite / "video" / "video"),
          "--frontalized-root", rel(xite / "video" / "video_frontalized"), "--labels", rel(csv_run)])
 
