@@ -202,11 +202,14 @@ def encode_clip(args):
     return (clip["sample_name"], "skipped")
 
   os.makedirs(subject_dir, exist_ok=True)
+  # Encode to a temporary name so an interrupted run never leaves a truncated video that a
+  # later run would skip as already encoded.
+  tmp_path = out_path[:-len(".mp4")] + ".tmp.mp4"
   cmd = [
     "ffmpeg", "-y", "-framerate", str(fps),
     "-pattern_type", "glob", "-i", clip["rgb_glob"],
     "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", str(crf),
-    out_path,
+    tmp_path,
   ]
   proc = subprocess.run(cmd, stdout=subprocess.DEVNULL,
                         stderr=subprocess.PIPE)
@@ -214,6 +217,7 @@ def encode_clip(args):
     tail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
     reason = tail[-1] if tail else "ffmpeg error"
     return (clip["sample_name"], "failed:" + reason)
+  os.replace(tmp_path, out_path)
   return (clip["sample_name"], "encoded")
 
 

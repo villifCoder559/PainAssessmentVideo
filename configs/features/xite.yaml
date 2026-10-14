@@ -1,0 +1,17 @@
+# Feature folders read by training for xite: for each backbone the base folder <base_name>
+# and, per augmentation, <base_name>_<name> plus <base_name>_<name>$0, $1, ... (`runs` folders
+# in total), each made by one extract_feature.py run with `flags`. Transcribed from the
+# extraction commands recorded in the paper's feature folders (config_dict.txt); folders
+# made from pre-augmented videos use the equivalent on-the-fly flags. X-ITE training
+# (configs/train/xite_*.yaml) reads no augmented folders, so none are listed.
+videos: XITE/video/video_frontalized
+labels: XITE/starting_point/samples.csv
+features: XITE/video/features
+base_name: spatial_pooled_features_XITE_B_last143_stride16_interpol_all
+backbones:
+  DFER:
+    folder: DFER
+    augmentations: {}
+  S:
+    folder: VideoMaev2_S
+    augmentations: {}

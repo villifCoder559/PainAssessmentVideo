@@ -272,3 +272,8 @@ jepa/*
 making_better_mistakes/*
 !making_better_mistakes/LICENSE
 !making_better_mistakes/better_mistakes/
+
+# Label-free row order of the UNBC CSVs, read by reproduce/setup_unbc.py.
+!UNBC/starting_point/
+UNBC/starting_point/*
+!UNBC/starting_point/sample_order_permutation.txt

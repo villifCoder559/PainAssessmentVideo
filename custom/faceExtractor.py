@@ -519,25 +519,41 @@ class FaceExtractor:
   def get_numpy_array(self,landmarks):
     return np.array([[lm.x,lm.y,lm.z] for lm in landmarks])
 
-  def get_mean_facial_landmarks(self,list_video_path,align=True,numpy_view=True):
+  def get_mean_facial_landmarks(self,list_video_path,align=True,numpy_view=True,no_detection_log=None):
+    """
+    Mean face landmarks over every frame of the given videos, centred on the nose.
+
+    Args:
+      list_video_path: Videos to read.
+      align: Align each frame with the MediaPipe FaceAligner first.
+      numpy_view: Return a (478, 3) array instead of NormalizedLandmark objects.
+      no_detection_log: Text file that receives '<video>,<frame>' for each frame without a
+        face (default: partA/video/mean_face_landmarks_per_subject/no_detection_log.txt).
+
+    Returns:
+      (mean landmarks, number of frames with a face).
+    """
+    if no_detection_log is None:
+      no_detection_log = os.path.join('partA','video','mean_face_landmarks_per_subject','no_detection_log.txt')
     all_landmarks = np.zeros(shape=(len(list_video_path),478,3),dtype=np.float32)
     count_frame = 0
     for count_video,video_path in enumerate(list_video_path):
+      # The VIDEO-mode landmarker needs increasing timestamps; each video starts at 0 again.
+      if count_video > 0:
+        self.reset_face_detector()
       frame_list = self._get_list_frame(video_path,align=align)
+      # extract_facial_landmarks returns, per frame, a list of [x, y, z] or None.
       detection_result_list = self.extract_facial_landmarks(frame_list)
       for frame_nr,detection_result in enumerate(detection_result_list):
-        if detection_result is None or len(detection_result.face_landmarks) == 0:
-          error_log_file = os.path.join('partA','video','mean_face_landmarks_per_subject','no_detection_log.txt')
-          if not os.path.exists(os.path.dirname(error_log_file)):
-            os.makedirs(os.path.dirname(error_log_file))
-          with open(error_log_file,'a') as f:
+        if detection_result is None:
+          os.makedirs(os.path.dirname(no_detection_log) or '.', exist_ok=True)
+          with open(no_detection_log,'a') as f:
             f.write(f'{video_path},{frame_nr}\n')
         else:
-          # landmarks = self.get_numpy_array(detection_result.face_landmarks[0])
-          landmarks = self.center_wrt_nose(detection_result.face_landmarks[0])
-          # landmarks = self.convert_from_numpy_to_NormalizedLandmark(landmarks)
+          landmarks = np.asarray(detection_result, dtype=np.float32)
+          # Same centring as center_wrt_nose: the nose tip moves to (0.5, 0.5, 0.5).
           count_frame += 1
-          all_landmarks[count_video] += self.get_numpy_array(landmarks)
+          all_landmarks[count_video] += landmarks - (landmarks[NOSE_INDEX] - 0.5)
       if count_video+1 % 10 == 0:
         print(f'count_video: {count_video}')
     mean_face_landmarks = np.sum(all_landmarks,axis=0) / count_frame

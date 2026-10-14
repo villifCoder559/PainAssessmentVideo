@@ -14,7 +14,7 @@ sys.path.insert(0, str(REPO_ROOT / "reproduce"))
 
 import _common  # noqa: E402
 
-SCRIPTS = sorted(p.stem for p in (REPO_ROOT / "reproduce").glob("*.py") if p.stem != "_common")
+SCRIPTS = sorted(p.stem for p in (REPO_ROOT / "reproduce").glob("*.py") if not p.stem.startswith("_"))
 
 
 def make_run(runs_root: Path, config: str, folds: int) -> Path:

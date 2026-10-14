@@ -1,0 +1,32 @@
+# Feature folders read by training for biovid: for each backbone the base folder <base_name>
+# and, per augmentation, <base_name>_<name> plus <base_name>_<name>$0, $1, ... (`runs` folders
+# in total), each made by one extract_feature.py run with `flags`. Transcribed from the
+# extraction commands recorded in the paper's feature folders (config_dict.txt); folders
+# made from pre-augmented videos use the equivalent on-the-fly flags.
+videos: partA/video/video_frontalized_interpolated_resolution_original
+labels: partA/starting_point/samples.csv
+features: partA/video/features
+base_name: spatial_pooled_features_Biovid_B_last143_stride16_interpol
+backbones:
+  DFER:
+    folder: DFER
+    augmentations:
+      gaussian: {runs: 5, flags: [--gaussian_smooth, --gaussian_sigma_min, 0.4, --gaussian_sigma_max, 0.9, --gaussian_kernel_size, 3]}
+      hflip: {runs: 1, flags: [--h_flip]}
+      jitter: {runs: 6, flags: [--color_jitter]}
+      jitter_shift: {runs: 5, flags: [--color_jitter, --spatial_shift]}
+      rotation: {runs: 1, flags: [--rotation]}
+      rotation_zoom: {runs: 5, flags: [--rotation, --zoom]}
+      shift: {runs: 6, flags: [--spatial_shift]}
+      shift_hflip: {runs: 5, flags: [--spatial_shift, --h_flip]}
+      zoom: {runs: 5, flags: [--zoom]}
+  S:
+    folder: VideoMaev2_S
+    augmentations:
+      gaussian: {runs: 3, flags: [--gaussian_smooth, --gaussian_sigma_min, 0.4, --gaussian_sigma_max, 0.9, --gaussian_kernel_size, 3]}
+      jitter: {runs: 3, flags: [--color_jitter]}
+      jitter_shift: {runs: 3, flags: [--color_jitter, --spatial_shift]}
+      rotation_zoom: {runs: 3, flags: [--rotation, --zoom]}
+      shift: {runs: 3, flags: [--spatial_shift]}
+      shift_hflip: {runs: 3, flags: [--spatial_shift, --h_flip]}
+      zoom: {runs: 3, flags: [--zoom]}

@@ -1,0 +1,33 @@
+# Feature folders read by training for unbc: for each backbone the base folder <base_name>
+# and, per augmentation, <base_name>_<name> plus <base_name>_<name>$0, $1, ... (`runs` folders
+# in total), each made by one extract_feature.py run with `flags`. Transcribed from the
+# extraction commands recorded in the paper's feature folders (config_dict.txt); folders
+# made from pre-augmented videos use the equivalent on-the-fly flags.
+videos: UNBC/video/WarpedVideos_Cropped_interpolated_mirror
+labels: UNBC/starting_point/samples.csv
+features: UNBC/video/features
+base_name: spatial_pooled_features_UNBC_B_last143_stride16_interpol
+backbones:
+  DFER:
+    folder: DFER
+    augmentations:
+      gaussian: {runs: 6, flags: [--gaussian_smooth, --gaussian_sigma_min, 0.4, --gaussian_sigma_max, 0.9, --gaussian_kernel_size, 3]}
+      hflip: {runs: 1, flags: [--h_flip]}
+      jitter: {runs: 7, flags: [--color_jitter]}
+      jitter_rotation: {runs: 1, flags: [--color_jitter, --rotation]}
+      jitter_shift: {runs: 7, flags: [--color_jitter, --spatial_shift]}
+      rotation: {runs: 1, flags: [--rotation]}
+      rotation_zoom: {runs: 7, flags: [--rotation, --zoom]}
+      shift: {runs: 8, flags: [--spatial_shift]}
+      shift_hflip: {runs: 7, flags: [--spatial_shift, --h_flip]}
+      zoom: {runs: 7, flags: [--zoom]}
+  S:
+    folder: VideoMaev2_S
+    augmentations:
+      gaussian: {runs: 5, flags: [--gaussian_smooth, --gaussian_sigma_min, 0.4, --gaussian_sigma_max, 0.9, --gaussian_kernel_size, 3]}
+      jitter: {runs: 5, flags: [--color_jitter]}
+      jitter_shift: {runs: 5, flags: [--color_jitter, --spatial_shift]}
+      rotation_zoom: {runs: 5, flags: [--rotation, --zoom]}
+      shift: {runs: 5, flags: [--spatial_shift]}
+      shift_hflip: {runs: 5, flags: [--spatial_shift, --h_flip]}
+      zoom: {runs: 5, flags: [--zoom]}
