@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 import cross_space_fake_projection_tables as adapter_tables
-from cross_space_generate_latex_table import (
+from cross_space_table_helpers import (
   METHOD_NAMES,
   _method_sort_key,
   _model_metadata,
@@ -52,7 +52,7 @@ def _direction_cell(source: str, target: str) -> str:
 
 
 def _direction_key(direction: tuple[str, str]) -> tuple:
-  """Order directions like cross_space_generate_latex_table: dataset pair, then source."""
+  """Order directions like the earlier LaTeX table generator: dataset pair, then source."""
   return tuple(sorted(direction)), direction
 
 

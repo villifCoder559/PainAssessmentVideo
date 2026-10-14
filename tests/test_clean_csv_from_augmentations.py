@@ -15,7 +15,7 @@ with mock.patch('multiprocessing.Manager') as manager:
   manager.return_value.dict.return_value = {}
   import custom.helper as helper
   import cross_space_projection as csp
-  from log_cross_attention_from_model import clean_csv_from_augmentations
+  from cross_space_projection import clean_csv_from_augmentations
 
 
 def _write_source_csv(path):

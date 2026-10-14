@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from cross_space_generate_latex_table import _model_metadata
+from cross_space_table_helpers import _model_metadata
 
 
 METHOD_ORDER = ("linear", "mlp", "procrustes", "linear_close", "autoencoder")

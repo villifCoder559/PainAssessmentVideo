@@ -1664,7 +1664,7 @@ class AttentiveHeadJEPA(BaseHead):
       multitask_num_classes=None,
       backbone: custom_backbone.BackboneBase = None,
       embedding_reduction: helper.EMBEDDING_REDUCTION = None,
-      skip_init_weights=False, # used only for model debugging in log_cross_attention_from_model.py script
+      skip_init_weights=False, # set when the weights come from a checkpoint
       complete_block=1,
       type_head=0,
       mlp_num_hidden_layers=2):

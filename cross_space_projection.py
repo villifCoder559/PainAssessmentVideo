@@ -30,6 +30,7 @@ import os
 import pickle
 import random
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -44,7 +45,6 @@ import custom.helper as helper
 import custom.tools as tools
 from custom.model import Model_Advanced
 from custom.targets import TargetSpec, resolve_target_spec
-from log_cross_attention_from_model import clean_csv_from_augmentations
 
 _SEED = 42
 _LAUNCH_CONFIG_FILENAME = 'launch_config.yaml'
@@ -59,6 +59,56 @@ _ANCHOR_SELECTION_TYPES = (
   'balance_subject_random_capped',
   'balance_class_subject',
 )
+
+
+def clean_csv_from_augmentations(csv_path, *, unique=False):
+  """Write an augmentation-free CSV without exposing partial files to readers.
+
+  Persistent outputs keep the historical ``*_cleaned.csv`` name, but are first
+  written to a same-directory temporary file and then atomically published.
+  Callers that set ``unique=True`` receive a private completed file and own its
+  cleanup.
+  """
+  source = Path(csv_path)
+  try:
+    df = pd.read_csv(source, sep='\t', dtype={'sample_name': str})
+  except pd.errors.EmptyDataError as exc:
+    raise ValueError(f'Source CSV is empty or has no columns: {source}') from exc
+  if 'sample_id' not in df.columns:
+    raise ValueError(f"Source CSV {source} is missing required column 'sample_id'")
+
+  print(f'Remove augmentations with threshold step shift: {helper.step_shift}')
+  mask_to_keep = df['sample_id'] <= helper.step_shift
+  df_clean = df[mask_to_keep]
+  if df_clean.empty:
+    raise ValueError(
+      f'Source CSV {source} contains no original samples at step_shift={helper.step_shift} '
+      f'(input rows={len(df)})'
+    )
+
+  if unique:
+    fd, cleaned_csv_path = tempfile.mkstemp(
+      prefix=f'.{source.stem}_cleaned_', suffix='.csv', dir=source.parent,
+    )
+    os.close(fd)
+    try:
+      df_clean.to_csv(cleaned_csv_path, index=False, sep='\t')
+    except BaseException:
+      Path(cleaned_csv_path).unlink(missing_ok=True)
+      raise
+    return cleaned_csv_path
+
+  cleaned_csv_path = source.with_name(f'{source.stem}_cleaned{source.suffix}')
+  fd, temporary_path = tempfile.mkstemp(
+    prefix=f'.{cleaned_csv_path.name}.', suffix='.tmp', dir=source.parent,
+  )
+  os.close(fd)
+  try:
+    df_clean.to_csv(temporary_path, index=False, sep='\t')
+    os.replace(temporary_path, cleaned_csv_path)
+  finally:
+    Path(temporary_path).unlink(missing_ok=True)
+  return str(cleaned_csv_path)
 
 
 def _filter_classes_by_max(df, remove_classes_greater, csv_path):
