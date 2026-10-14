@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 usage() {
-  echo "Usage: $0 --dataset {Biovid|UNBC|MINT} SAMPLE_ID [SAMPLE_ID ...] [--origin {target|source}] [--stage {1|2|4}] [--compare-native] [--video [SPEED]]" >&2
-  echo "       $0 --dataset {Biovid|UNBC|MINT} --pick_rand_samples K [--origin {target|source}] [--stage {1|2|4}] [--compare-native] [--video [SPEED]]" >&2
+  echo "Usage: $0 --dataset {Biovid|UNBC|MINT} SAMPLE_ID [SAMPLE_ID ...] [--origin {target|source}] [--stage {1|2|4}] [--compare-native] [--video [SPEED]] [--snapshots FRAME ...]" >&2
+  echo "       $0 --dataset {Biovid|UNBC|MINT} --pick_rand_samples K [--origin {target|source}] [--stage {1|2|4}] [--compare-native] [--video [SPEED]] [--snapshots FRAME ...]" >&2
   exit 2
 }
 
@@ -68,6 +68,7 @@ origin_set=0
 stage_set=0
 video_set=0
 video_arguments=()
+snapshot_arguments=()
 while (( $# > 0 )); do
   case "$1" in
     --origin)
@@ -99,9 +100,21 @@ while (( $# > 0 )); do
         shift
       fi
       ;;
+    --snapshots)
+      (( ${#snapshot_arguments[@]} == 0 )) || usage
+      snapshot_arguments=(--snapshots)
+      shift
+      while (( $# > 0 )) && [[ $1 != --* ]]; do
+        [[ $1 =~ ^[0-9]+$ ]] || usage
+        snapshot_arguments+=("$1")
+        shift
+      done
+      (( ${#snapshot_arguments[@]} > 1 )) || usage
+      ;;
     *) usage ;;
   esac
 done
+(( ${#snapshot_arguments[@]} == 0 || video_set )) || usage
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 cd "$script_dir" || exit 2
 
@@ -115,7 +128,7 @@ run_plot() {
 
   echo "Running $experiment for sample $sample_id"
   if python3 "$script_dir/plot_cumulative_predictions.py" \
-      "$experiment" "$sample_id" "$@" "${video_arguments[@]}"; then
+      "$experiment" "$sample_id" "$@" "${video_arguments[@]}" "${snapshot_arguments[@]}"; then
     ((passed += 1))
   else
     failed+=("$sample_id: $experiment")

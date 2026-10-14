@@ -902,6 +902,40 @@ def test_plot_can_use_full_dataset_y_range():
     assert figure.axes[0].get_ylim() == (0.0, 5.0)
 
 
+@pytest.mark.parametrize(("extra", "expected_top"), [([], 3.0), (["--y-headroom", "0.25"], 3.25)])
+def test_cli_y_headroom_extends_only_full_range_axes(
+        tmp_path, monkeypatch, extra, expected_top):
+    native = _native_experiment(tmp_path)
+    monkeypatch.setattr(pcp, "require_cuda", lambda: None)
+    captured = []
+    make_figure = pcp.make_prediction_figure
+
+    def capture_figure(*args, **kwargs):
+        figure = make_figure(*args, **kwargs)
+        axis = figure.axes[0]
+        captured.append((axis.get_title(), axis.get_ylim()))
+        return figure
+
+    monkeypatch.setattr(pcp, "make_prediction_figure", capture_figure)
+    result = pcp.InferenceResult(
+        curves=pcp.CurveSet(summary={"Native": [1.0, 2.0]},
+                            detail={"Native": [1.0, 2.0]}),
+        frame_count=20, ground_truth=3.0, metadata="fold 1, epoch 7",
+        origin_dataset="UNBC", origin_model="VideoMAE",
+    )
+    argv = [str(native), "42", "--output-root", str(tmp_path / "plots"), *extra]
+    pcp.run_cli(argv, native_inference=lambda *args: result)
+
+    full_range = [ylim for _, ylim in (captured[1], captured[3])]
+    assert full_range == [(0.0, expected_top)] * 2
+    assert all("labels range: 0-3" in title for title, _ in captured)
+
+
+def test_cli_rejects_negative_y_headroom(tmp_path):
+    with pytest.raises(SystemExit):
+        pcp.run_cli([str(tmp_path), "42", "--y-headroom", "-1"])
+
+
 def test_extra_native_curve_is_rendered_only_in_full_range_summaries(tmp_path, monkeypatch):
     curves = pcp.CurveSet(
         summary={"Source": [1.0, 2.0]},

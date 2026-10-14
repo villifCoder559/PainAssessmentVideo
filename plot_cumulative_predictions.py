@@ -1116,6 +1116,7 @@ def make_prediction_figure(
     title: str,
     *,
     y_max: float | None = None,
+    y_headroom: float = 0.0,
 ):
     import matplotlib.pyplot as plt
 
@@ -1151,7 +1152,7 @@ def make_prediction_figure(
     axis.set_xlabel("End frame")
     axis.set_ylabel("Pain prediction")
     if y_max is not None:
-        axis.set_ylim(0, y_max)
+        axis.set_ylim(0, y_max + y_headroom)
     axis.set_xticks(x_values)
     axis.set_xticklabels(
         [str(end) for _, end in frame_ranges],
@@ -1174,6 +1175,7 @@ def save_prediction_plots(
     digest: str,
     y_max: float,
     debug_title: bool = False,
+    y_headroom: float = 0.0,
 ) -> tuple[Path, ...]:
     import matplotlib.pyplot as plt
 
@@ -1206,6 +1208,7 @@ def save_prediction_plots(
             ground_truth,
             prediction_figure_title(title, suffix, debug_title=debug_title),
             y_max=axis_max,
+            y_headroom=y_headroom,
         )
         figure.savefig(path, dpi=200)
         plt.close(figure)
@@ -1221,6 +1224,7 @@ def save_native_comparison_plot(
     *,
     digest: str,
     y_max: float,
+    y_headroom: float = 0.0,
 ) -> Path:
     import matplotlib.pyplot as plt
 
@@ -1233,6 +1237,7 @@ def save_native_comparison_plot(
         ground_truth,
         title,
         y_max=y_max,
+        y_headroom=y_headroom,
     )
     figure.savefig(path, dpi=200)
     plt.close(figure)
@@ -1597,6 +1602,16 @@ def _non_negative_frame(value: str) -> int:
     return frame
 
 
+def _non_negative_float(value: str) -> float:
+    try:
+        number = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("value must be a number") from exc
+    if not math.isfinite(number) or number < 0:
+        raise argparse.ArgumentTypeError("value must be finite and non-negative")
+    return number
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -1642,6 +1657,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dump-curves", action="store_true",
         help="also write the plotted curve values to curves_<digest>.json",
+    )
+    parser.add_argument(
+        "--y-headroom", type=_non_negative_float, default=0.0, metavar="VALUE",
+        help="extend the y-axis of full-range PNG plots above the label maximum",
     )
     return parser
 
@@ -1853,6 +1872,7 @@ def run_cli(
             output_dir,
             digest=digest,
             y_max=y_max,
+            y_headroom=args.y_headroom,
         ),)
     else:
         title = (
@@ -1872,6 +1892,7 @@ def run_cli(
             digest=digest,
             y_max=y_max,
             debug_title=args.debug_title,
+            y_headroom=args.y_headroom,
         )
     if video_enabled:
         if native_comparison_enabled:

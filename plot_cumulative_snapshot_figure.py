@@ -70,11 +70,14 @@ def make_figure(
     from PIL import Image
 
     plot = np.asarray(Image.open(plot_path).convert("RGB"))
-    top, bottom, left, ticks = axes_geometry(plot.mean(2))
+    top, _, left, ticks = axes_geometry(plot.mean(2))
     crop_top = max(0, top - title_margin)
     plot = plot[crop_top:].copy()
     # blank title remnants above the axes; keep the top y-tick label on the left
     plot[:top - crop_top - 1, left + 1:] = 255
+    # arrows start below the x-axis label so they never cross the text
+    inked = np.flatnonzero((plot.mean(2) < 128).any(1))
+    arrow_y = min(int(inked[-1]) + 8, plot.shape[0] - 1)
     frames = snapshot_frames(snapshot_dir)
     faces = [
         face_crop(np.asarray(Image.open(snapshot_dir / f"frame_{frame:05d}.png")
@@ -109,7 +112,7 @@ def make_figure(
             spine.set_linewidth(0.5)
         ax.set_xlabel(f"frame {frame}", fontsize=7, color=INK, labelpad=1.5)
         figure.add_artist(ConnectionPatch(
-            xyA=(ticks[frame // CHUNK_SIZE], bottom - crop_top + 60),
+            xyA=(ticks[frame // CHUNK_SIZE], arrow_y),
             coordsA=plot_ax.transData,
             xyB=(0.5, 1.0), coordsB=ax.transAxes,
             arrowstyle="-|>", mutation_scale=6, lw=0.6, color=ARROW,
