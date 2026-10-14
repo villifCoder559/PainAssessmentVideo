@@ -77,7 +77,7 @@ gdown 1nzvMITUHic9fKwjQ7XLcnaXYViWTawRv -O "$DFER_DIR/checkpoint-49.pth"
 | Dataset | Where to request | Who can sign |
 | --- | --- | --- |
 | BioVid Heat Pain, Part A | [agreement form](https://www.nit.ovgu.de/BioVid.html) (sent to Ulm University) | permanent academic staff |
-| UNBC-McMaster Shoulder Pain | [PainArchive](https://painarchive.jeffcohn.net/) | faculty or research scientist |
+| UNBC-McMaster Shoulder Pain | no longer public; ask the owners via [PainArchive](https://painarchive.jeffcohn.net/) | faculty or research scientist |
 | MIntPAIN | [EULA by e-mail](https://www.vap.aau.dk/mintpain-database/) (Aalborg University) | permanent academic staff |
 | X-ITE (2025 challenge subset + test labels) | [X-ITE Pain Challenge](https://sites.google.com/view/xitepainchallenge) | see the challenge rules |
 
@@ -96,7 +96,7 @@ PartA/video/video/<subject>/<sample>.mp4
 python reproduce/setup_biovid.py --raw /path/to/PartA --gpu 0
 ```
 
-**UNBC-McMaster**: one pain score per sequence in each `.txt` file.
+**UNBC-McMaster**: the layout of the copy released to us; one pain score per sequence in each `.txt` file.
 
 ```
 UNBC/OPI/<subject>/<sequence>.txt
