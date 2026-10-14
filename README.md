@@ -14,7 +14,7 @@ regression performance, whereas anchor-only transfer gives a higher source MAE.
 
 > **What you need.** This code, the two public backbone checkpoints (§2) and your own copy of
 > each dataset, requested from its owners (§3.1). The dataset agreements do not allow
-> redistributing labels or embeddings, so one setup script per dataset rebuilds them (§3.2).
+> redistributing labels or embeddings, so one setup script per dataset rebuilds them (§3.3).
 
 Run every command from the **repository root**.
 
@@ -81,69 +81,135 @@ gdown 1nzvMITUHic9fKwjQ7XLcnaXYViWTawRv -O "$DFER_DIR/checkpoint-49.pth"
 | MIntPAIN | [EULA by e-mail](https://www.vap.aau.dk/mintpain-database/) (Aalborg University) | permanent academic staff |
 | X-ITE (2025 challenge subset + test labels) | [X-ITE Pain Challenge](https://sites.google.com/view/xitepainchallenge) | see the challenge rules |
 
-### 3.2 Set up each dataset
+### 3.2 Download layout
 
-Download the backbone weights (§2) first. Then run one command per dataset; `--raw` is the
-downloaded folder, laid out as shown. An interrupted run resumes when started again.
+| Dataset | `--raw` folder | Expected content |
+| --- | --- | --- |
+| BioVid Part A | `PartA/` | `starting_point/samples.csv`, `video/video/<subject>/<sample>.mp4` |
+| UNBC-McMaster | `UNBC/` (layout of the copy released to us) | `OPI/<subject>/<sequence>.txt`, `VAS/<subject>/<sequence>.txt`, `WarpedVideos/<subject>/<sequence>/<sequence>.mp4` |
+| MIntPAIN | `MIntPAIN/` | `Sub<N> <Name>/Annotated_data_SubNN_TrialNN/SubNN_TrialNN_SweepNN_LabelN/RGB/*.jpg` |
+| X-ITE | `XITE/` | `train_data/{baseline,low_pain,med_pain}/fvf/<subject>/<sample>.mp4`, `test_data/fvf/<subject>/<sample>.mp4`, `Labels_test_data.csv` |
 
-**BioVid Part A**: `--raw` is the `PartA` folder.
+Download the backbone weights (§2) first. MIntPAIN needs `ffmpeg`. Every step skips finished
+outputs, so an interrupted step resumes when run again.
 
-```
-PartA/starting_point/samples.csv
-PartA/video/video/<subject>/<sample>.mp4
-```
-```sh
-python reproduce/setup_biovid.py --raw /path/to/PartA --gpu 0
-```
+### 3.3 Setup per dataset
 
-**UNBC-McMaster**: the layout of the copy released to us; one pain score per sequence in each `.txt` file.
+#### BioVid Part A
 
-```
-UNBC/OPI/<subject>/<sequence>.txt
-UNBC/VAS/<subject>/<sequence>.txt
-UNBC/WarpedVideos/<subject>/<sequence>/<sequence>.mp4
-```
-```sh
-python reproduce/setup_unbc.py --raw /path/to/UNBC --gpu 0
-```
+All steps at once: `python reproduce/setup_biovid.py --raw /path/to/PartA --gpu 0`
 
-**MIntPAIN**: only the RGB frames are used. Needs `ffmpeg`.
+1. Label CSVs (identical to the paper's) and video links. The `landmarks` stage is not needed: its
+   output, the frontalization reference face, is shipped.
 
-```
-MIntPAIN/Sub1 <Name>/Annotated_data_Sub01_Trial01/Sub01_Trial01_Sweep01_Label0/RGB/RGB-*.jpg
-```
-```sh
-python reproduce/setup_mintpain.py --raw /path/to/MIntPAIN --gpu 0
-```
+   ```sh
+   python reproduce/setup_biovid.py --raw /path/to/PartA --stages csv video
+   ```
 
-**X-ITE**: only the frontal face videos (`fvf`) are used.
+2. Frontalization, padded to a multiple of 16 frames.
 
-```
-XITE/train_data/{baseline,low_pain,med_pain}/fvf/<subject>/<sample>.mp4
-XITE/test_data/fvf/<subject>/<sample>.mp4
-XITE/Labels_test_data.csv                  (test labels released by the organizers)
-```
-```sh
-python reproduce/setup_xite.py --raw /path/to/XITE --gpu 0
-```
+   ```sh
+   python reproduce/setup_biovid.py --raw /path/to/PartA --stages preprocess
+   ```
 
-### 3.3 Individual steps
+3. Base embeddings of both backbones.
 
-Each command above runs these steps in order; `--stages` runs some of them (set `S` to the
-dataset's script and `RAW` to its folder):
+   ```sh
+   python reproduce/setup_biovid.py --raw /path/to/PartA --stages features --base_only --gpu 0
+   ```
 
-```sh
-S=reproduce/setup_unbc.py; RAW=/path/to/UNBC
-python $S --raw $RAW --stages csv video                     # label CSVs (identical to the paper's) + videos
-python $S --raw $RAW --stages preprocess                    # frontalize (UNBC: face crop), pad to x16 frames
-python $S --raw $RAW --stages features --base_only --gpu 0  # embeddings of both backbones
-python $S --raw $RAW --stages features --gpu 0              # + the augmented copies (configs/features/<dataset>.yaml)
-```
+4. Augmented embeddings, needed by both paper configs (`biovid_dfer`, `biovid_vmae_s`).
 
-`--subjects <names>` limits a run to a few subjects for a quick test.
+   ```sh
+   python reproduce/setup_biovid.py --raw /path/to/PartA --stages features --gpu 0
+   ```
 
-For your own videos (`<videos>/<subject_name>/<sample_name>.mp4`, listed in a tab-separated CSV),
-the same steps use the underlying tools:
+#### UNBC-McMaster
+
+All steps at once: `python reproduce/setup_unbc.py --raw /path/to/UNBC --gpu 0`
+
+1. Label CSVs (identical to the paper's, row order restored from the shipped permutation) and video links.
+
+   ```sh
+   python reproduce/setup_unbc.py --raw /path/to/UNBC --stages csv video
+   ```
+
+2. Face crop on a black background, padded to a multiple of 16 frames.
+
+   ```sh
+   python reproduce/setup_unbc.py --raw /path/to/UNBC --stages preprocess
+   ```
+
+3. Base embeddings of both backbones.
+
+   ```sh
+   python reproduce/setup_unbc.py --raw /path/to/UNBC --stages features --base_only --gpu 0
+   ```
+
+4. Augmented embeddings, needed by every UNBC config except `unbc_vas_dfer`.
+
+   ```sh
+   python reproduce/setup_unbc.py --raw /path/to/UNBC --stages features --gpu 0
+   ```
+
+#### MIntPAIN
+
+All steps at once: `python reproduce/setup_mintpain.py --raw /path/to/MIntPAIN --gpu 0`
+
+1. Label CSV (identical to the paper's) and 25 fps videos encoded from the RGB frames.
+
+   ```sh
+   python reproduce/setup_mintpain.py --raw /path/to/MIntPAIN --stages csv video
+   ```
+
+2. Frontalization, padded to a multiple of 16 frames.
+
+   ```sh
+   python reproduce/setup_mintpain.py --raw /path/to/MIntPAIN --stages preprocess
+   ```
+
+3. Base embeddings of both backbones.
+
+   ```sh
+   python reproduce/setup_mintpain.py --raw /path/to/MIntPAIN --stages features --base_only --gpu 0
+   ```
+
+4. Augmented embeddings, needed by both paper configs (`mintpain_dfer`, `mintpain_vmae_s`).
+
+   ```sh
+   python reproduce/setup_mintpain.py --raw /path/to/MIntPAIN --stages features --gpu 0
+   ```
+
+#### X-ITE
+
+All steps at once: `python reproduce/setup_xite.py --raw /path/to/XITE --gpu 0`
+
+1. Label CSVs with the predefined train/validation/test splits (identical to the paper's) and video links.
+
+   ```sh
+   python reproduce/setup_xite.py --raw /path/to/XITE --stages csv video
+   ```
+
+2. Frontalization, padded to a multiple of 16 frames, then a check of the outputs.
+
+   ```sh
+   python reproduce/setup_xite.py --raw /path/to/XITE --stages preprocess
+   ```
+
+3. Base embeddings of both backbones.
+
+   ```sh
+   python reproduce/setup_xite.py --raw /path/to/XITE --stages features --base_only --gpu 0
+   ```
+
+The X-ITE configs use only the base embeddings.
+
+`--subjects <names>` limits any step to a few subjects for a quick test.
+
+### 3.4 Your own videos
+
+Videos laid out as `<videos>/<subject_name>/<sample_name>.mp4` and listed in a tab-separated CSV
+go through the same steps with the underlying tools:
 
 ```sh
 python extract_video_frontalized.py --gv --vfp <videos> --csv <labels.csv> --pfo <frontalized> \
@@ -160,7 +226,7 @@ python extract_feature.py --model_type DFER --path_dataset <frontalized> --path_
   `extract_feature.py` again with an existing `--saving_folder_path` adds the next `$N` folder.
 * `<videos>` must contain a dataset keyword (`unbc`, `parta`/`biovid`, `mintpain`, `xite`).
 
-### 3.4 Result
+### 3.5 Result
 
 The rebuilt embeddings are close to the paper's but not bit-identical: the videos are re-encoded,
 and the augmentations draw new random parameters. In our tests the base embeddings had a mean
@@ -236,7 +302,7 @@ python reproduce/train_all.py --gpu 0 --only biovid_dfer mintpain_dfer
 | X-ITE (predefined splits) | VideoMAEv2-S | `python train_model.py --config configs/train/xite_vmae_s.yaml` |
 | X-ITE (predefined splits) | MAE-DFER | `python train_model.py --config configs/train/xite_dfer.yaml` |
 
-† Needs the augmented embeddings (§3).
+† Needs the augmented embeddings (§3.3, step 4).
 
 * Quick check: append `--stop 1 1 --ep 1`. Flags on the command line override the YAML.
 * `stop: [K, S]` runs K folds × S subfolds. The subfold with the best validation score becomes
