@@ -7,7 +7,6 @@ import optuna
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from custom.model_selection import (
-  best_metric_index,
   is_better_metric,
   optuna_direction_for_metric,
   required_metric_for_losses,
@@ -77,22 +76,6 @@ class TestMetricDirection(unittest.TestCase):
   def test_optuna_direction_matches_the_selection_metric(self):
     self.assertEqual(optuna_direction_for_metric('val_accuracy'), 'maximize')
     self.assertEqual(optuna_direction_for_metric('val_loss'), 'minimize')
-
-  def test_best_subfold_index_uses_the_metric_direction(self):
-    self.assertEqual(
-      best_metric_index([0.7, 0.9, 0.8], 'val_accuracy'),
-      1,
-    )
-    self.assertEqual(
-      best_metric_index([0.9, 0.4, 0.2], 'val_loss'),
-      2,
-    )
-
-  def test_best_subfold_index_keeps_lower_index_on_a_tie(self):
-    self.assertEqual(
-      best_metric_index([0.9, 0.9], 'val_accuracy'),
-      0,
-    )
 
   def test_epoch_selection_is_metric_driven_with_validation(self):
     self.assertTrue(

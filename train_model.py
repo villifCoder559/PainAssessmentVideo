@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import optuna
 import optunahub
 import yaml
@@ -93,29 +92,6 @@ def configure_target_spec(config):
   validate_primary_losses(losses_to_validate, spec)
   config['target_spec'] = spec.to_metadata()
   return spec
-
-def get_optimizer(opt):
-  """Get optimizer class from string name.
-
-  Args:
-    opt (str): Name of the optimizer (adam, sgd, adamw).
-
-  Returns:
-    class: The optimizer class.
-
-  Raises:
-    ValueError: If optimizer is not found.
-  """
-  optimizers = {
-    'adam': optim.Adam,
-    'sgd': optim.SGD,
-    'adamw': optim.AdamW
-  }
-  opt_lower = opt.lower()
-  if opt_lower not in optimizers:
-    raise ValueError(f'Optimizer not found: {opt}. Valid options: {list(optimizers.keys())}')
-  return optimizers[opt_lower]
-
 
 def get_sampling_frame_strategy(strategy):
   """Get sampling strategy from string name.

@@ -72,16 +72,6 @@ def threshold_pruner_kwargs(metric_name, threshold):
   )
 
 
-def best_metric_index(metric_values, metric_name):
-  if not metric_values:
-    raise ValueError('Cannot select a best model from an empty metric list.')
-  best_index = 0
-  for index, value in enumerate(metric_values[1:], start=1):
-    if is_better_metric(value, metric_values[best_index], metric_name):
-      best_index = index
-  return best_index
-
-
 def should_select_epoch(
   incumbent_metric,
   candidate_metric,

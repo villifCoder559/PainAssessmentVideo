@@ -281,106 +281,6 @@ Author: Yonglong Tian (yonglong@mit.edu)
 Date: May 07, 2020
 """
 ## From github repo https://github.com/HobbitLong/SupContrast/blob/master/losses.py
-class SupConLoss(nn.Module):
-  """Supervised Contrastive Learning: https://arxiv.org/pdf/2004.11362.pdf.
-  It also supports the unsupervised contrastive loss in SimCLR"""
-  def __init__(self, temperature=0.07, contrast_mode='all',
-                base_temperature=0.07):
-    super(SupConLoss, self).__init__()
-    self.temperature = temperature
-    self.contrast_mode = contrast_mode
-    self.base_temperature = base_temperature
-
-  def forward(self, features, labels=None, mask=None):
-    """Compute loss for model. If both `labels` and `mask` are None,
-    it degenerates to SimCLR unsupervised loss:
-    https://arxiv.org/pdf/2002.05709.pdf
-
-    Args:
-        features: hidden vector of shape [bsz, C]. Feature must be normalized.
-        labels: ground truth of shape [bsz].
-        mask: contrastive mask of shape [bsz, bsz], mask_{i,j}=1 if sample j
-            has the same class as sample i. Can be asymmetric.
-    Returns:
-        A loss scalar.
-    """
-    device = (torch.device('cuda')
-              if features.is_cuda
-              else torch.device('cpu'))
-    if features.ndim == 2:
-      features = features.unsqueeze(1)
-    if len(features.shape) != 3:
-      raise ValueError('`features` needs to be [bsz, n_views, ...],'
-                        'at least 3 dimensions are required')
-    # if len(features.shape) > 3:
-    #   features = features.view(features.shape[0], features.shape[1], -1)
-
-    batch_size = features.shape[0]
-    if labels is not None and mask is not None:
-      raise ValueError('Cannot define both `labels` and `mask`')
-    elif labels is None and mask is None:
-      mask = torch.eye(batch_size, dtype=torch.float32).to(device)
-    elif labels is not None:
-      labels = labels.contiguous().view(-1, 1)
-      if labels.shape[0] != batch_size:
-        raise ValueError('Num of labels does not match num of features')
-      mask = torch.eq(labels, labels.T).float().to(device)
-    else:
-      mask = mask.float().to(device)
-
-    contrast_count = features.shape[1]
-    contrast_feature = torch.cat(torch.unbind(features, dim=1), dim=0) 
-    if self.contrast_mode == 'one':
-      anchor_feature = features[:, 0]
-      anchor_count = 1
-    elif self.contrast_mode == 'all':
-      anchor_feature = contrast_feature
-      anchor_count = contrast_count
-    else:
-      raise ValueError('Unknown mode: {}'.format(self.contrast_mode))
-
-    # compute logits
-    anchor_dot_contrast = torch.div(
-        torch.matmul(anchor_feature, contrast_feature.T),
-        self.temperature)
-    # for numerical stability
-    logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
-    logits = anchor_dot_contrast - logits_max.detach()
-
-    # tile mask
-    mask = mask.repeat(anchor_count, contrast_count)
-    # mask-out self-contrast cases
-    logits_mask = torch.scatter(
-        torch.ones_like(mask),
-        1,
-        torch.arange(batch_size * anchor_count).view(-1, 1).to(device),
-        0
-    )
-    mask = mask * logits_mask
-
-    # compute log_prob
-    exp_logits = torch.exp(logits) * logits_mask
-    log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
-
-    # compute mean of log-likelihood over positive
-    # modified to handle edge cases when there is no positive pair
-    # for an anchor point. 
-    # Edge case e.g.:- 
-    # features of shape: [4,1,...]
-    # labels:            [0,1,1,2]
-    # loss before mean:  [nan, ..., ..., nan] 
-    mask_pos_pairs = mask.sum(1)
-    mask_pos_pairs = torch.where(mask_pos_pairs < 1e-6, 1, mask_pos_pairs)
-    mean_log_prob_pos = (mask * log_prob).sum(1) / mask_pos_pairs
-
-    # loss
-    loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos
-    loss = loss.view(anchor_count, batch_size).mean()
-
-    return loss
-
-
-
 class SpearmanCorrelationLossOptimized(nn.Module):
   """
   Optimized version that computes all correlations in a more vectorized way.
@@ -849,66 +749,6 @@ class SupConWeightedLoss(torch.nn.Module):
     loss = loss[valid].mean()
     return loss
 
-class CCCLoss(nn.Module):
-  """
-  Concordance Correlation Coefficient loss: returns (1 - CCC).
-
-  Args:
-    eps (float): small value for numeric stability.
-    per_sample (bool):
-      - False (default): compute CCC across all elements (flattened) and return a scalar.
-      - True: compute CCC per-sample across dims 1.. and reduce according to `reduction`.
-    reduction (str): 'mean'|'sum'|'none' used only when per_sample=True.
-  """
-  def __init__(self, eps: float = 1e-8, per_sample: bool = False, reduction: str = "mean"):
-    super().__init__()
-    assert reduction in ("mean", "sum", "none")
-    self.eps = eps
-    self.per_sample = per_sample
-    self.reduction = reduction
-
-  def forward(self, preds: torch.Tensor, target: torch.Tensor):
-    
-    if target.dtype.is_floating_point is False:
-      target = target.float()
-    if preds.dtype.is_floating_point is False:
-      preds = preds.float()
-    if preds.shape != target.shape:
-      raise ValueError(f"preds and target must have same shape, got {preds.shape} vs {target.shape}")
-
-    if not self.per_sample:
-      # Flatten everything and compute a single CCC
-      p = preds.view(-1)
-      t = target.view(-1)
-
-      mu_p = p.mean()
-      mu_t = t.mean()
-      var_p = p.var(unbiased=False)
-      var_t = t.var(unbiased=False)
-      cov = ((p - mu_p) * (t - mu_t)).mean()
-      ccc = (2.0 * cov) / (var_p + var_t + (mu_p - mu_t) ** 2 + self.eps)
-      return 1.0 - ccc
-
-    # Per-sample CCC: compute CCC for each sample across dims 1..
-    p = preds.view(preds.size(0), -1)   # [B, L]
-    t = target.view(target.size(0), -1) # [B, L]
-
-    mu_p = p.mean(dim=1)    # [B]
-    mu_t = t.mean(dim=1)    # [B]
-    var_p = p.var(dim=1, unbiased=False)  # [B]
-    var_t = t.var(dim=1, unbiased=False)  # [B]
-    cov = ((p - mu_p.unsqueeze(1)) * (t - mu_t.unsqueeze(1))).mean(dim=1)  # [B]
-
-    ccc = (2.0 * cov) / (var_p + var_t + (mu_p - mu_t) ** 2 + self.eps)  # [B]
-    loss = 1.0 - ccc  # [B]
-
-    if self.reduction == "mean":
-      return loss.mean()
-    elif self.reduction == "sum":
-      return loss.sum()
-    else:  # 'none'
-      return loss
-
 class LabelDifference(nn.Module):
   def __init__(self, distance_type='l1'):
     super(LabelDifference, self).__init__()
@@ -1172,32 +1012,6 @@ class DisentangledLoss(nn.Module):
     return total_loss, log_loss
 
 
-def _safe_gram(x: torch.Tensor) -> torch.Tensor:
-  x = x.contiguous()
-  x = x.float()
-  x = torch.nan_to_num(x)
-  return x @ x.T
-
-
-def hsic_linear(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-  n = x.size(0)
-
-  K = _safe_gram(x)
-  L = _safe_gram(y)
-
-  K_row = K.mean(dim=1, keepdim=True)
-  K_col = K.mean(dim=0, keepdim=True)
-  Kc = K - K_row - K_col + K.mean()
-
-  L_row = L.mean(dim=1, keepdim=True)
-  L_col = L.mean(dim=0, keepdim=True)
-  Lc = L - L_row - L_col + L.mean()
-
-  full_sum = (Kc * Lc).sum()
-  diag_sum = (Kc.diag() * Lc.diag()).sum()
-
-  return (full_sum - diag_sum) / (n * (n - 3))
-
 def rbf_kernel(x: torch.Tensor, sigma: float = None) -> torch.Tensor:
   """
   Compute RBF (Gaussian) kernel matrix for input x.
@@ -1299,53 +1113,6 @@ def marginal_hsic_loss(
   id_onehot = F.one_hot(id_local, num_classes=n_ids).float().to(z.device)
 
   return hsic_rbf(z, id_onehot, sigma_x=sigma_z, sigma_y=sigma_id)
-
-def conditional_hsic_loss(
-  z: torch.Tensor,
-  id_labels: torch.Tensor,
-  y_labels: torch.Tensor,
-  min_group_size: int = 5,
-  normalize_features: bool = True,
-) -> torch.Tensor:
-  if normalize_features:
-    z = F.normalize(z, dim=1)
-
-  id_labels = id_labels.long()
-
-  unique_y, counts = torch.unique(y_labels, return_counts=True)
-
-  valid = counts >= min_group_size
-  unique_y = unique_y[valid]
-  counts = counts[valid]
-
-  if unique_y.numel() == 0:
-    return torch.zeros(1, device=z.device, dtype=z.dtype, requires_grad=True).squeeze()
-
-  total_hsic = torch.zeros(1, device=z.device, dtype=z.dtype)
-  total_weight = 0
-
-  for y_val, cnt in zip(unique_y, counts):
-    mask = y_labels == y_val
-    group_size = cnt.item()
-
-    z_y = z[mask]
-    id_y = id_labels[mask]
-
-    # Remap to local consecutive IDs within this group
-    # e.g. [0, 3, 7, 3] -> [0, 1, 2, 1]
-    # This avoids huge sparse one-hot matrices and
-    # out-of-range index crashes from batch ID gaps
-    _, id_y_local = torch.unique(id_y, return_inverse=True)
-    n_local = id_y_local.max().item() + 1
-    id_onehot = F.one_hot(id_y_local, num_classes=n_local).float()
-
-    # hsic_val = hsic_linear(z_y, id_onehot)
-    hsic_val = hsic_rbf(z_y, id_onehot)
-    total_hsic = total_hsic + hsic_val * group_size
-    total_weight += group_size
-
-  return total_hsic.squeeze() / total_weight
-
 
 class CenterLoss(nn.Module):
   """

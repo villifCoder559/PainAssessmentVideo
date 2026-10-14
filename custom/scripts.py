@@ -19,7 +19,7 @@ from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 import os
 import random
 import custom.loss as losses
-from custom.model_selection import best_metric_index, is_better_metric
+from custom.model_selection import is_better_metric
 from custom.predefined_training import run_predefined_split
 from custom.targets import TargetSpec
 import copy
@@ -461,39 +461,6 @@ def generate_subfold_csv_files(sub_idx, k_fold, sub_k_fold_list, csv_array, cols
   
   return sub_path_csv_kth_fold
 
-def select_best_model(fold_results_kth, target_metric_best_model, saving_path_kth_fold, fold_idx):
-  """Select the best model from sub-folds based on validation metrics"""
-  # Get best model indices for each sub-fold
-  best_results_idx = [fold_results_kth[i]['dict_results']['best_model_idx'] for i in range(len(fold_results_kth))]
-  best_results_state_dict = [fold_results_kth[i]['dict_results']['best_model_state'] for i in range(len(fold_results_kth))]
-
-  best_metric_values = [
-    dict_train['dict_results']['list_val_performance_metric'][
-      best_results_idx[index]
-    ]
-    for index, dict_train in enumerate(fold_results_kth)
-  ]
-  best_model_subfolder_idx = best_metric_index(
-    best_metric_values, target_metric_best_model
-  )
-  
-  # Get best model epoch
-  best_model_epoch = fold_results_kth[best_model_subfolder_idx]['dict_results']['best_model_idx']
-  
-  # Get best model path
-  path_model_weights = os.path.join(
-    saving_path_kth_fold,
-    f'k{fold_idx}_cross_val_sub_{best_model_subfolder_idx}',
-    f'best_model_ep_{best_model_epoch}.pt'
-  )
-  
-  return {
-    'subfolder_idx': best_model_subfolder_idx,
-    'epoch': best_model_epoch,
-    'state_dict': best_results_state_dict[best_model_subfolder_idx],
-    'path': path_model_weights
-  }
-
 def test_model(model_advanced, path_model_weights, test_csv_path,
                    state_dict, criterion, concatenate_temporal,
                    subfolder_idx=None,saving_path_kth_fold=None,fold_idx=None,**kwargs):
@@ -561,45 +528,6 @@ def reduce_logs_for_subfold(dict_train, skip_reduction=False):
     reduced_dict_train.pop('dict_results')  
   # save only the last matrix
   return reduced_dict_train
-
-def cleanup_extra_models(train_folder_path, fold_idx, k_fold, dict_results_model_weights):
-  """Clean up extra model weights to save space"""
-  saving_path_kth_fold = os.path.join(train_folder_path, f'k{fold_idx}_cross_val')
-  best_sub_idx = dict_results_model_weights[f'{fold_idx}']['sub']
-  
-  for j in range(k_fold - 1):
-    # Delete models except the best one
-    if j != best_sub_idx:
-      path_folder_model_weights = os.path.join(saving_path_kth_fold, f'k{fold_idx}_cross_val_sub_{j}')
-      
-      # Get .pth files
-      for file in os.listdir(path_folder_model_weights):
-        if file.endswith(".pth"):
-          os.remove(os.path.join(path_folder_model_weights, file))
-
-def compile_test_loss_plots(list_test_results):
-  """Compile test loss plots for visualization"""
-  plot_models_test_loss = {}
-  plot_subject_test_loss = {}
-  plot_class_test_loss = {}
-  
-  for i, dict_test in enumerate(list_test_results):
-    plot_models_test_loss[f'k_{i}'] = dict_test['test_loss']
-    plot_subject_test_loss[f'k_{i}'] = {
-      'loss': dict_test['test_loss_per_subject'],
-      'elements': dict_test['test_unique_subject_ids']
-    }
-    plot_class_test_loss[f'k_{i}'] = {
-      'loss': dict_test['test_loss_per_class'],
-      'elements': dict_test['test_unique_y']
-    }
-  
-  return {
-    'models': plot_models_test_loss,
-    'subjects': plot_subject_test_loss,
-    'classes': plot_class_test_loss
-  }
-
 
 def run_train_test(model_type, pooling_embedding_reduction, pooling_clips_reduction, sample_frame_strategy, 
                    path_csv_dataset, path_video_dataset, head, stride_window_in_video, features_folder_saving_path,head_params,

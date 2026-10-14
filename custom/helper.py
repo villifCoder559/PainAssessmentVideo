@@ -36,11 +36,6 @@ unbc_count_to_id = {
   24: 123
 }
 
-def convert_unbc_count_to_id(unique_subject_ids):
-  return np.array([unbc_count_to_id[int(s)] for s in unique_subject_ids])
-
-
-
 stoic_subjects = [27,28,32,33,34,35,36,39,40,41,42,44,51,53,55,56,61,64,74,87]
 saving_rate_training_logs = 3
 dict_data = None
@@ -84,13 +79,6 @@ LOG_NORM_CROSS_ATTN_BLOCK = {
   'logs':[]
 }
   
-def init_log_norm_cross_attn_block():
-  global LOG_NORM_CROSS_ATTN_BLOCK
-  LOG_NORM_CROSS_ATTN_BLOCK = {
-    'enable': False,
-    'logs':[]
-  }
-
 def init_log_cross_attention():
   global LOG_CROSS_ATTENTION
   LOG_CROSS_ATTENTION = {
@@ -145,12 +133,6 @@ def set_step_shift(folder_feature):
 
 def transform_sample_id(original_sample_id, augmentation_type):
   return original_sample_id + get_shift_for_sample_id(augmentation_type)
-
-def get_original_sample_id(sample_id):
-  if sample_id <= step_shift:
-    return sample_id
-  else:
-    return ((sample_id - 1) % step_shift) + 1
 
 def is_hflip_augmentation(sample_id):
   return sample_id > step_shift and sample_id <= step_shift * 2
@@ -259,16 +241,6 @@ def get_augmentation_availables(fold_feature_path):
   # by customDatasetWhole._load_element via aug_variant_folders, not via sample_id shifts
   augment_available = list(dict.fromkeys(a.split('$')[0] for a in augment_available))
   return augment_available
-
-
-def get_perfectly_balanced_target_samples_per_class(df, batch_size, min_target_samples_per_class=0, class_bins=None):
-  class_counts = pd.Series(class_bins if class_bins is not None else df['class_id']).value_counts()
-  n_classes = len(class_counts)
-  total_samples = len(df)
-  assert batch_size % n_classes == 0, "Batch size must be divisible by number of classes for perfect balancing."
-  nr_batches = np.ceil(total_samples // batch_size)
-  target_class_count = int((nr_batches * batch_size) / n_classes)
-  return target_class_count
 
 
 def refine_perfectly_balanced_target_samples_per_class(df, target_samples_per_class,strategy='oversample',target_spec=None):
