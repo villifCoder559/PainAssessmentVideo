@@ -17,7 +17,6 @@ The paper release keeps only the Linux files. The Windows overlay (`environment-
 | [environment.yml](environment.yml) | Common CPU environment for Linux x86_64, Windows x86_64, and macOS. |
 | [environment-native.yml](environment-native.yml) | Required Decord/torchsort additions for CPU training on Linux x86_64 and Intel macOS. |
 | [environment-cuda.yml](environment-cuda.yml) | Standalone NVIDIA environment for Linux/Windows x86_64, using PyTorch 2.5.1 and CUDA runtime 11.8. |
-| [environment-notebooks.yml](environment-notebooks.yml) | Optional notebook frontend, kernel, and test tooling. |
 | [environment-pinned-linux-64.yml](environment-pinned-linux-64.yml) | Exact versions of the clean-room CPU environment that passed `smoke_test.sh` (Linux x86_64, standalone). |
 | [environment-cuda-pinned-linux-64.yml](environment-cuda-pinned-linux-64.yml) | Exact versions of the clean-room CUDA 11.8 environment that passed `smoke_test.sh` (Linux x86_64, standalone, includes Decord and torchsort). |
 

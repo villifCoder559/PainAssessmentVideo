@@ -20,7 +20,6 @@ NumPy 1.26.4, MediaPipe 0.10.5, transformers 4.57.1, and timm 1.0.15.
 | `environment.yml` | Common CPU stack on Linux x86_64, Windows x86_64, and macOS Intel/Apple Silicon. Conda-forge only; `nodefaults` prevents implicit extra channels. |
 | `environment-native.yml` | Required addition for CPU training and vendored video loaders on Linux x86_64 and Intel macOS: Conda Decord and torchsort. |
 | `environment-cuda.yml` | Standalone alternative for NVIDIA GPUs on Linux/Windows x86_64. Conda-forge supplies the common libraries; official PyTorch CUDA wheels supply the GPU stack. Native video/ranking installation is described below. |
-| `environment-notebooks.yml` | Optional JupyterLab/IPython/kernel and pytest tooling. |
 | `DEPENDENCIES.md` | Complete third-party import-to-distribution cross-check, including conditional and historical imports. |
 
 **The common file alone is insufficient for training.** `custom/loss.py` imports
@@ -62,15 +61,13 @@ stack remain usable; training is not supported until this extension is available
 An Intel Conda installation under Rosetta is another candidate, using the Intel
 commands and x86_64 packages consistently; do not mix arm64 and Intel packages.
 
-For notebooks/tests, add the optional overlay after creating the base environment:
+To run the tests, add pytest after creating the base environment:
 
 ```sh
-conda env update -n pain-portable -f env_portability/environment-notebooks.yml
-conda run -n pain-portable python -m ipykernel install --user --name pain-portable --display-name "Pain assessment (portable)"
-conda run -n pain-portable jupyter lab
+conda run -n pain-portable python -m pip install pytest
 ```
 
-For the CUDA environment, use `-n pain-portable-cuda` with either optional overlay.
+For the CUDA environment, use `-n pain-portable-cuda`.
 Do not apply the CPU native overlay to a CUDA environment.
 
 ## NVIDIA GPU installation

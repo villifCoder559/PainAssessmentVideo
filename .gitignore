@@ -217,7 +217,6 @@ REPRO*
 
 # Root documentation.
 !/README.md
-!/PORTABILITY_REPORT.md
 
 # ---------------------------------------------------------------------------
 # Paper release whitelist: only what reproduces the paper is tracked.
@@ -250,7 +249,6 @@ env_portability/*
 !env_portability/environment-cuda.yml
 !env_portability/environment-pinned-linux-64.yml
 !env_portability/environment-cuda-pinned-linux-64.yml
-!env_portability/environment-notebooks.yml
 
 # Face-landmark models read by custom/faceExtractor.py.
 landmark_model/*

@@ -34,7 +34,7 @@ Standard-library roots and verified local modules (including `custom`, `MAE_DFER
 | `pandas` | pandas | environment.yml (Conda) | `new_plot_tsne_post_head.py:9` |
 | `petrel_client` | petrel-client | Optional Petrel storage client/source/configuration | none left (all uses removed in the 2026-10-08 cleanup) |
 | `psutil` | psutil | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
-| `pytest` | pytest | Optional environment-notebooks.yml; tests | `tests/test_plot_cumulative_predictions.py:11` |
+| `pytest` | pytest | `pip install pytest`; tests | `tests/test_plot_cumulative_predictions.py:11` |
 | `safetensors` | safetensors | environment.yml (Conda) | `tests/test_check_augmentation_completeness.py:6` |
 | `scipy` | scipy | environment.yml (Conda) | `new_plot_tsne_post_head.py:11` |
 | `seaborn` | seaborn | environment.yml (Conda) | `new_plot_res_from_server.py:26` |

@@ -123,8 +123,7 @@ package/pip caches, `PYTHONNOUSERSITE=1` and no reuse of the original environmen
   `pip check`, a CUDA tensor and a CUDA torchsort soft-rank passed (RTX 2080 Ti, driver 550).
 
 `smoke_test.sh` (training on precomputed embeddings, MAE-DFER forward pass, all cross-space
-projectors, log aggregation) passed in these environments after the source fixes listed in
-[../PORTABILITY_REPORT.md](../PORTABILITY_REPORT.md). The working CPU and CUDA environments
+projectors, log aggregation) passed in these environments after the portability source fixes. The working CPU and CUDA environments
 were exported to `environment-pinned-linux-64.yml` and `environment-cuda-pinned-linux-64.yml`.
 Windows/macOS runtime remains unvalidated.
 

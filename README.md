@@ -353,8 +353,7 @@ All scripts take `--gpu <id>` (default `0`). Notes:
   table.
 * **Temporal predictions (7678):** uses the BioVid → UNBC MLP run of `paper_tests_seed_42` and
   the newest BioVid MAE-DFER run. The plotted values are written to `curves_<digest>.json` under
-  `chunk_prediction_plots/`. `run_cumulative_predictions.sh` runs the same analysis over many
-  videos.
+  `chunk_prediction_plots/`.
 
 ## 8. Outputs
 
@@ -391,7 +390,6 @@ in `Cross_projection/smoke_test/<timestamp>/`. All of these can be deleted.
 * The V-JEPA 2.1 backbone option in `custom/backbone.py` (`--mt vjepa2_1_B`) is not used in the
   paper, and its vendored code is not shipped. Using it requires a checkout of
   [facebookresearch/vjepa2](https://github.com/facebookresearch/vjepa2) in `vjepa2/`.
-* See [PORTABILITY_REPORT.md](PORTABILITY_REPORT.md) for every issue found and fixed.
 
 ## 10. CPU fallback
 
