@@ -30,6 +30,8 @@ class Model_Advanced: # Scenario_Advanced
     head_params (dict): Head hyperparameters.
     removed: options of older releases found in saved run configs.
     """
+    helper.drop_removed_options(removed, 'Model_Advanced')
+    helper.drop_removed_options(head_params, 'head_params')
     if model_type != MODEL_TYPE.ViT_image:
       self.backbone = VideoBackbone(model_type, use_sdpa=True)
     else:
@@ -250,6 +252,7 @@ class Model_Advanced: # Scenario_Advanced
     """
     if not is_test:
       raise Exception('Set is_test to True. Currently this function is only for testing.')
+    kwargs = helper.drop_removed_options(kwargs, 'run config')
     
     if path_model_weights is not None:
       self.head.load_state_weights(path_model_weights)

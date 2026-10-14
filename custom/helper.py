@@ -561,3 +561,51 @@ def generate_csv_augmented(original_csv_path, dict_augmentation, out_csv_path, s
   df_merged.to_csv(out_csv_path, index=False, sep='\t')
   print(f'CSV file with augmentations saved to {out_csv_path}')
   return df_merged
+
+
+# Options of older releases, with the value they had in every paper run. Saved run configs
+# (k_fold_results.pkl: model_advanced_params, head_params, config) still carry them.
+REMOVED_OPTION_DEFAULTS = {
+  # Model_Advanced
+  'adapter_dict': None, 'concatenate_temporal': 0, 'num_clips_per_video': 1,
+  'sample_frame_strategy': 'sliding_window', 'soft_labels': 0.0, 'stride_inside_window': 1,
+  'use_sdpa': 1, 'gaussian_sigma_min': 0.5, 'gaussian_sigma_max': 2.0, 'gaussian_kernel_size': 5,
+  # head_params
+  'adversarial_head': 0, 'multitask_head': 0, 'multitask_num_classes': None, 'coral_loss': False,
+  'drop_path_mode': 'row', 'head_init_path': None, 'num_queries': 1, 'agg_method': 'mean',
+  'remove_head': False, 'train_backbone': 0, 'type_head': 0, 'unfreeze_layers': None,
+  'use_batch_norm': 0,
+  # run config
+  'HSIC_subject_lambda': 0.0, 'HSIC_pain_lambda': 0.0, 'HSIC_feat_normalization': 0,
+  'adversarial_loss_lambda': 0.0, 'adv_alpha_strategy': None, 'adv_alpha_gamma': 0.0,
+  'lambda_center_loss': 0.0, 'ratio_lr_center_loss': 1.0, 'lambda_multitask': 0.0,
+  'balance_batches': 0, 'clip_grad_norm': None, 'concatenate_temp_dim': 0,
+  'consider_only_lasts_n_chunks': 0, 'debug_grad_flow': 0, 'debug_grad_flow_batches': 1,
+  'feature_merge_type': None, 'feature_merge_lambda': None, 'feature_merge_orig': 1,
+  'gaussian': 0.0, 'hflip': 0.0, 'jitter': 0.0, 'rotation': 0.0, 'shift': 0.0,
+  'latent_basic': 0.0, 'latent_masking': 0.0, 'latent_coefficient': 0.0,
+  'load_idxs_splits': 0, 'min_subjects_per_level': 0, 'only_augments': None,
+  'perfect_bal_strategy': None, 'sampler_augmented_only_types': None, 'type_group': 0,
+  'xattn_mask': None, 'round_output_loss': 0, 'add_CCC_loss': 0.0, 'CCC_loss': None,
+}
+
+
+def _is_default(value, default):
+  if isinstance(value, list) and len(value) == 1:
+    value = value[0]
+  if default is None:
+    return value is None
+  value = getattr(value, 'value', value)  # enums are compared by value
+  try:
+    return bool(value == default)
+  except (TypeError, ValueError, RuntimeError):
+    return False
+
+
+def drop_removed_options(params, where):
+  """Return params without the removed options; raise if one of them holds a non-default value."""
+  for key, value in params.items():
+    if key in REMOVED_OPTION_DEFAULTS and not _is_default(value, REMOVED_OPTION_DEFAULTS[key]):
+      raise ValueError(f"{where}: {key}={value!r} is not supported in this release "
+                       f"(only the default {REMOVED_OPTION_DEFAULTS[key]!r}); use an older release of the code.")
+  return {key: value for key, value in params.items() if key not in REMOVED_OPTION_DEFAULTS}
