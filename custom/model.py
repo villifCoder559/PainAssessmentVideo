@@ -30,7 +30,9 @@ class Model_Advanced: # Scenario_Advanced
     head_params (dict): Head hyperparameters.
     removed: options of older releases found in saved run configs.
     """
-    helper.drop_removed_options(removed, 'Model_Advanced')
+    unknown = helper.drop_removed_options(removed, 'Model_Advanced')
+    if unknown:
+      raise TypeError(f'Model_Advanced got unexpected options: {sorted(unknown)}')
     helper.drop_removed_options(head_params, 'head_params')
     if model_type != MODEL_TYPE.ViT_image:
       self.backbone = VideoBackbone(model_type, use_sdpa=True)

@@ -29,3 +29,19 @@ def test_unknown_keys_are_kept():
 
 def test_every_removed_option_default_is_accepted():
   assert drop_removed_options(dict(REMOVED_OPTION_DEFAULTS), 'test') == {}
+
+
+def _model_advanced_args():
+  # The option guard runs before anything is built, so placeholder values are enough.
+  names = ('model_type embedding_reduction clips_reduction path_dataset path_labels head batch_size_training '
+           'stride_window clip_length dict_augmented prefetch_factor features_folder_saving_path label_smooth '
+           'n_workers new_csv_path load_dataset_in_memory').split()
+  args = dict.fromkeys(names)
+  args['head_params'] = {}
+  return args
+
+
+def test_model_advanced_rejects_unknown_option():
+  from custom.model import Model_Advanced
+  with pytest.raises(TypeError, match='not_an_option'):
+    Model_Advanced(**_model_advanced_args(), not_an_option=1)
