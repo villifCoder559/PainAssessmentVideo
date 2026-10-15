@@ -22,8 +22,9 @@ NumPy 1.26.4, MediaPipe 0.10.5, transformers 4.57.1, and timm 1.0.15.
 | `environment-cuda.yml` | Standalone alternative for NVIDIA GPUs on Linux/Windows x86_64. Conda-forge supplies the common libraries; official PyTorch CUDA wheels supply the GPU stack. Native video/ranking installation is described below. |
 | `DEPENDENCIES.md` | Complete third-party import-to-distribution cross-check, including conditional and historical imports. |
 
-**The common file alone is insufficient for training.** `custom/loss.py` imports
-torchsort unconditionally; imported vendored video loaders require Decord. Both are
+**The common file alone is insufficient for the smoke test.** Imported vendored video
+loaders require Decord, and the environment checks import torchsort (no longer used by
+the code, kept in the pinned environments). Both are
 direct requirements, separated because their binary availability differs by OS and
 CPU architecture. The overlays are additions, not standalone environments. There is
 no CPU/CUDA auto-detection in these files.
@@ -312,7 +313,7 @@ After adding the native dependencies, run:
 ```sh
 python -m pip check
 python -c "import torch, torchvision, numpy, scipy, cv2, mediapipe, transformers, timm, decord, torchsort; from mediapipe.tasks.python.vision import FaceAligner, FaceAlignerOptions, FaceLandmarksConnections; print(torch.__version__, torchvision.__version__, numpy.__version__, cv2.__version__); print(torchsort.soft_rank(torch.tensor([[3.,1.,2.]])))"
-python -c "import custom.backbone, custom.dataset, custom.faceExtractor, custom.loss"
+python -c "import custom.backbone, custom.dataset, custom.faceExtractor, custom.head"
 ffmpeg -version
 ffprobe -version
 git --version

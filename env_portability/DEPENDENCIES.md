@@ -10,12 +10,12 @@ Standard-library roots and verified local modules (including `custom`, `MAE_DFER
 | --- | --- | --- | --- |
 | `PIL` | pillow | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `apex` | NVIDIA Apex | Optional NVIDIA Apex source/build; not PyPI apex | none left (all uses removed in the 2026-10-08 cleanup) |
-| `av` | av | environment.yml (Conda) | `custom/tools.py:18` |
+| `av` | av | environment.yml (Conda) | none left (all uses removed in the lightweight release) |
 | `conditional` | conditional | environment.yml (pip) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `configargparse` | configargparse | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
-| `coral_pytorch` | coral-pytorch | environment.yml (pip) | `custom/head.py:37` |
+| `coral_pytorch` | coral-pytorch | environment.yml (pip) | `custom/dataset.py:29` |
 | `cv2` | opencv-contrib-python | environment.yml (pip) | `extract_landmarks.py:12` |
-| `dataframe_image` | dataframe_image | environment.yml (Conda) | `custom/scripts.py:11` |
+| `dataframe_image` | dataframe_image | environment.yml (Conda) | none left (all uses removed in the lightweight release) |
 | `decord` | decord | Required native overlay; Apple Silicon Conda command | `smoke_test.sh:62` (import check only) |
 | `deepspeed` | deepspeed | Additional DeepSpeed GPU workflow; separate installation | none left (all uses removed in the 2026-10-08 cleanup) |
 | `einops` | einops | environment.yml (Conda) | `MAE_DFER/modeling_finetune.py:8` |
@@ -27,7 +27,7 @@ Standard-library roots and verified local modules (including `custom`, `MAE_DFER
 | `networkx` | networkx | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `nltk` | nltk | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `numpy` | numpy | environment.yml (Conda) | `new_plot_tsne_post_head.py:3` |
-| `openTSNE` | opentsne | environment.yml (Conda) | `new_plot_tsne_post_head.py:7` |
+| `openTSNE` | opentsne | environment.yml (Conda) | none left (all uses removed in the lightweight release) |
 | `optuna` | optuna | environment.yml (Conda) | `tests/test_model_selection_policy.py:5` |
 | `optunahub` | optunahub | environment.yml (Conda) | `train_model.py:16` |
 | `packaging` | packaging | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
@@ -45,9 +45,9 @@ Standard-library roots and verified local modules (including `custom`, `MAE_DFER
 | `tensorboardX` | tensorboardx | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `timm` | timm | environment.yml (Conda) | `MAE_DFER/modeling_finetune.py:6` |
 | `torch` | pytorch (pytorch-cpu selector in base) | environment.yml (Conda) | `statistical_compare_kfold_results.py:401` |
-| `torch_optimizer` | torch-optimizer | environment.yml (Conda) | `custom/optimizers.py:6` |
+| `torch_optimizer` | torch-optimizer | environment.yml (Conda) | none left (all uses removed in the lightweight release) |
 | `torchmetrics` | torchmetrics | environment.yml (Conda) | `new_plot_res_from_server.py:13` |
-| `torchsort` | torchsort | Required native overlay; CUDA/Apple Silicon build or wheel step | `custom/loss.py:5` |
+| `torchsort` | torchsort | Required native overlay; CUDA/Apple Silicon build or wheel step | none left (all uses removed in the lightweight release) |
 | `torchvision` | torchvision | environment.yml (Conda) | `custom/dataset.py:19` |
 | `tqdm` | tqdm | environment.yml (Conda) | `new_plot_tsne_post_head.py:15` |
 | `transformers` | transformers | environment.yml (Conda) | `custom/backbone.py:29` |
