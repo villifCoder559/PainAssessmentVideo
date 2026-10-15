@@ -11,10 +11,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from cross_space_projection import (
     _build_projector_network,
-    _projector_recipe_id,
     _projector_tag,
     _projector_key,
-    _projector_bundle_key,
     LINEAR_PROJECTOR_CONFIG,
 )
 
@@ -43,7 +41,7 @@ class TestAutoencoderNetwork(unittest.TestCase):
     def test_forward_shape(self):
         """A forward pass on (B, d_old) returns (B, d_new)."""
         d_old, d_new = 48, 24
-        net = _build_projector_network(d_old, d_new, 'autoencoder', 'relu', encoder_ratio=4)
+        net = _build_projector_network(d_old, d_new, 'autoencoder', 'gelu', encoder_ratio=4)
         out = net(torch.randn(7, d_old))
         self.assertEqual(tuple(out.shape), (7, d_new))
 
@@ -62,40 +60,17 @@ class TestAutoencoderNetwork(unittest.TestCase):
 
 
 class TestRatioDisambiguation(unittest.TestCase):
-    """encoder_ratio must distinguish recipes/bundles for autoencoder but collapse for others."""
+    """encoder_ratio must appear in the autoencoder output tag but not in the others."""
 
-    def test_recipe_id_distinguishes_ratio(self):
-        """Two recipes differing only in encoder_ratio must get distinct recipe ids
-        (otherwise proj_map.setdefault would silently drop one)."""
-        self.assertNotEqual(_projector_recipe_id(_cfg(encoder_ratio=2)),
-                            _projector_recipe_id(_cfg(encoder_ratio=8)))
-
-    def test_recipe_id_default_unchanged(self):
-        """encoder_ratio == 4 (default) must leave the recipe id byte-for-byte unchanged."""
-        base = dict(LINEAR_PROJECTOR_CONFIG)
-        base.pop('encoder_ratio', None)
-        self.assertEqual(_projector_recipe_id(base), _projector_recipe_id(_cfg(encoder_ratio=4)))
-
-    def test_autoencoder_bundle_key_distinguishes_ratio(self):
-        """For autoencoder, ratio variants get distinct bundle keys (one trained net each)."""
-        k2 = _projector_bundle_key('autoencoder', 'gelu', _cfg(encoder_ratio=2))
-        k8 = _projector_bundle_key('autoencoder', 'gelu', _cfg(encoder_ratio=8))
-        self.assertNotEqual(k2, k8)
-
-    def test_autoencoder_bundle_key_distinguishes_activation(self):
-        """For autoencoder, activation is part of the bundle key (it is swept via --mlp_activation)."""
-        kg = _projector_bundle_key('autoencoder', 'gelu', _cfg(encoder_ratio=4))
-        kr = _projector_bundle_key('autoencoder', 'relu', _cfg(encoder_ratio=4))
-        self.assertNotEqual(kg, kr)
+    def test_autoencoder_tag_distinguishes_ratio(self):
+        self.assertNotEqual(_projector_tag('autoencoder', _cfg(encoder_ratio=2)),
+                            _projector_tag('autoencoder', _cfg(encoder_ratio=8)))
         self.assertEqual(_projector_key('autoencoder', 'gelu'), 'autoencoder_gelu')
 
-    def test_linear_bundle_key_ignores_ratio(self):
-        """For non-autoencoder kinds the ratio is absent from the tag, so ratio variants
-        collapse to a single trained bundle."""
-        k2 = _projector_bundle_key('linear', None, _cfg(encoder_ratio=2))
-        k8 = _projector_bundle_key('linear', None, _cfg(encoder_ratio=8))
-        self.assertEqual(k2, k8)
+    def test_linear_tag_ignores_ratio(self):
         self.assertNotIn('er', _projector_tag('linear', _cfg(encoder_ratio=8)))
+        self.assertEqual(_projector_tag('linear', _cfg(encoder_ratio=2)),
+                         _projector_tag('linear', _cfg(encoder_ratio=8)))
 
 
 class TestCrossSpaceLogsAutoencoderRebuild(unittest.TestCase):

@@ -218,23 +218,3 @@ def test_model_combo_aggregate_reuses_directory_uid_and_names_class_cutoff(
     assert aggregate["config_cross_space_projection"]["uid"] == 100
     assert aggregate["config_cross_space_projection"]["remove_classes_greater"] == cutoff
 
-
-def test_grid_root_gets_snapshot_and_records_it_in_best_config(tmp_path):
-    study = _CompletedStudy()
-    model_config = {
-        "model_advanced_params": {"features_folder_saving_path": "unused-features"}
-    }
-
-    with (
-        mock.patch.object(csp, "_load_config", return_value=model_config),
-        mock.patch.object(csp, "_build_model", return_value=object()),
-        mock.patch.object(csp, "_precompute_embeddings", return_value=({}, {})),
-        mock.patch.object(csp, "_get_sampler", return_value=object()),
-        mock.patch.object(csp.optuna, "create_study", return_value=study),
-    ):
-        out_dir = Path(csp.run_optuna(_grid_args(), out_root=tmp_path))
-
-    assert (out_dir / "launch_config.yaml").read_bytes() == RAW_CONFIG
-    assert "config_snapshot: launch_config.yaml\n" in (
-        out_dir / "best_config.txt"
-    ).read_text(encoding="utf-8")

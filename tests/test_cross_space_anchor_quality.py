@@ -211,80 +211,6 @@ def test_extract_anchor_quality_pool_runs_new_model_on_every_candidate(tmp_path)
     assert scores == {10: 0.5, 20: 0.0, 30: 0.75}
 
 
-def test_grid_precompute_caches_full_quality_inference_and_reuses_selected_embeddings(tmp_path):
-    source_csv = tmp_path / "train.csv"
-    pd.DataFrame(
-        {
-            "sample_id": [1, 2, 3, 4, 5, 6],
-            "class_id": [0, 0, 0, 1, 1, 1],
-        }
-    ).to_csv(source_csv, index=False, sep="\t")
-    new_model = object()
-    old_model = object()
-    new_calls = []
-
-    def fake_extract(model, checkpoint, csv_path, config, features_path_override=None):
-        frame = pd.read_csv(csv_path, sep="\t")
-        sample_ids = frame["sample_id"].to_numpy(dtype=np.int64)
-        if model is new_model:
-            new_calls.append(sample_ids.tolist())
-            assert features_path_override is None
-            errors = {1: 0.8, 2: 0.1, 3: 0.4, 4: 0.5, 5: 0.2, 6: 0.9}
-            labels = np.zeros(len(sample_ids), dtype=np.float32)
-            predictions = np.array([errors[int(sid)] for sid in sample_ids], dtype=np.float32)
-        else:
-            assert model is old_model
-            assert features_path_override == "old-backbone-new-domain"
-            labels = np.zeros(len(sample_ids), dtype=np.float32)
-            predictions = np.zeros(len(sample_ids), dtype=np.float32)
-        return {
-            "sample_ids": sample_ids,
-            "labels": labels,
-            "predictions": predictions,
-            "embeddings": np.column_stack((sample_ids, sample_ids + 100)).astype(np.float32),
-        }
-
-    args = SimpleNamespace(
-        projector_recipes=[csp.LINEAR_PROJECTOR_CONFIG],
-        refinement_recipes=[csp.REFINEMENT_CONFIG],
-        interpolation_similarity=["cos"],
-        mlp_activation=["gelu"],
-        mlp_num_layers=[1],
-        refinement=0,
-        csv_anchor_selection=["train"],
-        num_anchors=[2, 4],
-        anchor_selection_type=["balance_class_quality"],
-        old_model_csv=[],
-        rbf_sigma=[1.0],
-    )
-
-    with (
-        mock.patch.object(csp, "_detect_dataset", return_value="NEW"),
-        mock.patch.object(csp, "_detect_backbone", return_value="BACKBONE"),
-        mock.patch.object(csp, "_get_features_path", return_value="old-backbone-new-domain"),
-        mock.patch.object(csp, "_resolve_anchor_csvs", return_value=[str(source_csv)]),
-        mock.patch.object(csp, "clean_csv_from_augmentations", side_effect=lambda path: path),
-        mock.patch.object(csp.helper, "set_step_shift"),
-        mock.patch.object(csp, "_extract_embeddings", side_effect=fake_extract),
-    ):
-        anchor_cache, _ = csp._precompute_embeddings(
-            old_model,
-            new_model,
-            "old-model.pt",
-            "new-model.pt",
-            {"config": {}},
-            {"config": {}},
-            "old-features",
-            "new-features",
-            args,
-            str(tmp_path),
-        )
-
-    assert new_calls == [[1, 2, 3, 4, 5, 6]]
-    assert anchor_cache[("train", 2, "balance_class_quality")]["new"]["sample_ids"].tolist() == [2, 5]
-    assert anchor_cache[("train", 4, "balance_class_quality")]["new"]["sample_ids"].tolist() == [2, 3, 5, 4]
-
-
 def test_single_run_scores_full_pool_and_reuses_new_model_embeddings(tmp_path):
     anchor_csv = tmp_path / "train.csv"
     pd.DataFrame(
@@ -344,6 +270,14 @@ def test_single_run_scores_full_pool_and_reuses_new_model_embeddings(tmp_path):
             "embeddings": np.column_stack((sample_ids, sample_ids + 100)).astype(np.float32),
         }
 
+    identity = torch.nn.Linear(2, 2, bias=False)
+    with torch.no_grad():
+        identity.weight[:] = torch.eye(2)
+    identity_bundle = {
+        "projector": identity, "norm_stats": None, "config": {}, "best_epoch": 0,
+        "best_val_mse": 0.0, "best_val_metric": 0.0, "best_val_metric_name": "mse",
+        "ckpt_path": None, "metrics": {}, "splits": {},
+    }
     args = SimpleNamespace(
         old_model_pth="old-model.pt",
         new_model_pth="new-model.pt",
@@ -351,10 +285,10 @@ def test_single_run_scores_full_pool_and_reuses_new_model_embeddings(tmp_path):
         anchor_selection_type="balance_class_quality",
         csv_anchor_selection="train",
         old_model_csv="test",
-        interpolation_similarity="cos",
+        interpolation_similarity="linear",
         mlp_activation="gelu",
         mlp_num_layers=1,
-        weighting_method="rbf",
+        weighting_method="none",
         rbf_sigma=1.0,
         run_tag="quality-test",
         fake_projection=False,
@@ -379,11 +313,8 @@ def test_single_run_scores_full_pool_and_reuses_new_model_embeddings(tmp_path):
         mock.patch.object(csp, "_detect_backbone", return_value="BACKBONE"),
         mock.patch.object(csp, "_get_features_path", return_value="old-backbone-new-domain"),
         mock.patch.object(csp, "_extract_embeddings", side_effect=fake_extract),
-        mock.patch.object(
-            csp,
-            "_compute_weights",
-            return_value=np.eye(2, dtype=np.float32),
-        ),
+        mock.patch.object(csp, "_extract_linear_val_pool", return_value=None),
+        mock.patch.object(csp, "_train_linear_projector", return_value=identity_bundle),
     ):
         result_path = csp.cross_space_projection(args, out_root=tmp_path)
 
@@ -408,7 +339,7 @@ def test_yaml_entrypoint_accepts_balance_class_quality(tmp_path, monkeypatch):
                 "rbf_sigma: [1.0]",
                 "n_trials: null",
                 "optuna_sampler: grid",
-                "refinement: 0",
+                "refinement: 3",
             ]
         ),
         encoding="utf-8",

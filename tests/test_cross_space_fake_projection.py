@@ -6,7 +6,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -38,7 +37,6 @@ with mock.patch('multiprocessing.Manager') as manager:
     _fake_projection_suffix,
     _matched_gaussian_embeddings,
     _prediction_frame,
-    _run_trial,
     _validate_fake_projection,
     _yaml_to_argv,
     LINEAR_PROJECTOR_CONFIG,
@@ -120,14 +118,10 @@ class FakeEmbeddingTest(unittest.TestCase):
 
     real = np.array([[0.0, 0.0], [1.0, 1.0]], dtype=np.float32)
     labels = np.array([0.0, 1.0], dtype=np.float32)
-    anchors = {
-      'embeddings': np.array([[0.0, 0.0], [1.0, 1.0]], dtype=np.float32),
-    }
-    new_anchors = {
-      'embeddings': np.array([[0.0, 0.0], [1.0, 1.0]], dtype=np.float32),
-    }
+    projector = torch.nn.Linear(2, 2, bias=False)
     linear = torch.nn.Linear(2, 1, bias=False)
     with torch.no_grad():
+      projector.weight[:] = torch.eye(2)
       linear.weight[:] = torch.tensor([[0.5, 0.5]])
 
     headline, baseline = _evaluate_projection_inputs(
@@ -135,10 +129,7 @@ class FakeEmbeddingTest(unittest.TestCase):
       labels=labels,
       classify_linear=linear,
       label_denorm=1.0,
-      interpolation_similarity='l2',
-      rbf_sigma=0.2,
-      old_model_anchors=anchors,
-      new_model_anchors_aligned=new_anchors,
+      projector=projector,
       fake_projection=True,
       seed=11,
     )
@@ -166,10 +157,6 @@ class FakeEmbeddingTest(unittest.TestCase):
       labels=np.array([1.0, 3.0], dtype=np.float32),
       classify_linear=classifier,
       label_denorm=1.0,
-      interpolation_similarity='linear',
-      rbf_sigma=1.0,
-      old_model_anchors=None,
-      new_model_anchors_aligned=None,
       projector=projector,
       fake_projection=True,
       seed=3,
@@ -195,10 +182,6 @@ class FakeEmbeddingTest(unittest.TestCase):
       labels=np.array([1.0, 3.0], dtype=np.float32),
       classify_linear=classifier,
       label_denorm=1.0,
-      interpolation_similarity='linear',
-      rbf_sigma=1.0,
-      old_model_anchors=None,
-      new_model_anchors_aligned=None,
       projector=projector,
       fake_projection=True,
       fake_projection_distribution='standard_normal',
@@ -394,69 +377,6 @@ class FakeProjectionAggregationTest(unittest.TestCase):
       np.testing.assert_array_equal(evaluation['fake_predictions'], [1., 2., 2., 3.])
       self.assertEqual(evaluation['real_metrics']['mae_micro'], 0.)
       self.assertEqual(evaluation['fake_metrics']['mae_micro'], 1.5)
-
-
-class FakeProjectionTrialTest(unittest.TestCase):
-  def test_trial_keeps_real_cache_and_writes_paired_outputs(self):
-    import torch
-
-    real = np.array([[0.0, 0.0], [1.0, 1.0]], dtype=np.float32)
-    old_tensors = {
-      'embeddings': real.copy(),
-      'labels': np.array([0.0, 1.0], dtype=np.float32),
-      'sample_ids': np.array([10, 11], dtype=np.int64),
-      'predictions': np.array([0.0, 1.0], dtype=np.float32),
-    }
-    anchor_key = ('train', 2, 'random')
-    anchors = {'embeddings': real.copy()}
-    anchor_cache = {
-      anchor_key: {
-        'old': anchors,
-        'new': {'embeddings': real.copy()},
-        'projectors': {},
-        'refine_distance': {},
-      },
-    }
-    tensor_cache = {'test': {'old_tensors': old_tensors, 'old_tensors_csv': 'unused.csv'}}
-    linear = torch.nn.Linear(2, 1, bias=False)
-    with torch.no_grad():
-      linear.weight[:] = torch.tensor([[0.5, 0.5]])
-    model = SimpleNamespace(head=SimpleNamespace(linear=linear))
-    params = {
-      'num_anchors': 2,
-      'anchor_selection_type': 'random',
-      'csv_anchor_selection': 'train',
-      'old_model_csv': 'test',
-      'interpolation_similarity': 'l2',
-      'mlp_activation': 'gelu',
-      'mlp_num_layers': 1,
-      'weighting_method': 'rbf',
-      'rbf_sigma': 0.2,
-      'projector_config': 'projector',
-      'refinement_config': 'refinement',
-      'refine_mode': 'none',
-    }
-
-    with tempfile.TemporaryDirectory() as trial_dir:
-      mae = _run_trial(
-        params, 0, anchor_cache, tensor_cache, model,
-        {'config': {'normalize_labels': 0}}, trial_dir, 123,
-        {'projector': dict(LINEAR_PROJECTOR_CONFIG)},
-        {'refinement': dict(REFINEMENT_CONFIG)},
-        fake_projection=True,
-        fake_projection_distribution='standard_normal',
-      )
-
-      with open(os.path.join(trial_dir, 'results.pkl'), 'rb') as f:
-        result = pickle.load(f)
-      self.assertEqual(mae, result['metrics']['mae'])
-      self.assertEqual(result['fake_projection_distribution'], 'standard_normal')
-      self.assertIn('real_projection', result)
-      np.testing.assert_allclose(result['real_projection']['predictions'].reshape(-1),
-                                 [0.0, 1.0], atol=1e-5)
-      np.testing.assert_array_equal(old_tensors['embeddings'], real)
-      self.assertTrue(os.path.isfile(os.path.join(trial_dir, 'predictions_fake.csv')))
-      self.assertTrue(os.path.isfile(os.path.join(trial_dir, 'predictions_real.csv')))
 
 
 def _mae_pair(predictions, labels):
