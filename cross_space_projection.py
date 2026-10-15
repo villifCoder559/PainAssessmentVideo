@@ -171,8 +171,7 @@ def _set_global_seed(seed):
 
   Reassigns the module global `_SEED` (which is read at call time by anchor
   selection — `_select_anchors`' `df.sample(random_state=_SEED)` — and the
-  subject-disjoint splits via `_make_subject_disjoint_subsets`, and by the Optuna
-  samplers in `_get_sampler`), then seeds Python's `random`, NumPy, and torch
+  subject-disjoint splits via `_make_subject_disjoint_subsets`), then seeds Python's `random`, NumPy, and torch
   (CPU + all CUDA devices) so weight init and `shuffle=True` DataLoaders become
   reproducible. cudnn / `use_deterministic_algorithms` are intentionally left
   untouched (no speed penalty, no unsupported-op crashes).
@@ -313,24 +312,21 @@ LINEAR_PROJECTOR_CONFIG = {
 # fine-tunes the new model's head.linear (and, in 'projector_linear' mode, the projector
 # too) so that source-domain (old model / "model B") accuracy improves while the new
 # model's own-domain accuracy is preserved. Edit the numeric values here; the on/off
-# switch and the 'mode' are driven by the --refinement CLI flag (0–5).
+# switch and the 'mode' are driven by the --refinement flag (3 or 4).
 #
-# 'mode' (set from --refinement):
-#   'projector_linear' (--refinement 2): jointly fine-tune the projector (old→new map)
+# 'mode' (set from --refinement; 3 runs linear_only and projector_linear, each in its own sub-dir):
+#   'projector_linear' (--refinement 3): jointly fine-tune the projector (old→new map)
 #       AND a COPY of head.linear. Requires a trained projector, so it only runs for
 #       projector kinds (interpolation_similarity in _PROJECTOR_KINDS) with num_anchors > 0.
 #       For interpolation_similarity='procrustes', set 'procrustes_constrained' to keep the
 #       refined projector a true similarity transform (R semi-orthogonal, isotropic scale)
 #       instead of letting it relax into a general affine map (see SimilarityProjector).
-#   'linear_only'      (--refinement 1): the projection is held FIXED and only a COPY of
-#       head.linear is fine-tuned. Works for ALL interpolation_similarity values — the
-#       projector kinds (frozen projector) AND the distance metrics (cos/l1/l2/l_inf/
-#       geodesic, fixed interpolation), since no trainable projector is required.
+#   'linear_only'      (--refinement 3): the projection is held FIXED (frozen projector) and
+#       only a COPY of head.linear is fine-tuned.
 #   'random_projector_linear' (--refinement 4): replace the learned projector with the
 #       selected linear/mlp/autoencoder/linear_close/procrustes architecture at its seeded
 #       random initialization (_build_random_projector_bundle),
-#       freeze it, and fine-tune only a COPY of head.linear. --refinement 5 runs all three
-#       applicable modes; --refinement 3 retains its legacy two-mode behavior.
+#       freeze it, and fine-tune only a COPY of head.linear.
 #
 # Loss = lambda_B * reg(linear(proj(emb_B)),     labels_B)        # improve source (model B)
 #      + lambda_A * reg(linear(new_anchor_emb),  anchor_labels)   # preserve new-domain (model A)
@@ -346,7 +342,7 @@ REFINEMENT_CONFIG = {
                                     # keep the refined projector a true similarity transform — R held
                                     # (semi-)orthogonal at every step via a hard Stiefel constraint and
                                     # the scale a single isotropic scalar (see SimilarityProjector).
-                                    # Inert for linear_close / distance metrics / linear / mlp /
+                                    # Inert for linear_close / linear / mlp / autoencoder /
                                     # linear_only / num_anchors<=0. Sweepable via YAML.
   'lr_projector':       1e-4,     # learning rate for the projector params (projector_linear only)
   'lr_linear':          1e-5,     # smaller → change the linear layer only slightly
@@ -379,9 +375,8 @@ _REFINEMENT_SWEEPABLE = (
   'weight_decay', 'epochs', 'loss', 'batch_size', 'procrustes_constrained',
 )
 
-# --refinement flag → the refinement mode(s) to run. Values 0–3 retain their legacy
-# meanings. 4 uses a randomly initialized frozen projector and trains only the head;
-# 5 runs all three controls. Applicability still depends on interpolation_similarity.
+# --refinement flag → the refinement mode(s) to run. 4 uses a randomly initialized frozen
+# projector and trains only the head.
 _REFINE_FLAG_TO_MODES = {
   3: ['linear_only', 'projector_linear'],
   4: ['random_projector_linear'],
@@ -2362,8 +2357,7 @@ def _run_refinement_stage(old_model, new_model, old_model_pth, new_model_pth,
   # --- before/after metrics ---
   # The new-model preserve eval + projector-drift loss depend only on the bundle (not on
   # old_model_csv). The old-on-csv metrics depend on the projected split, so they are
-  # skipped here (left NaN) when old_model_tensors is None — the Optuna path fills them
-  # per-trial against the stored refine bundle.
+  # skipped here (left NaN) when old_model_tensors is None.
   if old_model_tensors is not None:
     old_emb = old_model_tensors['embeddings']
     old_lab = old_model_tensors['labels']
@@ -3419,9 +3413,6 @@ def _select_refinement_source_subset(
   }
 
 
-# ---------------------------------------------------------------------------
-# Optuna helpers
-# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Main pipeline
@@ -3434,8 +3425,7 @@ def cross_space_projection(args, out_root=None):
   Args:
     args     (argparse.Namespace): Parsed CLI arguments with fields:
       new_model_pth, old_model_pth, num_anchors, anchor_selection_type,
-      csv_anchor_selection, old_model_csv, interpolation_similarity,
-      weighting_method, rbf_sigma.
+      csv_anchor_selection, old_model_csv, interpolation_similarity, refinement.
     out_root (str | None):         Base directory for the output tree. Defaults to the current
                                    working directory when None, so callers can route outputs
                                    without changing cwd.
@@ -3643,10 +3633,9 @@ def cross_space_projection(args, out_root=None):
   label_denorm = _label_transform_from_config(new_config)
 
   # --- Step 8a: Optional post-projection refinement. --refinement selects which mode(s) run
-  #     for this test (see _applicable_refine_modes): 1=linear_only (projection FIXED, refine a
-  #     copy of head.linear; works for distance metrics too), 2=projector_linear (refine the
-  #     projector + a copy of head.linear; projector kinds only), 3=ALL applicable modes in one
-  #     run. Each mode trains independently into its own sub-dir; with >1 mode the headline
+  #     for this test (see _applicable_refine_modes): 3=linear_only (projection FIXED, refine a
+  #     copy of head.linear) and projector_linear (refine the projector + a copy of
+  #     head.linear); 4=random_projector_linear. Each mode trains independently into its own sub-dir; with >1 mode the headline
   #     predictions stay the pure projected output (there is no single "the refined" model). ---
   refine_results = {}  # mode -> _run_refinement_stage result
   classify_linear = new_model.head.linear
@@ -3654,8 +3643,8 @@ def cross_space_projection(args, out_root=None):
   if _modes:
     _refine_base = os.path.join(projector_dir, 'refinement')
     for _mode in _modes:
-      # Suffix the dir / tag per mode only when several modes run, so single-mode
-      # (--refinement 1/2) output paths stay byte-for-byte unchanged.
+      # Suffix the dir / tag per mode only when several modes run (--refinement 3); the
+      # single mode of --refinement 4 writes straight into 'refinement'.
       refine_dir = f'{_refine_base}_{_mode}' if len(_modes) > 1 else _refine_base
       print(f'[cross_space_projection] Refinement stage (mode={_mode}) → {refine_dir}')
       rr = _run_refinement_stage(
@@ -3812,7 +3801,7 @@ def cross_space_projection(args, out_root=None):
         'new_test_eval':     rr.get('new_test_eval'),
       }
     if len(refine_results) == 1:
-      # Single mode (--refinement 1/2): keep the legacy single-block schema unchanged.
+      # Single mode (--refinement 4): the single-block schema.
       dict_res['refinement'] = _refine_block(next(iter(refine_results.values())))
     else:
       # Multiple modes (--refinement 3): one block per mode under 'refinements'.
@@ -3845,7 +3834,7 @@ def cross_space_projection(args, out_root=None):
 
 # Top-level keys accepted in a --config YAML. The 8 sweep axes + run settings mirror
 # the CLI flags; 'linear_projector' / 'refinement_config' are the swept-recipe blocks.
-# Note: 'refinement' is the 0–5 on/off+mode flag (not the recipe block).
+# Note: 'refinement' is the 3/4 mode flag (not the recipe block).
 _ALLOWED_YAML_KEYS = {
   'new_model_pth', 'old_model_pth', 'num_anchors', 'num_refinement_samples',
   'anchor_selection_type',
@@ -3885,7 +3874,7 @@ def _yaml_to_argv(ycfg):
     ycfg (dict): Parsed YAML mapping (already validated against _ALLOWED_YAML_KEYS).
 
   Returns:
-    list[str]: argv tokens, e.g. ['--num_anchors', '50', '100', '--optuna_sampler', 'grid'].
+    list[str]: argv tokens, e.g. ['--num_anchors', '50', '--refinement', '3'].
   """
   argv = []
   if 'fake_projection' in ycfg:
@@ -3913,13 +3902,12 @@ def _collect_seed_records(result_path, seed):
   """
   Read back the (mae, ccc) of every result produced by one seed's run.
 
-  Handles both dispatch paths: an Optuna run (result_path is the study out_dir,
-  holding many trial*/results.pkl), and a single run (result_path is a single
+  Handles both result layouts: a directory holding many trial*/results.pkl, and a single run (result_path is a single
   results_*.pkl file). Each record carries a `config` string so trials can later
   be grouped across seeds; single runs use the sentinel 'single'.
 
   Args:
-    result_path (str): Optuna out_dir (a directory) or single-run results .pkl path.
+    result_path (str): Directory of trial results or single-run results .pkl path.
     seed        (int): The seed that produced result_path (stamped on every record).
 
   Returns:
@@ -4323,14 +4311,14 @@ if __name__ == '__main__':
   parser.add_argument('--mlp_activation', type=str, nargs='+', default=['gelu'],
                       choices=list(_ACTIVATIONS),
                       help="Activation(s) for the 'mlp' projector "
-                           '(Linear(D_old,D_new)->act->Linear(D_new,D_new)). Sweepable: each '
-                           'value becomes a separate Optuna trial. Ignored for non-mlp interps.')
+                           '(Linear(D_old,D_new)->act->Linear(D_new,D_new)). One value '
+                           'per YAML. Ignored for non-mlp interps.')
   parser.add_argument('--mlp_num_layers', type=int, nargs='+', default=[1],
                       help="Depth(s) of the 'mlp' projector. 1 (default) = "
                            'Linear(D_old,D_new)->act->Linear(D_new,D_new) (current behavior); '
                            'each +1 appends one more act->Linear(D_new,D_new) block (same '
-                           'activation, no trailing activation). Sweepable: each value becomes a '
-                           'separate Optuna trial. Ignored for non-mlp interps.')
+                           'activation, no trailing activation). One value per '
+                           'YAML. Ignored for non-mlp interps.')
   parser.add_argument('--weighting_method', type=str, nargs='+', default=['none'], choices=['none'],
                       help="Kept for the config format and the result summaries; only 'none' "
                            '(projectors map embeddings directly).')
@@ -4360,7 +4348,7 @@ if __name__ == '__main__':
                            'A single seed reproduces the previous behavior. Multiple seeds re-run '
                            'the whole grid once per seed (each under a seed<N> subfolder) and write '
                            'a cross-seed mean+/-std summary. Default 42.')
-  parser.add_argument('--refinement', type=int, choices=[3, 4], default=3,
+  parser.add_argument('--refinement', type=int, choices=[3, 4], required=True,
                       help='Post-projection refinement: 3 = projector-only (projection held fixed, '
                            'a copy of the new model head.linear is fine-tuned) and joint (projector + '
                            'head.linear) refinement, each in its own sub-dir; 4 = frozen random '
@@ -4382,7 +4370,7 @@ if __name__ == '__main__':
       parser.error(f"unknown top-level YAML key(s) {sorted(_unknown)}; "
                    f"allowed: {sorted(_ALLOWED_YAML_KEYS)}")
     if isinstance(_ycfg.get('refinement'), dict):
-      parser.error("YAML key 'refinement' is the 0–5 on/off+mode flag; put the swept "
+      parser.error("YAML key 'refinement' is the 3/4 mode flag; put the swept "
                    "refinement hyperparameters under 'refinement_config' instead")
     try:
       args = parser.parse_args(_yaml_to_argv(_ycfg))
@@ -4417,15 +4405,15 @@ if __name__ == '__main__':
     _r['mode']    = REFINEMENT_CONFIG['mode']
   if any(n <= 0 for n in args.num_anchors):
     parser.error(f'--num_anchors must be > 0 (got {args.num_anchors})')
-  # use_optuna is decided by the non-seed axes only: a seed sweep must NOT force Optuna
-  # mode (each seed is an independent run that re-runs the seed-dependent precompute).
+  # A sweep is decided by the non-seed axes only: a list of seeds is allowed (each seed is
+  # an independent run), more than one value on any other axis is rejected below.
   _hyper_lists = [
     args.num_anchors, args.num_refinement_samples,
     args.anchor_selection_type, args.csv_anchor_selection,
     args.old_model_csv, args.interpolation_similarity, args.mlp_activation,
     args.mlp_num_layers, args.weighting_method, args.rbf_sigma,
   ]
-  use_optuna = (
+  is_sweep = (
     any(len(v) > 1 for v in _hyper_lists)
     or (args.n_trials is not None and args.n_trials > 1)
     or len(args.projector_recipes) > 1
@@ -4441,7 +4429,7 @@ if __name__ == '__main__':
   _old_pths    = list(args.old_model_pth)
   _model_pairs = [(i, j, n, o) for i, n in enumerate(_new_pths) for j, o in enumerate(_old_pths)]
   _multi_model = len(_model_pairs) > 1
-  if use_optuna:
+  if is_sweep:
     parser.error(
       'hyperparameter sweeps are not supported: give one value per axis and a single recipe '
       '(run one YAML per value, as reproduce/figure_anchor_budget.py does for num_anchors).')
@@ -4450,7 +4438,7 @@ if __name__ == '__main__':
   #     previous behavior byte-identical (no seed subfolder, no summary). Multiple seeds
   #     route each run under run_tag/seed<N> and write a cross-seed mean+/-std summary.
   #     Reseeding the module-global _SEED makes every call-time consumer (anchor sampling,
-  #     subject-disjoint splits, Optuna sampler, weight init / shuffle) use this seed. ---
+  #     subject-disjoint splits, weight init / shuffle) use this seed. ---
   _seeds        = args.seed                    # list[int] (argparse nargs='+')
   _multi_seed   = len(_seeds) > 1
   _group        = args.run_tag or f'seed_sweep_{int(time.time())}'  # parent of the per-seed runs
@@ -4459,7 +4447,7 @@ if __name__ == '__main__':
     _set_global_seed(_s)
     args.seed = _s                             # scalar for this run's logging / single_args
     if _multi_seed:
-      args.run_tag = f'{_group}/seed{_s}'      # nests under run_optuna's group/leaf rpartition
+      args.run_tag = f'{_group}/seed{_s}'      # group/leaf split of run_tag, see --run_tag
     if _multi_model:
       # Every new×old pair runs as a subtrial under the current run_tag; results pooled.
       _out = _run_model_combos(args, _model_pairs,

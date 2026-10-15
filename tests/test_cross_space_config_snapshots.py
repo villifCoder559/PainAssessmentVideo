@@ -31,6 +31,7 @@ RAW_CONFIG = (
     b"csv_anchor_selection: [train]\r\n"
     b"old_model_csv: [test]\r\n"
     b"run_tag: snapshots/standalone\r\n"
+    b"refinement: 3\r\n"
 )
 
 
@@ -218,3 +219,15 @@ def test_model_combo_aggregate_reuses_directory_uid_and_names_class_cutoff(
     assert aggregate["config_cross_space_projection"]["uid"] == 100
     assert aggregate["config_cross_space_projection"]["remove_classes_greater"] == cutoff
 
+
+
+def test_yaml_without_refinement_is_rejected(tmp_path, monkeypatch, capsys):
+    config = tmp_path / "no_refinement.yaml"
+    config.write_bytes(RAW_CONFIG.replace(b"refinement: 3\r\n", b""))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", [str(PROJECTION_SCRIPT), "--config", str(config)])
+
+    with pytest.raises(SystemExit):
+        runpy.run_path(str(PROJECTION_SCRIPT), run_name="__main__")
+
+    assert "--refinement" in capsys.readouterr().err
