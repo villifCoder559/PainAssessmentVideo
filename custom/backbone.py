@@ -70,7 +70,6 @@ class VideoBackbone(BackboneBase):
     model_type: ModelTypeEntry,
     remove_head: bool = True,
     use_sdpa: bool = False,
-    custom_model_path: bool = False,
   ):
     """Initialize the video backbone.
 
@@ -78,7 +77,6 @@ class VideoBackbone(BackboneBase):
       model_type:        Type of model to use from MODEL_TYPE enum.
       remove_head:       Whether to remove classification head.
       use_sdpa:          Whether to use scaled dot-product attention.
-      custom_model_path: Use a custom model path instead of the default.
 
     The backbone is always frozen: the paper trains only the head on precomputed embeddings.
 
@@ -103,7 +101,7 @@ class VideoBackbone(BackboneBase):
     #     f"Model not found at {model_path}. "
     #     )
     if model_type in [MODEL_TYPE.VIDEOMAE_v2_S, MODEL_TYPE.VIDEOMAE_v2_B, MODEL_TYPE.VIDEOMAE_v2_G, MODEL_TYPE.VIDEOMAE_v2_G_unl]:
-      if model_type == MODEL_TYPE.VIDEOMAE_v2_G_unl or custom_model_path:
+      if model_type == MODEL_TYPE.VIDEOMAE_v2_G_unl:
         # Load pretrained model
         self.model = self._load_model_pretrained(model_type)
       else:

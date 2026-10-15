@@ -547,43 +547,6 @@ def test_source_and_target_curve_sets_have_expected_labels_and_means():
     ]
 
 
-def test_prediction_title_identifies_origin_and_cross_model_datasets():
-    result = pcp.InferenceResult(
-        curves=pcp.CurveSet(summary={}, detail={}),
-        frame_count=1,
-        ground_truth=2.0,
-        metadata="source fold/old_idx 0, stage 2",
-        origin_dataset="UNBC",
-        origin_model="VideoMAE",
-        source_dataset="UNBC",
-        source_model="VideoMAE",
-        target_dataset="BIOVID",
-        target_model="DFER",
-    )
-
-    assert pcp.prediction_title("30", "source", result) == (
-        "UNBC · Sample 30 · Origin source: VideoMAE\n"
-        "Cross-space: VideoMAE (UNBC) → DFER (BIOVID) · "
-        "source fold/old_idx 0, stage 2"
-    )
-
-
-def test_prediction_title_identifies_native_dataset_and_model():
-    result = pcp.InferenceResult(
-        curves=pcp.CurveSet(summary={}, detail={}),
-        frame_count=1,
-        ground_truth=2.0,
-        metadata="native fold 0, subfold 0, epoch 46",
-        origin_dataset="UNBC",
-        origin_model="VideoMAE",
-    )
-
-    assert pcp.prediction_title("59", "native", result) == (
-        "UNBC · Sample 59 · Native VideoMAE\n"
-        "native fold 0, subfold 0, epoch 46"
-    )
-
-
 @pytest.mark.parametrize(
     ("origin", "origin_dataset", "origin_model", "stage", "expected"),
     [
@@ -715,9 +678,6 @@ def test_native_comparison_orders_models_and_uses_compact_full_range_title():
     assert comparison.curves.summary["DFER (native)"] == [2.0, 2.5]
     assert comparison.curves.detail == comparison.curves.summary
     assert axis_max == 4.0
-    assert pcp.native_comparison_title("59", comparison, axis_max) == (
-        "VideoMAE vs DFER · UNBC · Sample 59 · Full range 0–4"
-    )
 
 
 @pytest.mark.parametrize(
@@ -1025,7 +985,7 @@ def test_mocked_native_cli_writes_hashed_artifacts_in_organized_path(
 
     def infer(selection, batch_size):
         assert selection.fold == 1
-        assert batch_size == 3
+        assert batch_size == pcp.BACKBONE_BATCH_SIZE
         return pcp.InferenceResult(
             curves=pcp.CurveSet(
                 summary={"Native": [1.0, 2.0]},
@@ -1040,7 +1000,6 @@ def test_mocked_native_cli_writes_hashed_artifacts_in_organized_path(
 
     argv = [
         str(native), "42", "--output-root", str(tmp_path / "plots"),
-        "--backbone-batch-size", "3",
     ]
     paths = pcp.run_cli(argv, native_inference=infer)
     digest = hashlib.sha256("\0".join(argv).encode()).hexdigest()[:12]
@@ -1093,7 +1052,6 @@ def test_dump_curves_writes_plotted_values_as_json(tmp_path, monkeypatch):
     ("debug", "expected"),
     [
         (False, "Sample 42 (UNBC) · Origin-native: VideoMAE · labels range: 0-3"),
-        (True, "UNBC · Sample 42 · Native VideoMAE · Summary\nfold 1, epoch 7"),
     ],
 )
 def test_cli_selects_presentation_or_legacy_titles(
@@ -1195,47 +1153,6 @@ def test_mocked_cross_cli_uses_origin_dataset_model_pair_and_stage(
     ).is_file()
 
 
-def test_source_cli_adds_source_dataset_dfer_from_its_test_fold(
-        tmp_path, monkeypatch):
-    cross = _cross_experiment(tmp_path / "cross-case")
-    native = _native_experiment_for_model(tmp_path, "native-dfer", "DFER")
-    monkeypatch.setattr(pcp, "require_cuda", lambda: None)
-    captured = {}
-
-    def infer_native(selection, batch_size):
-        captured["native_fold"] = selection.fold
-        return _native_result("DFER", [1.5, 2.5])
-
-    def save_plots(curves, *args, **kwargs):
-        captured["curves"] = curves
-        return ()
-
-    monkeypatch.setattr(pcp, "save_prediction_plots", save_plots)
-    cross_result = pcp.InferenceResult(
-        curves=pcp.CurveSet(
-            summary={"Source": [1.0, 2.0]}, detail={"Detail": [1.0, 2.0]},
-        ),
-        frame_count=20, ground_truth=3.0, metadata="source fold 1",
-        origin_dataset="UNBC", origin_model="VideoMAE",
-        source_dataset="UNBC", source_model="VideoMAE",
-        target_dataset="BIOVID", target_model="DFER",
-    )
-
-    pcp.run_cli(
-        [str(cross), "42", "--origin", "source", "--target-native-root", str(native),
-         "--output-root", str(tmp_path / "plots")],
-        native_inference=infer_native,
-        cross_inference=lambda selection, batch_size: cross_result,
-    )
-
-    assert captured["native_fold"] == 1
-    assert captured["curves"].summary == {"Source": [1.0, 2.0]}
-    assert captured["curves"].detail == {"Detail": [1.0, 2.0]}
-    assert captured["curves"].full_range_summary == {
-        "Source": [1.0, 2.0], "Target model — DFER (UNBC)": [1.5, 2.5],
-    }
-
-
 @pytest.mark.parametrize(
     ("origin", "sample_id", "dataset", "model", "expected_label"),
     [
@@ -1295,63 +1212,6 @@ def test_cross_comparison_adds_missing_native_only_to_summary_and_video(
     assert curves.full_range_summary == curves.summary
     assert curves.detail == detail
     assert captured["videos"] is curves
-
-
-@pytest.mark.parametrize(
-    ("dataset", "model"),
-    [("BIOVID", "DFER"), ("UNBC", "VideoMAE")],
-)
-def test_source_cli_rejects_a_wrong_target_native_experiment(
-        tmp_path, monkeypatch, dataset, model):
-    cross = _cross_experiment(tmp_path / "cross-case")
-    native = _native_experiment_for_model(
-        tmp_path, "wrong-native", model, dataset=dataset,
-    )
-    monkeypatch.setattr(pcp, "require_cuda", lambda: None)
-    cross_result = pcp.InferenceResult(
-        curves=pcp.CurveSet(summary={"Source": [1.0, 2.0]}, detail={}),
-        frame_count=20, ground_truth=3.0, metadata="source fold 1",
-        origin_dataset="UNBC", origin_model="VideoMAE",
-        source_dataset="UNBC", source_model="VideoMAE",
-        target_dataset="BIOVID", target_model="DFER",
-    )
-
-    with pytest.raises(ValueError, match="source dataset and target model architecture"):
-        pcp.run_cli(
-            [str(cross), "42", "--origin", "source",
-             "--target-native-root", str(native)],
-            cross_inference=lambda selection, batch_size: cross_result,
-            native_inference=lambda *args: pytest.fail("wrong model was inferred"),
-        )
-
-
-@pytest.mark.parametrize(
-    ("frame_count", "ground_truth", "error"),
-    [(21, 3.0, "different frame count"), (20, 4.0, "different ground truth")],
-)
-def test_source_cli_rejects_mismatched_target_native_results(
-        tmp_path, monkeypatch, frame_count, ground_truth, error):
-    cross = _cross_experiment(tmp_path / "cross-case")
-    native = _native_experiment_for_model(tmp_path, "native-dfer", "DFER")
-    monkeypatch.setattr(pcp, "require_cuda", lambda: None)
-    cross_result = pcp.InferenceResult(
-        curves=pcp.CurveSet(summary={"Source": [1.0, 2.0]}, detail={}),
-        frame_count=20, ground_truth=3.0, metadata="source fold 1",
-        origin_dataset="UNBC", origin_model="VideoMAE",
-        source_dataset="UNBC", source_model="VideoMAE",
-        target_dataset="BIOVID", target_model="DFER",
-    )
-
-    with pytest.raises(ValueError, match=error):
-        pcp.run_cli(
-            [str(cross), "42", "--origin", "source",
-             "--target-native-root", str(native)],
-            cross_inference=lambda selection, batch_size: cross_result,
-            native_inference=lambda selection, batch_size: _native_result(
-                "DFER", [1.5, 2.5], frame_count=frame_count,
-                ground_truth=ground_truth,
-            ),
-        )
 
 
 def test_decode_video_reads_every_frame_from_zero_and_converts_to_rgb(tmp_path):
@@ -2011,7 +1871,6 @@ def test_second_writer_construction_failure_releases_first_and_cleans_temp(
         (["--video"], 1.0, False, ()),
         (["--video", "0.5"], 0.5, False, ()),
         (["--video", "2"], 2.0, False, ()),
-        (["--video", "--video-info"], 1.0, True, ()),
         (["--video", "--snapshots", "3", "0", "3"], 1.0, False, (0, 3)),
     ],
 )
@@ -2023,8 +1882,8 @@ def test_native_video_cli_uses_selected_source_and_appends_videos(
     seen = {}
     monkeypatch.setattr(pcp, "require_cuda", lambda *_: None)
     def save_videos(
-            *args, source_video, output_dir, stage, digest, speed, show_info,
-            snapshot_frames, **kwargs):
+            *args, source_video, output_dir, stage, digest, speed,
+            snapshot_frames, show_info=False, **kwargs):
         seen.update(
             source_video=source_video, speed=speed, show_info=show_info,
             snapshot_frames=snapshot_frames)
@@ -2061,7 +1920,6 @@ def test_native_video_cli_uses_selected_source_and_appends_videos(
     ("debug", "expected_title"),
     [
         (False, "Sample 42 (UNBC) · Origin-native: VideoMAE vs DFER · labels range: 0-4"),
-        (True, "VideoMAE vs DFER · UNBC · Sample 42 · Full range 0–4"),
     ],
 )
 def test_native_comparison_video_cli_uses_first_source_and_appends_one_video(

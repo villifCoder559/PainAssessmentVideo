@@ -210,25 +210,6 @@ def target_curve_set(
     )
 
 
-def prediction_title(
-    sample_id: str,
-    origin: str,
-    result: InferenceResult,
-) -> str:
-    if origin == "native":
-        return (
-            f"{result.origin_dataset} · Sample {sample_id} · "
-            f"Native {result.origin_model}\n{result.metadata}"
-        )
-    source = f"{result.source_model} ({result.source_dataset})"
-    target = f"{result.target_model} ({result.target_dataset})"
-    return (
-        f"{result.origin_dataset} · Sample {sample_id} · "
-        f"Origin {origin}: {result.origin_model}\n"
-        f"Cross-space: {source} → {target} · {result.metadata}"
-    )
-
-
 def presentation_title(
     sample_id: str,
     origin: str,
@@ -302,17 +283,6 @@ def validate_native_comparison_selections(
     identity = ("sample_id", "subject_name", "sample_name")
     if any(first.row.get(key) != second.row.get(key) for key in identity):
         raise ValueError("native comparison experiments must refer to the same sample")
-
-
-def native_comparison_title(
-    sample_id: str,
-    result: InferenceResult,
-    y_max: float,
-) -> str:
-    return (
-        f"VideoMAE vs DFER · {result.origin_dataset} · Sample {sample_id} · "
-        f"Full range 0–{y_max:g}"
-    )
 
 
 def prediction_figure_title(
@@ -1612,6 +1582,9 @@ def _non_negative_float(value: str) -> float:
     return number
 
 
+BACKBONE_BATCH_SIZE = 8  # backbone forward passes per batch of 16-frame chunks
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -1624,15 +1597,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--compare-native-root", type=Path,
         help="native experiment for the other model on the sample's dataset",
     )
-    parser.add_argument(
-        "--target-native-root", type=Path,
-        help="native target-model experiment trained on the source dataset",
-    )
     parser.add_argument("--origin", choices=("source", "target"))
     parser.add_argument("--refinement-stage", type=int, choices=(1, 2, 4), default=2)
-    parser.add_argument("--debug_title", action="store_true")
     parser.add_argument("--output-root", type=Path, default=Path("chunk_prediction_plots"))
-    parser.add_argument("--backbone-batch-size", type=int, default=8)
     parser.add_argument(
         "--video",
         dest="video_speed",
@@ -1641,10 +1608,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=_positive_finite_speed,
         default=None,
         metavar="SPEED",
-    )
-    parser.add_argument(
-        "--video-info", action="store_true",
-        help="overlay source/playback FPS and speed on --video output",
     )
     parser.add_argument(
         "--snapshots", nargs="+", type=_non_negative_frame, default=None,
@@ -1709,8 +1672,6 @@ def run_cli(
 ) -> tuple[Path, ...]:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = build_parser().parse_args(raw_argv)
-    if args.backbone_batch_size < 1:
-        raise ValueError("--backbone-batch-size must be positive")
     video_enabled = args.video_speed is not None
     if args.snapshots is not None and not video_enabled:
         raise ValueError("--snapshots requires --video")
@@ -1721,12 +1682,6 @@ def run_cli(
         if kind == "native":
             raise ValueError("--compare-native-root requires two native experiments")
         raise ValueError("--compare-native-root requires a native experiment")
-    if args.target_native_root is not None and (
-        kind != "cross" or args.origin != "source"
-    ):
-        raise ValueError("--target-native-root requires a source-origin cross experiment")
-    if comparison_enabled and args.target_native_root is not None:
-        raise ValueError("--compare-native-root and --target-native-root are exclusive")
     if kind == "native":
         if args.origin is not None:
             raise ValueError("--origin is only valid for cross-projection experiments")
@@ -1742,15 +1697,15 @@ def run_cli(
             comparison_y_max = dataset_axis_max(
                 comparison_selection.config, comparison_selection.test_csv
             )
-            result = inference(selection, args.backbone_batch_size)
+            result = inference(selection, BACKBONE_BATCH_SIZE)
             comparison_result = inference(
-                comparison_selection, args.backbone_batch_size
+                comparison_selection, BACKBONE_BATCH_SIZE
             )
             result, y_max = combine_native_results(
                 result, comparison_result, y_max, comparison_y_max
             )
         else:
-            result = inference(selection, args.backbone_batch_size)
+            result = inference(selection, BACKBONE_BATCH_SIZE)
         origin = "native"
         source_video = selection.video_path if video_enabled else None
     else:
@@ -1770,8 +1725,8 @@ def run_cli(
         )
         y_max = dataset_axis_max(fixed_config, selection.test_csv)
         inference = cross_inference or infer_cross
-        result = inference(selection, args.backbone_batch_size)
-        cross_native_root = args.compare_native_root or args.target_native_root
+        result = inference(selection, BACKBONE_BATCH_SIZE)
+        cross_native_root = args.compare_native_root
         if cross_native_root is not None:
             missing_side = "target" if args.origin == "source" else "source"
             expected_model = (
@@ -1792,7 +1747,7 @@ def run_cli(
                     f"dataset and {missing_side} model architecture"
                 )
             native_result = (native_inference or infer_native)(
-                native_selection, args.backbone_batch_size
+                native_selection, BACKBONE_BATCH_SIZE
             )
             if (native_result.origin_dataset, native_result.origin_model) != (
                 native_dataset, native_model
@@ -1824,9 +1779,7 @@ def run_cli(
             }
             result = replace(result, curves=replace(
                 result.curves,
-                summary=(
-                    comparison_summary if comparison_enabled else result.curves.summary
-                ),
+                summary=comparison_summary,
                 full_range_summary=comparison_summary,
             ))
         origin = args.origin
@@ -1858,12 +1811,7 @@ def run_cli(
                 f"--snapshots frame {frame} is outside 0–{result.frame_count - 1}"
             )
     if native_comparison_enabled:
-        title = (
-            native_comparison_title(args.sample_id, result, y_max)
-            if args.debug_title else presentation_title(
-                args.sample_id, origin, result, y_max, stage=None
-            )
-        )
+        title = presentation_title(args.sample_id, origin, result, y_max, stage=None)
         paths = (save_native_comparison_plot(
             result.curves,
             ranges,
@@ -1875,12 +1823,9 @@ def run_cli(
             y_headroom=args.y_headroom,
         ),)
     else:
-        title = (
-            prediction_title(args.sample_id, origin, result)
-            if args.debug_title else presentation_title(
-                args.sample_id, origin, result, y_max,
-                stage=None if origin == "native" else args.refinement_stage,
-            )
+        title = presentation_title(
+            args.sample_id, origin, result, y_max,
+            stage=None if origin == "native" else args.refinement_stage,
         )
         paths = save_prediction_plots(
             result.curves,
@@ -1891,7 +1836,6 @@ def run_cli(
             stage=args.refinement_stage,
             digest=digest,
             y_max=y_max,
-            debug_title=args.debug_title,
             y_headroom=args.y_headroom,
         )
     if video_enabled:
@@ -1906,7 +1850,6 @@ def run_cli(
                 digest=digest,
                 y_max=y_max,
                 speed=args.video_speed,
-                show_info=args.video_info,
                 snapshot_frames=snapshot_frames,
             ),)
         else:
@@ -1921,8 +1864,6 @@ def run_cli(
                 digest=digest,
                 y_max=y_max,
                 speed=args.video_speed,
-                debug_title=args.debug_title,
-                show_info=args.video_info,
                 snapshot_frames=snapshot_frames,
             )
     if args.dump_curves:

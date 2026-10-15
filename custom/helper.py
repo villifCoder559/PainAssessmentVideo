@@ -75,20 +75,6 @@ def init_log_video_embeddings():
     'labels':[],
     'sample_ids':[]
   }
-def get_sampling_frame_startegy(strategy):
-  """Get sampling strategy from string name."""
-  strategy = strategy.lower()
-  if strategy == SAMPLE_FRAME_STRATEGY.UNIFORM.value:
-    return SAMPLE_FRAME_STRATEGY.UNIFORM
-  elif strategy == SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW.value:
-    return SAMPLE_FRAME_STRATEGY.SLIDING_WINDOW
-  elif strategy == SAMPLE_FRAME_STRATEGY.CENTRAL_SAMPLING.value:
-    return SAMPLE_FRAME_STRATEGY.CENTRAL_SAMPLING
-  elif strategy == SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING.value:
-    return SAMPLE_FRAME_STRATEGY.RANDOM_SAMPLING 
-  else:
-    raise ValueError(f'Sampling strategy not found: {strategy}. Valid options: {list(SAMPLE_FRAME_STRATEGY)}')
-  
 step_shift = None  ## keep none to force setting it before use
 
 def set_step_shift(folder_feature):
@@ -381,25 +367,6 @@ class MODEL_TYPE:
   ViT_image         = _entries['ViT_image']
   DFER             = _entries['DFER']
   
-  @classmethod
-  def set_custom_model_type(cls, type, custom_model_path):
-    mapping = {
-      'S': 'VIDEOMAE_v2_S',
-      'B': 'VIDEOMAE_v2_B',
-      'G': 'VIDEOMAE_v2_G',
-      'G_unl': 'VIDEOMAE_v2_G_unl',
-      # 'VJEPA2_G_384': 'VJEPA2_G_384',
-      'vjepa2_L_fpc64_256': 'vjepa2_L_fpc64_256',
-      'vjepa2_G_fpc64_384': 'vjepa2_G_fpc64_384',
-      'vjepa2_1_B': 'vjepa2_1_B',
-      'ViT_image': 'ViT_image',
-      'DFER': 'DFER'
-    }
-    key = mapping.get(type)
-    if key is None or key not in cls._entries:
-      raise ValueError(f"Model type '{type}' not found. Choose from: {list(mapping.keys())}")
-    cls._entries[key].value = custom_model_path
-
   @classmethod
   def get_model_type(cls, type):
     mapping = {

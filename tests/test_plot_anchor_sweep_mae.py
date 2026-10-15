@@ -847,103 +847,9 @@ def test_module_help_lists_core_cli_modes():
     help_text = " ".join(result.stdout.split())
 
     assert result.returncode == 0, result.stderr
-    assert "--aggregate-policy" in help_text
-    assert "exactly one aggregate" in help_text
-    assert "highest numeric aggregate UID" in help_text
-    assert "--allow-incomplete" in help_text
-    assert "--extract-only" in help_text
-    assert "--plot-only" in help_text
-    assert "--show-std" in help_text
-    assert "--exclude-linear-close" in help_text
-
-
-def test_exclude_linear_close_preserves_tables_and_filters_figures(tmp_path):
-    root = tmp_path / "anchor_sweep"
-    _make_complete_group(root, method="linear")
-    _make_complete_group(root, method="linear_close")
-    output = tmp_path / "results"
-
-    result = _run_module(
-        "--input-root",
-        root,
-        "--output-dir",
-        output,
-        "--exclude-linear-close",
-        "--metric",
-        "micro",
-        "--anchor-scale",
-        "categorical",
-        "--format",
-        "png",
-        "--dpi",
-        72,
-        "--workers",
-        1,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    summary = pd.read_csv(output / "data" / "anchor_sweep_summary.csv")
-    subtrials = pd.read_csv(output / "data" / "anchor_sweep_subtrials.csv")
-    best = pd.read_csv(output / "data" / "anchor_sweep_best_anchors.csv")
-    validation = pd.read_csv(output / "data" / "validation_report.csv")
-    assert set(summary["method"]) == {"linear", "linear_close"}
-    assert set(subtrials["method"]) == {"linear", "linear_close"}
-    assert set(best["method"]) == {"linear", "linear_close"}
-    assert set(validation.loc[validation["method"].notna(), "method"]) == {
-        "linear",
-        "linear_close",
-    }
-    cache_names = {path.name for path in (output / "cache").iterdir()}
-    assert {
-        "biovid-to-mintpain__linear__K5.csv",
-        "biovid-to-mintpain__linear__K5.json",
-        "biovid-to-mintpain__linear_close__K5.csv",
-        "biovid-to-mintpain__linear_close__K5.json",
-    } <= cache_names
-    figures = sorted((output / "figures" / "micro").glob("*.png"))
-    assert len(figures) == 5
-    assert all("linear_close" not in path.name for path in figures)
-    with (output / "data" / "run_metadata.json").open(encoding="utf-8") as stream:
-        metadata = json.load(stream)
-    assert metadata["arguments"]["exclude_linear_close"] is True
-    assert metadata["subtrial_rows"] == 100
-    assert len(metadata["figures"]) == 5
-    assert all("linear_close" not in Path(path).name for path in metadata["figures"])
-
-
-def test_exclude_linear_close_conflicts_with_explicit_method_selection():
-    result = _run_module(
-        "--method",
-        "linear_close",
-        "mlp",
-        "--exclude-linear-close",
-    )
-
-    assert result.returncode != 0
-    assert "--exclude-linear-close cannot be combined" in result.stderr
-
-
-def test_exclude_linear_close_is_a_noop_for_extract_only(tmp_path):
-    root = tmp_path / "anchor_sweep"
-    _make_complete_group(root, method="linear_close")
-    output = tmp_path / "results"
-
-    result = _run_module(
-        "--input-root",
-        root,
-        "--output-dir",
-        output,
-        "--method",
-        "linear_close",
-        "--exclude-linear-close",
-        "--extract-only",
-        "--workers",
-        1,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    summary = pd.read_csv(output / "data" / "anchor_sweep_summary.csv")
-    assert set(summary["method"]) == {"linear_close"}
+    assert "--input-root" in help_text
+    assert "--output-dir" in help_text
+    assert "--workers" in help_text
 
 
 def test_inconsistent_projector_only_values_fail_before_cache_or_tables(tmp_path):
@@ -960,7 +866,6 @@ def test_inconsistent_projector_only_values_fail_before_cache_or_tables(tmp_path
         root,
         "--output-dir",
         output,
-        "--extract-only",
         "--workers",
         1,
     )
@@ -973,55 +878,6 @@ def test_inconsistent_projector_only_values_fail_before_cache_or_tables(tmp_path
     assert not (output / "data" / "anchor_sweep_subtrials.csv").exists()
 
 
-def test_plot_only_reports_inconsistent_cached_before_values_cleanly(tmp_path):
-    root = tmp_path / "anchor_sweep"
-    _make_complete_group(root)
-    output = tmp_path / "results"
-    extraction = _run_module(
-        "--input-root",
-        root,
-        "--output-dir",
-        output,
-        "--extract-only",
-        "--workers",
-        1,
-    )
-    assert extraction.returncode == 0, extraction.stdout + extraction.stderr
-    cache_csv = output / "cache" / "biovid-to-mintpain__linear__K5.csv"
-    cached = pd.read_csv(cache_csv)
-    mismatch = (
-        (cached["refinement_mode"] == "projector_linear")
-        & (cached["new_idx"] == 0)
-        & (cached["old_idx"] == 0)
-    )
-    cached.loc[mismatch, "target_before_micro"] += 0.5
-    cached.to_csv(cache_csv, index=False)
-    for name in (
-        "anchor_sweep_subtrials.csv",
-        "anchor_sweep_summary.csv",
-        "anchor_sweep_best_anchors.csv",
-    ):
-        (output / "data" / name).unlink()
-
-    result = _run_module(
-        "--output-dir",
-        output,
-        "--plot-only",
-        "--plots",
-        "heatmap",
-        "--metric",
-        "micro",
-        "--format",
-        "png",
-    )
-
-    assert result.returncode != 0
-    assert "Traceback" not in result.stderr
-    report = pd.read_csv(output / "data" / "validation_report.csv")
-    assert report["message"].str.contains("target_before_micro").any()
-    assert not (output / "data" / "anchor_sweep_subtrials.csv").exists()
-
-
 def test_cli_writes_tables_reuses_cache_and_invalidates_changed_subtrial(tmp_path):
     root = tmp_path / "anchor_sweep"
     _, subtrial_paths = _make_complete_group(root)
@@ -1031,15 +887,8 @@ def test_cli_writes_tables_reuses_cache_and_invalidates_changed_subtrial(tmp_pat
         root,
         "--output-dir",
         output,
-        "--direction",
-        "biovid-to-mintpain",
-        "--method",
-        "linear",
-        "--anchors",
-        5,
         "--workers",
         1,
-        "--extract-only",
     )
 
     first = _run_module(*arguments)
@@ -1084,53 +933,6 @@ def test_cli_writes_tables_reuses_cache_and_invalidates_changed_subtrial(tmp_pat
     assert set(changed_pair["actual_anchors"]) == {3}
 
 
-def test_plot_only_uses_compatible_cache_without_scanning_input_root(tmp_path):
-    root = tmp_path / "anchor_sweep"
-    _make_complete_group(root)
-    output = tmp_path / "results"
-    extraction = _run_module(
-        "--input-root",
-        root,
-        "--output-dir",
-        output,
-        "--workers",
-        1,
-        "--extract-only",
-    )
-    assert extraction.returncode == 0, extraction.stdout + extraction.stderr
-    root.rename(tmp_path / "moved-away")
-
-    plotting = _run_module(
-        "--input-root",
-        root,
-        "--output-dir",
-        output,
-        "--plot-only",
-        "--direction",
-        "biovid-to-mintpain",
-        "--method",
-        "linear",
-        "--anchors",
-        5,
-        "--metric",
-        "micro",
-        "--anchor-scale",
-        "categorical",
-        "--plots",
-        "methods",
-        "--format",
-        "png",
-        "--dpi",
-        72,
-    )
-
-    assert plotting.returncode == 0, plotting.stdout + plotting.stderr
-    figures = list((output / "figures" / "micro").glob("*.png"))
-    assert [path.name for path in figures] == [
-        "methods__biovid-to-mintpain__categorical.png"
-    ]
-
-
 def test_strict_validation_exits_nonzero_before_plotting(tmp_path):
     root = tmp_path / "anchor_sweep"
     pairs = [(new, old) for new in range(5) for old in range(5)][:-1]
@@ -1142,10 +944,6 @@ def test_strict_validation_exits_nonzero_before_plotting(tmp_path):
         root,
         "--output-dir",
         output,
-        "--format",
-        "png",
-        "--metric",
-        "micro",
     )
 
     assert result.returncode != 0
@@ -1162,7 +960,7 @@ def test_corrupt_aggregate_is_reported_as_validation_error(tmp_path):
     aggregate.write_bytes(b"not a pickle")
     output = tmp_path / "results"
 
-    result = _run_module("--input-root", root, "--output-dir", output, "--extract-only")
+    result = _run_module("--input-root", root, "--output-dir", output)
 
     assert result.returncode != 0
     assert "Traceback" not in result.stderr
@@ -1177,7 +975,7 @@ def test_missing_anchors_csv_is_reported_before_extraction(tmp_path):
     (subtrials[0].parent / "anchors.csv").unlink()
     output = tmp_path / "results"
 
-    result = _run_module("--input-root", root, "--output-dir", output, "--extract-only")
+    result = _run_module("--input-root", root, "--output-dir", output)
 
     assert result.returncode != 0
     assert "Traceback" not in result.stderr
@@ -1216,16 +1014,6 @@ def test_interactive_analysis_shows_phase_progress_and_eta(tmp_path, monkeypatch
             str(output),
             "--workers",
             "1",
-            "--metric",
-            "micro",
-            "--anchor-scale",
-            "categorical",
-            "--plots",
-            "methods",
-            "--format",
-            "png",
-            "--dpi",
-            "72",
         ]
     )
     stderr = capsys.readouterr().err

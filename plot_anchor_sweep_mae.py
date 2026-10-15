@@ -1506,16 +1506,6 @@ def _global_validation_records(
     return records
 
 
-def _direction_slugs() -> tuple[str, ...]:
-    return tuple(
-        f"{source.lower()}-to-{target.lower()}" for source, target in DIRECTION_ALIASES.values()
-    )
-
-
-def _expand_choice(value: str, all_values: tuple[str, ...]) -> tuple[str, ...]:
-    return all_values if value == "both" else (value,)
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -1525,84 +1515,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--input-root", type=Path, default=DEFAULT_INPUT_ROOT)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--direction", nargs="+", metavar="SLUG")
-    parser.add_argument("--method", nargs="+", choices=METHODS)
-    parser.add_argument("--anchors", nargs="+", type=int, metavar="K")
-    parser.add_argument("--metric", choices=("micro", "macro", "both"), default="both")
-    parser.add_argument(
-        "--anchor-scale", choices=("log", "categorical", "both"), default="both"
-    )
-    parser.add_argument(
-        "--plots",
-        nargs="+",
-        choices=("stages", "methods", "improvement", "heatmap", "distribution", "all"),
-        default=("all",),
-    )
-    parser.add_argument("--format", choices=("png", "pdf", "both"), default="both")
-    parser.add_argument("--dpi", type=int, default=300)
-    parser.add_argument(
-        "--show-std",
-        action="store_true",
-        help="Show descriptive ±1 sample-SD ribbons on line plots (hidden by default).",
-    )
-    parser.add_argument(
-        "--exclude-linear-close",
-        action="store_true",
-        help="Exclude the linear_close method from plots while retaining it in data tables.",
-    )
     parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument(
-        "--aggregate-policy",
-        choices=("error", "latest"),
-        default="error",
-        help=(
-            "Resolve multiple aggregated_<UID>/results_<UID>.pkl candidates within a K "
-            "directory: 'error' (default) requires exactly one aggregate and reports "
-            "duplicates as a validation error; 'latest' selects the highest numeric "
-            "aggregate UID."
-        ),
-    )
-    parser.add_argument("--allow-incomplete", action="store_true")
-    parser.add_argument("--refresh-cache", action="store_true")
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--extract-only", action="store_true")
-    mode.add_argument("--plot-only", action="store_true")
     return parser
-
-
-def _filter_frame(frame: pd.DataFrame, args: argparse.Namespace) -> pd.DataFrame:
-    selected = frame
-    if args.direction:
-        selected = selected[selected["direction"].isin(args.direction)]
-    if args.method:
-        selected = selected[selected["method"].isin(args.method)]
-    if args.anchors:
-        selected = selected[selected["configured_anchors"].isin(args.anchors)]
-    return selected.reset_index(drop=True)
-
-
-def _load_plot_only_cache(output_dir: Path, args: argparse.Namespace) -> pd.DataFrame:
-    frames: list[pd.DataFrame] = []
-    cache_dir = output_dir / "cache"
-    for metadata_path in sorted(cache_dir.glob("*.json")):
-        metadata = _read_json(metadata_path)
-        if not metadata or metadata.get("schema_version") != CACHE_SCHEMA_VERSION:
-            continue
-        identity = metadata.get("identity", {})
-        if args.direction and identity.get("direction") not in args.direction:
-            continue
-        if args.method and identity.get("method") not in args.method:
-            continue
-        if args.anchors and identity.get("configured_anchors") not in args.anchors:
-            continue
-        csv_path = metadata_path.with_suffix(".csv")
-        if csv_path.is_file():
-            frames.append(pd.read_csv(csv_path))
-    if not frames:
-        raise ValueError(
-            f"No compatible schema-v{CACHE_SCHEMA_VERSION} group caches matched in {cache_dir}"
-        )
-    return pd.concat(frames, ignore_index=True)
 
 
 def _write_analysis_tables(output_dir: Path, subtrials: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -1649,40 +1563,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     progress_enabled = _progress_enabled()
-    known_directions = set(_direction_slugs())
-    if args.direction:
-        unknown = sorted(set(args.direction) - known_directions)
-        if unknown:
-            parser.error(
-                f"unknown direction slug(s): {', '.join(unknown)}; expected: "
-                + ", ".join(_direction_slugs())
-            )
-    if args.anchors and any(value < 1 for value in args.anchors):
-        parser.error("--anchors values must be positive integers")
-    if args.dpi < 1 or args.workers < 1:
-        parser.error("--dpi and --workers must be positive integers")
-    if args.plot_only and args.refresh_cache:
-        parser.error("--refresh-cache cannot be combined with --plot-only")
-    if (
-        args.exclude_linear_close
-        and not args.extract_only
-        and args.method
-        and "linear_close" in args.method
-    ):
-        parser.error(
-            "--exclude-linear-close cannot be combined with --method containing linear_close"
-        )
+    if args.workers < 1:
+        parser.error("--workers must be a positive integer")
 
     output_dir = args.output_dir.resolve()
     data_dir = output_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     validation_records: list[dict[str, Any]] = []
 
-    if args.plot_only:
-        try:
-            subtrials = _load_plot_only_cache(output_dir, args)
-        except ValueError as error:
-            parser.error(str(error))
+    try:
+        groups = discover_groups(args.input_root)
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    if not groups:
         validation_records.append(
             {
                 "direction_alias": "",
@@ -1691,112 +1585,85 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "configured_anchors": "",
                 "k_dir": "",
                 "aggregate_path": "",
-                "severity": "info",
-                "message": "Plot-only mode trusted compatible per-group caches; PKLs were not scanned",
+                "severity": "error",
+                "message": "No sweep groups found",
             }
         )
-    else:
-        try:
-            groups = discover_groups(args.input_root, args.aggregate_policy)
-        except ValueError as error:
-            print(f"error: {error}", file=sys.stderr)
-            return 2
-        groups = [
-            group
-            for group in groups
-            if (not args.direction or group.direction_slug in args.direction)
-            and (not args.method or group.method in args.method)
-            and (not args.anchors or group.configured_anchors in args.anchors)
-        ]
-        if not groups:
-            validation_records.append(
-                {
-                    "direction_alias": "",
-                    "direction": "",
-                    "method": "",
-                    "configured_anchors": "",
-                    "k_dir": "",
-                    "aggregate_path": "",
-                    "severity": "error",
-                    "message": "No sweep groups matched the selected filters",
-                }
-            )
-            pd.DataFrame(validation_records).to_csv(
-                data_dir / "validation_report.csv", index=False
-            )
-            _write_metadata(output_dir, args, None, (), "validation_failed")
-            return 1
+        pd.DataFrame(validation_records).to_csv(
+            data_dir / "validation_report.csv", index=False
+        )
+        _write_metadata(output_dir, args, None, (), "validation_failed")
+        return 1
 
-        validations = [
-            validate_group(group, allow_incomplete=args.allow_incomplete)
-            for group in _progress(
-                groups,
-                desc="Validating groups",
+    validations = [
+        validate_group(group)
+        for group in _progress(
+            groups,
+            desc="Validating groups",
+            unit="group",
+            enabled=progress_enabled,
+        )
+    ]
+    for result in validations:
+        validation_records.extend(_validation_records(result))
+    validation_records.extend(_global_validation_records(groups, False))
+    report = pd.DataFrame(validation_records)
+    report.to_csv(data_dir / "validation_report.csv", index=False)
+    if (report["severity"] == "error").any():
+        _write_metadata(output_dir, args, None, (), "validation_failed")
+        print(
+            f"Validation failed; see {data_dir / 'validation_report.csv'}",
+            file=sys.stderr,
+        )
+        return 1
+
+    signatures: dict[SweepGroup, dict[str, Any]] = {}
+    frames_by_group: dict[SweepGroup, pd.DataFrame] = {}
+    stale: list[tuple[SweepGroup, ValidationResult]] = []
+    group_validations = zip(groups, validations)
+    for group, validation in _progress(
+        group_validations,
+        total=len(groups),
+        desc="Checking caches",
+        unit="group",
+        enabled=progress_enabled,
+    ):
+        signatures[group] = _group_signature(group)
+        base = _cache_base(output_dir, group)
+        if _cache_matches(base, group, signatures[group]):
+            frames_by_group[group] = pd.read_csv(base.with_suffix(".csv"))
+        else:
+            stale.append((group, validation))
+
+    if stale:
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = {
+                executor.submit(extract_group, group): (group, validation)
+                for group, validation in stale
+            }
+            extraction_progress = _progress(
+                total=len(futures),
+                desc="Extracting groups",
                 unit="group",
                 enabled=progress_enabled,
             )
-        ]
-        for result in validations:
-            validation_records.extend(_validation_records(result))
-        validation_records.extend(_global_validation_records(groups, args.allow_incomplete))
-        report = pd.DataFrame(validation_records)
-        report.to_csv(data_dir / "validation_report.csv", index=False)
-        if (report["severity"] == "error").any():
-            _write_metadata(output_dir, args, None, (), "validation_failed")
-            print(
-                f"Validation failed; see {data_dir / 'validation_report.csv'}",
-                file=sys.stderr,
-            )
-            return 1
-
-        signatures: dict[SweepGroup, dict[str, Any]] = {}
-        frames_by_group: dict[SweepGroup, pd.DataFrame] = {}
-        stale: list[tuple[SweepGroup, ValidationResult]] = []
-        group_validations = zip(groups, validations)
-        for group, validation in _progress(
-            group_validations,
-            total=len(groups),
-            desc="Checking caches",
-            unit="group",
-            enabled=progress_enabled,
-        ):
-            signatures[group] = _group_signature(group)
-            base = _cache_base(output_dir, group)
-            if not args.refresh_cache and _cache_matches(base, group, signatures[group]):
-                frames_by_group[group] = pd.read_csv(base.with_suffix(".csv"))
-            else:
-                stale.append((group, validation))
-
-        if stale:
-            with ThreadPoolExecutor(max_workers=args.workers) as executor:
-                futures = {
-                    executor.submit(extract_group, group, args.allow_incomplete): (group, validation)
-                    for group, validation in stale
-                }
-                extraction_progress = _progress(
-                    total=len(futures),
-                    desc="Extracting groups",
-                    unit="group",
-                    enabled=progress_enabled,
+            for future in as_completed(futures):
+                group, validation = futures[future]
+                frame = pd.DataFrame(asdict(row) for row in future.result())
+                _write_group_cache(
+                    _cache_base(output_dir, group),
+                    group,
+                    signatures[group],
+                    frame,
+                    validation,
                 )
-                for future in as_completed(futures):
-                    group, validation = futures[future]
-                    frame = pd.DataFrame(asdict(row) for row in future.result())
-                    _write_group_cache(
-                        _cache_base(output_dir, group),
-                        group,
-                        signatures[group],
-                        frame,
-                        validation,
-                    )
-                    frames_by_group[group] = frame
-                    extraction_progress.update(1)
-                extraction_progress.close()
-        subtrials = pd.concat([frames_by_group[group] for group in groups], ignore_index=True)
+                frames_by_group[group] = frame
+                extraction_progress.update(1)
+            extraction_progress.close()
+    subtrials = pd.concat([frames_by_group[group] for group in groups], ignore_index=True)
 
-    subtrials = _filter_frame(subtrials, args)
     if subtrials.empty:
-        print("error: no cached/extracted rows matched the filters", file=sys.stderr)
+        print("error: no cached/extracted rows", file=sys.stderr)
         _write_metadata(output_dir, args, subtrials, (), "no_rows")
         return 1
     try:
@@ -1826,28 +1693,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(f"error: {error}", file=sys.stderr)
         return 1
-    if args.plot_only:
-        pd.DataFrame(validation_records).to_csv(data_dir / "validation_report.csv", index=False)
     summary, _best = _write_analysis_tables(output_dir, subtrials)
-    figures: list[Path] = []
-    if not args.extract_only:
-        plots = (
-            ("stages", "methods", "improvement", "heatmap", "distribution")
-            if "all" in args.plots
-            else tuple(dict.fromkeys(args.plots))
-        )
-        options = PlotOptions(
-            output_dir=output_dir,
-            metrics=_expand_choice(args.metric, ("micro", "macro")),
-            anchor_scales=_expand_choice(args.anchor_scale, ("log", "categorical")),
-            plots=plots,
-            formats=_expand_choice(args.format, ("png", "pdf")),
-            dpi=args.dpi,
-            show_std=args.show_std,
-            exclude_linear_close=args.exclude_linear_close,
-            show_progress=progress_enabled,
-        )
-        figures = render_plots(subtrials, summary, options)
+    options = PlotOptions(output_dir=output_dir, show_progress=progress_enabled)
+    figures = render_plots(subtrials, summary, options)
     _write_metadata(output_dir, args, subtrials, figures, "complete")
     print(
         f"Wrote {len(subtrials)} subtrial-mode rows and {len(figures)} figures to {output_dir}"
