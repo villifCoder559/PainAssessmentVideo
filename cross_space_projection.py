@@ -2156,7 +2156,7 @@ def _run_refinement_stage(old_model, new_model, old_model_pth, new_model_pth,
                           mode=None, cfg=None,
                           remove_classes_greater=None, source_df=None,
                           num_refinement_samples=0, num_anchors=None,
-                          anchor_selection_type='random'):
+                          anchor_selection_type='balance_class_random'):
   """
   Orchestrate the refinement stage end to end: extract the model-B training embeddings
   and the new-model evaluation embeddings (unless supplied pre-computed), run

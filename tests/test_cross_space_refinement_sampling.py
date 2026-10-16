@@ -219,3 +219,11 @@ def test_yaml_forwards_refinement_sample_count_as_a_sweep_axis():
 def test_summary_metadata_preserves_refinement_sample_count():
     params = csl._synth_trial_params_from_cfg({"num_refinement_samples": 12})
     assert params["num_refinement_samples"] == 12
+
+
+def test_refinement_stage_default_selector_is_supported():
+    import inspect
+    default = inspect.signature(csp._run_refinement_stage).parameters['anchor_selection_type'].default
+    df = pd.DataFrame({'sample_id': range(4), 'class_id': [0, 0, 1, 1]})
+    assert len(csp._select_anchors(df, 2, default)) == 2
+
