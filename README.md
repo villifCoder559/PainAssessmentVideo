@@ -316,6 +316,8 @@ python reproduce/summarize_cross_space.py            # 3. write aggregated_summa
    `--run CONFIG=runs/<config>/history_run_<...>` picks a specific run.
 2. YAMLs whose result already exists are skipped. `--sets` restricts the run to some config sets.
    A single YAML can also be run with `python cross_space_projection.py --config <file.yaml>`.
+   The anchor-sweep YAMLs list several anchor counts, so run them through
+   `reproduce/figure_anchor_budget.py`, which runs one count at a time.
 
 ## 7. Paper tables, controls, statistics and figures
 
