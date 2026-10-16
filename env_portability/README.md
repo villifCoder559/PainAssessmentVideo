@@ -15,15 +15,14 @@ The paper release keeps only the Linux files. The Windows overlay (`environment-
 | File | Purpose |
 | --- | --- |
 | [environment.yml](environment.yml) | Common CPU environment for Linux x86_64, Windows x86_64, and macOS. |
-| [environment-native.yml](environment-native.yml) | Required Decord/torchsort additions for CPU training on Linux x86_64 and Intel macOS. |
+| [environment-native.yml](environment-native.yml) | Required Decord addition for CPU training on Linux x86_64 and Intel macOS. |
 | [environment-cuda.yml](environment-cuda.yml) | Standalone NVIDIA environment for Linux/Windows x86_64, using PyTorch 2.5.1 and CUDA runtime 11.8. |
 | [environment-pinned-linux-64.yml](environment-pinned-linux-64.yml) | Exact versions of the clean-room CPU environment that passed `smoke_test.sh` (Linux x86_64, standalone). |
 | [environment-cuda-pinned-linux-64.yml](environment-cuda-pinned-linux-64.yml) | Exact versions of the clean-room CUDA 11.8 environment that passed `smoke_test.sh` (Linux x86_64, standalone, includes Decord and torchsort). |
 
 The common file alone is **insufficient for training**: install the appropriate
 native additions. Overlay files update an existing environment; they are not
-standalone specifications. Apple Silicon needs a torchsort source build, which
-remains unvalidated; follow the [macOS instructions](ENVIRONMENT.md#installation).
+standalone specifications. On Apple Silicon, follow the [macOS instructions](ENVIRONMENT.md#installation).
 
 ## Quick start
 
@@ -36,7 +35,7 @@ capability ≤ 9.0):
 conda env create -f env_portability/environment-cuda-pinned-linux-64.yml
 conda activate pain-portable-cuda
 python -m pip check
-python -c "import torch, torchsort; print(torch.cuda.is_available(), torchsort.soft_rank(torch.tensor([[3.,1.,2.]], device='cuda')))"
+python -c "import torch; print(torch.cuda.is_available())"
 ```
 
 Linux x86_64 CPU only:
@@ -70,7 +69,7 @@ conda env create -f env_portability/environment-cuda.yml
 conda activate pain-portable-cuda
 ```
 
-Then complete the required Decord and matching torchsort installation in the
+Then complete the required Decord installation in the
 [GPU instructions](ENVIRONMENT.md#nvidia-gpu-installation). Do not apply a CPU
 native overlay to this environment. macOS cannot use the CUDA specification.
 

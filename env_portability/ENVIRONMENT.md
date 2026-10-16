@@ -18,16 +18,15 @@ NumPy 1.26.4, MediaPipe 0.10.5, transformers 4.57.1, and timm 1.0.15.
 | File | Use |
 | --- | --- |
 | `environment.yml` | Common CPU stack on Linux x86_64, Windows x86_64, and macOS Intel/Apple Silicon. Conda-forge only; `nodefaults` prevents implicit extra channels. |
-| `environment-native.yml` | Required addition for CPU training and vendored video loaders on Linux x86_64 and Intel macOS: Conda Decord and torchsort. |
-| `environment-cuda.yml` | Standalone alternative for NVIDIA GPUs on Linux/Windows x86_64. Conda-forge supplies the common libraries; official PyTorch CUDA wheels supply the GPU stack. Native video/ranking installation is described below. |
+| `environment-native.yml` | Required addition for CPU training and vendored video loaders on Linux x86_64 and Intel macOS: Conda Decord. |
+| `environment-cuda.yml` | Standalone alternative for NVIDIA GPUs on Linux/Windows x86_64. Conda-forge supplies the common libraries; official PyTorch CUDA wheels supply the GPU stack. Native video installation is described below. |
 | `DEPENDENCIES.md` | Complete third-party import-to-distribution cross-check, including conditional and historical imports. |
 
 **The common file alone is insufficient for the smoke test.** Imported vendored video
-loaders require Decord, and the environment checks import torchsort (no longer used by
-the code, kept in the pinned environments). Both are
-direct requirements, separated because their binary availability differs by OS and
-CPU architecture. The overlays are additions, not standalone environments. There is
-no CPU/CUDA auto-detection in these files.
+loaders require Decord, a direct requirement kept separate because its binary
+availability differs by OS and CPU architecture. (The pinned environments still contain
+torchsort, which the code no longer uses.) The overlays are additions, not standalone
+environments. There is no CPU/CUDA auto-detection in these files.
 
 ## Installation
 
@@ -49,16 +48,9 @@ Apple Silicon macOS (native arm64):
 conda env create -f env_portability/environment.yml
 conda activate pain-portable
 conda install --override-channels -c conda-forge "decord>=0.6,<0.7"
-# Required for training; there is no compatible prebuilt arm64 torchsort package.
-# Install Apple's Command Line Tools if they are not already available:
-xcode-select --install
-python -m pip install --no-build-isolation --no-deps "torchsort>=0.1.9,<0.2"
 python -m pip check
 ```
 
-The torchsort source build requires a C++ compiler and is **not validated here on
-Apple Silicon**. If it fails, CPU analysis utilities that do not import the training
-stack remain usable; training is not supported until this extension is available.
 An Intel Conda installation under Rosetta is another candidate, using the Intel
 commands and x86_64 packages consistently; do not mix arm64 and Intel packages.
 
@@ -75,7 +67,7 @@ Do not apply the CPU native overlay to a CUDA environment.
 
 On Linux x86_64, first try the pinned file
 `conda env create -f env_portability/environment-cuda-pinned-linux-64.yml`, which already contains
-Decord and the matching torchsort wheel. Use the flexible steps below only if it does not resolve.
+Decord. Use the flexible steps below only if it does not resolve.
 Both routes need an NVIDIA driver ≥ 520 and a GPU with compute capability ≤ 9.0 (PyTorch
 2.5.1+cu118 ships kernels for sm_37 to sm_90).
 
@@ -108,18 +100,9 @@ Linux NVIDIA GPU:
 conda env create -f env_portability/environment-cuda.yml
 conda activate pain-portable-cuda
 conda install --override-channels -c conda-forge "decord>=0.6,<0.7"
-# Official upstream wheel: Python 3.10 / PyTorch 2.5 / CUDA 11.8 / Linux x86_64.
-python -m pip install --no-deps "https://github.com/teddykoker/torchsort/releases/download/v0.1.10/torchsort-0.1.10+pt25cu118-cp310-cp310-linux_x86_64.whl"
 python -m pip check
 python -c "import torch; print(torch.__version__, torch.version.cuda); print(torch.ones(1, device='cuda'))"
 ```
-
-The wheel is an optional platform-specific installation step, not a path or binary
-reference embedded in a portable YAML. Consult
-[torchsort's upstream instructions](https://github.com/teddykoker/torchsort#pre-built-wheels)
-before changing Python, PyTorch, or CUDA: the extension must match all three.
-Conda-forge's GPU torchsort binaries for PyTorch 2.5 use CUDA 12.6 and its own
-PyTorch build, so do not mix them into the official wheel stack.
 
 Use Conda Decord on Linux/macOS: the older Linux PyPI wheel has obsolete
 CPython-3.6 tags inside `WHEEL` even though it is published with a Python-3 filename.
@@ -134,20 +117,13 @@ Native Windows NVIDIA GPU:
 conda env create -f env_portability/environment-cuda.yml
 conda activate pain-portable-cuda
 python -m pip install "decord>=0.6,<0.7"
-# No upstream Windows CUDA torchsort wheel is provided. A source build requires
-# Visual Studio C++ Build Tools and a CUDA 11.8 development toolkit:
-python -m pip install --no-build-isolation --no-deps "torchsort>=0.1.9,<0.2"
 python -m pip check
 python -c "import torch; print(torch.ones(1, device='cuda'))"
 ```
 
-That Windows source build is unverified; WSL2 with an NVIDIA-enabled Linux setup is
-the more established route for GPU training and Bash/SLURM-oriented code. CUDA
-development tools are needed only when compiling extensions; prebuilt PyTorch and
-torchsort wheels do not require system `nvcc`. The archived pt25/cu118 Linux wheel
-is for that same ABI family only; use the
-public upstream wheel for portability. Never install it into a CPU, macOS,
-Windows, or different Python/PyTorch/CUDA environment.
+Native Windows is unverified; WSL2 with an NVIDIA-enabled Linux setup is
+the more established route for GPU training and Bash/SLURM-oriented code. Prebuilt
+PyTorch wheels do not require system `nvcc`.
 
 DeepSpeed is an additional dependency for
 `VideoMAEv2/run_class_finetuning.py` and an optional MAE_DFER backend. It is **not
@@ -170,8 +146,8 @@ the unrelated PyPI package named `apex` is not the provider.
 | `torchmetrics>=1.5,<2`, `optuna>=4.3,<5`, `optunahub>=0.3,<1` | Retain the audited metric/sampler API families; these are conservative compatibility bounds, not tested guarantees for every allowed release. |
 | `mediapipe>=0.10.5,<0.10.22` | Keep the legacy `mp.solutions` face APIs together with Tasks `FaceAligner`, `FaceAlignerOptions`, and `FaceLandmarksConnections`. |
 | `opencv-contrib-python>=4.8,<4.12` | MediaPipe requires this distribution; OpenCV 4.12 wheels introduce a NumPy 2 requirement on Python 3.10. |
-| `decord>=0.6,<0.7`, `torchsort>=0.1.9,<0.2` in CPU additions | Known video/ranking API families. The Conda solver must additionally match the torchsort binary to PyTorch. It can select 0.1.9 rather than the captured custom 0.1.10 wheel. |
-| `torch==2.5.1+cu118`, `torchvision==0.20.1+cu118` in CUDA file only | Official matching native release pair and CUDA ABI; exact wheel versions prevent pip choosing the default CUDA 12.4 family and match the documented torchsort wheel. OS wheel tags are selected automatically, without filenames/hashes/local artifacts in the YAML. |
+| `decord>=0.6,<0.7` in CPU additions | Known video API family. |
+| `torch==2.5.1+cu118`, `torchvision==0.20.1+cu118` in CUDA file only | Official matching native release pair and CUDA ABI; exact wheel versions prevent pip choosing the default CUDA 12.4 family. OS wheel tags are selected automatically, without filenames/hashes/local artifacts in the YAML. |
 
 Everything else is left unpinned: SciPy, pandas, scikit-learn, scikit-image,
 matplotlib, seaborn, openTSNE, UMAP, Pillow, FFmpeg, PyAV, dataframe_image, einops,
@@ -237,13 +213,12 @@ Installing an entire upstream project may require them separately.
   dependencies. Linux ARM is not a validated full target. The resolved MediaPipe
   0.10.21 Linux wheel requires glibc >=2.28; older systems need an older compatible
   wheel allowed by the range and a separate dependency/runtime check.
-- **Windows:** the common CPU stack and separate Decord/torchsort providers have
+- **Windows:** the common CPU stack and separate Decord providers have
   Windows binaries. Bash launchers require WSL2 or another Bash environment.
   Distributed NCCL and several CUDA-specific upstream training paths require Linux;
   a native Windows package installation does not make them Windows-compatible.
 - **macOS:** use one architecture consistently. The common stack and Conda Decord
-  have Intel and arm64 providers. Apple Silicon needs a torchsort source build for
-  training. CUDA and NCCL workflows are unavailable. PyTorch's possible MPS support
+  have Intel and arm64 providers. CUDA and NCCL workflows are unavailable. PyTorch's possible MPS support
   does not make this code MPS-ready: several paths explicitly choose CUDA or CPU.
   Wheel and Conda build minimum macOS versions vary; current OpenCV 4.11 wheels
   require macOS 13, while older allowed wheels can support earlier releases.
@@ -312,7 +287,7 @@ After adding the native dependencies, run:
 
 ```sh
 python -m pip check
-python -c "import torch, torchvision, numpy, scipy, cv2, mediapipe, transformers, timm, decord, torchsort; from mediapipe.tasks.python.vision import FaceAligner, FaceAlignerOptions, FaceLandmarksConnections; print(torch.__version__, torchvision.__version__, numpy.__version__, cv2.__version__); print(torchsort.soft_rank(torch.tensor([[3.,1.,2.]])))"
+python -c "import torch, torchvision, numpy, scipy, cv2, mediapipe, transformers, timm, decord; from mediapipe.tasks.python.vision import FaceAligner, FaceAlignerOptions, FaceLandmarksConnections; print(torch.__version__, torchvision.__version__, numpy.__version__, cv2.__version__)"
 python -c "import custom.backbone, custom.dataset, custom.faceExtractor, custom.head"
 ffmpeg -version
 ffprobe -version
@@ -320,10 +295,10 @@ git --version
 ffmpeg -hide_banner -encoders
 ```
 
-For the CUDA setup also run a CUDA soft-rank operation:
+For the CUDA setup also run a CUDA operation:
 
 ```sh
-python -c "import torch, torchsort; print(torchsort.soft_rank(torch.tensor([[3.,1.,2.]], device='cuda')))"
+python -c "import torch; print(torch.ones(1, device='cuda'))"
 ```
 
 If the common and CUDA lists are later changed, keep their common dependencies

@@ -13,7 +13,7 @@
 #   PYTHON        python executable (default: python)
 #
 # Pipelines covered:
-#   env       pip check + key imports (torch, decord, torchsort, mediapipe, ...)
+#   env       pip check + key imports (torch, decord, mediapipe, ...)
 #   extract   MAE-DFER backbone forward pass (extract_feature.py) on a synthetic video (+ VideoMAEv2-S in full mode)
 #   train_*   train_model.py on precomputed embeddings (1 epoch, first fold/subfold, subject subsets)
 #   xspace_*  cross_space_projection.py via run_cross_space_configs.sh: linear, mlp, autoencoder
@@ -59,9 +59,8 @@ have() { local p; for p in "$@"; do [[ -e $p ]] || return 1; done; }
 ENV_CHECK="
 import subprocess, sys
 import torch, torchvision, numpy, scipy, pandas, sklearn, cv2, mediapipe, transformers, timm
-import decord, torchsort, optuna, optunahub, safetensors, einops, coral_pytorch, torchmetrics
+import decord, optuna, optunahub, safetensors, einops, coral_pytorch, torchmetrics
 print('python', sys.version.split()[0], '| torch', torch.__version__, '| cuda available', torch.cuda.is_available())
-print('soft_rank', torchsort.soft_rank(torch.tensor([[3., 1., 2.]])))
 r = subprocess.run([sys.executable, '-m', 'pip', 'check'], capture_output=True, text=True)
 print(r.stdout, r.stderr)
 sys.exit(r.returncode)

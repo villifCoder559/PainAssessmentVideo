@@ -14,45 +14,45 @@ Standard-library roots and verified local modules (including `custom`, `MAE_DFER
 | `conditional` | conditional | environment.yml (pip) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `configargparse` | configargparse | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `coral_pytorch` | coral-pytorch | environment.yml (pip) | `custom/dataset.py:29` |
-| `cv2` | opencv-contrib-python | environment.yml (pip) | `extract_landmarks.py:12` |
+| `cv2` | opencv-contrib-python | environment.yml (pip) | `XITE/check_frontalized_videos.py:13` |
 | `dataframe_image` | dataframe_image | environment.yml (Conda) | none left (all uses removed in the lightweight release) |
 | `decord` | decord | Required native overlay; Apple Silicon Conda command | `smoke_test.sh:62` (import check only) |
 | `deepspeed` | deepspeed | Additional DeepSpeed GPU workflow; separate installation | none left (all uses removed in the 2026-10-08 cleanup) |
 | `einops` | einops | environment.yml (Conda) | `MAE_DFER/modeling_finetune.py:8` |
 | `h5py` | h5py | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `hierarchies` | unresolved historical source | Unresolved historical source; scripts_asis only | none left (all uses removed in the 2026-10-08 cleanup) |
-| `matplotlib` | matplotlib | environment.yml (Conda) | `new_plot_tsne_post_head.py:2` |
+| `matplotlib` | matplotlib | environment.yml (Conda) | `new_plot_tsne_post_head.py:5` |
 | `mediapipe` | mediapipe | environment.yml (pip) | `custom/faceExtractor.py:7` |
 | `moviepy` | moviepy | environment.yml (pip) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `networkx` | networkx | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `nltk` | nltk | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
-| `numpy` | numpy | environment.yml (Conda) | `new_plot_tsne_post_head.py:3` |
+| `numpy` | numpy | environment.yml (Conda) | `new_plot_tsne_post_head.py:6` |
 | `openTSNE` | opentsne | environment.yml (Conda) | none left (all uses removed in the lightweight release) |
 | `optuna` | optuna | environment.yml (Conda) | `tests/test_model_selection_policy.py:5` |
-| `optunahub` | optunahub | environment.yml (Conda) | `train_model.py:16` |
+| `optunahub` | optunahub | environment.yml (Conda) | `train_model.py:12` |
 | `packaging` | packaging | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
-| `pandas` | pandas | environment.yml (Conda) | `new_plot_tsne_post_head.py:9` |
+| `pandas` | pandas | environment.yml (Conda) | `cross_space_fake_projection.py:11` |
 | `petrel_client` | petrel-client | Optional Petrel storage client/source/configuration | none left (all uses removed in the 2026-10-08 cleanup) |
 | `psutil` | psutil | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
-| `pytest` | pytest | `pip install pytest`; tests | `tests/test_plot_cumulative_predictions.py:11` |
+| `pytest` | pytest | `pip install pytest`; tests | `tests/test_plot_cumulative_predictions.py:12` |
 | `safetensors` | safetensors | environment.yml (Conda) | `tests/test_check_augmentation_completeness.py:6` |
-| `scipy` | scipy | environment.yml (Conda) | `new_plot_tsne_post_head.py:11` |
-| `seaborn` | seaborn | environment.yml (Conda) | `new_plot_res_from_server.py:26` |
+| `scipy` | scipy | environment.yml (Conda) | `cross_space_fake_projection.py:324` |
+| `seaborn` | seaborn | environment.yml (Conda) | `cross_space_logs.py:127` |
 | `setuptools` | setuptools | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `skimage` | scikit-image | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
-| `sklearn` | scikit-learn | environment.yml (Conda) | `custom/dataset.py:17` |
+| `sklearn` | scikit-learn | environment.yml (Conda) | `custom/scripts.py:9` |
 | `submitit` | submitit | Not shipped (`environment-cluster.yml` dropped) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `tensorboardX` | tensorboardx | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `timm` | timm | environment.yml (Conda) | `MAE_DFER/modeling_finetune.py:6` |
 | `torch` | pytorch (pytorch-cpu selector in base) | environment.yml (Conda) | `statistical_compare_kfold_results.py:401` |
 | `torch_optimizer` | torch-optimizer | environment.yml (Conda) | none left (all uses removed in the lightweight release) |
-| `torchmetrics` | torchmetrics | environment.yml (Conda) | `new_plot_res_from_server.py:13` |
-| `torchsort` | torchsort | Required native overlay; CUDA/Apple Silicon build or wheel step | none left (all uses removed in the lightweight release) |
+| `torchmetrics` | torchmetrics | environment.yml (Conda) | `cross_space_logs.py:132` |
+| `torchsort` | torchsort | not installed (no longer needed; still in the pinned exports) | none left (all uses removed in the lightweight release) |
 | `torchvision` | torchvision | environment.yml (Conda) | `custom/dataset.py:19` |
-| `tqdm` | tqdm | environment.yml (Conda) | `new_plot_tsne_post_head.py:15` |
+| `tqdm` | tqdm | environment.yml (Conda) | `MIntPAIN/generate_videos.py:29` |
 | `transformers` | transformers | environment.yml (Conda) | `custom/backbone.py:29` |
 | `tree_format` | tree-format | not installed (optional: only the as-is hierarchy scripts; its py2-tagged wheel fails `pip check`) | none left (all uses removed in the 2026-10-08 cleanup) |
-| `umap` | umap-learn | environment.yml (Conda) | `new_plot_tsne_post_head.py:8` |
+| `umap` | umap-learn | environment.yml (Conda) | `cross_space_logs.py:131` |
 | `webdataset` | webdataset | environment.yml (Conda) | none left (all uses removed in the 2026-10-08 cleanup) |
 | `yaml` | pyyaml | environment.yml (Conda) | `cross_space_logs.py:5301` |
 
@@ -79,8 +79,8 @@ is additionally scanned in the fresh audit.
 The CUDA profile supplies torch/torchvision through official CUDA 11.8 wheels.
 It supplies timm, torchmetrics, torch-optimizer, and WebDataset through pip to keep one PyTorch
 provider. All remaining common dependency requirements have the same providers and
-constraints as the CPU file. Native torchsort remains a separate matching wheel or
-source-build step; do not install the Conda CPU extension into the GPU profile.
+constraints as the CPU file. Decord remains a separate native step; do not apply the CPU
+overlay to the GPU profile.
 
 - Torchaudio: declared by VideoMAEv2, but never imported by live repository code; optional matched audio stack only.
 - wandb, beartype, braceexpand, iopath, peft, fire, python-box, ftfy: upstream declarations without live imports; install only for a separate upstream workflow that actually needs them.

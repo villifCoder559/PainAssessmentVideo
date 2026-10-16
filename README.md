@@ -36,10 +36,10 @@ nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv
 conda env create -f env_portability/environment-cuda-pinned-linux-64.yml   # creates "pain-portable-cuda"
 conda activate pain-portable-cuda
 python -m pip check
-python -c "import torch, torchsort; print(torch.cuda.is_available(), torchsort.soft_rank(torch.tensor([[3.,1.,2.]], device='cuda')))"
+python -c "import torch; print(torch.cuda.is_available())"
 ```
 
-The last command must print `True` and a tensor on `device='cuda:0'`. Both `python` and
+The last command must print `True`. Both `python` and
 `python3` must resolve to this env (`command -v python python3`), because
 `run_cross_space_configs.sh` calls `python3`. The env downloads several GB of CUDA wheels. No GPU?
 See [§10 CPU fallback](#10-cpu-fallback).
@@ -409,7 +409,7 @@ Pass `--gpu cpu` to the `reproduce/` scripts to run on CPU. The anchor sweep
 
 **Flexible (non-pinned) specifications.** Use these only if a pinned file does not resolve on
 your machine, or on Windows/macOS: `env_portability/environment.yml` plus
-`environment-native.yml` (CPU), or `environment-cuda.yml` plus the Decord/torchsort commands in
+`environment-native.yml` (CPU), or `environment-cuda.yml` plus the Decord commands in
 [env_portability/ENVIRONMENT.md](env_portability/ENVIRONMENT.md#nvidia-gpu-installation) (GPU).
 These may resolve to versions other than the tested ones. Windows and macOS instructions are
 documented there but were **not** tested end-to-end. All environment files are in
