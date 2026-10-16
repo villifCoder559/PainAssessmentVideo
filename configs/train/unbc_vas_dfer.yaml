@@ -1,11 +1,12 @@
 # Paper training run: unbc_vas_dfer (item 4)
-# Original run: REPRO_model_training/goal_dfer_vas attempt 100 (phase-2 best, test_MAE_raw 1.7233 +- 0.2731)
-# Source command: REPRO_model_training/goal_dfer_vas/100_*/_config_prompt.txt (--gp dropped, absolute paths made repo-relative)
+# Original run: REPRO_model_training/goal_dfer_vas attempt 172 (phase-3 best, --complete_block 2, test_MAE_raw 1.7651 +- 0.2006)
+# Source command: REPRO_model_training/goal_dfer_vas/172_*/_config_prompt.txt (--gp dropped, absolute paths made repo-relative;
+#   --p_early_stop/--min_delta/--threshold_mode dropped: removed from the code and inactive in the run)
 # Usage (from repo root): python train_model.py --config configs/train/unbc_vas_dfer.yaml
 
 head: ATTENTIVE_JEPA
-num_cross_head: [2]
-num_heads: [16]
+num_cross_head: [1]
+num_heads: [8]
 mt: DFER
 lr: [0.0001]
 ep: 100
@@ -17,25 +18,26 @@ path_video_dataset: UNBC/video/WarpedVideos_Cropped_interpolated_mirror
 k_fold: 5
 stop: [5, 5]
 opt: [adamw]
-batch_train: [9]
+batch_train: [6]
 init_network: [default]
 key_early_stopping: val_loss
 regulariz_lambda_L1: [0.0]
-regulariz_lambda_L2: [0.3]
+regulariz_lambda_L2: [0.5]
 scheduler_name: [cosine_restart]
 first_restart_epochs: [7]
 multiplier_restart: [2]
 warm_up_epochs: [5.0]
 warm_up_scheduler: [linear]
 warm_up_start_factor: [0.01]
-model_dropout: [0.3]
+model_dropout: [0.15]
 drop_attn: [0.0]
-drop_residual: [0.0]
-mlp_ratio: [0.5]
+drop_residual: [0.1]
+mlp_ratio: [0.25]
 label_smooth: [0.0]
 nr_blocks: [1]
 cross_block_after_transformers: [0]
 pos_enc: [3]
+complete_block: [2]
 n_trials: 1
 timeout: 102.0
 loss: [l1]
