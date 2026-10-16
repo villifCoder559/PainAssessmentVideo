@@ -403,7 +403,7 @@ def validate_arguments(dict_args):
     raise ValueError("Only the ATTENTIVE_JEPA head is supported.")
   if not dict_args['loss']:
     raise ValueError("Set --loss (l1 or ce).")
-  if any(str(v).lower() not in ('l1', 'ce') for v in dict_args['loss']):
+  if any(v not in ('l1', 'ce') for v in dict_args['loss']):
     raise ValueError(f"loss must be l1 or ce, got {dict_args['loss']}")
   if any(v not in (0, 3) for v in dict_args['pos_enc']):
     raise ValueError(f"pos_enc must be 0 or 3, got {dict_args['pos_enc']}")
