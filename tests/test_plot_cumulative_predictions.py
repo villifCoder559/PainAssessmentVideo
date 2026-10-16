@@ -1670,6 +1670,33 @@ def test_synchronized_videos_preserve_frames_speed_and_composite_properties(tmp_
         assert tuple(frame[-1, -1]) == (0, 0, 0)
 
 
+def test_videos_fall_back_to_mpeg4_when_opencv_has_no_h264_encoder(
+        tmp_path, monkeypatch):
+    cv2 = pytest.importorskip("cv2")
+    source = tmp_path / "source.mp4"
+    _write_synthetic_video(source)
+    real_writer = cv2.VideoWriter
+    h264 = cv2.VideoWriter_fourcc(*"avc1")
+
+    def pip_wheel_writer(path, codec, *args):
+        if codec == h264:
+            return real_writer()  # never opened, like OpenCV without an H.264 encoder
+        return real_writer(path, codec, *args)
+
+    monkeypatch.setattr(cv2, "VideoWriter", pip_wheel_writer)
+    curves = pcp.CurveSet(summary={"Summary": [1.0, 2.0]}, detail={})
+
+    path = pcp.save_native_comparison_video(
+        curves, [(0, 3), (0, 4)], 3.0, "Synthetic",
+        source_video=source, output_dir=tmp_path, digest="abcdef123456",
+        y_max=4.0, speed=1.0,
+    )
+
+    capture = cv2.VideoCapture(str(path))
+    assert capture.get(cv2.CAP_PROP_FRAME_COUNT) == pytest.approx(5)
+    capture.release()
+
+
 def test_native_comparison_video_writes_one_synchronized_full_range_file(tmp_path):
     cv2 = pytest.importorskip("cv2")
     source = tmp_path / "source.mp4"

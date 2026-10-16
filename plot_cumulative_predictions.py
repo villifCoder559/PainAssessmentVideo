@@ -1396,18 +1396,27 @@ def _write_synchronized_videos(
     first = _composite_frame(
         plots[0][0], frames[0], source_fps, playback_fps, speed, cv2_module=cv2,
         show_info=show_info)
-    codec = cv2.VideoWriter_fourcc(*"avc1")
     temporary_paths = tuple(
         path.with_name(f".{path.stem}.{uuid4().hex}.tmp.mp4") for path in paths
     )
     writers = []
     try:
-        for path in temporary_paths:
-            writers.append(
-                cv2.VideoWriter(str(path), codec, playback_fps, first.shape[1::-1])
-            )
-        if not all(writer.isOpened() for writer in writers):
-            raise RuntimeError("OpenCV could not open H.264 video writers")
+        # pip OpenCV wheels ship an FFmpeg without an H.264 encoder; MPEG-4 Part 2
+        # plays in VLC and ffmpeg but not in most browsers.
+        for fourcc in ("avc1", "mp4v"):
+            for writer in writers:
+                writer.release()
+            writers = []
+            for path in temporary_paths:
+                writers.append(cv2.VideoWriter(
+                    str(path), cv2.VideoWriter_fourcc(*fourcc), playback_fps,
+                    first.shape[1::-1]))
+            if all(writer.isOpened() for writer in writers):
+                break
+        else:
+            raise RuntimeError("OpenCV could not open H.264 or MPEG-4 video writers")
+        if fourcc != "avc1":
+            print("Warning: OpenCV has no H.264 encoder; writing MPEG-4 Part 2 video")
         for index, (source_frame, position) in enumerate(zip(frames, positions)):
             for writer, plot, stills in zip(writers, plots, captured):
                 plot_image = plot[0].copy()
@@ -1463,7 +1472,7 @@ def save_prediction_videos(
     show_info: bool = False,
     snapshot_frames: Sequence[int] = (),
 ) -> tuple[Path, Path]:
-    """Write synchronized summary and per-model H.264 composites atomically."""
+    """Write synchronized summary and per-model composites (H.264, else MPEG-4) atomically."""
     speed = _validated_video_speed(speed)
     full_range_summary = (
         curves.full_range_summary
