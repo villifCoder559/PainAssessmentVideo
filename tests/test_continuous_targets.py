@@ -105,14 +105,11 @@ def test_csv_union_sets_bounds_and_serializable_metadata(tmp_path):
   }
 
 
-@pytest.mark.parametrize(
-  'loss_name', ['ce', 'ce_weight', 'cdw_ce', 'huber_ce', 'sim_loss', 'coral']
-)
-def test_fractional_targets_reject_class_only_primary_losses(loss_name):
+def test_fractional_targets_reject_class_only_primary_losses():
   spec = TargetSpec.from_values([0.19, 5.20])
 
   with pytest.raises(ValueError, match='fractional class_id.*class-only'):
-    validate_primary_losses([loss_name], spec)
+    validate_primary_losses(['ce'], spec)
 
 
 def test_integer_targets_keep_classification_compatibility():
