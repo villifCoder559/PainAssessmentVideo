@@ -7,14 +7,8 @@ import pandas as pd
 import torch
 
 
-CLASS_ONLY_PRIMARY_LOSSES = frozenset({
-  'ce', 'ce_weight', 'cdw_ce', 'huber_ce', 'sim_loss', 'coral',
-})
-SCALAR_REGRESSION_LOSSES = frozenset({'l1', 'l2', 'huber', 'logcosh'})
-REPRESENTATION_LOSSES = frozenset({'contrastive_reg', 'only_contrastive', 'rncloss'})
-CLASS_BIN_LOSS_TYPES = frozenset({
-  'CrossEntropyLoss', 'CDW_CELoss', 'PHuberCrossEntropy', 'SimLoss',
-})
+CLASS_ONLY_PRIMARY_LOSSES = frozenset({'ce'})
+SCALAR_REGRESSION_LOSSES = frozenset({'l1'})
 
 
 def _validated_values(values):
