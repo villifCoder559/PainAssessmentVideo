@@ -403,6 +403,12 @@ def validate_arguments(dict_args):
     raise ValueError("Only the ATTENTIVE_JEPA head is supported.")
   if not dict_args['loss']:
     raise ValueError("Set --loss (l1 or ce).")
+  if any(str(v).lower() not in ('l1', 'ce') for v in dict_args['loss']):
+    raise ValueError(f"loss must be l1 or ce, got {dict_args['loss']}")
+  if any(v not in (0, 3) for v in dict_args['pos_enc']):
+    raise ValueError(f"pos_enc must be 0 or 3, got {dict_args['pos_enc']}")
+  if any(v not in ('cosine', 'cosine_restart') for v in dict_args['scheduler_name']):
+    raise ValueError(f"scheduler_name must be cosine or cosine_restart, got {dict_args['scheduler_name']}")
 
   if any(v not in (0, 1) for v in dict_args['stratified_training']):
     raise ValueError("stratified_training must be 0 or 1.")
@@ -537,7 +543,7 @@ if __name__ == '__main__':
     ),
   )
   parser.add_argument('--save_best_model', action='store_true', help='Save best model.')
-  parser.add_argument('--scheduler_name', type=str, nargs='*', default=['cosine'], help='Learning-rate scheduler. Choices: cosine, cosine_restart, step, onecycle, lambda. Default: cosine.')
+  parser.add_argument('--scheduler_name', type=str, nargs='*', default=['cosine'], help='Learning-rate scheduler. Choices: cosine, cosine_restart. Default: cosine.')
   parser.add_argument('--min_lr', type=float, nargs='*', default=[1e-7], help='Min lr.')
   parser.add_argument('--warm_up_epochs', type=float, nargs='*', default=[None], help='Warm up epochs.')
   parser.add_argument('--warm_up_scheduler', type=str, nargs='*', default=[None], help='Warm up scheduler.')
@@ -557,7 +563,6 @@ if __name__ == '__main__':
   parser.add_argument('--n_trials', type=int, default=100, help='Number of trials.')
   parser.add_argument('--timeout', type=float, default=14, help='Timeout in hours.')
 
-  # Feature merging (top/down variants)
   parser.add_argument('--normalize_labels', type=int, choices=[0, 1], default=0,
                       help='Min-max normalize continuous labels to [0,1] using observed bounds. '
                            'All logged metrics are reported in the original label scale.')

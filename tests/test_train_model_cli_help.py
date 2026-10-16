@@ -26,8 +26,7 @@ class TestTrainModelCliHelp(unittest.TestCase):
 
         self.assertEqual(
             help_text,
-            "Learning-rate scheduler. Choices: cosine, cosine_restart, step, onecycle, lambda. "
-            "Default: cosine.",
+            "Learning-rate scheduler. Choices: cosine, cosine_restart. Default: cosine.",
         )
 
 
