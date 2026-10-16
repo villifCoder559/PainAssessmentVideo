@@ -248,7 +248,8 @@ class Model_Advanced: # Scenario_Advanced
       state_dict (dict): Head weights, used when path_model_weights is None.
       csv_path (str): Path to the CSV file containing the dataset.
       criterion (torch.nn.Module): Loss function.
-      kwargs: run configuration; options of older releases are ignored.
+      kwargs: run configuration; options of older releases are accepted when they hold their
+        default, any other value raises ValueError.
     Returns:
       dict: evaluate() results plus per-sample predictions and the subject/class counts.
     """

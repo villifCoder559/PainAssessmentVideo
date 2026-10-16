@@ -49,32 +49,6 @@ class _SplitTracker:
   confidence_wrong_std: list = field(default_factory=list)
 
 
-def save_selected_checkpoints(
-  saving_path,
-  *,
-  best_model_state,
-  best_model_epoch,
-  last_model_state,
-  last_model_epoch,
-  save_best,
-  save_last,
-):
-  saved_paths = {}
-  if save_best:
-    best_path = os.path.join(
-      saving_path, f'best_model_ep_{best_model_epoch}.pt'
-    )
-    torch.save(best_model_state, best_path)
-    saved_paths['best'] = best_path
-  if save_last:
-    last_path = os.path.join(
-      saving_path, f'last_model_ep_{last_model_epoch}.pt'
-    )
-    torch.save(last_model_state, last_path)
-    saved_paths['last'] = last_path
-  return saved_paths
-
-
 import numpy as np
 
 class BaseHead(nn.Module):
@@ -584,16 +558,9 @@ class BaseHead(nn.Module):
         break
       
     if saving_path and helper.SAVE_PTH_MODEL:
-      saved_checkpoint_paths = save_selected_checkpoints(
-        saving_path,
-        best_model_state=best_model_state,
-        best_model_epoch=best_model_epoch,
-        last_model_state=None,
-        last_model_epoch=epoch,
-        save_best=True,
-        save_last=False,
-      )
-      print(f"Best model weights saved to {saved_checkpoint_paths['best']}")
+      best_path = os.path.join(saving_path, f'best_model_ep_{best_model_epoch}.pt')
+      torch.save(best_model_state, best_path)
+      print(f"Best model weights saved to {best_path}")
     
     logs = {
       'train_losses': list_train_losses,

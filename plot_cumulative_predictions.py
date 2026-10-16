@@ -616,9 +616,6 @@ def load_runtime_model(
     backbone = owner.backbone
     backbone.device = "cuda"
     backbone.model.to("cuda").eval()
-    # Prefix heads consume already-extracted clip features. If this run trained
-    # end-to-end, the checkpoint has now restored the shared backbone weights.
-    owner.head.backbone = None
     return RuntimeModel(config, checkpoint, owner, backbone, owner.head)
 
 
@@ -657,9 +654,6 @@ def extract_clip_features(
 
     outputs = []
     image_size = int(runtime.backbone.img_size)
-    dataset = getattr(runtime.owner, "dataset", None)
-    image_mean = getattr(dataset, "image_mean", None)
-    image_std = getattr(dataset, "image_std", None)
     for start in range(0, len(chunks), batch_size):
         raw = np.ascontiguousarray(chunks[start:start + batch_size])
         batch, frames, height, width, channels = raw.shape
@@ -669,8 +663,6 @@ def extract_clip_features(
         tensor = customDataset.preprocess_images(
             tensor,
             crop_size=(image_size, image_size),
-            image_mean=image_mean,
-            image_std=image_std,
         )
         tensor = tensor.reshape(
             batch, frames, channels, image_size, image_size
