@@ -1,6 +1,6 @@
 # Standalone NVIDIA environment for Linux/Windows x86_64.
 # Official GPU wheels avoid the old Conda torchvision/FFmpeg ABI constraint.
-# Add native video/ranking dependencies using ENVIRONMENT.md.
+# Add the native video (Decord) dependency using ENVIRONMENT.md.
 name: pain-portable-cuda
 channels:
 - conda-forge

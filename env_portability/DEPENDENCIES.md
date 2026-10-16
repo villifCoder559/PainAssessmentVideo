@@ -48,7 +48,7 @@ Standard-library roots and verified local modules (including `custom`, `MAE_DFER
 | `torch_optimizer` | torch-optimizer | environment.yml (Conda) | none left (all uses removed in the lightweight release) |
 | `torchmetrics` | torchmetrics | environment.yml (Conda) | `cross_space_logs.py:132` |
 | `torchsort` | torchsort | not installed (no longer needed; still in the pinned exports) | none left (all uses removed in the lightweight release) |
-| `torchvision` | torchvision | environment.yml (Conda) | `custom/dataset.py:19` |
+| `torchvision` | torchvision | environment.yml (Conda) | `custom/dataset.py:17` |
 | `tqdm` | tqdm | environment.yml (Conda) | `MIntPAIN/generate_videos.py:29` |
 | `transformers` | transformers | environment.yml (Conda) | `custom/backbone.py:29` |
 | `tree_format` | tree-format | not installed (optional: only the as-is hierarchy scripts; its py2-tagged wheel fails `pip check`) | none left (all uses removed in the 2026-10-08 cleanup) |

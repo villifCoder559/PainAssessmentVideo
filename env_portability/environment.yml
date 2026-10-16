@@ -1,4 +1,4 @@
-# Common CPU environment. Add the required native-video/ranking dependencies
+# Common CPU environment. Add the required native video (Decord) dependency
 # for your platform as described in ENVIRONMENT.md before running training.
 name: pain-portable
 channels:
