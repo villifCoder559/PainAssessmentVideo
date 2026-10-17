@@ -1,5 +1,7 @@
 # Cross-Space Latent Representation Transfer in Pain Score Regression
 
+**Paper:** [OpenReview](https://openreview.net/forum?id=LQseddjnui)
+
 We study whether frozen video foundation models capture the subtle facial dynamics needed to
 estimate pain intensity, and whether their video-level latent representations can be transferred
 between independently trained models while keeping the performance of the original source model.
