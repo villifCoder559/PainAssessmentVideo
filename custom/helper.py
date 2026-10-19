@@ -248,6 +248,11 @@ def generate_balanced_dataframe(df_original,list_augmentations_available,target_
   for class_id, count in original_class_distribution.items():
     if count < target_samples_distribution[class_id]:
       dict_class_upsample[class_id] = target_samples_distribution[class_id] - count    
+  if dict_class_upsample and not list_augmentations_available:
+    raise FileNotFoundError(
+      f'target_samples_per_class_training={target_samples_per_class} needs augmented samples for the '
+      f'classes below it, but none were found. Augmented embeddings must sit next to the --ffsp folder '
+      f'as sibling folders named <ffsp>_<augmentation> (e.g. <ffsp>_jitter, <ffsp>_jitter$0); see README.md.')
   upsample = np.array(list(dict_class_upsample.keys()))
   upsample = np.repeat(upsample, list(dict_class_upsample.values()))
 

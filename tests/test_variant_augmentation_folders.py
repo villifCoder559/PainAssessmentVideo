@@ -390,6 +390,24 @@ class TestAugmentationAvailables(unittest.TestCase):
     with self.assertRaises(FileNotFoundError):
       Model_Advanced.augment_csv(model, train_csv_path=csv_path, stratified_training=1)
 
+  def _df(self, class_ids):
+    n = len(class_ids)
+    return pd.DataFrame({'subject_id': [1] * n, 'subject_name': ['s'] * n, 'class_id': class_ids,
+                         'class_name': ['c'] * n, 'sample_id': list(range(1, n + 1)),
+                         'sample_name': [f'x{i}' for i in range(n)]})
+
+  def test_balanced_dataframe_without_augmentations_raises(self):
+    """A class below target_samples_per_class_training with no augmented folders must fail (unbc_vas_dfer
+    has stratified_training 0, so augment_csv's guard never runs) instead of training on originals only."""
+    with self.assertRaises(FileNotFoundError):
+      helper.generate_balanced_dataframe(self._df([0, 0, 1]), [], target_samples_per_class=2)
+
+  def test_balanced_dataframe_without_augmentations_ok_when_no_class_below_target(self):
+    """Nothing to upsample: no augmentations are needed, so the originals come back unchanged."""
+    df = self._df([0, 0, 1, 1])
+    out = helper.generate_balanced_dataframe(df, [], target_samples_per_class=2)
+    self.assertEqual(out['sample_id'].tolist(), [1, 2, 3, 4])
+
 
 if __name__ == '__main__':
   unittest.main()

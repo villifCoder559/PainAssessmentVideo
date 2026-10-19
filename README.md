@@ -148,7 +148,7 @@ All steps at once: `python reproduce/setup_unbc.py --raw /path/to/UNBC --gpu 0`
    python reproduce/setup_unbc.py --raw /path/to/UNBC --stages features --base_only --gpu 0
    ```
 
-4. Augmented embeddings, needed by every UNBC config except `unbc_vas_dfer`.
+4. Augmented embeddings, needed by every UNBC config.
 
    ```sh
    python reproduce/setup_unbc.py --raw /path/to/UNBC --stages features --gpu 0
@@ -280,7 +280,7 @@ python reproduce/train_all.py --gpu 0 --only biovid_dfer mintpain_dfer
 | UNBC (OPI 0–5) † | VideoMAEv2-S | `python train_model.py --config configs/train/unbc_opi0-5_vmae_s.yaml` |
 | UNBC (OPI 0–5) † | MAE-DFER | `python train_model.py --config configs/train/unbc_opi0-5_dfer.yaml` |
 | UNBC (VAS) † | VideoMAEv2-S | `python train_model.py --config configs/train/unbc_vas_vmae_s.yaml` |
-| UNBC (VAS) | MAE-DFER | `python train_model.py --config configs/train/unbc_vas_dfer.yaml` |
+| UNBC (VAS) † | MAE-DFER | `python train_model.py --config configs/train/unbc_vas_dfer.yaml` |
 | X-ITE (predefined splits) | VideoMAEv2-S | `python train_model.py --config configs/train/xite_vmae_s.yaml` |
 | X-ITE (predefined splits) | MAE-DFER | `python train_model.py --config configs/train/xite_dfer.yaml` |
 
