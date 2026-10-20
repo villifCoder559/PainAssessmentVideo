@@ -14,9 +14,10 @@ Encoder–Decoder, plus the closed-form Procrustes and OLS mappings, and they ar
 transfer direction. Joint refinement with stored source labels largely recovers native-source
 regression performance, whereas anchor-only transfer gives a higher source MAE.
 
-> **What you need.** This code, the two public backbone checkpoints (§2) and your own copy of
-> each dataset, requested from its owners (§3.1). The dataset agreements do not allow
-> redistributing labels or embeddings, so one setup script per dataset rebuilds them (§3.3).
+> **What you need.** This code, the two public backbone checkpoints (§3) and your own copy of
+> each dataset, requested from its owners (§4.1). The dataset agreements do not allow
+> redistributing labels or embeddings, so one setup script per dataset rebuilds them (§4.3).
+> If the authors shared the precomputed embeddings with you, §2 replaces §4.
 
 Run every command from the **repository root**.
 
@@ -44,9 +45,37 @@ python -c "import torch; print(torch.cuda.is_available())"
 The last command must print `True`. Both `python` and
 `python3` must resolve to this env (`command -v python python3`), because
 `run_cross_space_configs.sh` calls `python3`. The env downloads several GB of CUDA wheels. No GPU?
-See [§10 CPU fallback](#10-cpu-fallback).
+See [§11 CPU fallback](#11-cpu-fallback).
 
-## 2. Backbone weights
+## 2. Precomputed embeddings (private copy)
+
+> Only if the authors shared the embedding archives with you, under the same dataset agreements.
+> Otherwise skip to §3 and build the data from the raw datasets (§4).
+
+The archives hold the label CSVs and the paper's own embeddings, and replace all of §4. Check them
+in the download folder, then unpack them from the repository root:
+
+```sh
+(cd /path/to/download && sha256sum -c SHA256SUMS.txt)
+for z in biovid unbc mintpain xite; do unzip -q /path/to/download/pain_$z.zip; done
+```
+
+| Archive | Size | Unpacks to (relative to the repository root) |
+| --- | --- | --- |
+| `pain_biovid.zip` | 34 GB | `partA/starting_point/samples_adversarial.csv`, `partA/video/features/{DFER,VideoMaev2_S}/spatial_pooled_features_Biovid_B_last143_stride16_interpol[_<aug>[$N]]/` |
+| `pain_unbc.zip` | 1.9 GB | `UNBC/starting_point/{samples,samples_adversarial,samples_OPI,samples_OPI_0_to_4}.csv`, `UNBC/video/features/{DFER,VideoMaev2_S}/spatial_pooled_features_UNBC_B_last143_stride16_interpol[_<aug>[$N]]/` |
+| `pain_mintpain.zip` | 2.4 GB | `MIntPAIN/starting_point/samples.csv`, `MIntPAIN/features/{DFER,VideoMaev2_S}/spatial_pooled_features_MIntPAIN_B_last143_stride16_interpol[_<aug>[$N]]/` |
+| `pain_xite.zip` | 0.8 GB | `XITE/starting_point/splits/{train_samples_21,val_samples_5,test}.csv`, `XITE/video/features/{DFER,VideoMaev2_S}/spatial_pooled_features_XITE_B_last143_stride16_interpol_all/` |
+
+Each feature folder holds `<subject_name>/<sample_name>.safetensors`. The result is the tree in
+§4.4. Continue with §3.
+
+* Keep the folders where they unpack: training finds the augmented embeddings (`<base>_<aug>`,
+  `<base>_<aug>$N`) as siblings of the base folder named in the configs.
+* No videos are included. Only the temporal-prediction figure (video 7678, §8) needs one, rebuilt
+  from raw BioVid (§4, BioVid steps 1–2).
+
+## 3. Backbone weights
 
 `train_model.py` and `cross_space_projection.py` always build the backbone and load its weights,
 even when they only read precomputed embeddings. Download both checkpoints to these exact paths:
@@ -65,16 +94,17 @@ python -m pip install gdown   # or download the Google Drive file in a browser i
 gdown 1nzvMITUHic9fKwjQ7XLcnaXYViWTawRv -O "$DFER_DIR/checkpoint-49.pth"
 ```
 
-## 3. Data setup
+## 4. Data setup from the raw datasets
 
 > **No data is distributed.** The dataset agreements do not allow redistributing the videos, the
 > labels or anything derived from them, embeddings included. Request each dataset from its owners
-> (§3.1). The scripts below then rebuild the label CSVs, preprocessed videos and embeddings
-> (§3.2–3.3). The repository ships only two label-free files: the UNBC row order
+> (§4.1). The scripts below then rebuild the label CSVs, preprocessed videos and embeddings
+> (§4.2–4.3). The repository ships only two label-free files: the UNBC row order
 > (`UNBC/starting_point/sample_order_permutation.txt`) and the BioVid mean face used as the
 > frontalization reference (`partA/video/mean_face_landmarks_per_subject/all_subjects_mean_landmarks.pkl`).
+> Have the precomputed archives? Use §2 and skip this section.
 
-### 3.1 Request the datasets
+### 4.1 Request the datasets
 
 | Dataset | Where to request | Who can sign |
 | --- | --- | --- |
@@ -83,7 +113,7 @@ gdown 1nzvMITUHic9fKwjQ7XLcnaXYViWTawRv -O "$DFER_DIR/checkpoint-49.pth"
 | MIntPAIN | [EULA by e-mail](https://www.vap.aau.dk/mintpain-database/) (Aalborg University) | permanent academic staff |
 | X-ITE (2025 challenge subset + test labels) | [X-ITE Pain Challenge](https://sites.google.com/view/xitepainchallenge) | see the challenge rules |
 
-### 3.2 Download layout
+### 4.2 Download layout
 
 | Dataset | `--raw` folder | Expected content |
 | --- | --- | --- |
@@ -92,10 +122,10 @@ gdown 1nzvMITUHic9fKwjQ7XLcnaXYViWTawRv -O "$DFER_DIR/checkpoint-49.pth"
 | MIntPAIN | `MIntPAIN/` | `Sub<N> <Name>/Annotated_data_SubNN_TrialNN/SubNN_TrialNN_SweepNN_LabelN/RGB/*.jpg` |
 | X-ITE | `XITE/` | `train_data/{baseline,low_pain,med_pain}/fvf/<subject>/<sample>.mp4`, `test_data/fvf/<subject>/<sample>.mp4`, `Labels_test_data.csv` |
 
-Download the backbone weights (§2) first. MIntPAIN needs `ffmpeg`. Every step skips finished
+Download the backbone weights (§3) first. MIntPAIN needs `ffmpeg`. Every step skips finished
 outputs, so an interrupted step resumes when run again.
 
-### 3.3 Setup per dataset
+### 4.3 Setup per dataset
 
 #### BioVid Part A
 
@@ -208,7 +238,7 @@ The X-ITE configs use only the base embeddings.
 
 `--subjects <names>` limits any step to a few subjects for a quick test.
 
-### 3.4 Result
+### 4.4 Result
 
 The rebuilt embeddings are close to the paper's but not bit-identical: the videos are re-encoded,
 and the augmentations draw new random parameters. In our tests the base embeddings had a mean
@@ -242,12 +272,12 @@ Training and the cross-space code find the data by these relative paths:
     └── video/features/{DFER,VideoMaev2_S}/spatial_pooled_features_XITE_B_last143_stride16_interpol_all/...
 ```
 
-* The configs marked † in §5 need the augmented folders. Without them, training stops with a
+* The configs marked † in §6 need the augmented folders. Without them, training stops with a
   `FileNotFoundError` that explains this. The X-ITE configs use none.
 * `path_video_dataset` in the configs does **not** need to exist: only its name is used to
   identify the dataset.
 
-## 4. Smoke test
+## 5. Smoke test
 
 ```sh
 python reproduce/smoke_gpu.py --gpu 0          # ~10 min; add --full for all 12 training configs (~14 min)
@@ -259,7 +289,7 @@ device selection silently falls back to CPU when CUDA is unusable. The script fa
 FAILs, if an extraction or training log shows no GPU use, or if a log contains a CUDA error.
 Missing datasets are reported as `SKIP`.
 
-## 5. Model training
+## 6. Model training
 
 Each paper model is one subject-independent 5-fold cross-validation run, defined by a YAML file
 in `configs/train/`. Train all of them, or a subset:
@@ -284,15 +314,15 @@ python reproduce/train_all.py --gpu 0 --only biovid_dfer mintpain_dfer
 | X-ITE (predefined splits) | VideoMAEv2-S | `python train_model.py --config configs/train/xite_vmae_s.yaml` |
 | X-ITE (predefined splits) | MAE-DFER | `python train_model.py --config configs/train/xite_dfer.yaml` |
 
-† Needs the augmented embeddings (§3.3, step 4).
+† Needs the augmented embeddings (§4.3, step 4).
 
 * Quick check: append `--stop 1 1 --ep 1`. Flags on the command line override the YAML.
 * `stop: [K, S]` runs K folds × S subfolds. The subfold with the best validation score becomes
   the model of that fold.
-* Runs are written to `runs/<config>/history_run_*` (see §8). The cross-space step (§6) needs
+* Runs are written to `runs/<config>/history_run_*` (see §9). The cross-space step (§7) needs
   the six BioVid, MIntPAIN and UNBC OPI 0–4 runs.
 
-## 6. Cross-space projection
+## 7. Cross-space projection
 
 A cross-space YAML runs one projector method (`linear`, `mlp`, `autoencoder`, `procrustes`,
 `linear_close` = OLS) for one source (VideoMAEv2-S) → target (MAE-DFER) direction. It pairs the 5
@@ -303,7 +333,7 @@ source with the 5 target fold checkpoints and pools all pairs into one aggregate
 | `config_paper_tests_seed_42` | main results, random class-balanced anchors (`refinement: 3`) | `paper_tests_seed_42` |
 | `config_paper_tests_seed_42_quality` | quality-selected anchors | `paper_tests_seed_42_quality` |
 | `config_ablation_frozen_random_adapter` | frozen random projector + linear-head refinement (`refinement: 4`) | `ablation_paper_frozen_rnd_adapter` |
-| `config_anchor_sweep` | anchor-budget figure (§7) | `anchor_sweep_rerun_2026_09_23` |
+| `config_anchor_sweep` | anchor-budget figure (§8) | `anchor_sweep_rerun_2026_09_23` |
 
 ```sh
 python reproduce/fill_cross_space_checkpoints.py      # 1. point the YAMLs at your checkpoints (--dry-run to preview)
@@ -321,7 +351,7 @@ python reproduce/summarize_cross_space.py            # 3. write aggregated_summa
    The anchor-sweep YAMLs list several anchor counts, so run them through
    `reproduce/figure_anchor_budget.py`, which runs one count at a time.
 
-## 7. Paper tables, controls, statistics and figures
+## 8. Paper tables, controls, statistics and figures
 
 Each script reproduces one table or figure, named here by its paper title and LaTeX label, and
 writes it to `paper_outputs/`. A script first runs the steps it needs whose outputs are missing:
@@ -359,7 +389,7 @@ All scripts take `--gpu <id>` (default `0`). Notes:
   the newest BioVid MAE-DFER run. The plotted values are written to `curves_<digest>.json` under
   `chunk_prediction_plots/`.
 
-## 8. Outputs
+## 9. Outputs
 
 **Training** (`runs/<config>/history_run_<pid>_ATTENTIVE_JEPA_<host>_<timestamp>/`):
 
@@ -376,26 +406,26 @@ snapshot, `precomputed/` (anchors and extracted embeddings), one folder per subt
 pooled aggregated `.pkl`. `cross_space_logs.py --only_aggregated` writes `aggregated_summary.csv`
 and per-run plots in the output root.
 
-**Paper tables and figures** (§7): `paper_outputs/`. Statistics CSVs are in
+**Paper tables and figures** (§8): `paper_outputs/`. Statistics CSVs are in
 `paper_outputs/statistics/`, and the temporal-prediction plots are in `chunk_prediction_plots/`.
 
 **Smoke test**: logs in `smoke_out/logs/`, training runs in `smoke_out/train/`, cross-space runs
 in `Cross_projection/smoke_test/<timestamp>/`. All of these can be deleted.
 
-## 9. Known limitations
+## 10. Known limitations
 
 * **Backbone weights are mandatory** even for training on precomputed embeddings, and are loaded
   from paths relative to the working directory: run from the repository root.
 * Only Linux x86_64 was tested end-to-end.
 * CPU and GPU (and different attention kernels) give slightly different numbers. Exact paper
   values need the GPU setup.
-* The data setup scripts (§3) and the paper scripts in `reproduce/` (§7) are not covered by the
+* The data setup scripts (§4) and the paper scripts in `reproduce/` (§8) are not covered by the
   smoke test.
 * The V-JEPA 2.1 backbone option in `custom/backbone.py` (`--mt vjepa2_1_B`) is not used in the
   paper, and its vendored code is not shipped. Using it requires a checkout of
   [facebookresearch/vjepa2](https://github.com/facebookresearch/vjepa2) in `vjepa2/`.
 
-## 10. CPU fallback
+## 11. CPU fallback
 
 **Pinned CPU environment (Linux x86_64).** This is the environment exported from the clean-room
 install that passed `smoke_test.sh`. Training on CPU is slow, but it is enough for the smoke test

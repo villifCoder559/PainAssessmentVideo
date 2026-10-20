@@ -92,7 +92,8 @@ class Model_Advanced: # Scenario_Advanced
         print(f'\nApplied embedding reduction, T_S_S shape: {T_S_S_shape} ')
     else:
       raise ValueError(f'{features_folder_saving_path} holds no precomputed embeddings; '
-                       'run the dataset setup scripts first (README §3).')
+                       'unzip the precomputed embeddings (README §2) or run the '
+                       'dataset setup scripts (README §4).')
     print(f"Shape of T_S_S_shape: {T_S_S_shape}\n")
     print(f'\n num_heads: {head_params["num_heads"]},\n num_cross_heads: {head_params["num_cross_heads"]}\n')
     self.T_S_S_shape = T_S_S_shape

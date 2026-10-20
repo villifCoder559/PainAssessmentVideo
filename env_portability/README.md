@@ -46,7 +46,7 @@ conda activate pain-portable
 python -m pip check
 ```
 
-Then follow [README.md](../README.md) §2–§4 (weights, data, smoke test).
+Then follow [README.md](../README.md) §2–§5 (precomputed embeddings, weights, data setup, smoke test).
 
 ### Fallback: flexible specifications
 
